@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DeepGraph - Research Opportunity Map</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body data-root-node="{{ root_node_id }}" data-profile="{{ profile }}">
+    <header>
+        <h1>{{ app_name }} <span class="live-badge" id="liveBadge">IDLE</span></h1>
+        <p class="subtitle">{{ subtitle }}</p>
+    </header>
+
+    <div class="dashboard">
+        <!-- Stats Row -->
+        <div class="stats-row">
+            <div class="stat-card">
+                <div class="stat-number" id="statPapers">0</div>
+                <div class="stat-label">Papers Processed</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number" id="statClaims">0</div>
+                <div class="stat-label">Paper Briefs</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number" id="statResults">0</div>
+                <div class="stat-label">Evidence Rows</div>
+            </div>
+            <div class="stat-card highlight-red">
+                <div class="stat-number" id="statContradictions">0</div>
+                <div class="stat-label">Conflicts</div>
+            </div>
+            <div class="stat-card highlight-green">
+                <div class="stat-number" id="statGaps">0</div>
+                <div class="stat-label">Domain Briefs</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number" id="statTokens">0</div>
+                <div class="stat-label">Tokens Used</div>
+            </div>
+        </div>
+
+        <!-- Controls -->
+        <div class="controls">
+            <button onclick="startPipeline(20)">Analyze 20</button>
+            <button onclick="startPipeline(100)">Analyze 100</button>
+            <button onclick="startPipeline(500)">Analyze 500</button>
+            <button onclick="refreshAll()">Refresh</button>
+        </div>
+
+        <!-- Currently Processing -->
+        <div class="panel processing-panel" id="processingPanel">
+            <h2>Currently Processing</h2>
+            <div id="processingList" class="processing-list">
+                <p class="empty-msg">Idle</p>
+            </div>
+        </div>
+
+        <!-- Breadcrumb -->
+        <div class="breadcrumb" id="breadcrumb">
+            <span class="crumb active">Machine Learning</span>
+        </div>
+
+        <!-- Main: Large Graph + Feed -->
+        <div class="main-content-wide">
+            <div class="panel graph-panel-large">
+                <h2 id="graphTitle">Research Area Explorer</h2>
+                <svg id="graphSvg" width="100%" height="600"></svg>
+            </div>
+            <div class="panel feed-panel">
+                <h2>Pipeline Feed</h2>
+                <div id="eventFeed" class="event-feed"></div>
+            </div>
+        </div>
+
+        <!-- Detail Section -->
+        <div id="detailSection" class="detail-section" style="display:none;">
+            <div class="panel full-width">
+                <h2 id="summaryTitle">Area Overview</h2>
+                <div id="summaryContainer"></div>
+            </div>
+            <div class="bottom-panels">
+                <div class="panel">
+                    <h2 id="papersTitle">Representative Papers</h2>
+                    <div id="papersList" class="scrollable"></div>
+                </div>
+                <div class="panel">
+                    <h2>Opportunity Themes</h2>
+                    <div id="gapsList" class="scrollable"></div>
+                </div>
+            </div>
+            <div class="panel full-width" style="margin-top:16px;">
+                <h2 id="matrixTitle">Evidence Table</h2>
+                <div id="matrixContainer"></div>
+            </div>
+        </div>
+
+        <!-- Contradictions -->
+        <div class="panel" style="margin-top:16px;">
+            <h2>Recent Conflicting Claims</h2>
+            <div id="contradictionsList" class="scrollable"></div>
+        </div>
+    </div>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html>
