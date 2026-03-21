@@ -20,6 +20,7 @@ For each taxonomy node it can produce:
 - A short explanation of why the area matters
 - A summary of the main workstreams people are building
 - Common methods, datasets, and recurring patterns
+- Core entities and the relations connecting them
 - Opportunity themes and open questions grounded in paper limitations
 - Evidence tables for methods, datasets, and metrics
 
@@ -30,8 +31,8 @@ The pipeline is:
 1. Discover papers from arXiv
 2. Download PDFs and extract text
 3. Ask an LLM to classify papers and extract results
-4. Store paper-level briefs, claims, methods, and evidence rows
-5. Build node-level summaries and opportunity briefs
+4. Store paper-level briefs, claims, methods, entities, relations, and evidence rows
+5. Build node-level graph summaries, summaries, and opportunity briefs
 6. Serve an interactive dashboard
 
 Core components:
@@ -65,6 +66,7 @@ Important ones:
 - `DEEPGRAPH_PROFILE`: `machine_learning` or `open_science`
 - `DEEPGRAPH_ROOT_NODE_ID`: defaults to `ml` for ML mode and `science` for open science mode
 - `DEEPGRAPH_ARXIV_CATEGORIES`: optional comma-separated override
+- `DEEPGRAPH_BACKFILL_GRAPH_ON_START`: backfill graph entities and relations from existing structured records at startup
 - `DEEPGRAPH_WEB_PORT`: dashboard port
 
 Example: switch to the broader science profile
@@ -128,8 +130,16 @@ This repository is still an early-stage research system. The current implementat
 
 - literature ingestion
 - evidence extraction
+- entity/relation/evidence graph storage
+- auditable entity resolution and merge candidates
 - plain-language node summaries
 - opportunity surfacing from limitations and sparse evidence regions
+
+It also now includes a deterministic graph backfill path for older databases:
+
+- existing `methods`, `results`, `claims`, and `paper_insights` can be converted into graph entities and relations
+- node-level graph summaries can be regenerated without rerunning the full LLM extraction pipeline
+- similar entities can be surfaced as merge candidates for manual review instead of being destructively merged
 
 It is still weak at:
 

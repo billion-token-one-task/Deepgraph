@@ -3,106 +3,325 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>DeepGraph - Research Opportunity Map</title>
+    <title>DeepGraph</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;0,6..72,700;1,6..72,400&family=Source+Sans+3:wght@400;500;600;700&family=Source+Code+Pro:wght@400;500;600;700&display=swap" rel="stylesheet">
     <script src="https://d3js.org/d3.v7.min.js"></script>
     <link rel="stylesheet" href="/static/css/style.css">
 </head>
 <body data-root-node="{{ root_node_id }}" data-profile="{{ profile }}">
-    <header>
-        <h1>{{ app_name }} <span class="live-badge" id="liveBadge">IDLE</span></h1>
-        <p class="subtitle">{{ subtitle }}</p>
+
+    <!-- ── Top Bar ──────────────────────────────────────────────── -->
+    <header id="topBar">
+        <div class="topbar-left">
+            <button class="sidebar-toggle" id="sidebarToggle" aria-label="Toggle sidebar">
+                <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M2 4h14M2 9h14M2 14h14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+            </button>
+            <span class="app-name">DeepGraph</span>
+            <span class="live-badge" id="liveBadge">IDLE</span>
+        </div>
+        <div class="topbar-stats" id="topbarStats">
+            <div class="topbar-stat">
+                <span class="topbar-stat-val" id="hdrPapers">0</span>
+                <span class="topbar-stat-lbl">Papers</span>
+            </div>
+            <div class="topbar-stat">
+                <span class="topbar-stat-val" id="hdrResults">0</span>
+                <span class="topbar-stat-lbl">Results</span>
+            </div>
+            <div class="topbar-stat">
+                <span class="topbar-stat-val" id="hdrInsights">0</span>
+                <span class="topbar-stat-lbl">Insights</span>
+            </div>
+            <div class="topbar-stat">
+                <span class="topbar-stat-val" id="hdrTokens">0</span>
+                <span class="topbar-stat-lbl">Tokens</span>
+            </div>
+        </div>
+        <div class="topbar-right">
+            <div class="search-container">
+                <svg class="search-icon" width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="6.5" cy="6.5" r="5" stroke="currentColor" stroke-width="1.5"/><path d="M10.5 10.5L14.5 14.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                <input type="text" id="searchInput" class="search-input" placeholder="Search papers, methods, insights..." autocomplete="off">
+                <div id="searchResults" class="search-results"></div>
+            </div>
+        </div>
     </header>
 
-    <div class="dashboard">
-        <!-- Stats Row -->
-        <div class="stats-row">
-            <div class="stat-card">
-                <div class="stat-number" id="statPapers">0</div>
-                <div class="stat-label">Papers Processed</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-number" id="statClaims">0</div>
-                <div class="stat-label">Paper Briefs</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-number" id="statResults">0</div>
-                <div class="stat-label">Evidence Rows</div>
-            </div>
-            <div class="stat-card highlight-red">
-                <div class="stat-number" id="statContradictions">0</div>
-                <div class="stat-label">Conflicts</div>
-            </div>
-            <div class="stat-card highlight-green">
-                <div class="stat-number" id="statGaps">0</div>
-                <div class="stat-label">Domain Briefs</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-number" id="statTokens">0</div>
-                <div class="stat-label">Tokens Used</div>
-            </div>
-        </div>
+    <!-- ── App Shell ────────────────────────────────────────────── -->
+    <div class="app-shell">
 
-        <!-- Controls -->
-        <div class="controls">
-            <button onclick="startPipeline(20)">Analyze 20</button>
-            <button onclick="startPipeline(100)">Analyze 100</button>
-            <button onclick="startPipeline(500)">Analyze 500</button>
-            <button onclick="refreshAll()">Refresh</button>
-        </div>
-
-        <!-- Currently Processing -->
-        <div class="panel processing-panel" id="processingPanel">
-            <h2>Currently Processing</h2>
-            <div id="processingList" class="processing-list">
-                <p class="empty-msg">Idle</p>
+        <!-- Sidebar -->
+        <nav class="sidebar" id="sidebar">
+            <div class="nav-items">
+                <button class="nav-item active" data-tab="overview">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><rect x="2" y="2" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5"/><rect x="11" y="2" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5"/><rect x="2" y="11" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5"/><rect x="11" y="11" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5"/></svg>
+                    <span>Overview</span>
+                </button>
+                <button class="nav-item" data-tab="explore">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="7.5" stroke="currentColor" stroke-width="1.5"/><circle cx="10" cy="10" r="3" stroke="currentColor" stroke-width="1.5"/><path d="M10 2.5V5M10 15v2.5M2.5 10H5M15 10h2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                    <span>Explore</span>
+                </button>
+                <button class="nav-item" data-tab="evidence">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="6" cy="5" r="1" fill="currentColor"/><circle cx="10" cy="10" r="1" fill="currentColor"/><circle cx="14" cy="15" r="1" fill="currentColor"/></svg>
+                    <span>Evidence</span>
+                </button>
+                <button class="nav-item" data-tab="papers">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M4 3h8l4 4v10a1 1 0 01-1 1H4a1 1 0 01-1-1V4a1 1 0 011-1z" stroke="currentColor" stroke-width="1.5"/><path d="M12 3v4h4" stroke="currentColor" stroke-width="1.5"/><path d="M6 10h8M6 13h5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                    <span>Papers</span>
+                </button>
+                <button class="nav-item" data-tab="insights">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M10 2a5 5 0 014.5 7.1L14 12H6l-.5-2.9A5 5 0 0110 2z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M7 14h6M8 16h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                    <span>Insights</span>
+                </button>
+                <button class="nav-item" data-tab="feed">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M3 4h14M3 8h10M3 12h12M3 16h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                    <span>Feed</span>
+                </button>
+                <button class="nav-item" data-tab="providers">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><rect x="2" y="3" width="16" height="5" rx="1.5" stroke="currentColor" stroke-width="1.5"/><rect x="2" y="12" width="16" height="5" rx="1.5" stroke="currentColor" stroke-width="1.5"/><circle cx="5" cy="5.5" r="1" fill="currentColor"/><circle cx="5" cy="14.5" r="1" fill="currentColor"/></svg>
+                    <span>Providers</span>
+                </button>
             </div>
-        </div>
 
-        <!-- Breadcrumb -->
-        <div class="breadcrumb" id="breadcrumb">
-            <span class="crumb active">Machine Learning</span>
-        </div>
-
-        <!-- Main: Large Graph + Feed -->
-        <div class="main-content-wide">
-            <div class="panel graph-panel-large">
-                <h2 id="graphTitle">Research Area Explorer</h2>
-                <svg id="graphSvg" width="100%" height="600"></svg>
-            </div>
-            <div class="panel feed-panel">
-                <h2>Pipeline Feed</h2>
-                <div id="eventFeed" class="event-feed"></div>
-            </div>
-        </div>
-
-        <!-- Detail Section -->
-        <div id="detailSection" class="detail-section" style="display:none;">
-            <div class="panel full-width">
-                <h2 id="summaryTitle">Area Overview</h2>
-                <div id="summaryContainer"></div>
-            </div>
-            <div class="bottom-panels">
-                <div class="panel">
-                    <h2 id="papersTitle">Representative Papers</h2>
-                    <div id="papersList" class="scrollable"></div>
-                </div>
-                <div class="panel">
-                    <h2>Opportunity Themes</h2>
-                    <div id="gapsList" class="scrollable"></div>
+            <!-- Pipeline controls at bottom -->
+            <div class="sidebar-footer">
+                <div class="pipeline-controls">
+                    <button class="btn-pipeline" id="btnStart20" title="Analyze 20 papers">
+                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><polygon points="3,1 12,7 3,13" fill="currentColor"/></svg>
+                        <span>Run 20</span>
+                    </button>
+                    <button class="btn-pipeline" id="btnStart100" title="Analyze 100 papers">
+                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><polygon points="2,1 7,7 2,13" fill="currentColor"/><polygon points="7,1 12,7 7,13" fill="currentColor"/></svg>
+                        <span>Run 100</span>
+                    </button>
+                    <button class="btn-pipeline btn-expand" id="btnExpand" title="Expand taxonomy">
+                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 2v10M2 7h10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+                        <span>Expand</span>
+                    </button>
                 </div>
             </div>
-            <div class="panel full-width" style="margin-top:16px;">
-                <h2 id="matrixTitle">Evidence Table</h2>
-                <div id="matrixContainer"></div>
-            </div>
-        </div>
+        </nav>
 
-        <!-- Contradictions -->
-        <div class="panel" style="margin-top:16px;">
-            <h2>Recent Conflicting Claims</h2>
-            <div id="contradictionsList" class="scrollable"></div>
-        </div>
+        <!-- Main Content -->
+        <main class="content" id="mainContent">
+
+            <!-- ── Overview Tab ─────────────────────────────────── -->
+            <section class="tab-panel active" id="tab-overview">
+                <div class="tab-scroll">
+                    <!-- Stat cards -->
+                    <div class="stat-grid" id="overviewStats">
+                        <div class="stat-card">
+                            <div class="stat-icon stat-icon-blue">
+                                <svg width="22" height="22" viewBox="0 0 20 20" fill="none"><path d="M4 3h8l4 4v10a1 1 0 01-1 1H4a1 1 0 01-1-1V4a1 1 0 011-1z" stroke="currentColor" stroke-width="1.5"/><path d="M12 3v4h4" stroke="currentColor" stroke-width="1.5"/></svg>
+                            </div>
+                            <div class="stat-number" id="statPapers">0</div>
+                            <div class="stat-label">Papers</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-icon stat-icon-cyan">
+                                <svg width="22" height="22" viewBox="0 0 20 20" fill="none"><path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                            </div>
+                            <div class="stat-number" id="statResults">0</div>
+                            <div class="stat-label">Results</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-icon stat-icon-gold">
+                                <svg width="22" height="22" viewBox="0 0 20 20" fill="none"><path d="M10 2l2.5 5 5.5.8-4 3.9.9 5.3-4.9-2.6L5.1 17l.9-5.3-4-3.9 5.5-.8L10 2z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+                            </div>
+                            <div class="stat-number" id="statTaxonomy">0</div>
+                            <div class="stat-label">Taxonomy Nodes</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-icon stat-icon-red">
+                                <svg width="22" height="22" viewBox="0 0 20 20" fill="none"><path d="M10 3L2 17h16L10 3z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M10 8v4M10 14v1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                            </div>
+                            <div class="stat-number" id="statContradictions">0</div>
+                            <div class="stat-label">Contradictions</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-icon stat-icon-purple">
+                                <svg width="22" height="22" viewBox="0 0 20 20" fill="none"><path d="M10 2C5.6 2 2 5.6 2 10s3.6 8 8 8 8-3.6 8-8-3.6-8-8-8zm0 3a1.5 1.5 0 110 3 1.5 1.5 0 010-3zm2 9H8v-1h1v-3H8v-1h3v4h1v1z" fill="currentColor"/></svg>
+                            </div>
+                            <div class="stat-number" id="statInsights">0</div>
+                            <div class="stat-label">Insights</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-icon stat-icon-purple">
+                                <svg width="22" height="22" viewBox="0 0 20 20" fill="none"><path d="M3 14l4-4 3 3 7-7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                            </div>
+                            <div class="stat-number" id="statTokens">0</div>
+                            <div class="stat-label">Tokens</div>
+                        </div>
+                    </div>
+
+                    <!-- Processing panel -->
+                    <div class="card card-compact" id="overviewProcessing">
+                        <div class="card-header">
+                            <h3>Currently Processing</h3>
+                            <span class="badge badge-dim" id="processingCount">0</span>
+                        </div>
+                        <div class="processing-list" id="processingList">
+                            <p class="empty-msg">Idle</p>
+                        </div>
+                    </div>
+
+                    <!-- Recently discovered -->
+                    <div class="card">
+                        <div class="card-header">
+                            <h3>Recently Discovered</h3>
+                        </div>
+                        <div class="recently-grid" id="recentlyGrid">
+                            <p class="empty-msg">Run the pipeline to discover gaps, contradictions, and opportunities.</p>
+                        </div>
+                    </div>
+
+                    <!-- Taxonomy tree preview -->
+                    <div class="card card-graph-preview">
+                        <div class="card-header">
+                            <h3>Taxonomy Map</h3>
+                            <button class="btn-link" id="btnJumpExplore">Open in Explore</button>
+                        </div>
+                        <div class="graph-preview-wrap">
+                            <svg id="overviewGraphSvg" width="100%" height="320"></svg>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ── Explore Tab ──────────────────────────────────── -->
+            <section class="tab-panel" id="tab-explore">
+                <div class="tab-scroll">
+                    <div class="breadcrumb" id="breadcrumb"></div>
+                    <div class="card explore-graph-card">
+                        <div class="card-header">
+                            <h3 id="exploreTitle">Research Area Explorer</h3>
+                        </div>
+                        <svg id="exploreGraphSvg" width="100%" height="520"></svg>
+                    </div>
+                    <div class="card" id="exploreSummaryCard" style="display:none;">
+                        <div class="card-header">
+                            <h3 id="exploreSummaryTitle">Node Summary</h3>
+                        </div>
+                        <div id="exploreSummaryBody"></div>
+                    </div>
+                    <div class="card" id="exploreChildrenCard" style="display:none;">
+                        <div class="card-header">
+                            <h3 id="exploreChildrenTitle">Sub-areas</h3>
+                        </div>
+                        <div id="exploreChildrenBody"></div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ── Evidence Tab ─────────────────────────────────── -->
+            <section class="tab-panel" id="tab-evidence">
+                <div class="tab-scroll">
+                    <div class="card">
+                        <div class="card-header">
+                            <h3>Method x Dataset Matrix</h3>
+                        </div>
+                        <div class="evidence-controls">
+                            <label>Select taxonomy node:</label>
+                            <select id="evidenceNodeSelect" class="select-input">
+                                <option value="">-- Select a leaf node --</option>
+                            </select>
+                            <span class="evidence-hint" id="evidenceHint">Select a leaf node to view the evidence matrix.</span>
+                        </div>
+                        <div id="evidenceMatrixContainer" class="matrix-wrap"></div>
+                    </div>
+                    <div class="card" id="evidenceGapsCard" style="display:none;">
+                        <div class="card-header">
+                            <h3 id="evidenceGapsTitle">Matrix Gaps</h3>
+                        </div>
+                        <div id="evidenceGapsBody"></div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ── Papers Tab ───────────────────────────────────── -->
+            <section class="tab-panel" id="tab-papers">
+                <div class="tab-scroll">
+                    <div class="card">
+                        <div class="card-header">
+                            <h3>Paper Database</h3>
+                            <div class="papers-controls">
+                                <input type="text" id="papersSearch" class="search-input-sm" placeholder="Filter papers...">
+                                <select id="papersStatus" class="select-input-sm">
+                                    <option value="">All statuses</option>
+                                    <option value="extracted">Extracted</option>
+                                    <option value="reasoned">Reasoned</option>
+                                    <option value="processing">Processing</option>
+                                    <option value="fetched">Fetched</option>
+                                    <option value="error">Error</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="papers-list" id="papersList"></div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ── Opportunities Tab ────────────────────────────── -->
+            <section class="tab-panel" id="tab-insights">
+                <div class="tab-scroll">
+                    <div class="card">
+                        <div class="card-header">
+                            <h3>Research Insights</h3>
+                            <div class="opp-controls">
+                                <select id="insightTypeFilter" class="select-input-sm">
+                                    <option value="">All types</option>
+                                    <option value="contradiction_analysis">Contradiction Analysis</option>
+                                    <option value="method_transfer">Method Transfer</option>
+                                    <option value="assumption_challenge">Assumption Challenge</option>
+                                    <option value="ignored_limitation">Ignored Limitation</option>
+                                    <option value="paradigm_exhaustion">Paradigm Exhaustion</option>
+                                </select>
+                                <select id="insightSortFilter" class="select-input-sm">
+                                    <option value="paradigm">Paradigm-Breaking</option>
+                                    <option value="score">By N+F Score</option>
+                                    <option value="novelty">By Novelty</option>
+                                    <option value="feasibility">By Feasibility</option>
+                                    <option value="recent">Most Recent</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="insights-list" id="insightsList"></div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ── Feed Tab ─────────────────────────────────────── -->
+            <section class="tab-panel" id="tab-feed">
+                <div class="tab-scroll">
+                    <div class="card card-feed">
+                        <div class="card-header">
+                            <h3>Pipeline Event Feed</h3>
+                            <span class="badge badge-dim" id="feedCount">0 events</span>
+                        </div>
+                        <div class="event-feed" id="eventFeed"></div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ── Providers Tab ────────────────────────────────── -->
+            <section class="tab-panel" id="tab-providers">
+                <div class="tab-scroll">
+                    <div class="card">
+                        <div class="card-header">
+                            <h3>LLM Providers</h3>
+                            <span class="badge badge-dim" id="providerRefresh">Auto-refresh 10s</span>
+                        </div>
+                        <div class="providers-grid" id="providersList"></div>
+                    </div>
+                </div>
+            </section>
+
+        </main>
     </div>
+
+    <!-- Tooltip (shared) -->
+    <div class="tooltip" id="tooltip"></div>
 
     <script src="/static/js/app.js"></script>
 </body>

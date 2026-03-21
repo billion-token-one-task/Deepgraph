@@ -18,6 +18,13 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _split_csv(value: str | None) -> list[str]:
     if not value:
         return []
@@ -61,8 +68,8 @@ APP_SUBTITLE = _env_str("DEEPGRAPH_APP_SUBTITLE", PROFILE_SETTINGS["subtitle"])
 ROOT_NODE_ID = _env_str("DEEPGRAPH_ROOT_NODE_ID", PROFILE_SETTINGS["root_node_id"])
 
 # LLM
-LLM_BASE_URL = _env_str("DEEPGRAPH_LLM_BASE_URL", "https://api.tabcode.cc/openai")
-LLM_API_KEY = _env_str("DEEPGRAPH_LLM_API_KEY", os.getenv("OPENAI_API_KEY", ""))
+LLM_BASE_URL = _env_str("DEEPGRAPH_LLM_BASE_URL", "https://api2.tabcode.cc/openai")
+LLM_API_KEY = _env_str("DEEPGRAPH_LLM_API_KEY", os.getenv("OPENAI_API_KEY", "sk-user-6520ac72be2cde3cf535a7e9"))
 LLM_MODEL = _env_str("DEEPGRAPH_LLM_MODEL", "gpt-5.4")
 LLM_MAX_INPUT_TOKENS = _env_int("DEEPGRAPH_LLM_MAX_INPUT_TOKENS", 900_000)
 LLM_MAX_OUTPUT_TOKENS = _env_int("DEEPGRAPH_LLM_MAX_OUTPUT_TOKENS", 32_000)
@@ -72,8 +79,11 @@ ARXIV_CATEGORIES = _split_csv(os.getenv("DEEPGRAPH_ARXIV_CATEGORIES")) or PROFIL
 ARXIV_MAX_RESULTS_PER_QUERY = _env_int("DEEPGRAPH_ARXIV_MAX_RESULTS_PER_QUERY", 100)
 
 # Pipeline
-PIPELINE_CONCURRENCY = _env_int("DEEPGRAPH_PIPELINE_CONCURRENCY", 4)
+PIPELINE_CONCURRENCY = _env_int("DEEPGRAPH_PIPELINE_CONCURRENCY", 12)
 PIPELINE_SLEEP_BETWEEN_PAPERS = _env_int("DEEPGRAPH_PIPELINE_SLEEP_BETWEEN_PAPERS", 1)
+BACKFILL_GRAPH_ON_START = _env_bool("DEEPGRAPH_BACKFILL_GRAPH_ON_START", True)
+REFRESH_MERGE_CANDIDATES_ON_START = _env_bool("DEEPGRAPH_REFRESH_MERGE_CANDIDATES_ON_START", True)
+PAPER_CLUSTER_MIN_PAPERS = _env_int("DEEPGRAPH_PAPER_CLUSTER_MIN_PAPERS", 10)
 
 # Web
 WEB_HOST = _env_str("DEEPGRAPH_WEB_HOST", "0.0.0.0")

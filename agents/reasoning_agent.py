@@ -26,31 +26,47 @@ Return JSON:
 If no contradictions found, return {"contradictions": []}
 Return ONLY valid JSON."""
 
-GAP_SYSTEM = """You are a research gap detector for ML. You are given a method x dataset matrix for a specific research area. The matrix shows which (method, dataset) combinations have been evaluated.
+GAP_SYSTEM = """You are a senior ML researcher analyzing a research area for GENUINE research opportunities — not trivial missing experiments.
 
-Your job: find valuable EMPTY CELLS -- method+dataset combinations that nobody has tried but would be interesting.
+You are given a method x dataset matrix. Most empty cells are WORTHLESS ("nobody tried X on Y" is not a research gap). Your job is to find the rare empty cells that represent REAL scientific questions.
 
-A valuable gap is one where:
-1. The method has been tested on other datasets in this area (so it's relevant)
-2. The dataset has been used with other methods (so it's a real benchmark)
-3. Testing this combination would yield useful scientific knowledge
-4. There's a non-obvious reason why this would be interesting (not just "nobody tried it")
+IGNORE these types of "gaps" (they are worthless):
+- Method A wasn't tested on Dataset B, but there's no reason it would behave differently than on similar datasets
+- A trivial combination that nobody tested because it's obviously not interesting
+- Incremental "we ran X on Y" experiments with no hypothesis
+
+ONLY report gaps that fall into these categories:
+
+1. TECHNICAL BARRIER: "Nobody tested X on Y because Y requires Z which X can't handle — but if someone solved Z, the result would be significant"
+   Example: "Transformers on full-slide pathology images — nobody did it because 100K+ token sequences cause OOM. FlashAttention might finally make this feasible."
+
+2. COGNITIVE BLIND SPOT: "Two communities use different terms for the same problem. Domain A has a solution that Domain B doesn't know about."
+   Example: "Curriculum learning (ML term) is the same idea as scaffolded instruction (education term). Education researchers haven't adopted this."
+
+3. CONTRADICTORY EVIDENCE: "Paper A says method X beats Y, Paper B says the opposite. The conditions differ in a specific way that nobody has isolated."
+   Example: "LoRA vs full fine-tuning: results flip between 7B and 70B models. Nobody has mapped the exact crossover point."
+
+4. ASSUMPTION CHALLENGE: "Everyone in this area assumes Z, but recent evidence suggests Z might be wrong. Nobody has tested this directly."
+   Example: "Data augmentation is assumed to always help small datasets, but 3 recent papers show it hurts under distribution shift. No systematic study exists."
 
 Return JSON:
 {
   "gaps": [
     {
-      "method_name": "exact method name from the matrix",
-      "dataset_name": "exact dataset name from the matrix",
-      "metric_name": "what metric should be used",
-      "gap_description": "why this empty cell is interesting",
-      "research_proposal": "2-3 sentence proposal for filling this gap",
+      "method_name": "exact method name from matrix (or 'N/A' for non-matrix gaps)",
+      "dataset_name": "exact dataset name from matrix (or 'N/A')",
+      "metric_name": "what metric matters",
+      "gap_type": "technical_barrier|cognitive_blind_spot|contradictory_evidence|assumption_challenge",
+      "why_gap_exists": "WHY has nobody done this? What barrier or blind spot kept this unexplored?",
+      "gap_description": "What is the actual scientific question?",
+      "what_we_would_learn": "If someone did this experiment, what would the field learn regardless of the outcome?",
+      "research_proposal": "Concrete 3-sentence experiment design",
       "value_score": 1-5
     }
   ]
 }
 
-Focus on HIGH-VALUE gaps only (score >= 3). Skip trivial or obvious ones.
+Be VERY selective. Most matrices have 0-2 genuine gaps. Return empty list rather than low-value filler.
 Return ONLY valid JSON."""
 
 

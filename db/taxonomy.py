@@ -1,8 +1,9 @@
 """Predefined ML taxonomy tree and CRUD operations."""
 import json
-from collections import Counter
-from config import ROOT_NODE_ID
+from collections import Counter, defaultdict
+from config import PAPER_CLUSTER_MIN_PAPERS, ROOT_NODE_ID
 from db import database as db
+from db import evidence_graph as graph
 
 # ── Predefined taxonomy ────────────────────────────────────────────
 # Format: (id, name, parent_id, depth, description, sort_order)
@@ -69,12 +70,22 @@ TAXONOMY = [
      "Action recognition, video generation, tracking", 4),
     ("ml.dl.cv.3d", "3D Vision", "ml.dl.cv", 3,
      "NeRF, 3D reconstruction, point clouds, Gaussian splatting", 5),
+    ("ml.dl.cv.reid", "Re-Identification", "ml.dl.cv", 3,
+     "Matching identities across cameras, domains, or species", 6),
     ("ml.dl.cv.medical", "Medical Imaging", "ml.dl.cv", 3,
-     "Radiology, pathology, medical image analysis", 6),
+     "Radiology, pathology, medical image analysis", 7),
     ("ml.dl.cv.face", "Face Analysis", "ml.dl.cv", 3,
-     "Face recognition, detection, generation", 7),
+     "Face recognition, detection, generation", 8),
     ("ml.dl.cv.document", "Document Understanding", "ml.dl.cv", 3,
-     "OCR, layout analysis, document parsing", 8),
+     "OCR, layout analysis, document parsing", 9),
+
+    # ── Re-Identification (Level 4) ──────────────────────────────
+    ("ml.dl.cv.reid.person", "Person Re-Identification", "ml.dl.cv.reid", 4,
+     "Matching the same person across cameras or times", 0),
+    ("ml.dl.cv.reid.cross_domain", "Cross-Domain Re-Identification", "ml.dl.cv.reid", 4,
+     "Re-identification under domain shift across environments or datasets", 1),
+    ("ml.dl.cv.reid.animal", "Animal Re-Identification", "ml.dl.cv.reid", 4,
+     "Matching individual animals across images, videos, or sensors", 2),
 
     # ── NLP (Level 3) ─────────────────────────────────────────────
     ("ml.dl.nlp.lm", "Language Modeling", "ml.dl.nlp", 3,
@@ -261,6 +272,12 @@ SCIENCE_TAXONOMY = [
      "Language modeling, retrieval, reasoning, and dialogue", 3),
     ("science.computing.scientific_ml", "Scientific Machine Learning", "science.computing", 2,
      "Physics-informed and simulation-aware learning systems", 4),
+    ("science.computing.cv.reid", "Re-Identification", "science.computing.cv", 3,
+     "Matching the same identity across views, domains, or species", 0),
+    ("science.computing.cv.reid.cross_domain", "Cross-Domain Re-Identification", "science.computing.cv.reid", 4,
+     "Identity matching across different domains or environments", 0),
+    ("science.computing.cv.reid.animal", "Animal Re-Identification", "science.computing.cv.reid", 4,
+     "Identity matching for individual animals", 1),
 ]
 
 ALL_TAXONOMY = TAXONOMY + SCIENCE_TAXONOMY
@@ -477,6 +494,231 @@ def get_node_papers(node_id: str, limit: int = 50) -> list[dict]:
     return rows
 
 
+def get_node_paper_clusters(node_id: str, min_papers_to_cluster: int = PAPER_CLUSTER_MIN_PAPERS) -> list[dict]:
+    """Cluster papers inside a node using shared entity signals."""
+    papers = get_node_papers(node_id, limit=200)
+    if len(papers) < min_papers_to_cluster:
+        return []
+
+    paper_ids = [paper["id"] for paper in papers]
+    placeholders = ",".join("?" for _ in paper_ids)
+    mention_rows = db.fetchall(
+        f"""SELECT pem.paper_id, er.canonical_entity_id, ge.canonical_name
+            FROM paper_entity_mentions pem
+            JOIN entity_resolutions er ON er.entity_id = pem.entity_id
+            JOIN graph_entities ge ON ge.id = er.canonical_entity_id
+            WHERE pem.paper_id IN ({placeholders})
+              AND ge.entity_type != 'metric'""",
+        tuple(paper_ids),
+    )
+
+    paper_entities: dict[str, set[str]] = defaultdict(set)
+    entity_names: dict[str, dict[str, str]] = defaultdict(dict)
+    for row in mention_rows:
+        paper_entities[row["paper_id"]].add(row["canonical_entity_id"])
+        entity_names[row["paper_id"]][row["canonical_entity_id"]] = row["canonical_name"]
+
+    work_types = {paper["id"]: paper.get("work_type", "") or "" for paper in papers}
+    return cluster_papers_from_signals(
+        papers=papers,
+        paper_entities=paper_entities,
+        work_types=work_types,
+        entity_names=entity_names,
+        min_papers_to_cluster=min_papers_to_cluster,
+    )
+
+
+def _intersection_strength(paper_overlap: int, entity_overlap: int) -> float:
+    """Combine paper overlap and shared entities into one heatmap strength."""
+    return round(paper_overlap * 2.0 + entity_overlap * 0.35, 2)
+
+
+def cluster_papers_from_signals(
+    papers: list[dict],
+    paper_entities: dict[str, set[str]],
+    work_types: dict[str, str],
+    entity_names: dict[str, dict[str, str]],
+    min_shared_entities: int = 2,
+    min_papers_to_cluster: int = PAPER_CLUSTER_MIN_PAPERS,
+) -> list[dict]:
+    """Cluster papers by shared entities and work type signals."""
+    if len(papers) < min_papers_to_cluster:
+        return []
+
+    paper_ids = [paper["id"] for paper in papers]
+    adjacency: dict[str, set[str]] = defaultdict(set)
+    for i, left_id in enumerate(paper_ids):
+        left_entities = paper_entities.get(left_id, set())
+        for right_id in paper_ids[i + 1:]:
+            right_entities = paper_entities.get(right_id, set())
+            shared = left_entities & right_entities
+            same_work_type = bool(work_types.get(left_id) and work_types.get(left_id) == work_types.get(right_id))
+            if len(shared) >= min_shared_entities or (same_work_type and len(shared) >= 1):
+                adjacency[left_id].add(right_id)
+                adjacency[right_id].add(left_id)
+
+    visited = set()
+    components = []
+    for paper_id in paper_ids:
+        if paper_id in visited:
+            continue
+        stack = [paper_id]
+        component = []
+        while stack:
+            current = stack.pop()
+            if current in visited:
+                continue
+            visited.add(current)
+            component.append(current)
+            stack.extend(sorted(adjacency.get(current, set()) - visited))
+        if len(component) >= 2:
+            components.append(sorted(component))
+
+    paper_map = {paper["id"]: paper for paper in papers}
+    clusters = []
+    for component in sorted(components, key=lambda ids: (-len(ids), ids[0])):
+        entity_counter = Counter()
+        work_type_counter = Counter()
+        for paper_id in component:
+            work_type = work_types.get(paper_id)
+            if work_type:
+                work_type_counter[work_type] += 1
+            for entity_id in paper_entities.get(paper_id, set()):
+                entity_counter[entity_id] += 1
+
+        shared_entities = [
+            entity_names.get(component[0], {}).get(entity_id) or entity_id
+            for entity_id, count in entity_counter.most_common(5)
+            if count >= 2
+        ]
+        dominant_work_type = work_type_counter.most_common(1)[0][0].replace("_", " ").title() if work_type_counter else ""
+        if shared_entities:
+            label = " / ".join(shared_entities[:2])
+        elif dominant_work_type:
+            label = dominant_work_type
+        else:
+            label = f"Cluster of {len(component)} related papers"
+
+        clusters.append({
+            "label": label,
+            "paper_count": len(component),
+            "paper_ids": component,
+            "shared_entities": shared_entities[:5],
+            "work_types": [name for name, _count in work_type_counter.most_common(3)],
+            "sample_papers": [
+                {"id": paper_id, "title": paper_map[paper_id]["title"]}
+                for paper_id in component[:4]
+            ],
+        })
+
+    return clusters[:6]
+
+
+def get_leaf_descendants(node_id: str, limit: int = 12, min_papers: int = 1) -> list[dict]:
+    """Get leaf descendants with paper counts for a node."""
+    rows = db.fetchall(
+        """SELECT t.id, t.name, t.parent_id, t.depth, t.description, t.sort_order,
+                  COUNT(DISTINCT pt.paper_id) AS paper_count
+           FROM taxonomy_nodes t
+           LEFT JOIN taxonomy_nodes c ON c.parent_id = t.id
+           LEFT JOIN paper_taxonomy pt ON pt.node_id = t.id
+           WHERE c.id IS NULL
+             AND (t.id = ? OR t.id LIKE ? || '.%')
+           GROUP BY t.id, t.name, t.parent_id, t.depth, t.description, t.sort_order
+           HAVING paper_count >= ?
+           ORDER BY paper_count DESC, t.depth DESC, t.sort_order, t.name
+           LIMIT ?""",
+        (node_id, node_id, min_papers, limit),
+    )
+    return rows
+
+
+def get_subfield_intersection_matrix(node_id: str, limit: int = 12) -> dict:
+    """Build a subfield × subfield matrix using paper overlap and shared entities."""
+    subfields = get_leaf_descendants(node_id, limit=limit, min_papers=1)
+    if len(subfields) < 2:
+        return {"subfields": subfields, "cells": {}, "max_strength": 0, "has_signal": False}
+
+    subfield_ids = [row["id"] for row in subfields]
+    placeholders = ",".join("?" for _ in subfield_ids)
+
+    paper_rows = db.fetchall(
+        f"""SELECT node_id, paper_id
+            FROM paper_taxonomy
+            WHERE node_id IN ({placeholders})""",
+        tuple(subfield_ids),
+    )
+    paper_map: dict[str, set[str]] = defaultdict(set)
+    for row in paper_rows:
+        paper_map[row["node_id"]].add(row["paper_id"])
+
+    entity_rows = db.fetchall(
+        f"""SELECT pem.node_id, er.canonical_entity_id, ge.canonical_name
+            FROM paper_entity_mentions pem
+            JOIN entity_resolutions er ON er.entity_id = pem.entity_id
+            JOIN graph_entities ge ON ge.id = er.canonical_entity_id
+            WHERE pem.node_id IN ({placeholders})""",
+        tuple(subfield_ids),
+    )
+    entity_map: dict[str, set[str]] = defaultdict(set)
+    entity_name_map: dict[str, dict[str, str]] = defaultdict(dict)
+    for row in entity_rows:
+        entity_map[row["node_id"]].add(row["canonical_entity_id"])
+        entity_name_map[row["node_id"]][row["canonical_entity_id"]] = row["canonical_name"]
+
+    paper_title_rows = db.fetchall(
+        f"""SELECT DISTINCT p.id, p.title
+            FROM papers p
+            JOIN paper_taxonomy pt ON pt.paper_id = p.id
+            WHERE pt.node_id IN ({placeholders})""",
+        tuple(subfield_ids),
+    )
+    paper_titles = {row["id"]: row["title"] for row in paper_title_rows}
+
+    cells = {}
+    max_strength = 0.0
+    has_signal = False
+    for row_a in subfields:
+        for row_b in subfields:
+            id_a = row_a["id"]
+            id_b = row_b["id"]
+            paper_overlap_ids = sorted(paper_map[id_a] & paper_map[id_b], reverse=True)
+            entity_overlap_ids = sorted(entity_map[id_a] & entity_map[id_b])
+            paper_overlap = len(paper_overlap_ids)
+            entity_overlap = len(entity_overlap_ids)
+
+            if id_a == id_b:
+                strength = _intersection_strength(row_a["paper_count"], entity_overlap)
+            else:
+                strength = _intersection_strength(paper_overlap, entity_overlap)
+
+            if id_a != id_b and (paper_overlap > 0 or entity_overlap > 0):
+                has_signal = True
+            max_strength = max(max_strength, strength)
+
+            key = f"{id_a}|||{id_b}"
+            cells[key] = {
+                "paper_overlap": paper_overlap if id_a != id_b else row_a["paper_count"],
+                "shared_entity_count": entity_overlap,
+                "strength": strength,
+                "sample_papers": [
+                    {"id": pid, "title": paper_titles.get(pid, pid)}
+                    for pid in paper_overlap_ids[:3]
+                ],
+                "shared_entities": [
+                    entity_name_map[id_a].get(entity_id) or entity_name_map[id_b].get(entity_id) or entity_id
+                    for entity_id in entity_overlap_ids[:5]
+                ],
+            }
+
+    return {
+        "subfields": subfields,
+        "cells": cells,
+        "max_strength": max_strength,
+        "has_signal": has_signal,
+    }
+
+
 def get_method_dataset_matrix(node_id: str) -> dict:
     """Build the method x dataset matrix for a taxonomy node (and descendants).
 
@@ -548,6 +790,10 @@ def get_node_summary(node_id: str) -> dict | None:
 def get_node_signal_snapshot(node_id: str, paper_limit: int = 15) -> dict:
     """Collect summary signals for a node."""
     papers = get_node_papers(node_id, limit=paper_limit)
+    graph_summary = graph.ensure_node_graph_summary(node_id)
+    paper_clusters = get_node_paper_clusters(node_id)
+    from db import opportunity_engine as opp
+    opportunities = opp.ensure_node_opportunities(node_id)
 
     work_types = db.fetchall(
         """SELECT pi.work_type, COUNT(DISTINCT p.id) as count
@@ -606,6 +852,9 @@ def get_node_signal_snapshot(node_id: str, paper_limit: int = 15) -> dict:
         "limitations": [text for text, _ in limitations.most_common(12)],
         "open_questions": [text for text, _ in open_questions.most_common(12)],
         "matrix_gaps": get_node_gaps(node_id),
+        "graph_summary": graph_summary or {},
+        "paper_clusters": paper_clusters,
+        "opportunities": opportunities,
     }
 
 
@@ -719,3 +968,65 @@ def insert_matrix_gap(gap: dict) -> int:
     )
     db.commit()
     return cur.lastrowid
+
+
+# ── Dynamic taxonomy node creation ─────────────────────────────────
+
+def create_dynamic_node(
+    node_id: str,
+    name: str,
+    parent_id: str,
+    description: str = "",
+    sort_order: int = 0,
+) -> dict | None:
+    """Create a new taxonomy node dynamically (not from the predefined list).
+
+    Returns the created node dict, or None if it already exists.
+    """
+    existing = get_node(node_id)
+    if existing:
+        return None
+
+    parent = get_node(parent_id)
+    depth = (parent["depth"] + 1) if parent else 0
+
+    db.execute(
+        """INSERT OR IGNORE INTO taxonomy_nodes
+           (id, name, parent_id, depth, description, sort_order)
+           VALUES (?, ?, ?, ?, ?, ?)""",
+        (node_id, name, parent_id, depth, description, sort_order),
+    )
+    db.commit()
+    return get_node(node_id)
+
+
+def get_direct_paper_count(node_id: str) -> int:
+    """Return the number of papers directly assigned to a node (not subtree)."""
+    row = db.fetchone(
+        "SELECT COUNT(*) as c FROM paper_taxonomy WHERE node_id = ?",
+        (node_id,),
+    )
+    return row["c"] if row else 0
+
+
+def is_leaf_node(node_id: str) -> bool:
+    """Check whether a node is a leaf (has no children)."""
+    row = db.fetchone(
+        "SELECT id FROM taxonomy_nodes WHERE parent_id = ? LIMIT 1",
+        (node_id,),
+    )
+    return row is None
+
+
+def get_recently_created_nodes(limit: int = 20) -> list[dict]:
+    """Get the most recently created dynamic taxonomy nodes (by created_at)."""
+    return db.fetchall(
+        """SELECT t.*,
+                  COUNT(DISTINCT pt.paper_id) AS paper_count
+           FROM taxonomy_nodes t
+           LEFT JOIN paper_taxonomy pt ON pt.node_id = t.id
+           GROUP BY t.id
+           ORDER BY t.created_at DESC
+           LIMIT ?""",
+        (limit,),
+    )
