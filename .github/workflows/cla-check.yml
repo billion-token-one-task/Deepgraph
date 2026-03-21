@@ -1,0 +1,33 @@
+name: CLA Check
+
+on:
+  pull_request_target:
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify CLA signature
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out default-branch policy files
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run CLA check
+        env:
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+        run: python3 check_cla.py
