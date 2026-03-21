@@ -261,10 +261,24 @@ def get_stats() -> dict:
         stats["matrix_gaps_total"] = fetchone("SELECT COUNT(*) as c FROM matrix_gaps")["c"]
         stats["paper_insights_total"] = fetchone("SELECT COUNT(*) as c FROM paper_insights")["c"]
         stats["node_summaries_total"] = fetchone("SELECT COUNT(*) as c FROM node_summaries")["c"]
+        stats["graph_entities_total"] = fetchone("SELECT COUNT(*) as c FROM graph_entities")["c"]
+        stats["graph_relations_total"] = fetchone("SELECT COUNT(*) as c FROM graph_relations")["c"]
+        stats["node_graph_summaries_total"] = fetchone("SELECT COUNT(*) as c FROM node_graph_summaries")["c"]
+        stats["node_opportunities_total"] = fetchone("SELECT COUNT(*) as c FROM node_opportunities")["c"]
+        stats["entity_resolutions_total"] = fetchone("SELECT COUNT(*) as c FROM entity_resolutions")["c"]
+        stats["merge_candidates_pending_total"] = fetchone("SELECT COUNT(*) as c FROM entity_merge_candidates WHERE status='pending'")["c"]
+        stats["insights_total"] = fetchone("SELECT COUNT(*) as c FROM insights")["c"]
     except Exception:
         stats["results_total"] = 0
         stats["taxonomy_assignments"] = 0
         stats["matrix_gaps_total"] = 0
         stats["paper_insights_total"] = 0
         stats["node_summaries_total"] = 0
+        stats["graph_entities_total"] = 0
+        stats["graph_relations_total"] = 0
+        stats["node_graph_summaries_total"] = 0
+        stats["node_opportunities_total"] = 0
+        stats["entity_resolutions_total"] = 0
+        stats["merge_candidates_pending_total"] = 0
+        stats["insights_total"] = 0
     return stats

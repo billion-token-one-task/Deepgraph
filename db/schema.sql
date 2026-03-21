@@ -171,6 +171,93 @@ CREATE TABLE IF NOT EXISTS node_summaries (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS graph_entities (
+    id TEXT PRIMARY KEY,
+    canonical_name TEXT NOT NULL,
+    entity_type TEXT NOT NULL,
+    normalized_name TEXT NOT NULL,
+    description TEXT,
+    aliases TEXT,                       -- JSON array
+    metadata TEXT,                      -- JSON object
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS paper_entity_mentions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    paper_id TEXT NOT NULL REFERENCES papers(id),
+    node_id TEXT REFERENCES taxonomy_nodes(id),
+    entity_id TEXT NOT NULL REFERENCES graph_entities(id),
+    mention_text TEXT,
+    mention_role TEXT,
+    confidence REAL DEFAULT 1.0,
+    evidence_location TEXT,
+    source_text TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS graph_relations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    paper_id TEXT NOT NULL REFERENCES papers(id),
+    node_id TEXT REFERENCES taxonomy_nodes(id),
+    subject_entity_id TEXT NOT NULL REFERENCES graph_entities(id),
+    predicate TEXT NOT NULL,
+    object_entity_id TEXT NOT NULL REFERENCES graph_entities(id),
+    confidence REAL DEFAULT 1.0,
+    evidence_location TEXT,
+    source_text TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS node_graph_summaries (
+    node_id TEXT PRIMARY KEY REFERENCES taxonomy_nodes(id),
+    top_entities TEXT,                  -- JSON array of objects
+    top_relations TEXT,                 -- JSON array of objects
+    top_entity_types TEXT,              -- JSON array of objects
+    generated_from_papers TEXT,         -- JSON array of paper IDs
+    paper_count INTEGER DEFAULT 0,
+    entity_count INTEGER DEFAULT 0,
+    relation_count INTEGER DEFAULT 0,
+    generated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS node_opportunities (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    node_id TEXT NOT NULL REFERENCES taxonomy_nodes(id),
+    opportunity_type TEXT NOT NULL,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL,
+    why_now TEXT,
+    value_score REAL DEFAULT 0,
+    confidence REAL DEFAULT 0,
+    signal_counts TEXT,                  -- JSON object
+    evidence_paper_ids TEXT,             -- JSON array
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS entity_resolutions (
+    entity_id TEXT PRIMARY KEY REFERENCES graph_entities(id),
+    canonical_entity_id TEXT NOT NULL REFERENCES graph_entities(id),
+    status TEXT DEFAULT 'canonical',      -- canonical|merged
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS entity_merge_candidates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_type TEXT NOT NULL,
+    primary_entity_id TEXT NOT NULL REFERENCES graph_entities(id),
+    candidate_entity_id TEXT NOT NULL REFERENCES graph_entities(id),
+    similarity_score REAL NOT NULL,
+    rationale TEXT,
+    status TEXT DEFAULT 'pending',        -- pending|accepted|rejected
+    generated_by TEXT DEFAULT 'heuristic',
+    decision_note TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(primary_entity_id, candidate_entity_id)
+);
+
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_papers_status ON papers(status);
 CREATE INDEX IF NOT EXISTS idx_claims_paper ON claims(paper_id);
@@ -188,3 +275,16 @@ CREATE INDEX IF NOT EXISTS idx_results_method ON results(method_name);
 CREATE INDEX IF NOT EXISTS idx_results_dataset ON results(dataset_name);
 CREATE INDEX IF NOT EXISTS idx_matrix_gaps_node ON matrix_gaps(node_id);
 CREATE INDEX IF NOT EXISTS idx_paper_insights_work_type ON paper_insights(work_type);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_graph_entities_type_name ON graph_entities(entity_type, normalized_name);
+CREATE INDEX IF NOT EXISTS idx_paper_entity_mentions_paper ON paper_entity_mentions(paper_id);
+CREATE INDEX IF NOT EXISTS idx_paper_entity_mentions_node ON paper_entity_mentions(node_id);
+CREATE INDEX IF NOT EXISTS idx_paper_entity_mentions_entity ON paper_entity_mentions(entity_id);
+CREATE INDEX IF NOT EXISTS idx_graph_relations_paper ON graph_relations(paper_id);
+CREATE INDEX IF NOT EXISTS idx_graph_relations_node ON graph_relations(node_id);
+CREATE INDEX IF NOT EXISTS idx_graph_relations_subject ON graph_relations(subject_entity_id);
+CREATE INDEX IF NOT EXISTS idx_graph_relations_object ON graph_relations(object_entity_id);
+CREATE INDEX IF NOT EXISTS idx_node_opportunities_node ON node_opportunities(node_id);
+CREATE INDEX IF NOT EXISTS idx_node_opportunities_type ON node_opportunities(opportunity_type);
+CREATE INDEX IF NOT EXISTS idx_entity_resolutions_canonical ON entity_resolutions(canonical_entity_id);
+CREATE INDEX IF NOT EXISTS idx_entity_merge_candidates_status ON entity_merge_candidates(status);
+CREATE INDEX IF NOT EXISTS idx_entity_merge_candidates_type ON entity_merge_candidates(entity_type);

@@ -78,11 +78,28 @@ def generate_domain_summary(node: dict, snapshot: dict) -> tuple[dict, int]:
         f"- {item['name']}: {item['paper_count']} papers"
         for item in snapshot.get("datasets", [])[:12]
     ]
+    graph_summary = snapshot.get("graph_summary", {})
+    entity_lines = [
+        f"- {item['name']} ({item['entity_type']}): {item['paper_count']} papers"
+        for item in graph_summary.get("top_entities", [])[:12]
+    ]
+    relation_lines = [
+        f"- {item['subject']} --{item['predicate']}--> {item['object']} ({item['paper_count']} papers)"
+        for item in graph_summary.get("top_relations", [])[:12]
+    ]
+    cluster_lines = [
+        f"- {item['label']}: {item['paper_count']} papers; shared entities: {', '.join(item.get('shared_entities', [])[:3])}"
+        for item in snapshot.get("paper_clusters", [])[:8]
+    ]
     limitation_lines = [f"- {text}" for text in snapshot.get("limitations", [])[:12]]
     question_lines = [f"- {text}" for text in snapshot.get("open_questions", [])[:12]]
     matrix_gap_lines = [
         f"- {gap['method_name']} on {gap['dataset_name']}: {gap['gap_description']}"
         for gap in snapshot.get("matrix_gaps", [])[:8]
+    ]
+    opportunity_lines = [
+        f"- {item['title']}: {item['description']} [score={item.get('value_score', 0)}]"
+        for item in snapshot.get("opportunities", [])[:8]
     ]
 
     user_prompt = f"""Node: {node['name']} ({node['id']})
@@ -105,6 +122,15 @@ Common methods/systems:
 Common datasets/benchmarks:
 {chr(10).join(dataset_lines) or "- none"}
 
+Core entities in this area:
+{chr(10).join(entity_lines) or "- none"}
+
+Frequent graph relations:
+{chr(10).join(relation_lines) or "- none"}
+
+Paper clusters:
+{chr(10).join(cluster_lines) or "- none"}
+
 Recurring limitations:
 {chr(10).join(limitation_lines) or "- none"}
 
@@ -113,6 +139,9 @@ Open questions stated in papers:
 
 Existing matrix-style gaps:
 {chr(10).join(matrix_gap_lines) or "- none"}
+
+Deterministic opportunity signals:
+{chr(10).join(opportunity_lines) or "- none"}
 
 Write a plain-language landscape summary for this area."""
 
@@ -125,8 +154,11 @@ def fallback_domain_summary(node: dict, snapshot: dict) -> dict:
     work_types = snapshot.get("work_types", [])
     methods = [item["name"] for item in snapshot.get("methods", [])[:5]]
     datasets = [item["name"] for item in snapshot.get("datasets", [])[:5]]
+    graph_summary = snapshot.get("graph_summary", {})
+    paper_clusters = snapshot.get("paper_clusters", [])
     limitations = snapshot.get("limitations", [])
     open_questions = snapshot.get("open_questions", [])
+    opportunities = snapshot.get("opportunities", [])
 
     overview_parts = []
     if node.get("description"):
@@ -154,9 +186,24 @@ def fallback_domain_summary(node: dict, snapshot: dict) -> dict:
                 "description": child.get("description") or f"Researchers are active in {child['name']}.",
                 "paper_count": child.get("paper_count", 0),
             })
+    if not workstreams and paper_clusters:
+        for cluster in paper_clusters[:3]:
+            workstreams.append({
+                "label": cluster["label"],
+                "description": f"A cluster of related papers linked by shared entities: {', '.join(cluster.get('shared_entities', [])[:3])}.",
+                "paper_count": cluster["paper_count"],
+            })
 
     gaps = []
+    for item in opportunities[:3]:
+        gaps.append({
+            "title": item["title"],
+            "description": item["description"],
+            "why_now": item.get("why_now", ""),
+        })
     for text in limitations[:2]:
+        if len(gaps) >= 3:
+            break
         gaps.append({
             "title": "Known limitation",
             "description": text,
@@ -183,8 +230,8 @@ def fallback_domain_summary(node: dict, snapshot: dict) -> dict:
         "why_it_matters": f"{node['name']} matters because it changes what machine learning systems can do in practice.",
         "what_people_are_building": workstreams,
         "common_patterns": [item["work_type"].replace("_", " ") for item in work_types[:4]],
-        "common_methods": methods,
-        "common_datasets": datasets,
+        "common_methods": methods or [item["name"] for item in graph_summary.get("top_entities", []) if item.get("entity_type") == "method"][:5],
+        "common_datasets": datasets or [item["name"] for item in graph_summary.get("top_entities", []) if item.get("entity_type") == "dataset"][:5],
         "current_gaps": gaps,
         "starter_questions": open_questions[:3] or [
             "Which settings are still under-tested?",

@@ -6,8 +6,22 @@ from pathlib import Path
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
 
-from config import APP_NAME, ROOT_NODE_ID, WEB_HOST, WEB_PORT, WORKSPACE_DIR, PDF_CACHE_DIR
+from config import (
+    APP_NAME,
+    BACKFILL_GRAPH_ON_START,
+    REFRESH_MERGE_CANDIDATES_ON_START,
+    ROOT_NODE_ID,
+    WEB_HOST,
+    WEB_PORT,
+    WORKSPACE_DIR,
+    PDF_CACHE_DIR,
+)
 from db.database import init_db
+from db.evidence_graph import (
+    backfill_entity_resolutions,
+    backfill_graph_from_structured_data,
+    refresh_merge_candidates,
+)
 from db.taxonomy import seed_taxonomy, backfill_result_taxonomy
 from web.app import app
 
@@ -30,6 +44,14 @@ def main():
     print("Backfilling result taxonomy links...", flush=True)
     backfill_result_taxonomy()
     print("Result taxonomy ready.", flush=True)
+
+    print("Backfilling entity resolution map...", flush=True)
+    backfill_entity_resolutions()
+    print("Entity resolutions ready.", flush=True)
+
+    # Skip heavy backfills on startup for faster boot
+    # These can run in the background via pipeline
+    print("Skipping graph/merge backfill (run in pipeline instead).", flush=True)
 
     # Start web server
     print(f"Starting {APP_NAME} at http://{WEB_HOST}:{WEB_PORT} (root node: {ROOT_NODE_ID})", flush=True)

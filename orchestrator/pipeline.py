@@ -1,15 +1,21 @@
 """Orchestrator: continuous paper processing pipeline."""
+import logging
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 from config import PIPELINE_CONCURRENCY
 from db import database as db
+from db import evidence_graph as graph
+from db import opportunity_engine as opp
 from db import taxonomy as tax
 from ingestion.arxiv_client import fetch_recent
 from ingestion.pdf_parser import get_paper_text
 from agents.extraction_agent import extract_paper
 from agents.reasoning_agent import detect_contradictions, discover_matrix_gaps
+from agents.taxonomy_expander import run_expansion, EXPANSION_THRESHOLD
+
+logger = logging.getLogger(__name__)
 
 # Global event log for SSE
 _event_log: list[dict] = []
@@ -52,7 +58,8 @@ def process_single_paper(paper_id: str) -> dict:
         return {"error": "Paper not found"}
 
     result = {"paper_id": paper_id, "claims": 0, "results": 0,
-              "taxonomy_nodes": [], "contradictions": 0, "tokens": 0}
+              "taxonomy_nodes": [], "graph_entities": 0, "graph_relations": 0,
+              "contradictions": 0, "tokens": 0}
 
     try:
         # Step 1: Get full text
@@ -112,6 +119,20 @@ def process_single_paper(paper_id: str) -> dict:
             db.commit()
         result["results"] = len(extraction.get("results", []))
 
+        # Step 2e: Store entity-relation-evidence graph (merge LLM graph with structured records)
+        graph_payload = extraction.get("knowledge_graph") if isinstance(extraction.get("knowledge_graph"), dict) else {}
+        structured_graph = graph.build_structured_graph_payload_from_records(
+            extraction.get("methods", []),
+            extraction.get("results", []),
+            extraction.get("claims", []),
+            extraction.get("paper_overview"),
+        )
+        merged_graph = graph.merge_graph_payloads(graph_payload, structured_graph)
+        if merged_graph["entities"] or merged_graph["relations"]:
+            graph_stats = graph.store_paper_graph(paper_id, result["taxonomy_nodes"], merged_graph)
+            result["graph_entities"] = graph_stats["entities"]
+            result["graph_relations"] = graph_stats["relations"]
+
         db.update_paper_status(paper_id, "extracted", token_cost=tokens1)
 
         # Step 3: Check for contradictions
@@ -143,6 +164,8 @@ def process_single_paper(paper_id: str) -> dict:
             "claims": result["claims"],
             "results": result["results"],
             "taxonomy_nodes": result["taxonomy_nodes"],
+            "graph_entities": result["graph_entities"],
+            "graph_relations": result["graph_relations"],
             "contradictions": result["contradictions"],
             "tokens": result["tokens"],
         })
@@ -194,36 +217,128 @@ def run_continuous(max_papers: int = 0):
                     log_event("error", {"paper_id": pid, "error": str(e)})
                 processed += 1
 
+        # Auto-expand taxonomy every 50 papers
+        if processed % 50 == 0 and processed > 0:
+            try:
+                log_event("step", {"step": "auto_taxonomy_expansion", "papers_so_far": processed})
+                exp_results = run_expansion(min_papers=EXPANSION_THRESHOLD)
+                for exp in exp_results:
+                    if exp.get("new_children"):
+                        log_event("taxonomy_expanded", {
+                            "node_id": exp["node_id"],
+                            "new_children": exp["new_children"],
+                            "papers_reassigned": exp.get("papers_reassigned", 0),
+                        })
+                        for nid in exp["new_children"]:
+                            summary_nodes.add(nid)
+            except Exception as e:
+                logger.error("Auto expansion failed: %s", e)
+
         if max_papers and processed >= max_papers:
             break
 
-    # Step 3: Run matrix gap discovery on nodes with enough data
-    nodes_with_data = db.fetchall(
-        """SELECT rt.node_id, COUNT(DISTINCT r.method_name) as mc,
-                  COUNT(DISTINCT r.dataset_name) as dc
-           FROM results r
-           JOIN result_taxonomy rt ON rt.result_id = r.id
-           GROUP BY rt.node_id
-           HAVING mc >= 2 AND dc >= 2"""
+    # Step 2.5: Run abstraction to extract cross-domain patterns
+    from agents.abstraction_agent import run_abstraction_for_nodes, run_bridge_discovery
+    log_event("step", {"step": "pattern_abstraction"})
+    try:
+        num_patterns, abstraction_tokens = run_abstraction_for_nodes(min_claims=15)
+        log_event("abstraction_done", {"patterns": num_patterns, "tokens": abstraction_tokens})
+
+        if num_patterns >= 6:
+            log_event("step", {"step": "bridge_discovery"})
+            num_bridges, bridge_tokens = run_bridge_discovery()
+            log_event("bridge_done", {"bridges": num_bridges, "tokens": bridge_tokens})
+    except Exception as e:
+        logger.error("Abstraction/bridge failed: %s", e)
+        log_event("error", {"step": "abstraction", "error": str(e)})
+
+    # Step 3: Run deep insight discovery (replaces old matrix gap finder)
+    from agents.insight_agent import discover_insights, store_insight
+    insight_nodes = db.fetchall(
+        """SELECT t.id, t.name, COUNT(DISTINCT pt.paper_id) as pc
+           FROM taxonomy_nodes t
+           JOIN paper_taxonomy pt ON pt.node_id = t.id
+           GROUP BY t.id
+           HAVING pc >= 10
+           ORDER BY pc DESC LIMIT 15"""
     )
-    total_gap_tokens = 0
-    for node in nodes_with_data:
-        log_event("step", {"step": "gap_discovery", "node_id": node["node_id"]})
-        db.execute("DELETE FROM matrix_gaps WHERE node_id=?", (node["node_id"],))
-        db.commit()
-        gaps, tokens = discover_matrix_gaps(node["node_id"])
-        total_gap_tokens += tokens
-        for g in gaps:
-            tax.insert_matrix_gap(g)
-            log_event("gap", {
-                "node_id": g["node_id"],
-                "method": g["method_name"],
-                "dataset": g["dataset_name"],
-                "description": g["gap_description"],
-                "value": g.get("value_score", 0),
+    total_insight_tokens = 0
+    for node in insight_nodes:
+        # Skip if already has recent insights
+        existing = db.fetchone(
+            "SELECT COUNT(*) as c FROM insights WHERE node_id=? AND created_at > datetime('now', '-1 day')",
+            (node["id"],)
+        )
+        if existing and existing["c"] >= 2:
+            continue
+
+        log_event("step", {"step": "insight_discovery", "node_id": node["id"]})
+        insights, tokens = discover_insights(node["id"])
+        total_insight_tokens += tokens
+        for ins in insights:
+            store_insight(ins)
+            log_event("insight", {
+                "node_id": ins["node_id"],
+                "type": ins["type"],
+                "title": ins["title"],
+                "novelty": ins.get("novelty_score", 0),
+                "feasibility": ins.get("feasibility_score", 0),
             })
 
-    # Step 4: Generate plain-language node summaries for exploration
+    # Step 3b: Auto-expand taxonomy leaf nodes that have accumulated enough papers
+    log_event("step", {"step": "taxonomy_expansion", "threshold": EXPANSION_THRESHOLD})
+    try:
+        expansion_results = run_expansion(min_papers=EXPANSION_THRESHOLD)
+        total_expansion_tokens = 0
+        for exp in expansion_results:
+            total_expansion_tokens += exp.get("tokens", 0)
+            if exp.get("new_children"):
+                log_event("taxonomy_expanded", {
+                    "node_id": exp["node_id"],
+                    "new_children": exp["new_children"],
+                    "papers_reassigned": exp["papers_reassigned"],
+                    "tokens": exp.get("tokens", 0),
+                })
+                # Add the new children and their parent to summary_nodes
+                summary_nodes.add(exp["node_id"])
+                for child_id in exp["new_children"]:
+                    summary_nodes.add(child_id)
+            elif exp.get("error"):
+                logger.info("Skipped expansion for %s: %s", exp["node_id"], exp["error"])
+        if expansion_results:
+            log_event("taxonomy_expansion_done", {
+                "nodes_checked": len(expansion_results),
+                "nodes_expanded": sum(1 for e in expansion_results if e.get("new_children")),
+                "total_tokens": total_expansion_tokens,
+            })
+    except Exception as e:
+        logger.error("Taxonomy expansion failed: %s", e)
+        log_event("error", {"step": "taxonomy_expansion", "error": str(e)})
+
+    # Step 4: Generate node-level graph summaries
+    for node_id in sorted(summary_nodes):
+        log_event("step", {"step": "graph_summary", "node_id": node_id})
+        graph_summary = graph.ensure_node_graph_summary(node_id, force=True)
+        if graph_summary:
+            log_event("graph_summary", {
+                "node_id": node_id,
+                "entity_count": graph_summary.get("entity_count", 0),
+                "relation_count": graph_summary.get("relation_count", 0),
+            })
+
+    # Step 5: Generate richer opportunity signals
+    for node_id in sorted(summary_nodes):
+        log_event("step", {"step": "opportunity_scoring", "node_id": node_id})
+        opportunities = opp.ensure_node_opportunities(node_id, force=True)
+        if opportunities:
+            top = opportunities[0]
+            log_event("opportunity", {
+                "node_id": node_id,
+                "title": top["title"],
+                "value": top.get("value_score", 0),
+            })
+
+    # Step 6: Generate plain-language node summaries for exploration
     for node_id in sorted(summary_nodes):
         log_event("step", {"step": "node_summary", "node_id": node_id})
         summary = tax.ensure_node_summary(node_id, force=True)
@@ -242,5 +357,9 @@ def get_stats_dict() -> dict:
     base = db.get_stats()
     base["results_total"] = db.fetchone("SELECT COUNT(*) as c FROM results")["c"]
     base["taxonomy_assignments"] = db.fetchone("SELECT COUNT(*) as c FROM paper_taxonomy")["c"]
-    base["matrix_gaps_total"] = db.fetchone("SELECT COUNT(*) as c FROM matrix_gaps")["c"]
+    try:
+        base["matrix_gaps_total"] = db.fetchone("SELECT COUNT(*) as c FROM matrix_gaps")["c"]
+    except Exception:
+        base["matrix_gaps_total"] = 0
+    base["taxonomy_nodes_total"] = db.fetchone("SELECT COUNT(*) as c FROM taxonomy_nodes")["c"]
     return base
