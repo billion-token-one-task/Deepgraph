@@ -1,11 +1,19 @@
 """Deterministic opportunity scoring using results, graph relations, and evidence signals."""
 from __future__ import annotations
 
+import math
 import re
 from collections import Counter, defaultdict
 
 from db import database as db
 from db import evidence_graph as graph
+
+
+TRIAGE_BANDS = (
+    (4.4, "high"),
+    (3.1, "medium"),
+    (0.0, "watchlist"),
+)
 
 
 def _clamp_score(value: float) -> float:
@@ -18,6 +26,13 @@ def _short_title(prefix: str, text: str, max_words: int = 6) -> str:
         return prefix
     head = " ".join(text.strip().split()[:max_words]).rstrip(",.;:!?")
     return f"{prefix}: {head}"
+
+
+def _normalize_band(score: float) -> str:
+    for threshold, band in TRIAGE_BANDS:
+        if score >= threshold:
+            return band
+    return "watchlist"
 
 
 def score_coverage_imbalance(method_count: int, dataset_count: int) -> float:
@@ -139,6 +154,7 @@ def get_node_opportunities(node_id: str) -> list[dict]:
 
 
 def replace_node_opportunities(node_id: str, opportunities: list[dict]) -> list[dict]:
+    db.execute("DELETE FROM opportunity_triage WHERE node_id=?", (node_id,))
     db.execute("DELETE FROM node_opportunities WHERE node_id=?", (node_id,))
     for opportunity in opportunities:
         db.execute(
@@ -309,3 +325,258 @@ def ensure_node_opportunities(node_id: str, force: bool = False) -> list[dict]:
         return existing
     built = build_node_opportunities(node_id)
     return replace_node_opportunities(node_id, built)
+
+
+def upsert_opportunity_triage(triage: dict) -> dict:
+    db.execute(
+        """INSERT INTO opportunity_triage
+           (opportunity_id, node_id, scientific_value, innovation, verifiability, cost,
+            success_probability, evidence_strength, dependency_risk, priority_score,
+            priority_band, rationale, status)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(opportunity_id) DO UPDATE SET
+             node_id=excluded.node_id,
+             scientific_value=excluded.scientific_value,
+             innovation=excluded.innovation,
+             verifiability=excluded.verifiability,
+             cost=excluded.cost,
+             success_probability=excluded.success_probability,
+             evidence_strength=excluded.evidence_strength,
+             dependency_risk=excluded.dependency_risk,
+             priority_score=excluded.priority_score,
+             priority_band=excluded.priority_band,
+             rationale=excluded.rationale,
+             status=excluded.status,
+             updated_at=CURRENT_TIMESTAMP,
+             scored_at=CURRENT_TIMESTAMP""",
+        (
+            triage["opportunity_id"],
+            triage["node_id"],
+            triage["scientific_value"],
+            triage["innovation"],
+            triage["verifiability"],
+            triage["cost"],
+            triage["success_probability"],
+            triage["evidence_strength"],
+            triage["dependency_risk"],
+            triage["priority_score"],
+            triage["priority_band"],
+            triage.get("rationale"),
+            triage.get("status", "ready"),
+        ),
+    )
+    db.commit()
+    row = db.fetchone(
+        "SELECT * FROM opportunity_triage WHERE opportunity_id=?",
+        (triage["opportunity_id"],),
+    )
+    if row:
+        return row
+    return triage
+
+
+def rebuild_opportunity_triage(node_id: str | None = None, force: bool = False) -> list[dict]:
+    if node_id:
+        opportunities = get_node_opportunities(node_id)
+        if not opportunities:
+            opportunities = ensure_node_opportunities(node_id, force=force)
+    else:
+        opportunities = db.fetchall("SELECT * FROM node_opportunities ORDER BY node_id, value_score DESC, id DESC")
+
+    valid_ids = {opportunity["id"] for opportunity in opportunities}
+    if node_id:
+        if valid_ids:
+            placeholders = ",".join("?" for _ in valid_ids)
+            db.execute(
+                f"DELETE FROM opportunity_triage WHERE node_id=? AND opportunity_id NOT IN ({placeholders})",
+                (node_id, *sorted(valid_ids)),
+            )
+        else:
+            db.execute("DELETE FROM opportunity_triage WHERE node_id=?", (node_id,))
+    elif valid_ids:
+        placeholders = ",".join("?" for _ in valid_ids)
+        db.execute(
+            f"DELETE FROM opportunity_triage WHERE opportunity_id NOT IN ({placeholders})",
+            tuple(sorted(valid_ids)),
+        )
+    else:
+        db.execute("DELETE FROM opportunity_triage")
+
+    triaged: list[dict] = []
+    for opportunity in opportunities:
+        scored = triage_opportunity(opportunity)
+        triaged.append(upsert_opportunity_triage(scored))
+    return sorted(triaged, key=lambda item: (-item["priority_score"], item["node_id"], item["opportunity_id"]))
+
+
+def get_opportunity_triage(node_id: str | None = None, band: str | None = None, limit: int = 200) -> list[dict]:
+    sql = """SELECT ot.*, no.title, no.description, no.opportunity_type, no.why_now,
+                    no.value_score AS opportunity_value_score,
+                    no.confidence AS opportunity_confidence,
+                    no.evidence_paper_ids,
+                    tn.name AS node_name
+             FROM opportunity_triage ot
+             JOIN node_opportunities no ON no.id = ot.opportunity_id
+             JOIN taxonomy_nodes tn ON tn.id = ot.node_id
+             WHERE 1=1"""
+    params: list[object] = []
+    if node_id:
+        sql += " AND (ot.node_id=? OR ot.node_id LIKE ? || '.%')"
+        params.extend([node_id, node_id])
+    if band:
+        sql += " AND ot.priority_band=?"
+        params.append(band)
+    sql += " ORDER BY ot.priority_score DESC, ot.scored_at DESC, ot.id DESC LIMIT ?"
+    params.append(limit)
+    rows = db.fetchall(sql, tuple(params))
+    for row in rows:
+        row["evidence_paper_ids"] = db._load_json(row.get("evidence_paper_ids"), [])
+    return rows
+
+
+def get_opportunity_triage_stats() -> dict:
+    total = db.fetchone("SELECT COUNT(*) AS c FROM opportunity_triage")
+    bands = db.fetchall(
+        "SELECT priority_band, COUNT(*) AS c FROM opportunity_triage GROUP BY priority_band"
+    )
+    by_band = {row["priority_band"]: row["c"] for row in bands}
+    avg_row = db.fetchone(
+        """SELECT
+               AVG(priority_score) AS avg_priority,
+               AVG(scientific_value) AS avg_scientific_value,
+               AVG(innovation) AS avg_innovation,
+               AVG(verifiability) AS avg_verifiability,
+               AVG(cost) AS avg_cost,
+               AVG(success_probability) AS avg_success_probability
+           FROM opportunity_triage"""
+    ) or {}
+    return {
+        "total": total["c"] if total else 0,
+        "bands": by_band,
+        "averages": {
+            "priority_score": round(avg_row.get("avg_priority") or 0, 2),
+            "scientific_value": round(avg_row.get("avg_scientific_value") or 0, 2),
+            "innovation": round(avg_row.get("avg_innovation") or 0, 2),
+            "verifiability": round(avg_row.get("avg_verifiability") or 0, 2),
+            "cost": round(avg_row.get("avg_cost") or 0, 2),
+            "success_probability": round(avg_row.get("avg_success_probability") or 0, 2),
+        },
+    }
+
+
+def triage_opportunity(opportunity: dict) -> dict:
+    """Score a node opportunity for execution priority."""
+    node_id = opportunity["node_id"]
+    title = (opportunity.get("title") or "").lower()
+    description = (opportunity.get("description") or "").lower()
+    combined = f"{title} {description}"
+    papers = opportunity.get("evidence_paper_ids") or []
+    if isinstance(papers, str):
+        papers = db._load_json(papers, [])
+    signal_counts = opportunity.get("signal_counts") or {}
+    if isinstance(signal_counts, str):
+        signal_counts = db._load_json(signal_counts, {})
+
+    scientific_value = _clamp_score(float(opportunity.get("value_score") or 3.0))
+
+    novelty = 2.5
+    if opportunity.get("opportunity_type") in {"contradiction_resolution", "problem_operationalization"}:
+        novelty += 1.0
+    if "broaden" in combined or "expand" in combined:
+        novelty += 0.6
+    if "recurring" in combined or "unresolved" in combined:
+        novelty += 0.4
+
+    verifiability = 2.5
+    if opportunity.get("opportunity_type") in {"evaluation_gap", "problem_operationalization"}:
+        verifiability += 1.1
+    if papers:
+        verifiability += 0.5
+    if signal_counts:
+        verifiability += min(0.6, len(signal_counts) * 0.15)
+
+    cost = 2.0
+    if opportunity.get("opportunity_type") == "contradiction_resolution":
+        cost += 0.4
+    if opportunity.get("opportunity_type") == "benchmark_diversification":
+        cost += 0.3
+    if len(papers) >= 5:
+        cost += 0.4
+
+    success_probability = 2.8
+    if papers:
+        success_probability += 0.6
+    if opportunity.get("confidence"):
+        success_probability += min(0.7, float(opportunity.get("confidence")) - 0.5)
+    if opportunity.get("opportunity_type") == "open_question":
+        success_probability -= 0.2
+
+    evidence_strength = 2.4
+    if len(papers) >= 2:
+        evidence_strength += 0.9
+    if signal_counts:
+        evidence_strength += min(0.7, len(signal_counts) * 0.2)
+    if opportunity.get("why_now"):
+        evidence_strength += 0.2
+
+    dependency_risk = 1.8
+    if opportunity.get("opportunity_type") in {"benchmark_diversification", "problem_operationalization"}:
+        dependency_risk += 0.2
+    if len(papers) == 0:
+        dependency_risk += 0.5
+
+    priority_score = (
+        0.30 * scientific_value
+        + 0.20 * novelty
+        + 0.20 * verifiability
+        + 0.20 * success_probability
+        + 0.10 * evidence_strength
+        - 0.15 * cost
+        - 0.10 * dependency_risk
+    )
+    priority_score = round(max(1.0, min(5.0, priority_score)), 2)
+    band = _normalize_band(priority_score)
+
+    rationale_parts = [
+        f"{opportunity['opportunity_type']} on {node_id}",
+        f"evidence={len(papers)} papers",
+        f"signal={len(signal_counts)} signals",
+        f"value={scientific_value:.1f}",
+    ]
+    if opportunity.get("why_now"):
+        rationale_parts.append(opportunity["why_now"])
+
+    return {
+        "opportunity_id": opportunity["id"],
+        "node_id": node_id,
+        "scientific_value": scientific_value,
+        "innovation": _clamp_score(novelty),
+        "verifiability": _clamp_score(verifiability),
+        "cost": _clamp_score(cost),
+        "success_probability": _clamp_score(success_probability),
+        "evidence_strength": _clamp_score(evidence_strength),
+        "dependency_risk": _clamp_score(dependency_risk),
+        "priority_score": priority_score,
+        "priority_band": band,
+        "rationale": " | ".join(rationale_parts),
+        "status": "ready" if band != "watchlist" else "needs_review",
+    }
+
+
+
+def triage_node_opportunities(node_id: str, force: bool = False) -> list[dict]:
+    opportunities = get_node_opportunities(node_id)
+    if not opportunities:
+        opportunities = ensure_node_opportunities(node_id, force=force)
+    triaged = [triage_opportunity(opportunity) for opportunity in opportunities]
+    return sorted(triaged, key=lambda item: (-item["priority_score"], -item["scientific_value"], item["opportunity_id"]))
+
+
+def triage_all_opportunities(force: bool = False) -> list[dict]:
+    nodes = db.fetchall(
+        """SELECT DISTINCT node_id FROM node_opportunities ORDER BY node_id"""
+    )
+    rows: list[dict] = []
+    for node in nodes:
+        rows.extend(triage_node_opportunities(node["node_id"], force=force))
+    return sorted(rows, key=lambda item: (-item["priority_score"], item["node_id"], item["opportunity_id"]))

@@ -243,22 +243,27 @@ CREATE TABLE IF NOT EXISTS entity_resolutions (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE TABLE IF NOT EXISTS entity_merge_candidates (
+CREATE TABLE IF NOT EXISTS opportunity_triage (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    entity_type TEXT NOT NULL,
-    primary_entity_id TEXT NOT NULL REFERENCES graph_entities(id),
-    candidate_entity_id TEXT NOT NULL REFERENCES graph_entities(id),
-    similarity_score REAL NOT NULL,
+    opportunity_id INTEGER NOT NULL REFERENCES node_opportunities(id),
+    node_id TEXT NOT NULL REFERENCES taxonomy_nodes(id),
+    scientific_value REAL NOT NULL,
+    innovation REAL NOT NULL,
+    verifiability REAL NOT NULL,
+    cost REAL NOT NULL,
+    success_probability REAL NOT NULL,
+    evidence_strength REAL NOT NULL,
+    dependency_risk REAL NOT NULL,
+    priority_score REAL NOT NULL,
+    priority_band TEXT NOT NULL,
     rationale TEXT,
-    status TEXT DEFAULT 'pending',        -- pending|accepted|rejected
-    generated_by TEXT DEFAULT 'heuristic',
-    decision_note TEXT,
+    status TEXT DEFAULT 'ready',        -- ready|needs_review|rejected
+    scored_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(primary_entity_id, candidate_entity_id)
+    UNIQUE(opportunity_id)
 );
 
--- Indexes
 CREATE INDEX IF NOT EXISTS idx_papers_status ON papers(status);
 CREATE INDEX IF NOT EXISTS idx_claims_paper ON claims(paper_id);
 CREATE INDEX IF NOT EXISTS idx_claims_type ON claims(claim_type);
@@ -285,6 +290,10 @@ CREATE INDEX IF NOT EXISTS idx_graph_relations_subject ON graph_relations(subjec
 CREATE INDEX IF NOT EXISTS idx_graph_relations_object ON graph_relations(object_entity_id);
 CREATE INDEX IF NOT EXISTS idx_node_opportunities_node ON node_opportunities(node_id);
 CREATE INDEX IF NOT EXISTS idx_node_opportunities_type ON node_opportunities(opportunity_type);
+CREATE INDEX IF NOT EXISTS idx_opportunity_triage_priority ON opportunity_triage(priority_score DESC);
+CREATE INDEX IF NOT EXISTS idx_opportunity_triage_node_priority ON opportunity_triage(node_id, priority_score DESC);
+CREATE INDEX IF NOT EXISTS idx_opportunity_triage_band_priority ON opportunity_triage(priority_band, priority_score DESC);
+CREATE INDEX IF NOT EXISTS idx_opportunity_triage_status_priority ON opportunity_triage(status, priority_score DESC);
 CREATE INDEX IF NOT EXISTS idx_entity_resolutions_canonical ON entity_resolutions(canonical_entity_id);
 CREATE INDEX IF NOT EXISTS idx_entity_merge_candidates_status ON entity_merge_candidates(status);
 CREATE INDEX IF NOT EXISTS idx_entity_merge_candidates_type ON entity_merge_candidates(entity_type);
