@@ -155,7 +155,12 @@ EvoScientist 的 Writing Agent 已有论文写作能力。需要：
     └── final_report.md                    # 5 个范式断裂分析
 ```
 
-## LLM 配置
+## 本次分支记录
+
+- 分支：`issue-1-opportunity-closed-loop`
+- 已实现：机会 triage 队列、评分排序、Dashboard 展示、pipeline 末尾重建 triage
+- 验证：`python -m pytest -q tests/test_opportunity_engine.py tests/test_web_app.py`
+- 提醒：这版先补“发现 → 排序”的中段闭环，自动实验执行仍在后续计划中
 
 ### DeepGraph（3 provider 并发）
 | Provider | URL | Model | 用途 |
