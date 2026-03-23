@@ -86,6 +86,7 @@ def api_taxonomy_node(node_id):
     gaps = tax.get_node_gaps(node_id) if is_leaf else []
     # Only return cached data - never block on LLM generation during page load
     opportunities = opp.get_node_opportunities(node_id)
+    triage_queue = opp.get_opportunity_triage(node_id, limit=50)
     summary = tax.get_node_summary(node_id)
     graph_summary = graph.get_node_graph_summary(node_id)
 
@@ -100,6 +101,7 @@ def api_taxonomy_node(node_id):
         "matrix": matrix,
         "gaps": gaps,
         "opportunities": opportunities,
+        "triage_queue": triage_queue,
         "summary": summary,
         "graph_summary": graph_summary,
     })
@@ -150,6 +152,15 @@ def api_taxonomy_gaps(node_id):
 def api_taxonomy_opportunities(node_id):
     """Get richer deterministic opportunity themes for a node."""
     return jsonify(opp.get_node_opportunities(node_id))
+
+
+@app.route("/api/opportunity_triage")
+def api_opportunity_triage():
+    """Get the prioritized opportunity queue."""
+    node_id = request.args.get("node_id", "")
+    band = request.args.get("band", "")
+    limit = request.args.get("limit", 100, type=int)
+    return jsonify(opp.get_opportunity_triage(node_id or None, band or None, limit=limit))
 
 
 @app.route("/api/insights")
