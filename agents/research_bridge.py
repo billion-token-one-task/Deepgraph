@@ -25,7 +25,12 @@ def gather_context(insight_id: int) -> dict:
     """Gather all supporting evidence for an insight from the knowledge graph."""
     conn = get_conn()
 
-    insight = dict(conn.execute("SELECT * FROM insights WHERE id = ?", (insight_id,)).fetchone())
+    row = conn.execute("SELECT * FROM insights WHERE id = ?", (insight_id,)).fetchone()
+    if not row:
+        conn.close()
+        return {"insight": {}, "papers": [], "claims": [], "methods": [],
+                "contradictions": [], "paper_insights": [], "results_sample": []}
+    insight = dict(row)
 
     node_id = insight["node_id"]
 
@@ -147,20 +152,20 @@ def format_proposal(ctx: dict) -> str:
     limitations = []
     open_questions = []
     for pi in ctx["paper_insights"]:
-        if pi["limitations"]:
+        if pi.get("limitations"):
             try:
-                lims = json.loads(pi["limitations"]) if pi["limitations"].startswith("[") else [pi["limitations"]]
+                lims = json.loads(pi["limitations"]) if isinstance(pi["limitations"], str) and pi["limitations"].startswith("[") else [pi["limitations"]]
                 for l in lims[:2]:
                     limitations.append(f"[{pi['paper_id']}] {l}")
             except:
-                limitations.append(f"[{pi['paper_id']}] {pi['limitations'][:200]}")
-        if pi["open_questions"]:
+                limitations.append(f"[{pi['paper_id']}] {str(pi['limitations'])[:200]}")
+        if pi.get("open_questions"):
             try:
-                qs = json.loads(pi["open_questions"]) if pi["open_questions"].startswith("[") else [pi["open_questions"]]
+                qs = json.loads(pi["open_questions"]) if isinstance(pi["open_questions"], str) and pi["open_questions"].startswith("[") else [pi["open_questions"]]
                 for q in qs[:2]:
                     open_questions.append(f"[{pi['paper_id']}] {q}")
             except:
-                open_questions.append(f"[{pi['paper_id']}] {pi['open_questions'][:200]}")
+                open_questions.append(f"[{pi['paper_id']}] {str(pi['open_questions'])[:200]}")
 
     lim_text = "\n".join(f"- {l}" for l in limitations[:15])
     oq_text = "\n".join(f"- {q}" for q in open_questions[:10])
@@ -284,6 +289,7 @@ def launch_evoscientist(insight_id: int, workdir: str = None) -> dict:
     )
     env = os.environ.copy()
     env["CUSTOM_OPENAI_USE_RESPONSES_API"] = "true"
+    log_file = open(Path(workdir) / "evoscientist.log", "w")
     proc = subprocess.Popen(
         [
             evosci_bin,
@@ -292,7 +298,7 @@ def launch_evoscientist(insight_id: int, workdir: str = None) -> dict:
             "--ui", "cli",
             "-p", short_prompt,
         ],
-        stdout=open(Path(workdir) / "evoscientist.log", "w"),
+        stdout=log_file,
         stderr=subprocess.STDOUT,
         cwd=workdir,
         env=env,

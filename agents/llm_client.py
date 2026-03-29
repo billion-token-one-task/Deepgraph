@@ -1,15 +1,46 @@
-"""Multi-provider LLM client with round-robin load balancing."""
+"""Multi-provider LLM client with load balancing and per-provider rate limiting."""
 import json
 import threading
 import time
 import httpx
-from config import LLM_BASE_URL, LLM_API_KEY, LLM_MODEL, LLM_MAX_OUTPUT_TOKENS
+from config import (
+    LLM_API_KEY,
+    LLM_BASE_URL,
+    LLM_MAX_OUTPUT_TOKENS,
+    LLM_MODEL,
+    LLM_USE_TABCODE,
+    MINIMAX_API_KEY,
+    MINIMAX_BASE_URL,
+    MINIMAX_MODEL,
+    MINIMAX_RPM,
+)
 
-# Provider pool: each entry is (base_url, api_key, model, name)
 _providers = []
 _provider_idx = 0
 _provider_lock = threading.Lock()
-_provider_stats = {}  # name -> {calls, tokens, errors, avg_latency}
+_provider_stats = {}
+
+_rate_limiters = {}       # name -> _RateLimiter
+_provider_cooldown = {}   # name -> resume_timestamp (epoch)
+
+
+class _RateLimiter:
+    """Sliding-window rate limiter (thread-safe)."""
+
+    def __init__(self, rpm: int):
+        self.rpm = rpm
+        self.interval = 60.0 / rpm  # min seconds between calls
+        self._lock = threading.Lock()
+        self._last_call = 0.0
+
+    def wait(self):
+        """Block until a call is allowed."""
+        with self._lock:
+            now = time.time()
+            earliest = self._last_call + self.interval
+            if now < earliest:
+                time.sleep(earliest - now)
+            self._last_call = time.time()
 
 
 def _init_providers():
@@ -18,8 +49,19 @@ def _init_providers():
     if _providers:
         return
 
-    # Provider 1: tabcode (from config)
-    if LLM_API_KEY:
+    # Provider: MiniMax (default primary — Chat Completions API)
+    if MINIMAX_API_KEY:
+        _providers.append({
+            "name": "minimax",
+            "base_url": MINIMAX_BASE_URL,
+            "api_key": MINIMAX_API_KEY,
+            "model": MINIMAX_MODEL,
+            "protocol": "chat_completions",
+            "rpm": MINIMAX_RPM,
+        })
+
+    # Optional: tabcode / OpenAI-compatible proxy (Responses API)
+    if LLM_USE_TABCODE and LLM_API_KEY:
         _providers.append({
             "name": "tabcode",
             "base_url": LLM_BASE_URL,
@@ -27,87 +69,146 @@ def _init_providers():
             "model": LLM_MODEL,
         })
 
-    # Provider 2: Kimi (Chat Completions API, needs special User-Agent)
-    import os
-    kimi_key = os.environ.get("KIMI_API_KEY", "sk-kimi-A9HyGmdMtUiKL3oaSHsePPzlh28ckzOjlcWKPjszzcDtLiDau1LTluN2TgCG4Q6s")
-    if kimi_key:
-        _providers.append({
-            "name": "kimi",
-            "base_url": "https://api.kimi.com/coding/v1",
-            "api_key": kimi_key,
-            "model": "kimi-latest",
-            "protocol": "chat_completions",  # uses /chat/completions not /responses
-            "extra_headers": {"User-Agent": "claude-code/1.0"},
-        })
-
-    # Provider 3: MiniMax M2.7 (Chat Completions API)
-    minimax_key = os.environ.get("MINIMAX_API_KEY", "sk-cp-gLnIPlTb9FtsyyldavYKa9T10i6dKbyTfN0lFh2F0jZc2hUEc9G5c4SjShTwEmofYlz938D9oUYFB_0nTj2bgtRR2UDFbetq3QzGv7KvSYPnB4LVs2NW9ys")
-    if minimax_key:
-        _providers.append({
-            "name": "minimax",
-            "base_url": "https://api.minimaxi.com/v1/text",
-            "api_key": minimax_key,
-            "model": "M2.7",
-            "protocol": "chat_completions",
-            "chat_endpoint": "/chatcompletion_v2",  # custom endpoint path
-        })
-
-    # Init stats
+    # Init stats + rate limiters
     for p in _providers:
-        _provider_stats[p["name"]] = {"calls": 0, "tokens": 0, "errors": 0, "total_latency": 0}
+        _provider_stats[p["name"]] = {
+            "calls": 0, "tokens": 0, "errors": 0, "total_latency": 0, "in_flight": 0,
+            "cached_tokens": 0, "input_tokens": 0,
+        }
+        rpm = p.get("rpm", 0)
+        if rpm > 0:
+            _rate_limiters[p["name"]] = _RateLimiter(rpm)
+            print(f"[LLM] Rate limiter for {p['name']}: {rpm} RPM ({60.0/rpm:.1f}s interval)", flush=True)
 
     if not _providers:
-        raise RuntimeError("No LLM providers configured. Set DEEPGRAPH_LLM_API_KEY or OPENAI_API_KEY.")
+        raise RuntimeError(
+            "No LLM providers configured. Set MINIMAX_API_KEY (default path), "
+            "or set DEEPGRAPH_LLM_USE_TABCODE=1 plus DEEPGRAPH_LLM_API_KEY / OPENAI_API_KEY."
+        )
 
 
 def _next_provider() -> dict:
-    """Round-robin provider selection, skipping recently-errored ones."""
+    """Atomically select a provider AND increment its in_flight counter.
+    
+    Strategy: find the fastest provider and send it most work.
+    Slow providers only get 1 in-flight at a time (probe / trickle).
+    Fast provider (<15s avg) gets up to 20 in-flight.
+    """
     global _provider_idx
     _init_providers()
 
+    FAST_THRESHOLD = 15.0
+    FAST_MAX_INFLIGHT = 20
+    SLOW_MAX_INFLIGHT = 1
+
     with _provider_lock:
-        # Try each provider, prefer ones with fewer errors
-        best = None
-        for i in range(len(_providers)):
-            idx = (_provider_idx + i) % len(_providers)
-            p = _providers[idx]
-            stats = _provider_stats[p["name"]]
-            # Skip if error rate > 50% and has been called at least 3 times
+        now = time.time()
+        candidates = []
+        for p in _providers:
+            name = p["name"]
+            # Skip providers in cooldown (quota exhausted)
+            cooldown_until = _provider_cooldown.get(name, 0)
+            if now < cooldown_until:
+                remaining = int(cooldown_until - now)
+                if remaining % 60 == 0:  # log once per minute
+                    print(f"[LLM] {name} in cooldown, {remaining}s remaining", flush=True)
+                continue
+            elif cooldown_until > 0:
+                print(f"[LLM] {name} cooldown expired, re-enabling", flush=True)
+                _provider_cooldown[name] = 0
+
+            stats = _provider_stats[name]
             if stats["calls"] >= 3 and stats["errors"] / stats["calls"] > 0.5:
                 continue
-            best = p
-            _provider_idx = (idx + 1) % len(_providers)
-            break
+            avg_lat = stats["total_latency"] / max(stats["calls"], 1)
+            in_flight = stats.get("in_flight", 0)
+            completed = stats["calls"]
+            candidates.append((p, avg_lat, in_flight, completed))
 
-        if best is None:
-            # All providers erroring, just use first one
-            best = _providers[0]
-            _provider_idx = 1 % len(_providers)
+        if not candidates:
+            chosen = _providers[0]
+            _provider_stats[chosen["name"]]["in_flight"] = _provider_stats[chosen["name"]].get("in_flight", 0) + 1
+            return chosen
 
-        return best
+        # Classify providers
+        fast = []
+        slow = []
+        unknown = []
+        for c in candidates:
+            p, avg_lat, in_flight, completed = c
+            if completed == 0:
+                unknown.append(c)
+            elif avg_lat <= FAST_THRESHOLD:
+                fast.append(c)
+            else:
+                slow.append(c)
+
+        chosen = None
+
+        # Priority 1: fast providers with room
+        fast_avail = [c for c in fast if c[2] < FAST_MAX_INFLIGHT]
+        if fast_avail:
+            chosen = min(fast_avail, key=lambda c: c[2])[0]
+
+        # Priority 2: unknown providers that need probing (1 at a time)
+        if chosen is None:
+            probe_avail = [c for c in unknown if c[2] == 0]
+            if probe_avail:
+                chosen = probe_avail[0][0]
+
+        # Priority 3: slow providers with room (trickle)
+        if chosen is None:
+            slow_avail = [c for c in slow if c[2] < SLOW_MAX_INFLIGHT]
+            if slow_avail:
+                chosen = min(slow_avail, key=lambda c: c[1])[0]
+
+        # Priority 4: everything full — pick least loaded overall
+        if chosen is None:
+            chosen = min(candidates, key=lambda c: c[2])[0]
+
+        _provider_stats[chosen["name"]]["in_flight"] = _provider_stats[chosen["name"]].get("in_flight", 0) + 1
+        return chosen
+
+
+def _release_provider(name: str):
+    """Decrement in_flight for a provider (thread-safe)."""
+    with _provider_lock:
+        stats = _provider_stats[name]
+        stats["in_flight"] = max(0, stats.get("in_flight", 0) - 1)
 
 
 def get_provider_stats() -> dict:
     """Return stats for all providers."""
     _init_providers()
     result = {}
+    now = time.time()
     for p in _providers:
         name = p["name"]
         s = _provider_stats[name]
+        total_input = s.get("input_tokens", 0)
+        cached = s.get("cached_tokens", 0)
+        cache_rate = round(cached / max(total_input, 1) * 100, 1)
+        cooldown_until = _provider_cooldown.get(name, 0)
+        cooldown_remaining = max(0, int(cooldown_until - now))
         result[name] = {
             "calls": s["calls"],
             "tokens": s["tokens"],
             "errors": s["errors"],
             "avg_latency": round(s["total_latency"] / max(s["calls"], 1), 1),
+            "in_flight": s.get("in_flight", 0),
             "model": p["model"],
             "base_url": p["base_url"][:40],
+            "cached_tokens": cached,
+            "input_tokens": total_input,
+            "cache_hit_rate": f"{cache_rate}%",
+            "cooldown_remaining": f"{cooldown_remaining}s" if cooldown_remaining > 0 else "active",
         }
     return result
 
 
 def _call_provider(provider: dict, system_prompt: str, user_prompt: str,
-                   max_tokens: int) -> tuple[str, int]:
-    """Call a specific provider. Routes to correct protocol."""
+                   max_tokens: int) -> tuple[str, int, int, int]:
+    """Call a specific provider. Returns (text, total_tokens, cached_tokens, input_tokens)."""
     protocol = provider.get("protocol", "responses")
     if protocol == "chat_completions":
         return _call_chat_completions(provider, system_prompt, user_prompt, max_tokens)
@@ -115,8 +216,9 @@ def _call_provider(provider: dict, system_prompt: str, user_prompt: str,
 
 
 def _call_chat_completions(provider: dict, system_prompt: str, user_prompt: str,
-                           max_tokens: int) -> tuple[str, int]:
-    """Call via OpenAI Chat Completions API (for Kimi etc)."""
+                           max_tokens: int) -> tuple[str, int, int, int]:
+    """Call via OpenAI Chat Completions API (for Kimi etc).
+    Returns (text, total_tokens, cached_tokens, input_tokens)."""
     payload = {
         "model": provider["model"],
         "messages": [
@@ -135,37 +237,77 @@ def _call_chat_completions(provider: dict, system_prompt: str, user_prompt: str,
 
     response_text = ""
     total_tokens = 0
+    cached_tokens = 0
+    input_tokens = 0
 
     endpoint = provider.get("chat_endpoint", "/chat/completions")
-    with httpx.Client(timeout=300) as client:
+    chunk_count = 0
+    all_lines = []
+    with httpx.Client(timeout=httpx.Timeout(300.0, connect=30.0)) as client:
         with client.stream("POST", f"{provider['base_url']}{endpoint}",
                            json=payload, headers=headers) as resp:
             resp.raise_for_status()
             for line in resp.iter_lines():
-                if not line.startswith("data: "):
+                if line.startswith("data: "):
+                    data_str = line[6:]
+                elif line.startswith("data:"):
+                    data_str = line[5:]
+                else:
+                    all_lines.append(line)
                     continue
-                data_str = line[6:]
                 if data_str.strip() == "[DONE]":
                     break
                 try:
                     chunk = json.loads(data_str)
                 except json.JSONDecodeError:
                     continue
+                chunk_count += 1
+
+                # MiniMax embeds rate limit errors in SSE body (HTTP 200)
+                if chunk.get("type") == "error":
+                    err_info = chunk.get("error", {})
+                    err_type = err_info.get("type", "")
+                    err_msg = err_info.get("message", "")
+                    if "rate_limit" in err_type or "usage limit" in err_msg.lower():
+                        print(f"[LLM] {provider['name']} SSE rate limit: {err_msg}", flush=True)
+                        raise httpx.HTTPStatusError(
+                            f"SSE rate limit: {err_msg}",
+                            request=httpx.Request("POST", provider["base_url"]),
+                            response=httpx.Response(429),
+                        )
+                    print(f"[LLM] {provider['name']} SSE error: {err_type}: {err_msg}", flush=True)
+                    raise RuntimeError(f"{provider['name']} API error: {err_type}: {err_msg}")
+
                 choices = chunk.get("choices", [])
                 if choices:
                     delta = choices[0].get("delta", {})
-                    content = delta.get("content", "")
-                    if content:
-                        response_text += content
+                    # MiniMax (and similar) stream thinking in reasoning_content; final answer in content.
+                    # Concatenate so JSON in either stream is preserved for downstream parsing.
+                    reasoning = delta.get("reasoning_content") or ""
+                    content = delta.get("content") or ""
+                    piece = reasoning + content
+                    if piece:
+                        response_text += piece
                 usage = chunk.get("usage")
                 if usage:
                     total_tokens = usage.get("total_tokens", 0)
+                    input_tokens = usage.get("prompt_tokens", 0)
+                    # MiniMax cache info: usage.prompt_tokens_details.cached_tokens
+                    ptd = usage.get("prompt_tokens_details") or {}
+                    cached_tokens = ptd.get("cached_tokens", 0)
 
-    return response_text, total_tokens
+    if not response_text:
+        non_data = [l for l in all_lines if l.strip()][:5]
+        print(f"[LLM] WARNING: {provider['name']} empty after {chunk_count} chunks. "
+              f"Non-data lines: {non_data}", flush=True)
+        if chunk_count <= 2 and total_tokens > 0:
+            print(f"[LLM] {provider['name']}: empty response despite {total_tokens} tokens reported", flush=True)
+
+    return response_text, total_tokens, cached_tokens, input_tokens
 
 
 def _call_responses_api(provider: dict, system_prompt: str, user_prompt: str,
-                        max_tokens: int) -> tuple[str, int]:
+                        max_tokens: int) -> tuple[str, int, int, int]:
     """Call via OpenAI Responses API (for tabcode etc)."""
     input_items = [
         {"role": "developer", "content": [{"type": "input_text", "text": system_prompt}]},
@@ -188,8 +330,10 @@ def _call_responses_api(provider: dict, system_prompt: str, user_prompt: str,
 
     response_text = ""
     total_tokens = 0
+    cached_tokens = 0
+    input_tokens = 0
 
-    with httpx.Client(timeout=300) as client:
+    with httpx.Client(timeout=httpx.Timeout(300.0, connect=30.0)) as client:
         with client.stream("POST", f"{provider['base_url']}/responses",
                            json=payload, headers=headers) as resp:
             resp.raise_for_status()
@@ -210,81 +354,262 @@ def _call_responses_api(provider: dict, system_prompt: str, user_prompt: str,
                 elif event_type == "response.completed":
                     usage = event.get("response", {}).get("usage", {})
                     total_tokens = usage.get("total_tokens", 0)
+                    input_tokens = usage.get("input_tokens", 0)
+                    # OpenAI cache: usage.input_tokens_details.cached_tokens
+                    itd = usage.get("input_tokens_details") or {}
+                    cached_tokens = itd.get("cached_tokens", 0)
 
-    return response_text, total_tokens
+    return response_text, total_tokens, cached_tokens, input_tokens
+
+
+def _is_rate_limit_error(exc: Exception) -> bool:
+    """Check if an exception is an HTTP 429 rate limit error."""
+    if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429:
+        return True
+    return False
 
 
 def call_llm(system_prompt: str, user_prompt: str, temperature: float = 0.0,
              max_tokens: int = None) -> tuple[str, int]:
-    """Call LLM with automatic provider selection and failover."""
+    """Call LLM with automatic provider selection, rate limiting, and failover."""
     max_tokens = max_tokens or LLM_MAX_OUTPUT_TOKENS
     _init_providers()
 
     last_error = None
     tried = set()
+    MAX_429_RETRIES = 3
 
     for attempt in range(len(_providers)):
         provider = _next_provider()
         if provider["name"] in tried:
+            _release_provider(provider["name"])
             continue
         tried.add(provider["name"])
 
-        start = time.time()
-        try:
-            text, tokens = _call_provider(provider, system_prompt, user_prompt, max_tokens)
-            latency = time.time() - start
+        stats = _provider_stats[provider["name"]]
 
-            stats = _provider_stats[provider["name"]]
-            stats["calls"] += 1
-            stats["tokens"] += tokens
-            stats["total_latency"] += latency
+        for retry in range(MAX_429_RETRIES + 1):
+            limiter = _rate_limiters.get(provider["name"])
+            if limiter:
+                limiter.wait()
 
-            return text, tokens
+            start = time.time()
+            try:
+                text, tokens, cached_toks, input_toks = _call_provider(
+                    provider, system_prompt, user_prompt, max_tokens)
+                latency = time.time() - start
 
-        except Exception as e:
-            latency = time.time() - start
-            stats = _provider_stats[provider["name"]]
-            stats["calls"] += 1
-            stats["errors"] += 1
-            stats["total_latency"] += latency
-            last_error = e
-            continue
+                if not text or len(text.strip()) < 10:
+                    with _provider_lock:
+                        stats["calls"] += 1
+                        stats["errors"] += 1
+                        stats["total_latency"] += latency
+                    _release_provider(provider["name"])
+                    print(f"[LLM] WARNING: {provider['name']} returned empty/short response, trying next provider", flush=True)
+                    last_error = RuntimeError(f"{provider['name']} returned empty response")
+                    break  # try next provider
+
+                with _provider_lock:
+                    stats["calls"] += 1
+                    stats["tokens"] += tokens
+                    stats["total_latency"] += latency
+                    stats["cached_tokens"] += cached_toks
+                    stats["input_tokens"] += input_toks
+                _release_provider(provider["name"])
+                return text, tokens
+
+            except Exception as e:
+                latency = time.time() - start
+                if _is_rate_limit_error(e):
+                    err_msg = str(e)
+                    is_quota = "usage limit" in err_msg.lower() or "2056" in err_msg
+                    if is_quota:
+                        cooldown_secs = 600  # 10 min cooldown for quota exhaustion
+                        with _provider_lock:
+                            _provider_cooldown[provider["name"]] = time.time() + cooldown_secs
+                            stats["calls"] += 1
+                            stats["errors"] += 1
+                            stats["total_latency"] += latency
+                        _release_provider(provider["name"])
+                        print(f"[LLM] {provider['name']} quota exhausted (5h window), "
+                              f"cooldown {cooldown_secs//60}min", flush=True)
+                        last_error = e
+                        break  # try next provider
+                    elif retry < MAX_429_RETRIES:
+                        backoff = (2 ** retry) * 5  # 5s, 10s, 20s
+                        print(f"[LLM] 429 rate limit from {provider['name']}, "
+                              f"retry {retry+1}/{MAX_429_RETRIES} after {backoff}s", flush=True)
+                        with _provider_lock:
+                            stats["errors"] += 1
+                        time.sleep(backoff)
+                        continue  # retry same provider
+
+                with _provider_lock:
+                    stats["calls"] += 1
+                    stats["errors"] += 1
+                    stats["total_latency"] += latency
+                _release_provider(provider["name"])
+                last_error = e
+                break  # try next provider
 
     raise RuntimeError(f"All {len(_providers)} providers failed. Last error: {last_error}")
 
 
-def call_llm_json(system_prompt: str, user_prompt: str, temperature: float = 0.0) -> tuple[dict | list, int]:
-    """Call LLM and parse response as JSON. Handles markdown blocks and extra text."""
-    import re
-    text, tokens = call_llm(system_prompt, user_prompt, temperature)
-    text = text.strip()
+def _first_balanced_json_slice(text: str, start: int) -> str | None:
+    """Slice from start to matching top-level } or ]; respects JSON string rules."""
+    if start < 0 or start >= len(text):
+        return None
+    op = text[start]
+    if op not in "{[":
+        return None
+    cl = "}" if op == "{" else "]"
+    depth = 0
+    in_str = False
+    esc = False
+    for j in range(start, len(text)):
+        c = text[j]
+        if in_str:
+            if esc:
+                esc = False
+            elif c == "\\":
+                esc = True
+            elif c == '"':
+                in_str = False
+            continue
+        if c == '"':
+            in_str = True
+            continue
+        if c == op:
+            depth += 1
+        elif c == cl:
+            depth -= 1
+            if depth == 0:
+                return text[start : j + 1]
+    return None
 
-    # Strip markdown code blocks
-    if text.startswith("```"):
-        lines = text.split("\n")
-        # Remove first line (```json or ```) and last line (```)
+
+def _normalize_jsonish(s: str) -> str:
+    """Fix common LLM JSON quirks before json.loads."""
+    import re
+
+    t = s.strip()
+    if t.startswith("\ufeff"):
+        t = t[1:].lstrip()
+    # Smart quotes → ASCII (structural noise from Word/LaTeX copy-paste)
+    t = t.translate(
+        str.maketrans(
+            {
+                "\u201c": '"',
+                "\u201d": '"',
+                "\u2018": "'",
+                "\u2019": "'",
+            }
+        )
+    )
+    # Python literals in pseudo-JSON
+    t = re.sub(r"\bTrue\b", "true", t)
+    t = re.sub(r"\bFalse\b", "false", t)
+    t = re.sub(r"\bNone\b", "null", t)
+    return t
+
+
+def _json_try_load(s: str) -> dict | list | None:
+    """Try strict parse; then strip trailing commas LLMs often emit."""
+    import re
+
+    s = _normalize_jsonish(s)
+    for candidate in (s,):
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError:
+            pass
+    fixed = re.sub(r",(\s*})", r"\1", s)
+    fixed = re.sub(r",(\s*])", r"\1", fixed)
+    if fixed != s:
+        try:
+            return json.loads(fixed)
+        except json.JSONDecodeError:
+            pass
+    return None
+
+
+def parse_llm_json_text(text: str) -> tuple[dict | list, str]:
+    """Extract JSON object/array from arbitrary LLM output. Returns (parsed, method_label)."""
+    import re
+
+    raw = text.strip()
+    if not raw:
+        return {}, "empty"
+
+    # Strip thinking blocks (same pattern as paradigm_agent / validation_loop)
+    t = re.sub(r"<thinking>[\s\S]*?</thinking>", "", raw, flags=re.I).strip()
+    # Some providers stream "think" segments as ```think ... ```
+    t = re.sub(r"```\s*think\s*[\s\S]*?```", "", t, flags=re.I).strip()
+
+    # Explicit fenced blocks — try each ``` ... ``` body
+    for m in re.finditer(r"```(?:json)?\s*([\s\S]*?)```", t, re.I):
+        body = m.group(1).strip()
+        got = _json_try_load(body)
+        if got is not None:
+            return got, "markdown_fence"
+
+    # Single opening fence without closer
+    if t.startswith("```"):
+        lines = t.split("\n")
         end = len(lines)
         for i in range(len(lines) - 1, 0, -1):
             if lines[i].strip() == "```":
                 end = i
                 break
-        text = "\n".join(lines[1:end]).strip()
+        t = "\n".join(lines[1:end]).strip()
 
-    # Try direct parse first
-    try:
-        return json.loads(text), tokens
-    except json.JSONDecodeError:
-        pass
+    # Direct parse
+    got = _json_try_load(t)
+    if got is not None:
+        return got, "direct"
 
-    # Try to find JSON object/array in the text
-    for match in re.finditer(r'(\{[\s\S]*\}|\[[\s\S]*\])', text):
-        try:
-            return json.loads(match.group()), tokens
-        except json.JSONDecodeError:
+    # Greedy {...} often overshoots; try every '{' position with brace matching
+    for i, ch in enumerate(t):
+        if ch != "{":
             continue
+        chunk = _first_balanced_json_slice(t, i)
+        if not chunk:
+            continue
+        got = _json_try_load(chunk)
+        if got is not None:
+            return got, f"balanced_object@{i}"
 
-    # Last resort: if text is empty, return empty dict
-    if not text:
+    for i, ch in enumerate(t):
+        if ch != "[":
+            continue
+        chunk = _first_balanced_json_slice(t, i)
+        if not chunk:
+            continue
+        got = _json_try_load(chunk)
+        if got is not None:
+            return got, f"balanced_array@{i}"
+
+    # Legacy greedy regex (last resort)
+    for match in re.finditer(r"(\{[\s\S]*\}|\[[\s\S]*\])", t):
+        got = _json_try_load(match.group(1))
+        if got is not None:
+            return got, "regex_greedy"
+
+    raise json.JSONDecodeError(f"No valid JSON found ({len(raw)} chars)", raw, 0)
+
+
+def call_llm_json(system_prompt: str, user_prompt: str, temperature: float = 0.0) -> tuple[dict | list, int]:
+    """Call LLM and parse response as JSON. Handles markdown blocks, thinking tags, and extra text."""
+    text, tokens = call_llm(system_prompt, user_prompt, temperature)
+    if not text or not str(text).strip():
+        print(f"[LLM_JSON] WARNING: empty LLM response ({tokens} tokens)", flush=True)
         return {}, tokens
-
-    raise json.JSONDecodeError(f"No valid JSON found in LLM response ({len(text)} chars)", text, 0)
+    try:
+        parsed, how = parse_llm_json_text(text)
+        if how not in ("direct", "empty"):
+            print(f"[LLM_JSON] Parsed via {how} ({len(text)} chars)", flush=True)
+        return parsed, tokens
+    except json.JSONDecodeError as e:
+        preview = str(text).replace("\n", " ")[:320]
+        print(f"[LLM_JSON] Parse failed: {e}; preview: {preview}...", flush=True)
+        raise

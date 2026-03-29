@@ -96,7 +96,7 @@ Find universal patterns that transcend this specific research area. Focus on str
             indices = pat.get("source_claim_indices", [])
             pat["source_claim_ids"] = [
                 claims[i]["id"] for i in indices
-                if i < len(claims)
+                if isinstance(i, int) and 0 <= i < len(claims)
             ]
 
         return patterns, tokens

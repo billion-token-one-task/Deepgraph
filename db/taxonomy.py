@@ -880,7 +880,8 @@ def ensure_node_summary(node_id: str, force: bool = False) -> dict | None:
 
     try:
         summary, _tokens = generate_domain_summary(node, snapshot)
-    except Exception:
+    except Exception as e:
+        print(f"[TAXONOMY] Domain summary generation failed for {node_id}: {e}", flush=True)
         summary = fallback_domain_summary(node, snapshot)
 
     summary["node_id"] = node_id

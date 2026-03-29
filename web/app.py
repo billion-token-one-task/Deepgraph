@@ -2,6 +2,7 @@
 import json
 import threading
 import time
+import traceback
 from flask import Flask, render_template, jsonify, Response, request
 from config import APP_NAME, APP_SUBTITLE, PROFILE, ROOT_NODE_ID
 from db import database as db
@@ -14,6 +15,9 @@ from agents.taxonomy_expander import run_expansion
 app = Flask(__name__,
             template_folder="templates",
             static_folder="static")
+
+_pipeline_running = False
+_pipeline_lock = threading.Lock()
 
 
 @app.route("/")
@@ -53,11 +57,18 @@ def api_providers():
 
 @app.route("/api/processing")
 def api_processing():
-    """Get papers currently being processed."""
+    """Get papers currently being processed + recently completed (last 15s)."""
     rows = db.fetchall(
-        "SELECT id, title, status FROM papers WHERE status='processing' ORDER BY updated_at DESC LIMIT 10"
+        """SELECT id, title, status FROM papers
+           WHERE status IN ('processing', 'extracted')
+              OR (status IN ('reasoned', 'error') AND updated_at > datetime('now', '-15 seconds'))
+           ORDER BY CASE status WHEN 'processing' THEN 0 WHEN 'extracted' THEN 1 ELSE 2 END, updated_at DESC
+           LIMIT 30"""
     )
-    return jsonify(rows)
+    processing_count = db.fetchone("SELECT COUNT(*) as c FROM papers WHERE status='processing'")["c"]
+    with _pipeline_lock:
+        is_running = _pipeline_running or processing_count > 0
+    return jsonify({"papers": rows, "pipeline_running": is_running})
 
 
 # ── Taxonomy Navigation ───────────────────────────────────────────
@@ -550,8 +561,29 @@ def api_events():
 @app.route("/api/start", methods=["POST"])
 def api_start():
     """Start the pipeline."""
+    global _pipeline_running
     max_papers = request.json.get("max_papers", 20) if request.is_json else 20
-    thread = threading.Thread(target=run_continuous, args=(max_papers,), daemon=True)
+
+    with _pipeline_lock:
+        if _pipeline_running:
+            return jsonify({"status": "already_running", "max_papers": max_papers})
+        _pipeline_running = True
+
+    def safe_run(n):
+        global _pipeline_running
+        import traceback as tb
+        try:
+            run_continuous(n)
+        except Exception as e:
+            print(f"[PIPELINE CRASH] {e}", flush=True)
+            print(tb.format_exc(), flush=True)
+            log_event("error", {"step": "pipeline_crash", "error": str(e),
+                                "traceback": tb.format_exc()})
+        finally:
+            with _pipeline_lock:
+                _pipeline_running = False
+
+    thread = threading.Thread(target=safe_run, args=(max_papers,), daemon=True)
     thread.start()
     return jsonify({"status": "started", "max_papers": max_papers})
 
@@ -602,16 +634,21 @@ def api_research_status():
 def api_research_proposal(insight_id):
     """Preview the research proposal that would be sent to EvoScientist."""
     from agents.research_bridge import gather_context, format_proposal
-    ctx = gather_context(insight_id)
-    proposal = format_proposal(ctx)
-    return jsonify({
-        "insight_id": insight_id,
-        "title": ctx["insight"]["title"],
-        "paper_count": len(ctx["papers"]),
-        "claim_count": len(ctx["claims"]),
-        "contradiction_count": len(ctx["contradictions"]),
-        "proposal": proposal,
-    })
+    try:
+        ctx = gather_context(insight_id)
+        if not ctx.get("insight"):
+            return jsonify({"error": "Insight not found"}), 404
+        proposal = format_proposal(ctx)
+        return jsonify({
+            "insight_id": insight_id,
+            "title": ctx["insight"]["title"],
+            "paper_count": len(ctx["papers"]),
+            "claim_count": len(ctx["claims"]),
+            "contradiction_count": len(ctx["contradictions"]),
+            "proposal": proposal,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/insights/rank", methods=["POST"])
@@ -625,3 +662,277 @@ def api_rank_insights():
     thread = threading.Thread(target=run_ranking, daemon=True)
     thread.start()
     return jsonify({"status": "started"})
+
+
+# ── Deep Insights (Tier 1 / Tier 2) ─────────────────────────────────
+
+@app.route("/api/deep_insights")
+def api_deep_insights():
+    """List deep insights with optional tier/status filter."""
+    tier = request.args.get("tier", "", type=str)
+    status = request.args.get("status", "")
+    limit = request.args.get("limit", 50, type=int)
+
+    sql = "SELECT * FROM deep_insights WHERE 1=1"
+    params = []
+    if tier:
+        sql += " AND tier=?"
+        try:
+            params.append(int(tier))
+        except (ValueError, TypeError):
+            return jsonify({"error": "Invalid tier value"}), 400
+    if status:
+        sql += " AND status=?"
+        params.append(status)
+    sql += " ORDER BY CASE WHEN adversarial_score IS NOT NULL THEN adversarial_score ELSE 0 END DESC, created_at DESC LIMIT ?"
+    params.append(limit)
+
+    try:
+        rows = db.fetchall(sql, tuple(params))
+        return jsonify(rows)
+    except Exception:
+        return jsonify([])
+
+
+@app.route("/api/deep_insights/<int:insight_id>")
+def api_deep_insight_detail(insight_id):
+    """Get full detail for one deep insight."""
+    row = db.fetchone("SELECT * FROM deep_insights WHERE id=?", (insight_id,))
+    if not row:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify(dict(row))
+
+
+@app.route("/api/deep_insights/generate", methods=["POST"])
+def api_generate_deep_insights():
+    """Trigger discovery pipeline (harvest + Tier 1 + Tier 2).
+
+    JSON body (optional):
+      tier: "1" | "2" | "both" (default both)
+      bulk: true — use DISCOVERY_BULK_* wider signals + expand all Tier2 problems
+    """
+    from orchestrator.discovery_scheduler import run_full_discovery
+    tier = request.json.get("tier", "both") if request.is_json else "both"
+    bulk = bool(request.json.get("bulk")) if request.is_json else False
+
+    def do_discovery():
+        if tier == "1":
+            from orchestrator.discovery_scheduler import harvest_signals, run_tier1_discovery
+            harvest_signals()
+            run_tier1_discovery(bulk=bulk)
+        elif tier == "2":
+            from orchestrator.discovery_scheduler import harvest_signals, run_tier2_discovery
+            harvest_signals()
+            run_tier2_discovery(bulk=bulk)
+        else:
+            run_full_discovery(bulk=bulk)
+
+    t = threading.Thread(target=do_discovery, daemon=True)
+    t.start()
+    return jsonify({"status": "started", "tier": tier, "bulk": bulk})
+
+
+@app.route("/api/deep_insights/<int:insight_id>/verify", methods=["POST"])
+def api_verify_deep_insight(insight_id):
+    """Launch novelty verification via EvoScientist."""
+    from agents.novelty_verifier import launch_verification
+    try:
+        result = launch_verification(insight_id)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/deep_insights/<int:insight_id>/verify_status")
+def api_verify_status(insight_id):
+    """Check verification status."""
+    from agents.novelty_verifier import check_verification_result
+    return jsonify(check_verification_result(insight_id))
+
+
+@app.route("/api/deep_insights/<int:insight_id>/research", methods=["POST"])
+def api_deep_insight_research(insight_id):
+    """Launch full EvoScientist research session."""
+    from agents.novelty_verifier import launch_full_research
+    try:
+        result = launch_full_research(insight_id)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/deep_insights/signals")
+def api_deep_insight_signals():
+    """Get current signal harvester data."""
+    try:
+        overlaps = db.fetchall(
+            "SELECT * FROM node_entity_overlap ORDER BY overlap_score DESC LIMIT 20")
+        pattern_ms = db.fetchall(
+            "SELECT * FROM pattern_matches ORDER BY similarity_score DESC LIMIT 15")
+        clusters = db.fetchall(
+            "SELECT * FROM contradiction_clusters ORDER BY cluster_size DESC")
+        plateaus = db.fetchall(
+            "SELECT * FROM performance_plateaus ORDER BY method_count DESC LIMIT 15")
+        return jsonify({
+            "entity_overlaps": overlaps,
+            "pattern_matches": pattern_ms,
+            "contradiction_clusters": clusters,
+            "performance_plateaus": plateaus,
+        })
+    except Exception:
+        return jsonify({"entity_overlaps": [], "pattern_matches": [],
+                        "contradiction_clusters": [], "performance_plateaus": []})
+
+
+# ── SciForge: Experiment Validation ──────────────────────────────────
+
+@app.route("/api/experiments")
+def api_experiments():
+    """List experiment runs with optional status/insight filter."""
+    status = request.args.get("status", "")
+    insight_id = request.args.get("insight_id", "", type=str)
+    limit = request.args.get("limit", 50, type=int)
+
+    sql = """SELECT er.*, di.title as insight_title, di.tier as insight_tier
+             FROM experiment_runs er
+             JOIN deep_insights di ON er.deep_insight_id = di.id
+             WHERE 1=1"""
+    params = []
+    if status:
+        sql += " AND er.status=?"
+        params.append(status)
+    if insight_id:
+        sql += " AND er.deep_insight_id=?"
+        try:
+            params.append(int(insight_id))
+        except (ValueError, TypeError):
+            return jsonify({"error": "Invalid insight_id value"}), 400
+    sql += " ORDER BY er.created_at DESC LIMIT ?"
+    params.append(limit)
+
+    try:
+        rows = db.fetchall(sql, tuple(params))
+        return jsonify(rows)
+    except Exception:
+        return jsonify([])
+
+
+@app.route("/api/experiments/<int:run_id>")
+def api_experiment_detail(run_id):
+    """Get full detail for one experiment run including iterations."""
+    run = db.fetchone(
+        """SELECT er.*, di.title as insight_title, di.tier as insight_tier
+           FROM experiment_runs er
+           JOIN deep_insights di ON er.deep_insight_id = di.id
+           WHERE er.id=?""", (run_id,))
+    if not run:
+        return jsonify({"error": "Not found"}), 404
+
+    iterations = db.fetchall(
+        """SELECT * FROM experiment_iterations WHERE run_id=?
+           ORDER BY iteration_number""", (run_id,))
+
+    claims = db.fetchall(
+        "SELECT * FROM experimental_claims WHERE run_id=?", (run_id,))
+
+    return jsonify({
+        "run": dict(run),
+        "iterations": iterations,
+        "claims": claims,
+    })
+
+
+@app.route("/api/experiments/forge", methods=["POST"])
+def api_forge_experiment():
+    """Forge an experiment from a deep insight (scaffold + codebase)."""
+    from agents.experiment_forge import forge_experiment
+    insight_id = request.json.get("insight_id") if request.is_json else None
+    if not insight_id:
+        return jsonify({"error": "insight_id required"}), 400
+
+    def do_forge():
+        log_event("sciforge", {"step": "forge_start", "insight_id": insight_id})
+        result = forge_experiment(int(insight_id))
+        log_event("sciforge", {"step": "forge_done", **{k: v for k, v in result.items() if k != "codebase"}})
+
+    t = threading.Thread(target=do_forge, daemon=True)
+    t.start()
+    return jsonify({"status": "started", "insight_id": insight_id})
+
+
+@app.route("/api/experiments/<int:run_id>/run", methods=["POST"])
+def api_run_experiment(run_id):
+    """Launch the validation loop for a forged experiment."""
+    from agents.validation_loop import run_validation_loop
+    from agents.knowledge_loop import process_completed_run
+
+    run = db.fetchone("SELECT * FROM experiment_runs WHERE id=?", (run_id,))
+    if not run:
+        return jsonify({"error": "Run not found"}), 404
+
+    def do_run():
+        log_event("sciforge", {"step": "loop_start", "run_id": run_id})
+        try:
+            result = run_validation_loop(run_id)
+            log_event("sciforge", {"step": "loop_done", "run_id": run_id,
+                                   "verdict": result.get("verdict", "?")})
+            process_completed_run(run_id)
+            log_event("sciforge", {"step": "knowledge_loop_done", "run_id": run_id})
+        except Exception as e:
+            db.execute(
+                "UPDATE experiment_runs SET status='failed', error_message=? WHERE id=?",
+                (str(e), run_id))
+            db.commit()
+            log_event("error", {"step": "validation_loop", "run_id": run_id, "error": str(e)})
+            print(f"[SCIFORGE] Validation loop failed: {e}\n{traceback.format_exc()}", flush=True)
+
+    t = threading.Thread(target=do_run, daemon=True)
+    t.start()
+    return jsonify({"status": "started", "run_id": run_id})
+
+
+@app.route("/api/experiments/run_full", methods=["POST"])
+def api_run_full_experiment():
+    """Full pipeline: forge + validation loop + knowledge loop for a deep insight."""
+    from agents.experiment_forge import forge_experiment
+    from agents.validation_loop import run_validation_loop
+    from agents.knowledge_loop import process_completed_run
+
+    insight_id = request.json.get("insight_id") if request.is_json else None
+    if not insight_id:
+        return jsonify({"error": "insight_id required"}), 400
+
+    def do_full():
+        log_event("sciforge", {"step": "full_start", "insight_id": insight_id})
+        try:
+            forge_result = forge_experiment(int(insight_id))
+            if "error" in forge_result:
+                log_event("error", {"step": "forge", "error": forge_result["error"]})
+                return
+            run_id = forge_result["run_id"]
+            log_event("sciforge", {"step": "forge_done", "run_id": run_id})
+
+            loop_result = run_validation_loop(run_id)
+            log_event("sciforge", {"step": "loop_done", "run_id": run_id,
+                                   "verdict": loop_result.get("verdict", "?")})
+
+            process_completed_run(run_id)
+            log_event("sciforge", {"step": "full_done", "run_id": run_id,
+                                   "verdict": loop_result.get("verdict", "?")})
+        except Exception as e:
+            log_event("error", {"step": "full_experiment", "insight_id": insight_id, "error": str(e)})
+            print(f"[SCIFORGE] Full experiment failed: {e}\n{traceback.format_exc()}", flush=True)
+
+    t = threading.Thread(target=do_full, daemon=True)
+    t.start()
+    return jsonify({"status": "started", "insight_id": insight_id})
+
+
+@app.route("/api/meta_report")
+def api_meta_report():
+    """Get the meta-learning report on hypothesis quality."""
+    from agents.meta_learner import get_full_meta_report
+    try:
+        return jsonify(get_full_meta_report())
+    except Exception:
+        return jsonify({"status": "error", "total_experiments": 0})

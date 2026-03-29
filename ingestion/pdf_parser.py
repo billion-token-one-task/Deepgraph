@@ -14,7 +14,10 @@ def download_pdf(arxiv_id: str, pdf_url: str) -> Path:
         return pdf_path
 
     url = pdf_url or f"https://arxiv.org/pdf/{arxiv_id}.pdf"
-    urllib.request.urlretrieve(url, str(pdf_path))
+    req = urllib.request.Request(url, headers={"User-Agent": "DeepGraph/1.0"})
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        with open(pdf_path, "wb") as f:
+            f.write(resp.read())
     return pdf_path
 
 

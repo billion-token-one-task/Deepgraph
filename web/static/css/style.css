@@ -507,6 +507,14 @@ header#topBar {
     font-weight: 600;
     letter-spacing: 0.02em;
 }
+.proc-item.proc-done {
+    opacity: 0.5;
+    border-color: rgba(100, 160, 100, 0.25);
+    background: rgba(100, 160, 100, 0.05);
+}
+.proc-item.proc-done .proc-step {
+    color: var(--text-muted, #888);
+}
 @keyframes proc-pulse {
     0%, 100% { border-color: rgba(196, 112, 75, 0.15); }
     50% { border-color: rgba(196, 112, 75, 0.35); }
@@ -1570,9 +1578,35 @@ header#topBar {
     font-size: 0.78rem;
     line-height: 1.7;
     color: #b0c0d0;
-    white-space: pre-wrap;
     word-wrap: break-word;
     font-family: var(--font-body);
+}
+.proposal-body h1, .proposal-body h2, .proposal-body h3, .proposal-body h4 {
+    color: #e0e8f0;
+    margin: 1.2em 0 0.5em;
+}
+.proposal-body h1 { font-size: 1.3em; }
+.proposal-body h2 { font-size: 1.15em; }
+.proposal-body h3 { font-size: 1.05em; }
+.proposal-body ul, .proposal-body ol {
+    padding-left: 1.5em;
+    margin: 0.5em 0;
+}
+.proposal-body li { margin: 0.3em 0; }
+.proposal-body p { margin: 0.6em 0; }
+.proposal-body strong { color: #d0dce8; }
+.proposal-body code {
+    background: rgba(255,255,255,0.06);
+    padding: 0.15em 0.4em;
+    border-radius: 3px;
+    font-family: var(--font-mono);
+    font-size: 0.92em;
+}
+.proposal-body blockquote {
+    border-left: 3px solid var(--accent);
+    padding-left: 1em;
+    margin: 0.8em 0;
+    color: #8a9ab0;
 }
 .proposal-footer {
     padding: 14px 24px;

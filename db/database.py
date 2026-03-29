@@ -23,6 +23,10 @@ def init_db():
     conn = get_conn()
     schema_path = Path(__file__).parent / "schema.sql"
     conn.executescript(schema_path.read_text())
+    # Also init v2 tables (signal harvester + deep insights)
+    schema_v2_path = Path(__file__).parent / "schema_v2.sql"
+    if schema_v2_path.exists():
+        conn.executescript(schema_v2_path.read_text())
     conn.commit()
 
 
@@ -268,6 +272,14 @@ def get_stats() -> dict:
         stats["entity_resolutions_total"] = fetchone("SELECT COUNT(*) as c FROM entity_resolutions")["c"]
         stats["merge_candidates_pending_total"] = fetchone("SELECT COUNT(*) as c FROM entity_merge_candidates WHERE status='pending'")["c"]
         stats["insights_total"] = fetchone("SELECT COUNT(*) as c FROM insights")["c"]
+        stats["deep_insights_total"] = fetchone("SELECT COUNT(*) as c FROM deep_insights")["c"]
+        stats["deep_insights_tier1"] = fetchone("SELECT COUNT(*) as c FROM deep_insights WHERE tier=1")["c"]
+        stats["deep_insights_tier2"] = fetchone("SELECT COUNT(*) as c FROM deep_insights WHERE tier=2")["c"]
+        stats["experiment_runs_total"] = fetchone("SELECT COUNT(*) as c FROM experiment_runs")["c"]
+        stats["experiment_runs_completed"] = fetchone("SELECT COUNT(*) as c FROM experiment_runs WHERE status='completed'")["c"]
+        stats["experimental_claims_total"] = fetchone("SELECT COUNT(*) as c FROM experimental_claims")["c"]
+        stats["experiments_confirmed"] = fetchone("SELECT COUNT(*) as c FROM experiment_runs WHERE hypothesis_verdict='confirmed'")["c"]
+        stats["experiments_refuted"] = fetchone("SELECT COUNT(*) as c FROM experiment_runs WHERE hypothesis_verdict='refuted'")["c"]
     except Exception:
         stats["results_total"] = 0
         stats["taxonomy_assignments"] = 0
@@ -281,4 +293,12 @@ def get_stats() -> dict:
         stats["entity_resolutions_total"] = 0
         stats["merge_candidates_pending_total"] = 0
         stats["insights_total"] = 0
+        stats["deep_insights_total"] = 0
+        stats["deep_insights_tier1"] = 0
+        stats["deep_insights_tier2"] = 0
+        stats["experiment_runs_total"] = 0
+        stats["experiment_runs_completed"] = 0
+        stats["experimental_claims_total"] = 0
+        stats["experiments_confirmed"] = 0
+        stats["experiments_refuted"] = 0
     return stats

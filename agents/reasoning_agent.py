@@ -116,6 +116,87 @@ EXISTING RELATED CLAIMS:
     return result.get("contradictions", []), tokens
 
 
+BATCH_CONTRADICTION_SYSTEM = """You are a scientific contradiction detector. Given a set of NEW claims from one paper and EXISTING claims from other papers, identify contradictions.
+
+A contradiction exists when:
+- Two claims make opposing statements about similar things under similar conditions
+- Two claims report significantly different numbers for the same method+dataset+metric
+
+Return JSON:
+{
+  "contradictions": [
+    {
+      "new_claim_idx": <0-based index of the new claim>,
+      "existing_claim_id": <id of the contradicting existing claim>,
+      "description": "clear explanation of the contradiction with specific numbers",
+      "condition_diff": "key differences in experimental conditions",
+      "hypothesis": "a testable hypothesis to resolve this",
+      "severity": "low|medium|high"
+    }
+  ]
+}
+
+If no contradictions, return {"contradictions": []}. Be selective — only flag REAL contradictions.
+Return ONLY valid JSON."""
+
+
+def detect_contradictions_batch(claims: list[dict]) -> tuple[list[dict], int]:
+    """Check all performance claims from a paper in one LLM call."""
+    perf_claims = [c for c in claims if c.get("claim_type") == "performance" and c.get("method_name")]
+    if not perf_claims:
+        return [], 0
+
+    # Gather all related existing claims
+    all_related = {}
+    seen_ids = set()
+    for c in perf_claims:
+        claim_id = c.get("_id", 0)
+        if c.get("method_name"):
+            rows = db.fetchall(
+                "SELECT id, claim_text, claim_type, method_name, dataset_name, metric_name, metric_value, paper_id "
+                "FROM claims WHERE method_name=? AND id!=? LIMIT 10",
+                (c["method_name"], claim_id)
+            )
+            for r in rows:
+                if r["id"] not in seen_ids:
+                    seen_ids.add(r["id"])
+                    all_related[r["id"]] = r
+
+    if not all_related:
+        return [], 0
+
+    # Build prompt
+    new_claims_text = "\n".join(
+        f"[{i}] {c['claim_text'][:200]} [method={c.get('method_name')}, dataset={c.get('dataset_name')}, "
+        f"metric={c.get('metric_name')}, value={c.get('metric_value')}]"
+        for i, c in enumerate(perf_claims)
+    )
+
+    existing_text = "\n".join(
+        f"[ID={r['id']}] (paper {r['paper_id']}): {r['claim_text'][:200]} "
+        f"[method={r.get('method_name')}, dataset={r.get('dataset_name')}, "
+        f"metric={r.get('metric_name')}, value={r.get('metric_value')}]"
+        for r in list(all_related.values())[:30]
+    )
+
+    user_prompt = f"""NEW CLAIMS FROM THIS PAPER:
+{new_claims_text}
+
+EXISTING CLAIMS FROM OTHER PAPERS:
+{existing_text}"""
+
+    result, tokens = call_llm_json(BATCH_CONTRADICTION_SYSTEM, user_prompt)
+    contras = result.get("contradictions", [])
+
+    # Map back to claim IDs
+    for contra in contras:
+        idx = contra.get("new_claim_idx", 0)
+        if 0 <= idx < len(perf_claims):
+            contra["_new_claim"] = perf_claims[idx]
+
+    return contras, tokens
+
+
 def discover_matrix_gaps(node_id: str) -> tuple[list[dict], int]:
     """Find valuable empty cells in the method x dataset matrix for a taxonomy node."""
     matrix = tax.get_method_dataset_matrix(node_id)

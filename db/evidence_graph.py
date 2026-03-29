@@ -475,7 +475,13 @@ def get_merge_candidate_context(candidate_id: int) -> dict | None:
 def list_merge_candidates_with_context(status: str = "pending", limit: int = 100, entity_type: str | None = None) -> list[dict]:
     """List merge candidates and attach lightweight review context."""
     rows = list_merge_candidates(status=status, limit=limit, entity_type=entity_type)
-    return [get_merge_candidate_context(row["id"]) for row in rows if row.get("id") is not None]
+    results = []
+    for row in rows:
+        if row.get("id") is not None:
+            ctx = get_merge_candidate_context(row["id"])
+            if ctx is not None:
+                results.append(ctx)
+    return results
 
 
 def refresh_merge_candidates(entity_type: str | None = None, min_score: float = 0.84, max_entities_per_type: int = 500) -> dict:
