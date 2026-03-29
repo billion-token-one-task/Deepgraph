@@ -1,47 +1,82 @@
 # DeepGraph
 
-DeepGraph is an open scientific opportunity mapping engine. It ingests papers, extracts structured evidence, generates plain-language domain briefs for non-specialists, and highlights open gaps worth exploring.
-
-The current codebase supports two operating modes:
-
-- `machine_learning`: optimized for the existing ML-focused taxonomy and current demo data.
-- `open_science`: a broader science-oriented taxonomy spanning computing, biology, medicine, physics, chemistry, Earth science, mathematics, and engineering.
+DeepGraph is an open scientific discovery engine. It ingests papers, extracts structured evidence, builds a knowledge graph, and runs a closed-loop pipeline that generates research hypotheses, tests them through autonomous experiments, and feeds results back into the graph.
 
 ## What It Does
 
-DeepGraph is not just a paper browser. It tries to answer two practical questions:
+DeepGraph answers three questions:
 
-1. What is this research area roughly about?
-2. What are people not solving yet?
-
-For each taxonomy node it can produce:
-
-- A plain-language overview for non-specialists
-- A short explanation of why the area matters
-- A summary of the main workstreams people are building
-- Common methods, datasets, and recurring patterns
-- Core entities and the relations connecting them
-- Opportunity themes and open questions grounded in paper limitations
-- Evidence tables for methods, datasets, and metrics
+1. **What is this research area about?** — plain-language overviews, key methods, datasets, and entities for any taxonomy node.
+2. **What are people not solving yet?** — opportunity themes grounded in paper limitations, contradictions, and sparse evidence regions.
+3. **What should we try next?** — cross-field structural insights (Tier 1) and executable paper-ready ideas (Tier 2), validated through autonomous experiments.
 
 ## Architecture
 
-The pipeline is:
+```
+Papers (arXiv)
+  │
+  ▼
+Ingestion ─── PDF parse ─── LLM extraction
+  │
+  ▼
+Knowledge Graph (entities, relations, claims, evidence)
+  │
+  ├──► Domain Summaries & Opportunity Briefs
+  │
+  ▼
+Signal Harvester (SQL-based, zero LLM cost)
+  │  cross-node overlap, convergent patterns,
+  │  contradiction clusters, performance plateaus
+  │
+  ├──► Tier 1: Paradigm Agent
+  │      structural isomorphisms across distant subfields
+  │
+  ├──► Tier 2: Paper Idea Agent
+  │      executable top-venue paper ideas
+  │
+  ▼
+Experiment Forge → Validation Loop
+  │  scaffold experiments, run baselines,
+  │  test hypotheses, interpret results
+  │
+  ▼
+Knowledge Loop ◄── Meta-Learner
+  feed results back into graph,     re-weight signal
+  cascade hypothesis updates        harvesting strategy
+```
 
-1. Discover papers from arXiv
-2. Download PDFs and extract text
-3. Ask an LLM to classify papers and extract results
-4. Store paper-level briefs, claims, methods, entities, relations, and evidence rows
-5. Build node-level graph summaries, summaries, and opportunity briefs
-6. Serve an interactive dashboard
+### Core Components
 
-Core components:
+| Directory | Purpose |
+|-----------|---------|
+| `ingestion/` | arXiv paper discovery and PDF parsing |
+| `agents/` | LLM extraction, insight generation, experiment orchestration |
+| `db/` | Schema, taxonomy, evidence graph, entity resolution |
+| `orchestrator/` | End-to-end pipeline and background discovery scheduler |
+| `web/` | Flask API and interactive dashboard |
 
-- `ingestion/`: paper discovery and PDF parsing
-- `agents/`: LLM extraction, contradiction detection, and domain-summary generation
-- `db/`: schema, taxonomy, summary caching, and matrix building
-- `orchestrator/`: end-to-end pipeline
-- `web/`: Flask API and dashboard
+### Agent Modules
+
+**Extraction & Analysis**
+- `extraction_agent` — classify papers and extract structured results
+- `insight_agent` — deep cross-paper reasoning (contradictions, method transfers, paradigm shifts)
+- `insight_ranker` — rank and prioritize insights
+- `reasoning_agent` — multi-step reasoning chains
+- `abstraction_agent` — abstract structural patterns
+- `domain_summary_agent` — plain-language node summaries
+- `research_bridge` — connect findings across domains
+- `taxonomy_expander` — grow taxonomy from discovered structure
+
+**Discovery Pipeline (SciForge)**
+- `signal_harvester` — SQL-based cross-field signal detection
+- `paradigm_agent` — Tier 1: discover hidden unifying structures across subfields
+- `paper_idea_agent` — Tier 2: generate executable top-venue paper ideas
+- `novelty_verifier` — check if insights already exist in literature
+- `experiment_forge` — translate insights into runnable experiments
+- `validation_loop` — hypothesis-directed experiment engine
+- `result_interpreter` — parse outcomes into structured verdicts
+- `knowledge_loop` — feed results back into knowledge graph
+- `meta_learner` — self-improve discovery strategy from experimental history
 
 ## Quick Start
 
@@ -50,6 +85,7 @@ python3.12 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
+# Edit .env with your API key
 export $(grep -v '^#' .env | xargs)
 python3.12 main.py
 ```
@@ -58,18 +94,18 @@ Then open `http://localhost:8080`.
 
 ## Configuration
 
-DeepGraph is configured through environment variables.
+Key environment variables:
 
-Important ones:
+| Variable | Description |
+|----------|-------------|
+| `DEEPGRAPH_LLM_API_KEY` | Required. LLM API key for extraction and generation |
+| `DEEPGRAPH_PROFILE` | `machine_learning` or `open_science` |
+| `DEEPGRAPH_ROOT_NODE_ID` | Defaults to `ml` or `science` based on profile |
+| `DEEPGRAPH_ARXIV_CATEGORIES` | Optional comma-separated arXiv category override |
+| `DEEPGRAPH_BACKFILL_GRAPH_ON_START` | Backfill graph from existing structured records at startup |
+| `DEEPGRAPH_WEB_PORT` | Dashboard port (default 8080) |
 
-- `DEEPGRAPH_LLM_API_KEY`: required for extraction and summary generation
-- `DEEPGRAPH_PROFILE`: `machine_learning` or `open_science`
-- `DEEPGRAPH_ROOT_NODE_ID`: defaults to `ml` for ML mode and `science` for open science mode
-- `DEEPGRAPH_ARXIV_CATEGORIES`: optional comma-separated override
-- `DEEPGRAPH_BACKFILL_GRAPH_ON_START`: backfill graph entities and relations from existing structured records at startup
-- `DEEPGRAPH_WEB_PORT`: dashboard port
-
-Example: switch to the broader science profile
+Switch to the broader science profile:
 
 ```bash
 export DEEPGRAPH_PROFILE=open_science
@@ -77,9 +113,13 @@ export DEEPGRAPH_ROOT_NODE_ID=science
 python3.12 main.py
 ```
 
-## Open Science Taxonomy
+### Discovery Pipeline Configuration
 
-The `open_science` profile includes a broader root taxonomy with these major branches:
+The SciForge discovery pipeline has additional tuning knobs via `DISCOVERY_BULK_*` environment variables — see [config.py](config.py) for the full list.
+
+## Science Taxonomy
+
+The `open_science` profile spans:
 
 - Mathematics & Statistics
 - Physics
@@ -90,18 +130,12 @@ The `open_science` profile includes a broader root taxonomy with these major bra
 - Engineering
 - Computing & AI
 
-This gives you a cleaner path toward a general scientific knowledge graph instead of a hardcoded ML-only tree.
-
 ## Packaging
-
-The project includes a `pyproject.toml`, so you can build source and wheel artifacts with:
 
 ```bash
 python3.12 -m pip install build
 python3.12 -m build
 ```
-
-Artifacts will be written to `dist/`.
 
 ## Running Tests
 
@@ -109,44 +143,26 @@ Artifacts will be written to `dist/`.
 python3.12 -m unittest discover -s tests
 ```
 
-## Notes On Data
+## Data & Security
 
-Large local artifacts are intentionally not meant for source control:
-
-- SQLite databases
-- WAL files
-- cached PDFs
-- logs
-
-They are excluded by `.gitignore`.
-
-## Security
-
-The open-source version does not hardcode API keys. You must provide credentials through environment variables.
+Large local artifacts (SQLite databases, WAL files, cached PDFs, logs) are excluded by `.gitignore`. The open-source version does not hardcode API keys — credentials are provided through environment variables only.
 
 ## Status
 
-This repository is still an early-stage research system. The current implementation is strongest at:
+DeepGraph has evolved from a passive literature analysis tool into an active discovery system. Current strengths:
 
-- literature ingestion
-- evidence extraction
-- entity/relation/evidence graph storage
-- auditable entity resolution and merge candidates
-- plain-language node summaries
-- opportunity surfacing from limitations and sparse evidence regions
+- Literature ingestion and evidence extraction
+- Entity/relation/evidence graph with auditable entity resolution
+- Plain-language node summaries and opportunity surfacing
+- **Closed-loop discovery**: signal harvesting → insight generation → autonomous experiment → knowledge feedback
+- Meta-learning from experimental track record
 
-It also now includes a deterministic graph backfill path for older databases:
+Still improving:
 
-- existing `methods`, `results`, `claims`, and `paper_insights` can be converted into graph entities and relations
-- node-level graph summaries can be regenerated without rerunning the full LLM extraction pipeline
-- similar entities can be surfaced as merge candidates for manual review instead of being destructively merged
-
-It is still weak at:
-
-- entity canonicalization across papers
-- cross-source deduplication
-- strong scientific ontologies beyond the built-in taxonomy packs
-- large-scale historical backfills across all of science
+- Entity canonicalization across papers
+- Cross-source deduplication
+- Richer scientific ontologies beyond built-in taxonomy packs
+- Large-scale historical backfills
 
 ## License
 
