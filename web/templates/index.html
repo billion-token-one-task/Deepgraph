@@ -8,6 +8,7 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;0,6..72,700;1,6..72,400&family=Source+Sans+3:wght@400;500;600;700&family=Source+Code+Pro:wght@400;500;600;700&display=swap" rel="stylesheet">
     <script src="https://d3js.org/d3.v7.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <link rel="stylesheet" href="/static/css/style.css">
 </head>
 <body data-root-node="{{ root_node_id }}" data-profile="{{ profile }}">
@@ -69,6 +70,14 @@
                 <button class="nav-item" data-tab="papers">
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M4 3h8l4 4v10a1 1 0 01-1 1H4a1 1 0 01-1-1V4a1 1 0 011-1z" stroke="currentColor" stroke-width="1.5"/><path d="M12 3v4h4" stroke="currentColor" stroke-width="1.5"/><path d="M6 10h8M6 13h5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
                     <span>Papers</span>
+                </button>
+                <button class="nav-item" data-tab="discoveries">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M10 1L12.5 6.5 18.5 7.5 14 11.5 15 17.5 10 14.5 5 17.5 6 11.5 1.5 7.5 7.5 6.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+                    <span>Discoveries</span>
+                </button>
+                <button class="nav-item" data-tab="experiments">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M10 2v6M7 5l3 3 3-3M4 10h12v7H4z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M7 13h6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                    <span>Experiments</span>
                 </button>
                 <button class="nav-item" data-tab="insights">
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M10 2a5 5 0 014.5 7.1L14 12H6l-.5-2.9A5 5 0 0110 2z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M7 14h6M8 16h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
@@ -258,6 +267,62 @@
                             </div>
                         </div>
                         <div class="papers-list" id="papersList"></div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ── Discoveries Tab (Tier 1 + Tier 2) ────────────── -->
+            <section class="tab-panel" id="tab-discoveries">
+                <div class="tab-scroll">
+                    <div class="card">
+                        <div class="card-header">
+                            <h3>Deep Discoveries</h3>
+                            <div class="opp-controls">
+                                <select id="discoveryTierFilter" class="select-input-sm">
+                                    <option value="">All Tiers</option>
+                                    <option value="1">Tier 1: Paradigm</option>
+                                    <option value="2">Tier 2: Paper Ideas</option>
+                                </select>
+                                <button class="btn-pipeline" id="btnGenerateDiscoveries" title="Generate new discoveries">
+                                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><polygon points="3,1 12,7 3,13" fill="currentColor"/></svg>
+                                    <span>Generate</span>
+                                </button>
+                            </div>
+                        </div>
+                        <div id="discoveriesList" class="insights-list">
+                            <p class="empty-msg">No deep discoveries yet. Click Generate to run the discovery pipeline.</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ── Experiments Tab (SciForge) ──────────────────── -->
+            <section class="tab-panel" id="tab-experiments">
+                <div class="tab-scroll">
+                    <div class="card">
+                        <div class="card-header">
+                            <h3>SciForge Experiments</h3>
+                            <div class="opp-controls">
+                                <select id="experimentStatusFilter" class="select-input-sm">
+                                    <option value="">All</option>
+                                    <option value="pending">Pending</option>
+                                    <option value="scaffolding">Scaffolding</option>
+                                    <option value="reproducing">Reproducing</option>
+                                    <option value="testing">Testing</option>
+                                    <option value="completed">Completed</option>
+                                    <option value="failed">Failed</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div id="experimentsList" class="insights-list">
+                            <p class="empty-msg">No experiments yet. Forge an experiment from a deep discovery to start.</p>
+                        </div>
+                    </div>
+                    <div class="card" id="metaReportCard" style="display:none;">
+                        <div class="card-header">
+                            <h3>Meta-Learning Report</h3>
+                        </div>
+                        <div id="metaReportBody"></div>
                     </div>
                 </div>
             </section>

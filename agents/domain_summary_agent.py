@@ -56,10 +56,10 @@ def generate_domain_summary(node: dict, snapshot: dict) -> tuple[dict, int]:
             line += f" | approach: {paper['approach_summary']}"
         if paper.get("work_type"):
             line += f" | type: {paper['work_type']}"
-        if paper.get("limitations"):
-            line += f" | limitations: {'; '.join(paper['limitations'][:2])}"
-        if paper.get("open_questions"):
-            line += f" | open questions: {'; '.join(paper['open_questions'][:2])}"
+        if paper.get("limitations") and isinstance(paper["limitations"], list):
+            line += f" | limitations: {'; '.join(str(l) for l in paper['limitations'][:2])}"
+        if paper.get("open_questions") and isinstance(paper["open_questions"], list):
+            line += f" | open questions: {'; '.join(str(q) for q in paper['open_questions'][:2])}"
         paper_lines.append(line)
 
     child_lines = [

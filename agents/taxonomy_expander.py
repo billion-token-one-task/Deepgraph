@@ -165,9 +165,9 @@ Based on these papers, propose 3-6 natural sub-categories that would meaningfull
     child_depth = node["depth"] + 1
 
     for sort_idx, subcat in enumerate(subcategories):
-        slug = _sanitize_slug(subcat.get("slug", subcat["name"]))
+        slug = _sanitize_slug(subcat.get("slug") or subcat.get("name", "unnamed"))
         child_id = f"{node_id}.{slug}"
-        child_name = subcat["name"]
+        child_name = subcat.get("name", slug)
         child_desc = subcat.get("description", "")
 
         # Ensure uniqueness: if this ID already exists, skip

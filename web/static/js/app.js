@@ -54,8 +54,8 @@ function $(sel) { return document.querySelector(sel); }
 function $$(sel) { return document.querySelectorAll(sel); }
 function el(id) { return document.getElementById(id); }
 
-async function api(path) {
-    const r = await fetch(path);
+async function api(path, opts) {
+    const r = await fetch(path, opts);
     if (!r.ok) throw new Error(`API ${path} returned ${r.status}`);
     return r.json();
 }
@@ -101,6 +101,12 @@ function onTabActivated(tab) {
             break;
         case 'papers':
             if (!papersLoaded) loadPapers();
+            break;
+        case 'discoveries':
+            loadDiscoveriesTab();
+            break;
+        case 'experiments':
+            loadExperimentsTab();
             break;
         case 'insights':
             loadInsightsTab();
@@ -149,9 +155,18 @@ async function refreshStats() {
 
 // ── SSE Event Stream ─────────────────────────────────────────────────
 
+let sseRetryDelay = 2000;
+
 function startSSE() {
-    if (eventSource) return;
+    if (eventSource) {
+        try { eventSource.close(); } catch(e) {}
+        eventSource = null;
+    }
     eventSource = new EventSource('/api/events');
+
+    eventSource.onopen = () => {
+        sseRetryDelay = 2000;
+    };
 
     eventSource.onmessage = (msg) => {
         try {
@@ -159,13 +174,8 @@ function startSSE() {
             events.push(ev);
             if (events.length > 50) events.shift();
 
-            // Track processing
             trackPaperEvent(ev);
-
-            // Update live badge
             updateLiveBadge(ev);
-
-            // Append to feed
             appendFeedEvent(ev);
         } catch (e) {
             console.error('SSE parse error:', e);
@@ -175,15 +185,21 @@ function startSSE() {
     eventSource.onerror = () => {
         eventSource.close();
         eventSource = null;
-        // Reconnect after 5s
-        setTimeout(startSSE, 5000);
+        setTimeout(startSSE, sseRetryDelay);
+        sseRetryDelay = Math.min(sseRetryDelay * 1.5, 15000);
     };
 }
 
+let pipelineRunning = false;
+
 function updateLiveBadge(ev) {
+    if (ev) {
+        if (ev.type === 'pipeline_start') pipelineRunning = true;
+        if (ev.type === 'pipeline_done' || ev.type === 'pipeline_crash') pipelineRunning = false;
+    }
     const badge = el('liveBadge');
-    const running = Object.keys(activePapers).length > 0 ||
-                    (ev && (ev.type === 'step' || ev.type === 'pipeline_start'));
+    const activeCount = Object.values(activePapers).filter(p => !p.done).length;
+    const running = pipelineRunning || activeCount > 0;
     badge.textContent = running ? 'LIVE' : 'IDLE';
     badge.classList.toggle('running', running);
 }
@@ -197,19 +213,66 @@ function trackPaperEvent(ev) {
             activePapers[pid] = { title: ev.data.title || pid, step: '', startTime: Date.now() };
         }
         activePapers[pid].step = ev.data.step || '';
+        activePapers[pid].done = false;
         if (ev.data.title) activePapers[pid].title = ev.data.title;
     } else if (ev.type === 'paper_done' || ev.type === 'error') {
-        delete activePapers[pid];
+        if (activePapers[pid]) {
+            activePapers[pid].done = true;
+            activePapers[pid].doneAt = Date.now();
+            activePapers[pid].step = ev.type === 'error' ? 'error' : 'done';
+        }
     }
 
     renderProcessingList();
+}
+
+async function loadProcessingPapers() {
+    try {
+        const data = await api('/api/processing');
+        const rows = data.papers || data;
+        if (data.pipeline_running != null) pipelineRunning = data.pipeline_running;
+
+        for (const r of rows) {
+            const isDone = r.status === 'reasoned' || r.status === 'error';
+            if (!activePapers[r.id]) {
+                activePapers[r.id] = {
+                    title: r.title || r.id,
+                    step: isDone ? (r.status === 'error' ? 'error' : 'done') : (r.status || 'processing'),
+                    startTime: Date.now(),
+                    done: isDone,
+                    doneAt: isDone ? Date.now() : null
+                };
+            } else if (isDone && !activePapers[r.id].done) {
+                activePapers[r.id].done = true;
+                activePapers[r.id].doneAt = Date.now();
+                activePapers[r.id].step = r.status === 'error' ? 'error' : 'done';
+            } else if (!isDone) {
+                activePapers[r.id].step = r.status || 'processing';
+            }
+        }
+        // Remove papers no longer in the API response and already done for > 10s
+        const activeIds = new Set(rows.map(r => r.id));
+        const now = Date.now();
+        for (const [pid, info] of Object.entries(activePapers)) {
+            if (!activeIds.has(pid) && info.done && now - info.doneAt > 10000) {
+                delete activePapers[pid];
+            } else if (!activeIds.has(pid) && !info.done) {
+                activePapers[pid].done = true;
+                activePapers[pid].doneAt = Date.now();
+                activePapers[pid].step = 'done';
+            }
+        }
+        renderProcessingList();
+        updateLiveBadge();
+    } catch (e) { /* ignore */ }
 }
 
 function renderProcessingList() {
     const listEl = el('processingList');
     const countEl = el('processingCount');
     const entries = Object.entries(activePapers);
-    countEl.textContent = entries.length;
+    const activeCount = entries.filter(([, info]) => !info.done).length;
+    countEl.textContent = activeCount || entries.length;
 
     if (entries.length === 0) {
         listEl.innerHTML = '<p class="empty-msg">Idle</p>';
@@ -218,10 +281,14 @@ function renderProcessingList() {
 
     listEl.innerHTML = entries.map(([pid, info]) => {
         const elapsed = Math.round((Date.now() - info.startTime) / 1000);
-        return `<div class="proc-item">
+        const doneClass = info.done ? ' proc-done' : '';
+        const stepLabel = info.done
+            ? (info.step === 'error' ? 'error' : `done (${elapsed}s)`)
+            : `${info.step} (${elapsed}s)`;
+        return `<div class="proc-item${doneClass}">
             <span class="proc-id">${esc(pid)}</span>
             <span class="proc-title">${esc(trunc(info.title, 50))}</span>
-            <span class="proc-step">${esc(info.step)} (${elapsed}s)</span>
+            <span class="proc-step">${esc(stepLabel)}</span>
         </div>`;
     }).join('');
 }
@@ -1201,6 +1268,264 @@ function renderOpportunities() {
     }).join('');
 }
 
+// ── Discoveries Tab (Tier 1 + Tier 2 Deep Insights) ──────────────────
+
+async function loadDiscoveriesTab() {
+    const tierFilter = el('discoveryTierFilter')?.value || '';
+    try {
+        let url = '/api/deep_insights?limit=50';
+        if (tierFilter) url += `&tier=${tierFilter}`;
+        const insights = await api(url);
+        renderDiscoveries(insights);
+    } catch (e) {
+        const list = el('discoveriesList');
+        if (list) list.innerHTML = '<p class="empty-msg">No deep discoveries yet. Click Generate to run the discovery pipeline.</p>';
+    }
+}
+
+function renderDiscoveries(discoveries) {
+    const list = el('discoveriesList');
+    if (!discoveries || discoveries.length === 0) {
+        list.innerHTML = '<p class="empty-msg">No deep discoveries yet. Click Generate to run the discovery pipeline.</p>';
+        return;
+    }
+
+    list.innerHTML = discoveries.map(d => {
+        const isTier1 = d.tier === 1;
+        const tierColor = isTier1 ? '#c4453a' : '#2e86ab';
+        const tierLabel = isTier1 ? 'PARADIGM' : 'PAPER IDEA';
+
+        const noveltyBadge = d.novelty_status === 'novel'
+            ? '<span class="paradigm-badge high">NOVEL</span>'
+            : d.novelty_status === 'partially_exists'
+            ? '<span class="paradigm-badge mid">PARTIAL</span>'
+            : d.novelty_status === 'exists'
+            ? '<span class="paradigm-badge low">EXISTS</span>'
+            : '<span class="paradigm-badge low">UNCHECKED</span>';
+
+        const scoreBadge = d.adversarial_score
+            ? `<span class="insight-scores">Adversarial: ${d.adversarial_score}/10</span>`
+            : '';
+
+        let bodyHtml = '';
+
+        if (isTier1) {
+            bodyHtml += d.formal_structure
+                ? `<div class="insight-hypothesis"><span class="insight-label">Formal Structure:</span> ${esc(d.formal_structure)}</div>` : '';
+            bodyHtml += d.transformation
+                ? `<div class="insight-experiment"><span class="insight-label">Transformation:</span> ${esc(d.transformation)}</div>` : '';
+
+            let fieldA = {}, fieldB = {};
+            try { fieldA = JSON.parse(d.field_a || '{}'); } catch(e) {}
+            try { fieldB = JSON.parse(d.field_b || '{}'); } catch(e) {}
+            if (fieldA.node_id || fieldB.node_id) {
+                bodyHtml += `<div class="insight-evidence">
+                    <span class="insight-label">Fields:</span>
+                    ${fieldA.node_id ? `<span class="chip" onclick="window._dg.exploreNode('${esc(fieldA.node_id)}')">${esc(fieldA.node_id)}</span>` : ''}
+                    <span style="margin:0 4px;">↔</span>
+                    ${fieldB.node_id ? `<span class="chip" onclick="window._dg.exploreNode('${esc(fieldB.node_id)}')">${esc(fieldB.node_id)}</span>` : ''}
+                </div>`;
+            }
+
+            let predictions = [];
+            try { predictions = JSON.parse(d.predictions || '[]'); } catch(e) {}
+            if (predictions.length) {
+                bodyHtml += '<div class="insight-experiment"><span class="insight-label">Predictions:</span><ul style="margin:4px 0;padding-left:20px;">';
+                for (const p of predictions.slice(0, 3)) {
+                    const stmt = typeof p === 'string' ? p : (p.statement || '');
+                    bodyHtml += `<li>${esc(stmt)}</li>`;
+                }
+                bodyHtml += '</ul></div>';
+            }
+
+            if (d.adversarial_critique) {
+                let critique = {};
+                try { critique = JSON.parse(d.adversarial_critique); } catch(e) {}
+                if (critique.strongest_attack) {
+                    bodyHtml += `<div class="insight-impact"><span class="insight-label">Strongest Challenge:</span> ${esc(critique.strongest_attack)}</div>`;
+                }
+            }
+        } else {
+            bodyHtml += d.problem_statement
+                ? `<div class="insight-hypothesis"><span class="insight-label">Problem:</span> ${esc(d.problem_statement)}</div>` : '';
+            bodyHtml += d.existing_weakness
+                ? `<div class="insight-evidence"><span class="insight-label">Weakness:</span> ${esc(d.existing_weakness)}</div>` : '';
+
+            let method = {};
+            try { method = JSON.parse(d.proposed_method || '{}'); } catch(e) {}
+            if (method.name) {
+                bodyHtml += `<div class="insight-experiment">
+                    <span class="insight-label">Method: ${esc(method.name)}</span> (${esc(method.type || '?')})
+                    <div style="margin-top:4px;">${esc(method.one_line || '')}</div>
+                    ${method.definition ? `<pre style="font-size:0.72rem;margin:6px 0;white-space:pre-wrap;color:var(--text-secondary);">${esc(trunc(method.definition, 300))}</pre>` : ''}
+                </div>`;
+            }
+
+            let plan = {};
+            try { plan = JSON.parse(d.experimental_plan || '{}'); } catch(e) {}
+            if (plan.baselines && plan.baselines.length) {
+                bodyHtml += '<div class="insight-impact"><span class="insight-label">Baselines:</span> ';
+                bodyHtml += plan.baselines.map(b => esc(b.name || b)).join(', ');
+                bodyHtml += '</div>';
+            }
+            if (plan.datasets && plan.datasets.length) {
+                bodyHtml += '<div class="insight-impact"><span class="insight-label">Datasets:</span> ';
+                bodyHtml += plan.datasets.map(ds => esc(ds.name || ds)).join(', ');
+                bodyHtml += '</div>';
+            }
+            if (plan.compute_budget) {
+                bodyHtml += `<div class="insight-impact"><span class="insight-label">Compute:</span> ${esc(plan.compute_budget.total_gpu_hours || '?')} GPU-hours</div>`;
+            }
+        }
+
+        return `<div class="insight-card" style="border-left: 3px solid ${tierColor};">
+            <div class="insight-header">
+                <span class="insight-type" style="color:${tierColor};font-weight:700;">TIER ${d.tier}: ${tierLabel}</span>
+                ${noveltyBadge}
+                ${scoreBadge}
+                <span style="color:var(--text-dim);font-size:0.68rem;">${esc(d.status || '')}</span>
+            </div>
+            <div class="insight-title">${esc(d.title)}</div>
+            ${bodyHtml}
+            ${d.evidence_summary ? `<div class="insight-evidence"><span class="insight-label">Evidence:</span> ${esc(trunc(d.evidence_summary, 250))}</div>` : ''}
+            <div class="insight-actions">
+                ${d.novelty_status === 'unchecked' ? `<button class="btn-preview" onclick="window._dg.verifyDiscovery(${d.id})">Verify Novelty</button>` : ''}
+                <button class="btn-research" onclick="window._dg.runFullExperiment(${d.id})">SciForge Run</button>
+                <button class="btn-preview" onclick="window._dg.forgeExperiment(${d.id})">Forge Only</button>
+                <button class="btn-preview" onclick="window._dg.launchDeepResearch(${d.id})">Deep Research</button>
+            </div>
+        </div>`;
+    }).join('');
+}
+
+async function generateDiscoveries(tier) {
+    try {
+        const body = tier ? {tier: String(tier)} : {};
+        await api('/api/deep_insights/generate', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(body),
+        });
+        el('discoveriesList').innerHTML = '<p class="empty-msg">Discovery pipeline started... This may take 5-15 minutes. Refresh to see results.</p>';
+    } catch (e) {
+        alert('Failed to start discovery: ' + e.message);
+    }
+}
+
+// ── Experiments Tab (SciForge) ────────────────────────────────────────
+
+async function loadExperimentsTab() {
+    const statusFilter = el('experimentStatusFilter')?.value || '';
+    try {
+        let url = '/api/experiments?limit=50';
+        if (statusFilter) url += `&status=${statusFilter}`;
+        const runs = await api(url);
+        renderExperiments(runs);
+
+        const meta = await api('/api/meta_report');
+        renderMetaReport(meta);
+    } catch (e) {
+        const list = el('experimentsList');
+        if (list) list.innerHTML = '<p class="empty-msg">No experiments yet.</p>';
+    }
+}
+
+function renderExperiments(runs) {
+    const list = el('experimentsList');
+    if (!runs || !runs.length) {
+        list.innerHTML = '<p class="empty-msg">No experiments yet. Forge an experiment from a deep discovery to start.</p>';
+        return;
+    }
+
+    list.innerHTML = runs.map(r => {
+        const statusColors = {
+            pending: '#9a9088', scaffolding: '#a8842a', reproducing: '#2e86ab',
+            testing: '#c4704b', completed: '#3d8b5e', failed: '#c4453a'
+        };
+        const verdictColors = {
+            confirmed: '#3d8b5e', refuted: '#c4453a', inconclusive: '#a8842a'
+        };
+        const color = statusColors[r.status] || '#888';
+        const vColor = verdictColors[r.hypothesis_verdict] || '#888';
+
+        const effect = r.effect_pct != null ? `${r.effect_pct >= 0 ? '+' : ''}${r.effect_pct.toFixed(2)}%` : '';
+        const verdict = r.hypothesis_verdict
+            ? `<span style="color:${vColor};font-weight:700;text-transform:uppercase;">${r.hypothesis_verdict}</span>`
+            : '';
+
+        return `<div class="insight-card" style="border-left: 3px solid ${color};">
+            <div class="insight-header">
+                <span class="insight-type" style="color:${color};font-weight:700;">RUN #${r.id} [${esc(r.status)}]</span>
+                ${verdict}
+                ${effect ? `<span class="insight-scores">Effect: ${effect}</span>` : ''}
+                <span style="color:var(--text-dim);font-size:0.68rem;">Tier ${r.insight_tier || '?'}</span>
+            </div>
+            <div class="insight-title">${esc(r.insight_title || 'Experiment')}</div>
+            <div style="display:flex;gap:16px;margin:6px 0;font-size:0.75rem;color:var(--text-secondary);">
+                <span>Iterations: ${r.iterations_total || 0} (${r.iterations_kept || 0} kept)</span>
+                <span>Baseline: ${r.baseline_metric_value != null ? r.baseline_metric_value.toFixed(4) : '?'}</span>
+                <span>Best: ${r.best_metric_value != null ? r.best_metric_value.toFixed(4) : '?'}</span>
+            </div>
+            ${r.codebase_url && r.codebase_url !== 'scratch' ? `<div style="font-size:0.7rem;color:var(--text-dim);">Repo: ${esc(r.codebase_url)}</div>` : ''}
+            <div class="insight-actions">
+                ${r.status === 'scaffolding' ? `<button class="btn-research" onclick="window._dg.runExperiment(${r.id})">Start Loop</button>` : ''}
+                <button class="btn-preview" onclick="window._dg.viewExperiment(${r.id})">View Details</button>
+            </div>
+        </div>`;
+    }).join('');
+}
+
+function renderMetaReport(meta) {
+    const card = el('metaReportCard');
+    const body = el('metaReportBody');
+    if (!meta || meta.status === 'insufficient_data' || meta.total_experiments < 1) {
+        card.style.display = 'none';
+        return;
+    }
+    card.style.display = '';
+
+    const tr = meta.track_record || {};
+    let html = `<div style="display:flex;gap:20px;flex-wrap:wrap;margin-bottom:12px;">
+        <div class="stat-card" style="min-width:100px;">
+            <div class="stat-number">${meta.total_experiments}</div>
+            <div class="stat-label">Experiments</div>
+        </div>
+        <div class="stat-card" style="min-width:100px;">
+            <div class="stat-number" style="color:#3d8b5e;">${tr.total_confirmed || 0}</div>
+            <div class="stat-label">Confirmed</div>
+        </div>
+        <div class="stat-card" style="min-width:100px;">
+            <div class="stat-number" style="color:#c4453a;">${tr.total_refuted || 0}</div>
+            <div class="stat-label">Refuted</div>
+        </div>
+        <div class="stat-card" style="min-width:100px;">
+            <div class="stat-number">${((tr.overall_hit_rate || 0) * 100).toFixed(1)}%</div>
+            <div class="stat-label">Hit Rate</div>
+        </div>
+    </div>`;
+
+    if (tr.signal_types && tr.signal_types.length) {
+        html += '<h4 style="margin:12px 0 6px;">Signal Type Performance</h4>';
+        html += '<table class="matrix-table" style="font-size:0.75rem;"><thead><tr><th>Signal</th><th>Total</th><th>Confirmed</th><th>Refuted</th><th>Hit Rate</th></tr></thead><tbody>';
+        for (const s of tr.signal_types) {
+            html += `<tr><td>${esc(s.signal_type)}</td><td>${s.hypothesis_count}</td><td style="color:#3d8b5e;">${s.confirmed_count}</td><td style="color:#c4453a;">${s.refuted_count}</td><td><b>${((s.hit_rate || 0) * 100).toFixed(1)}%</b></td></tr>`;
+        }
+        html += '</tbody></table>';
+    }
+
+    const weights = meta.signal_weights || {};
+    if (Object.keys(weights).length) {
+        html += '<h4 style="margin:12px 0 6px;">Learned Signal Weights</h4><div class="chip-row">';
+        for (const [k, v] of Object.entries(weights)) {
+            const color = v > 1.5 ? '#3d8b5e' : v < 0.5 ? '#c4453a' : '#a8842a';
+            html += `<span class="chip" style="border-color:${color};color:${color};">${esc(k)}: ${v}x</span>`;
+        }
+        html += '</div>';
+    }
+
+    body.innerHTML = html;
+}
+
 // ── Providers Tab ────────────────────────────────────────────────────
 
 async function loadProviders() {
@@ -1456,9 +1781,153 @@ window._dg = {
         }
     },
 
+    async forgeExperiment(insightId) {
+        if (!confirm('Forge an experiment from this discovery? This will find a codebase, generate scaffold, and prepare for the validation loop.')) return;
+        try {
+            await api('/api/experiments/forge', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({insight_id: insightId}),
+            });
+            alert('Experiment forge started! Switch to the Experiments tab to monitor.');
+            setTimeout(() => { switchTab('experiments'); loadExperimentsTab(); }, 2000);
+        } catch (e) {
+            alert('Failed: ' + e.message);
+        }
+    },
+
+    async runFullExperiment(insightId) {
+        if (!confirm('Run FULL SciForge pipeline? This will:\n1. Find/clone codebase\n2. Generate scaffold\n3. Run validation loop (may take hours)\n4. Update knowledge graph\n\nContinue?')) return;
+        try {
+            await api('/api/experiments/run_full', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({insight_id: insightId}),
+            });
+            alert('Full SciForge pipeline started! Monitor in the Experiments tab.');
+            setTimeout(() => { switchTab('experiments'); loadExperimentsTab(); }, 2000);
+        } catch (e) {
+            alert('Failed: ' + e.message);
+        }
+    },
+
+    async runExperiment(runId) {
+        if (!confirm('Start the validation loop for this experiment?')) return;
+        try {
+            await api(`/api/experiments/${runId}/run`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: '{}',
+            });
+            alert('Validation loop started!');
+            setTimeout(loadExperimentsTab, 3000);
+        } catch (e) {
+            alert('Failed: ' + e.message);
+        }
+    },
+
+    async viewExperiment(runId) {
+        try {
+            const data = await api(`/api/experiments/${runId}`);
+            const run = data.run;
+            const iters = data.iterations || [];
+            const claims = data.claims || [];
+
+            let html = `<div class="proposal-content" style="max-height:80vh;">
+                <div class="proposal-header">
+                    <h3>Experiment #${run.id}: ${esc(run.insight_title || '')}</h3>
+                    <span class="proposal-stats">Status: ${esc(run.status)} | Verdict: ${esc(run.hypothesis_verdict || 'pending')}</span>
+                    <button class="btn-close" onclick="this.closest('.proposal-modal').remove()">×</button>
+                </div>
+                <div class="proposal-body">
+                <h4>Metrics</h4>
+                <p>Baseline: ${run.baseline_metric_value || '?'} | Best: ${run.best_metric_value || '?'} | Effect: ${run.effect_pct != null ? run.effect_pct.toFixed(2) + '%' : '?'}</p>
+                <p>Iterations: ${run.iterations_total || 0} total, ${run.iterations_kept || 0} kept</p>
+                ${run.codebase_url ? `<p>Codebase: <a href="${esc(run.codebase_url)}" target="_blank">${esc(run.codebase_url)}</a></p>` : ''}
+                ${run.error_message ? `<p style="color:#c4453a;">Error: ${esc(run.error_message)}</p>` : ''}`;
+
+            if (iters.length) {
+                html += '<h4>Iteration History</h4><table class="matrix-table" style="font-size:0.72rem;"><thead><tr><th>#</th><th>Phase</th><th>Metric</th><th>Status</th><th>Description</th></tr></thead><tbody>';
+                for (const it of iters.slice(-30)) {
+                    const sColor = it.status === 'keep' ? '#3d8b5e' : it.status === 'crash' ? '#c4453a' : '#9a9088';
+                    html += `<tr><td>${it.iteration_number}</td><td>${esc(it.phase)}</td><td>${it.metric_value != null ? it.metric_value.toFixed(6) : '-'}</td><td style="color:${sColor};">${esc(it.status)}</td><td>${esc(trunc(it.description || '', 60))}</td></tr>`;
+                }
+                html += '</tbody></table>';
+            }
+
+            if (claims.length) {
+                html += '<h4>Experimental Claims</h4>';
+                for (const cl of claims) {
+                    const vColor = cl.verdict === 'confirmed' ? '#3d8b5e' : cl.verdict === 'refuted' ? '#c4453a' : '#a8842a';
+                    html += `<div style="padding:8px;margin:4px 0;border-left:3px solid ${vColor};background:var(--bg-elevated);">
+                        <strong style="color:${vColor};">${esc(cl.verdict.toUpperCase())}</strong> (p=${cl.p_value != null ? cl.p_value.toFixed(4) : '?'})
+                        <p style="margin:4px 0;font-size:0.78rem;">${esc(cl.claim_text)}</p>
+                    </div>`;
+                }
+            }
+
+            html += '</div></div>';
+
+            const modal = document.createElement('div');
+            modal.className = 'proposal-modal';
+            modal.innerHTML = `<div class="proposal-overlay" onclick="this.parentElement.remove()"></div>${html}`;
+            document.body.appendChild(modal);
+        } catch (e) {
+            alert('Failed to load: ' + e.message);
+        }
+    },
+
+    async verifyDiscovery(insightId) {
+        if (!confirm('Launch novelty verification for this discovery? EvoScientist will search the literature (5-15 min).')) return;
+        try {
+            const res = await api(`/api/deep_insights/${insightId}/verify`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: '{}',
+            });
+            alert(`Verification launched!\nWorkdir: ${res.workdir}\nPID: ${res.pid}`);
+            setTimeout(loadDiscoveriesTab, 3000);
+        } catch (e) {
+            alert('Failed to launch verification: ' + e.message);
+        }
+    },
+
+    async launchDeepResearch(insightId) {
+        if (!confirm('Launch full EvoScientist research for this deep insight? This will start a longer background session.')) return;
+        try {
+            const res = await api(`/api/deep_insights/${insightId}/research`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: '{}',
+            });
+            alert(`Research launched!\nWorkdir: ${res.workdir}\nPID: ${res.pid}`);
+        } catch (e) {
+            alert('Failed to launch: ' + e.message);
+        }
+    },
+
     async previewProposal(insightId) {
         try {
             const res = await api(`/api/research/proposal/${insightId}`);
+            // Render markdown
+            function renderMd(text) {
+                if (typeof marked !== 'undefined' && marked.parse) return marked.parse(text);
+                // Fallback: basic markdown rendering
+                return text
+                    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+                    .replace(/^### (.+)$/gm, '<h3>$1</h3>')
+                    .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+                    .replace(/^# (.+)$/gm, '<h1>$1</h1>')
+                    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+                    .replace(/\*(.+?)\*/g, '<em>$1</em>')
+                    .replace(/^- (.+)$/gm, '<li>$1</li>')
+                    .replace(/(<li>.*<\/li>\n?)+/g, '<ul>$&</ul>')
+                    .replace(/^---$/gm, '<hr>')
+                    .replace(/\n{2,}/g, '</p><p>')
+                    .replace(/\n/g, '<br>')
+                    .replace(/^/, '<p>').replace(/$/, '</p>');
+            }
+            const bodyHtml = renderMd(res.proposal);
             // Show in a modal
             const modal = document.createElement('div');
             modal.className = 'proposal-modal';
@@ -1469,7 +1938,7 @@ window._dg = {
                         <span class="proposal-stats">${res.paper_count} papers · ${res.claim_count} claims · ${res.contradiction_count} contradictions</span>
                         <button class="btn-close" onclick="this.closest('.proposal-modal').remove()">\u00D7</button>
                     </div>
-                    <pre class="proposal-body">${esc(res.proposal)}</pre>
+                    <div class="proposal-body">${bodyHtml}</div>
                     <div class="proposal-footer">
                         <button class="btn-research" onclick="window._dg.launchResearch(${insightId}); this.closest('.proposal-modal').remove();">Launch Research</button>
                     </div>
@@ -1497,6 +1966,16 @@ function init() {
         switchTab('explore');
         if (!exploreData) navigateTo(ROOT_NODE);
     });
+
+    // Discovery filters + generate button
+    const dtf = el('discoveryTierFilter');
+    if (dtf) dtf.addEventListener('change', loadDiscoveriesTab);
+    const btnGen = el('btnGenerateDiscoveries');
+    if (btnGen) btnGen.addEventListener('click', () => generateDiscoveries());
+
+    // Experiment filters
+    const esf = el('experimentStatusFilter');
+    if (esf) esf.addEventListener('change', loadExperimentsTab);
 
     // Insight filters
     const itf = el('insightTypeFilter');
@@ -1529,13 +2008,14 @@ function init() {
     refreshStats();
     loadRecentlyDiscovered();
     loadOverviewGraph();
+    loadProcessingPapers();
     startSSE();
 
     // Stats refresh every 15s
     statsTimer = setInterval(refreshStats, 15000);
 
-    // Processing panel refresh every 3s
-    setInterval(renderProcessingList, 3000);
+    // Processing panel refresh every 3s (also fetches from API)
+    setInterval(loadProcessingPapers, 3000);
 
     // Periodically refresh recently discovered (every 30s)
     setInterval(loadRecentlyDiscovered, 30000);

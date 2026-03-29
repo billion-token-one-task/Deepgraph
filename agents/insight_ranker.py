@@ -91,7 +91,7 @@ def rank_insights_batch(insight_ids: list[int] = None) -> dict:
     """)
     db.commit()
 
-    return {"ranked": ranked, "tokens": sum(1 for _ in all_rankings)}
+    return {"ranked": ranked, "tokens": len(all_rankings)}
 
 
 if __name__ == "__main__":
