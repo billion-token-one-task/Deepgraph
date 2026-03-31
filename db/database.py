@@ -269,6 +269,7 @@ def get_stats() -> dict:
         stats["graph_relations_total"] = fetchone("SELECT COUNT(*) as c FROM graph_relations")["c"]
         stats["node_graph_summaries_total"] = fetchone("SELECT COUNT(*) as c FROM node_graph_summaries")["c"]
         stats["node_opportunities_total"] = fetchone("SELECT COUNT(*) as c FROM node_opportunities")["c"]
+        stats["opportunity_triage_total"] = fetchone("SELECT COUNT(*) as c FROM opportunity_triage")["c"]
         stats["entity_resolutions_total"] = fetchone("SELECT COUNT(*) as c FROM entity_resolutions")["c"]
         stats["merge_candidates_pending_total"] = fetchone("SELECT COUNT(*) as c FROM entity_merge_candidates WHERE status='pending'")["c"]
         stats["insights_total"] = fetchone("SELECT COUNT(*) as c FROM insights")["c"]
@@ -292,6 +293,7 @@ def get_stats() -> dict:
         stats["node_opportunities_total"] = 0
         stats["entity_resolutions_total"] = 0
         stats["merge_candidates_pending_total"] = 0
+        stats["opportunity_triage_total"] = 0
         stats["insights_total"] = 0
         stats["deep_insights_total"] = 0
         stats["deep_insights_tier1"] = 0

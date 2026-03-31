@@ -494,6 +494,15 @@ def run_continuous(max_papers: int = 0):
     for node_id in sorted(summary_nodes):
         log_event("step", {"step": "opportunity_scoring", "node_id": node_id})
         opportunities = opp.ensure_node_opportunities(node_id, force=True)
+        triage = opp.rebuild_opportunity_triage(node_id, force=True)
+        if triage:
+            top_triage = triage[0]
+            log_event("opportunity_triage", {
+                "node_id": node_id,
+                "title": top_triage["title"],
+                "priority_score": top_triage.get("priority_score", 0),
+                "priority_band": top_triage.get("priority_band"),
+            })
         if opportunities:
             top = opportunities[0]
             log_event("opportunity", {

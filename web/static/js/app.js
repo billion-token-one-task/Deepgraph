@@ -23,9 +23,10 @@ let taxonomyFlat    = [];        // flat list for Evidence dropdown
 let searchTimer     = null;
 let statsTimer      = null;
 let providerTimer   = null;
+let providersLoaded = false;
 let papersLoaded    = false;
 let oppsLoaded      = false;
-let providersLoaded = false;
+let triageLoaded    = false;
 let sidebarCollapsed = false;
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -111,6 +112,9 @@ function onTabActivated(tab) {
         case 'insights':
             loadInsightsTab();
             break;
+        case 'triage':
+            loadTriageTab();
+            break;
         case 'feed':
             scrollFeedToBottom();
             break;
@@ -148,6 +152,8 @@ async function refreshStats() {
         el('statContradictions').textContent = fmt(s.contradictions_total || 0);
         el('statInsights').textContent      = fmt(s.insights_total || 0);
         el('statTokens').textContent        = fmt(s.tokens_consumed || 0);
+        const triageBadge = el('triageCount');
+        if (triageBadge) triageBadge.textContent = fmt(s.opportunity_triage_total || 0);
     } catch (e) {
         console.error('Stats error:', e);
     }
@@ -467,7 +473,7 @@ async function navigateTo(nodeId) {
         renderBreadcrumb(data.breadcrumb || []);
 
         // Title
-        el('exploreTitle').textContent = data.node.name + ' \u2014 Opportunity Map';
+        el('exploreTitle').textContent = data.node.name + ' \u2014 Triage Map';
 
         // Graph
         renderRadialGraph('exploreGraphSvg', data.node, data.children, 520, false);
@@ -1102,7 +1108,51 @@ async function togglePaper(rowEl) {
     }
 }
 
-// ── Opportunities Tab ────────────────────────────────────────────────
+async function loadTriageTab() {
+    const bandFilter = el('triageBandFilter')?.value || '';
+    try {
+        let url = `/api/opportunity_triage?limit=200`;
+        if (bandFilter) url += `&band=${encodeURIComponent(bandFilter)}`;
+        const triage = await api(url);
+        const list = el('triageList');
+        if (!list) return;
+
+        if (!triage.length) {
+            list.innerHTML = '<p class="empty-msg">No triage queue yet. Run the pipeline to score opportunities.</p>';
+            triageLoaded = true;
+            return;
+        }
+
+        list.innerHTML = triage.map(item => {
+            const bandColor = item.priority_band === 'high' ? '#44dd88' : item.priority_band === 'medium' ? '#ffaa33' : '#6a7a8a';
+            const nodeId = esc(item.node_id || '');
+            const paperLinks = (item.evidence_paper_ids || []).map(pid => `<a class="paper-cite" href="https://arxiv.org/abs/${esc(pid)}" target="_blank">${esc(pid)}</a>`).join(' ');
+            const metrics = [
+                `S:${Number(item.scientific_value || 0).toFixed(1)}`,
+                `N:${Number(item.innovation || 0).toFixed(1)}`,
+                `V:${Number(item.verifiability || 0).toFixed(1)}`,
+                `C:${Number(item.cost || 0).toFixed(1)}`,
+                `P:${Number(item.success_probability || 0).toFixed(1)}`,
+            ].join(' ');
+            return `<div class="insight-card" style="border-left: 3px solid ${bandColor};">
+                <div class="insight-header">
+                    <span class="insight-type" style="color:${bandColor};">${esc((item.priority_band || 'watchlist').replace(/_/g, ' '))}</span>
+                    <span class="insight-scores">${metrics}</span>
+                    <span class="insight-area" onclick="window._dg.exploreNode('${nodeId}')" style="cursor:pointer;color:#6a7a8a;font-size:0.68rem;">${esc(item.node_id)}</span>
+                </div>
+                <div class="insight-title">${esc(item.title || '')}</div>
+                ${paperLinks ? `<div class="insight-papers">${paperLinks}</div>` : ''}
+                <div class="insight-rationale">${esc(item.rationale || '')}</div>
+                <div class="insight-actions">
+                    <button class="btn-preview" onclick="window._dg.exploreNode('${nodeId}')">Open node</button>
+                </div>
+            </div>`;
+        }).join('');
+        triageLoaded = true;
+    } catch (e) {
+        console.error('Triage tab error:', e);
+    }
+}
 
 async function loadInsightsTab() {
     const typeFilter = el('insightTypeFilter')?.value || '';
@@ -1182,7 +1232,7 @@ async function loadOpportunities() {
         );
         renderOpportunities();
     } catch (e) {
-        console.error('Opportunities load error:', e);
+        console.error('Triage load error:', e);
     }
 }
 
@@ -1222,7 +1272,7 @@ function renderOpportunities() {
     }
 
     if (filtered.length === 0) {
-        list.innerHTML = '<p class="empty-msg">No research insights yet. Run the pipeline to discover genuine research opportunities.</p>';
+        list.innerHTML = '<p class="empty-msg">No triage items yet. Run the pipeline to score opportunities.</p>';
         return;
     }
 
@@ -1763,6 +1813,7 @@ window._dg = {
         switchTab('explore');
         navigateTo(nodeId);
     },
+    switchTab,
     togglePaper,
     updateMatrixMetric,
     searchNav,
@@ -1980,8 +2031,10 @@ function init() {
     // Insight filters
     const itf = el('insightTypeFilter');
     const isf = el('insightSortFilter');
+    const tbf = el('triageBandFilter');
     if (itf) itf.addEventListener('change', loadInsightsTab);
     if (isf) isf.addEventListener('change', loadInsightsTab);
+    if (tbf) tbf.addEventListener('change', loadTriageTab);
 
     // Pipeline controls
     el('btnStart20').addEventListener('click', () => startPipeline(20));

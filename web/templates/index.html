@@ -83,6 +83,10 @@
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M10 2a5 5 0 014.5 7.1L14 12H6l-.5-2.9A5 5 0 0110 2z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M7 14h6M8 16h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
                     <span>Insights</span>
                 </button>
+                <button class="nav-item" data-tab="triage">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M4 6h12M6 10h8M8 14h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="4" cy="6" r="1" fill="currentColor"/><circle cx="6" cy="10" r="1" fill="currentColor"/><circle cx="8" cy="14" r="1" fill="currentColor"/></svg>
+                    <span>Triage</span>
+                </button>
                 <button class="nav-item" data-tab="feed">
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M3 4h14M3 8h10M3 12h12M3 16h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
                     <span>Feed</span>
@@ -181,7 +185,7 @@
                             <h3>Recently Discovered</h3>
                         </div>
                         <div class="recently-grid" id="recentlyGrid">
-                            <p class="empty-msg">Run the pipeline to discover gaps, contradictions, and opportunities.</p>
+                            <p class="empty-msg">Run the pipeline to discover gaps, contradictions, and triage items.</p>
                         </div>
                     </div>
 
@@ -352,6 +356,27 @@
                             </div>
                         </div>
                         <div class="insights-list" id="insightsList"></div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ── Triage Tab ───────────────────────────────────── -->
+            <section class="tab-panel" id="tab-triage">
+                <div class="tab-scroll">
+                    <div class="card">
+                        <div class="card-header">
+                            <h3>Triage Queue</h3>
+                            <span class="badge badge-dim" id="triageCount">0</span>
+                        </div>
+                        <div class="opp-controls">
+                            <select id="triageBandFilter" class="select-input-sm">
+                                <option value="">All bands</option>
+                                <option value="high">High</option>
+                                <option value="medium">Medium</option>
+                                <option value="watchlist">Watchlist</option>
+                            </select>
+                        </div>
+                        <div class="insights-list" id="triageList"></div>
                     </div>
                 </div>
             </section>
