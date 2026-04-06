@@ -1,0 +1,5 @@
+{
+    "powerquery.client.additionalSymbolsDirectories": [
+        "/Users/heke/Deepgraph/.vscode/excel-pq-symbols"
+    ]
+}
