@@ -381,6 +381,12 @@ def _candidate_block_keys(entity: dict) -> set[str]:
 
 def list_merge_candidates(status: str = "pending", limit: int = 100, entity_type: str | None = None) -> list[dict]:
     """List merge candidates with display metadata."""
+    table_exists = db.fetchone(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='entity_merge_candidates'"
+    )
+    if not table_exists:
+        return []
+
     sql = """
         SELECT emc.*, 
                p.canonical_name AS primary_name, p.entity_type AS primary_type,
@@ -453,6 +459,12 @@ def _collect_entity_context(entity_id: str, limit: int = 5) -> dict:
 
 def get_merge_candidate_context(candidate_id: int) -> dict | None:
     """Return a merge candidate plus supporting node/paper/relation context."""
+    table_exists = db.fetchone(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='entity_merge_candidates'"
+    )
+    if not table_exists:
+        return None
+
     row = db.fetchone(
         """SELECT emc.*, 
                   p.canonical_name AS primary_name, p.entity_type AS primary_type, p.aliases AS primary_aliases,
