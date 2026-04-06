@@ -1,6 +1,4 @@
 """Generate plain-language domain summaries and research opportunities."""
-from agents.llm_client import call_llm_json
-
 
 SYSTEM_PROMPT = """You explain research landscapes to non-specialists.
 
@@ -44,6 +42,8 @@ Rules:
 
 def generate_domain_summary(node: dict, snapshot: dict) -> tuple[dict, int]:
     """Generate a node summary from structured evidence."""
+    from agents.llm_client import call_llm_json
+
     papers = snapshot.get("papers", [])
     paper_lines = []
     for idx, paper in enumerate(papers[:12], start=1):
