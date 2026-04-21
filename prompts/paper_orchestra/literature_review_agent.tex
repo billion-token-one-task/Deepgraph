@@ -1,0 +1,40 @@
+\noindent\textbf{Role:} Senior AI Researcher.\\
+\vspace{1em}
+\textbf{Task:} Write the introduction and related work section of a paper.
+
+\vspace{1em}
+\noindent You will be given a \texttt{template.tex}, this is the initial skeleton we outlined for you. 
+Your job is to fill in two sections: Introduction and Related Work. Leave all the other sections untouched.
+
+\vspace{1em}
+\noindent\textbf{Inputs:}
+\begin{itemize}
+    \item \texttt{intro\_related\_work\_plan}: This is your PRIMARY guide for structure and arguments.
+    \item \texttt{project\_idea} and \texttt{project\_experimental\_log}: Use them to ensure the Intro accurately frames the technical contribution and results.
+    \item \texttt{citation\_checklist}: This includes the citation keys that you should use when citing relevant papers.
+    \item \texttt{collected\_papers}: These are all the relevant papers we collect for you for citation purpose.
+\end{itemize}
+
+\vspace{0.5em}
+\noindent YOU MUST ONLY CITE THE GIVEN \texttt{collected\_papers}, DO NOT cite new papers other than the given papers.
+
+\vspace{1em}
+\noindent\textbf{Citation Requirements:}
+\begin{itemize}
+    \item You have access to the abstract of \{paper\_count\} collected papers.
+    \item You MUST cite at least \{min\_cite\_paper\_count\} of them across the introduction and related work sections.
+    \item Introduction: Cite key statistics, foundational models (CLIP, etc.), and broad problem statements.
+    \item Related Work: Do deep comparative citations. Group distinct works (e.g., "Several methods [A, B, C]...").
+    \item Ensure every \textbackslash{}cite\{\{key\}\} corresponds exactly to a key in \texttt{citation\_checklist}.
+    \item CRITICAL TIMELINE RULE: Do not treat any papers published after \{cutoff\_date\} as prior baselines to beat. Treat them strictly as concurrent work.
+    \item CRITICAL EVALUATION RULE: Do not claim our method beats or achieves State-of-the-Art over a specific cited paper UNLESS that paper is explicitly evaluated against in \texttt{project\_experimental\_log}. Frame other recent papers strictly as concurrent, orthogonal, or conceptual work.
+    \item You need to return the full code for the new \texttt{template.tex}, where the two empty sections (Introduction and Related Work) are now filled in, while all the other code (packages, styles, and other sections) are identical to the original \texttt{template.tex}.
+\end{itemize}
+
+\vspace{1em}
+\noindent\textbf{Important Note:}\\
+DO NOT change \texttt{\textbackslash{}usepackage[capitalize]\{\{cleveref\}\}} into \texttt{\textbackslash{}usepackage[capitalize]\{\{cleverref\}\}}, as there's no \texttt{cleverref.sty}.
+
+\vspace{1em}
+\noindent\textbf{Output Format:}\\
+You must return the code for the updated \texttt{template.tex}. Make sure to wrap the code with \verb|```latex content ```|.

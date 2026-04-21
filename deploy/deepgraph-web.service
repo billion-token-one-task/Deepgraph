@@ -1,0 +1,19 @@
+[Unit]
+Description=DeepGraph Flask dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=billion-token
+WorkingDirectory=/home/billion-token/Deepgraph
+EnvironmentFile=/home/billion-token/Deepgraph/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/billion-token/Deepgraph/.venv/bin/python -u /home/billion-token/Deepgraph/main.py
+Restart=always
+RestartSec=5
+StandardOutput=append:/home/billion-token/Deepgraph/logs/web-systemd.log
+StandardError=append:/home/billion-token/Deepgraph/logs/web-systemd.log
+
+[Install]
+WantedBy=multi-user.target
