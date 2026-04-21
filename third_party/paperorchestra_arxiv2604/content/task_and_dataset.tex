@@ -1,0 +1,29 @@
+\section{Task and Dataset}
+\subsection{Task Formulation}
+We formulate the end-to-end AI research paper generation task as a function mapping unconstrained pre-writing materials to a complete submission package. Specifically, the framework operates on the following input components:
+
+\begin{itemize}
+    \item \textbf{Idea Summary} ($\mathcal{I}$): A brief overview establishing the proposed methodology, core contributions, and theoretical foundation.
+    \item \textbf{Experimental Log} ($\mathcal{E}$): A compilation of experimental results, covering raw data points, ablation studies, and performance metrics.
+    \item \textbf{LaTeX Template} ($\mathcal{T}$): The template files provided by the target AI conference.
+    \item \textbf{Conference Guidelines} ($\mathcal{G}$): The requirements mandated by the target AI conference.
+    \item \textbf{Figures} ($\mathcal{F}$): An optional set of pre-existing visual assets (e.g., diagrams, plots). If no figures are provided ($\mathcal{F} = \emptyset$), the pipeline autonomously synthesizes all relevant visuals.
+\end{itemize}
+
+The goal is to produce a finalized submission package $P$. We define $P$ as a tuple consisting of the source \mylatex{} file ($P_\textit{tex}$) and the rendered PDF ($P_{\textit{pdf}}$), generated via the framework $W$:
+\begin{equation}
+    P = (P_\textit{tex}, P_{\textit{pdf}}) = W(\mathcal{I}, \mathcal{E}, \mathcal{T}, \mathcal{G}, \mathcal{F})
+\end{equation}
+
+\subsection{Dataset Construction}
+To evaluate our pipeline, we introduce \ourdataset{} (App.~\ref{appendix:data_distribution}), a new dataset comprising 200 accepted papers from CVPR 2025 and ICLR 2025 (100 papers each). These venues ensure high academic standards while testing adaptability to distinct conference formats (double-column CVPR vs. single-column ICLR). To construct the evaluation tuple $(\mathcal{I}, \mathcal{E}, \mathcal{T}, \mathcal{G}, \mathcal{F})$ for each paper, we retrieve the official \mylatex{} templates ($\mathcal{T}$) and guidelines ($\mathcal{G}$) for each venue and execute the following pipeline:
+
+\paragraph{Paper Acquisition and Extraction.}
+We randomly sample papers from the OpenReview portal (ICLR) and the CVF Open Access repository (CVPR) to ensure topic diversity. We process the raw PDFs using MinerU~\citep{wang2024mineruopensourcesolutionprecise} to generate structured, mathematically faithful Markdown, and PDFFigures 2.0~\citep{pdffigures2} to extract visual entities ($\mathcal{F}$) and captions. Incomplete or misparsed samples are discarded to maintain corpus quality.
+
+\paragraph{Synthesizing Raw Materials.}
+Since pre-writing materials (e.g., lab notes) are unavailable, we prompt an LLM to reverse-engineer two core components from the extracted PDF content (App.~\ref{appendix:raw_material_extraction}). To prevent information leakage, both components are fully anonymized (stripping authors and titles) and rendered strictly self-contained by removing all citations, URLs, and explicit figure or table references. We synthesize the following (App.~\ref{appendix:raw_material_data_example}):
+\begin{itemize}
+    \item \textbf{Idea Summary ($\mathcal{I}$):} Distills the core methodology while explicitly excluding experimental results. We generate a \textit{Sparse} variant (summarizing only high-level ideas) and a \textit{Dense} variant (retaining formal definitions and \mylatex{} equations) to simulate different degrees of user drafting effort.
+    \item \textbf{Experimental Log ($\mathcal{E}$):} Extracts a record of experimental setup and empirical findings, including baselines, datasets, metrics, and tabular data. The LLM further de-contextualizes this data by converting visual insights into standalone factual observations, allowing us to test how well the writing system can reconstruct the narrative purely from raw data.
+\end{itemize}

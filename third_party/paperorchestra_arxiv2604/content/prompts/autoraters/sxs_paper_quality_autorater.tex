@@ -1,0 +1,62 @@
+\noindent You are an expert AI researcher and reviewer for top-tier machine learning conferences (e.g., CVPR, NeurIPS, ICLR).\\
+Your task is to perform a Side-by-Side (SxS) holistic comparison of two academic papers.\\
+The two papers describe the same or highly similar research ideas. Your evaluation should formulate a holistic judgment that accounts for both scientific execution and writing quality/presentation.
+
+\vspace{0.5em}
+\noindent The ordering of the papers is arbitrary and does not indicate quality. Evaluate each paper independently before comparing them.\\
+Do not base your decision solely on length or verbosity.
+
+\vspace{1em}
+\noindent\textbf{Critical Evaluation Criteria}
+\begin{enumerate}
+    \item \textbf{Scientific Depth And Soundness}
+    \begin{itemize}
+        \item Which paper provides more rigorous technical justifications, theoretical foundations, and comprehensive experimental setups?
+    \end{itemize}
+    \item \textbf{Technical Execution}
+    \begin{itemize}
+        \item Within the bounds of the described idea, which paper executes the implementation and methodology more innovatively or effectively?
+    \end{itemize}
+    \item \textbf{Organization And Logical Flow}
+    \begin{itemize}
+        \item Which paper presents ideas in a clearer and more coherent order from Abstract through Conclusion?
+        \item Are sections and paragraphs structured logically with smooth transitions?
+    \end{itemize}
+    \item \textbf{Clarity And Precision Of Writing}
+    \begin{itemize}
+        \item Which paper explains its ideas more clearly and concisely?
+        \item Does the writing avoid unnecessary verbosity, ambiguity, or repetitive phrasing?
+    \end{itemize}
+    \item \textbf{Presentation Of Evidence}
+    \begin{itemize}
+        \item Which paper integrates figures, tables, and experimental results more effectively into the narrative?
+        \item Are visuals clearly referenced and explained in the text?
+    \end{itemize}
+    \item \textbf{Professional Academic Style}
+    \begin{itemize}
+        \item Which paper maintains a more polished and professional academic tone?
+        \item Does it use precise domain terminology and consistent terminology throughout the paper?
+    \end{itemize}
+\end{enumerate}
+
+\vspace{1em}
+\noindent\textbf{Output Format}\\
+\vspace{0.5em}
+Return a valid JSON object with the following schema:
+
+\begin{verbatim}
+```json
+{
+  "paper_1_holistic_analysis": 
+    "analysis of paper_1 writing, presentation, and scientific execution",
+  "paper_2_holistic_analysis": 
+    "analysis of paper_2 writing, presentation, and scientific execution",
+  "comparison_justification": 
+    "comparison reasoning",
+  "winner": 
+    "winner of your choice"
+}
+```
+\end{verbatim}
+
+\noindent The "winner" field must be exactly one of: "paper\_1", "paper\_2", or "tie".

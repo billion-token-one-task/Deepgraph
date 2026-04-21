@@ -1,0 +1,210 @@
+\usepackage{multirow}
+\usepackage[table]{xcolor}
+\usepackage{xcolor}
+\usepackage{pifont}
+\usepackage{tikz}
+\usepackage[most]{tcolorbox}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{xspace}
+\usepackage{graphicx}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{lineno}
+\usepackage{cleveref}
+\usepackage{enumitem}
+\usepackage{markdown}
+\setlist[itemize]{leftmargin=5mm}
+
+
+\newcommand{\ourmethod}{\textsc{PaperOrchestra}}
+\newcommand{\ourdataset}{\texttt{PaperWritingBench}}
+\newcommand{\mylatex}{L\kern-.36em\raisebox{0.3ex}{\textsc{a}}\kern-.15em T\kern-.1667em\lower.5ex\hbox{E}\kern-.125em X}
+
+\definecolor{best_color}{HTML}{90EE90}  
+\definecolor{second_color}{HTML}{FFFF99}
+
+\definecolor{promptbg}{RGB}{248,248,248}
+\definecolor{promptborder}{RGB}{210,210,210}
+
+\newcommand{\cmark}{\textcolor{green!70!black}{\ding{51}}} % Green Check
+\newcommand{\xmark}{\textcolor{red!80!black}{\ding{55}}}   % Red Cross
+\newcommand{\pmark}{%                                      % Yellow Half-circle
+  \tikz[baseline=-0.5ex]{%
+    \draw[fill=white] (0,0) circle (0.65ex);
+    \clip (0,0) circle (0.65ex);
+    \fill[yellow!90!orange] (-0.65ex,-0.65ex) rectangle (0,0.65ex);
+    \draw (0,0) circle (0.65ex);
+  }%
+}
+
+% \lstdefinestyle{prompt}{
+%   basicstyle=\ttfamily\small,
+%   columns=fullflexible,
+%   breaklines=true,
+%   breakatwhitespace=true,
+%   keepspaces=true,
+%   showstringspaces=false,
+%   frame=none,
+%   aboveskip=0pt,
+%   belowskip=0pt
+% }
+
+% \newtcolorbox{promptbox}[1][]{%
+%   enhanced,
+%   breakable,
+%   colback=promptbg,
+%   colframe=promptborder,
+%   boxrule=0.5pt,
+%   arc=3pt,
+%   left=6pt,right=6pt,top=6pt,bottom=6pt,
+%   title=#1,
+%   fonttitle=\bfseries\small,
+% }
+% % End: For Prompt Display
+
+
+% --- Define Colors for Raw Materials ---
+% You can adjust these HTML hex codes to fit your exact document theme
+\definecolor{rawbg}{HTML}{F4F8FC}       % A very soft, icy blue for the background
+\definecolor{rawborder}{HTML}{5D8AA8}   % A darker, muted blue for the border/title background
+
+% --- Raw Material Box Environment ---
+\newtcolorbox{rawmaterialbox}[1][]{%
+  enhanced,
+  breakable,
+  colback=rawbg,
+  colframe=rawborder,
+  boxrule=0.5pt,
+  arc=3pt,
+  left=6pt, right=6pt, top=6pt, bottom=6pt,
+  title=#1,
+  fonttitle=\bfseries\small,
+  coltitle=white % Keeps the title text crisp against the darker border color
+}
+
+% --- Define Colors for Human Evaluation ---
+\definecolor{humanevalbg}{HTML}{F2F2F2}      % Soft, very light grey background
+\definecolor{humanevalborder}{HTML}{A6A6A6}  % Solid medium-light grey border
+
+% --- Human Evaluation Box Environment ---
+\newtcolorbox{humanevalbox}[1][]{%
+  enhanced,
+  breakable,
+  colback=humanevalbg,
+  colframe=humanevalborder,
+  boxrule=0.5pt,
+  arc=3pt,
+  left=6pt, right=6pt, top=6pt, bottom=6pt,
+  title=#1,
+  fonttitle=\bfseries\small,
+  coltitle=white % Keeps the title text crisp against the darker border color
+}
+
+% ==========================================
+% PROMPT BOX COLORS
+% ==========================================
+% \definecolor{paperbg}{HTML}{E8F4F8}       % Light, airy baby blue
+% \definecolor{paperborder}{HTML}{B1D0E0}   % Solid pastel blue border
+
+% Leakage Prevention (Baby Pink)
+\definecolor{leakbg}{HTML}{FDECF2}     % Light, true baby pink
+\definecolor{leakborder}{HTML}{E8B4C8} % Solid pastel pink border
+
+% Paper Writing (Soft Sage / Sea Glass)
+\definecolor{paperbg}{HTML}{E8F0ED}       
+\definecolor{paperborder}{HTML}{9EB4AD} 
+
+% Raw Material Extraction (Soft Mauve/Blush)
+\definecolor{extractbg}{HTML}{F6F0F2}    
+\definecolor{extractborder}{HTML}{C5A8B0}
+
+% Autoraters (Soft Parchment/Sand)
+\definecolor{raterbg}{HTML}{FEF5E7}
+\definecolor{raterborder}{HTML}{EBD1A7}  
+
+% ==========================================
+% PROMPT BOX ENVIRONMENTS
+% ==========================================
+
+% Leakage Prevention Prompt Box
+\newtcolorbox{leakpromptbox}[1][]{%
+  enhanced,
+  breakable,
+  colback=leakbg,
+  colframe=leakborder,
+  boxrule=0.5pt,
+  arc=3pt,
+  left=6pt,right=6pt,top=6pt,bottom=6pt,
+  title=#1,
+  fonttitle=\bfseries\small,
+  fontupper=\ttfamily\small\raggedright,
+  coltitle=white
+}
+
+% Paper Writing Prompt Box
+\newtcolorbox{paperpromptbox}[1][]{%
+  enhanced,
+  breakable,
+  colback=paperbg,
+  colframe=paperborder,
+  boxrule=0.5pt,
+  arc=3pt,
+  left=6pt,right=6pt,top=6pt,bottom=6pt,
+  title=#1,
+  fonttitle=\bfseries\small,
+  fontupper=\ttfamily\small\raggedright,
+  coltitle=white
+}
+
+% Raw Material Extraction Prompt Box
+\newtcolorbox{extractpromptbox}[1][]{%
+  enhanced,
+  breakable,
+  colback=extractbg,
+  colframe=extractborder,
+  boxrule=0.5pt,
+  arc=3pt,
+  left=6pt,right=6pt,top=6pt,bottom=6pt,
+  title=#1,
+  fonttitle=\bfseries\small,
+  fontupper=\ttfamily\small\raggedright,
+  coltitle=white
+}
+
+% Autoraters Prompt Box
+\newtcolorbox{raterpromptbox}[1][]{%
+  enhanced,
+  breakable,
+  colback=raterbg,
+  colframe=raterborder,
+  boxrule=0.5pt,
+  arc=3pt,
+  left=6pt,right=6pt,top=6pt,bottom=6pt,
+  title=#1,
+  fonttitle=\bfseries\small,
+  fontupper=\ttfamily\small\raggedright,
+  coltitle=white
+}
+
+% ==========================================
+% METHODOLOGY COMPARISON BOX
+% ==========================================
+% Soft Lavender/Purple for methodology comparison
+\definecolor{methodbg}{HTML}{F4F0F8}
+\definecolor{methodborder}{HTML}{BFA8D0}
+
+\newtcolorbox{methodologybox}[1][]{%
+  enhanced,
+  breakable,
+  colback=methodbg,
+  colframe=methodborder,
+  boxrule=0.5pt,
+  arc=3pt,
+  left=6pt, right=6pt, top=6pt, bottom=6pt,
+  title=#1,
+  fonttitle=\bfseries\small,
+  coltitle=white
+}

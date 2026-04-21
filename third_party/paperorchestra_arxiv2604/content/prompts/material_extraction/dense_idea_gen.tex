@@ -1,0 +1,73 @@
+You are a Lead Research Scientist planning a new project. Your task is to reverse-engineer a comprehensive, highly detailed "Technical Proposal" (\texttt{idea.md}) based on a provided text.
+
+\vspace{0.5em}
+\noindent You have been given the text content of a paper ([PAPER CONTENT]). You must translate this finished work back into its initial \textbf{detailed} project proposal.
+
+\vspace{1em}
+\noindent\textbf{Critical Data Ingestion Rules}
+\begin{enumerate}
+    \item \textbf{Target Content:} Extract information \textit{only} regarding the \textbf{concept, formulation, and construction} of the research.
+    \begin{itemize}
+        \item \textbf{Focus Areas:} Problem Definition, Motivation, Method/Algorithm, Architecture, Mathematical Formulation.
+    \end{itemize}
+    \item \textbf{Exclusion Zone:} Stop extracting information once the text shifts to \textbf{empirical verification}.
+    \begin{itemize}
+        \item \textbf{STRICTLY IGNORE:} Sections related to 'Experiments', 'Results', 'Evaluation', 'Comparisons', 'Ablation Studies', or 'Conclusions'.
+        \item \textbf{Do not} mention specific accuracy numbers, benchmark scores, or state-of-the-art claims based on results.
+    \end{itemize}
+\end{enumerate}
+
+\vspace{1em}
+\noindent\textbf{Instructions}
+\begin{enumerate}
+    \item \textbf{Perspective \& Tone:}
+    \begin{itemize}
+        \item Write in \textbf{First-Person Future Tense} (e.g., "We will define...", "We formulate the loss as...", "The architecture will consist of...").
+        \item Act as if the experiments have \textbf{not yet happened}. You are proposing what you \textit{plan} to build.
+    \end{itemize}
+    \item \textbf{Preserve Technical Density (High Precision):}
+    \begin{itemize}
+        \item \textbf{Equations are vital:} If the text contains mathematical formulations, loss functions, or algorithms, you \textbf{MUST} preserve them using LaTeX format.
+        \item \textbf{Define your Variables:} Never output an equation without defining the variables used in it. (e.g., do not just write \$L = x - y\$; write "We define the loss \$L\$ as the difference between target \$x\$ and prediction \$y\$...").
+        \item \textbf{Do not simplify:} If the paper describes a specific mechanism (e.g., "multi-head attention with \$d=512\$"), include that specific detail in the plan.
+    \end{itemize}
+    \item \textbf{Structure:}
+    \begin{itemize}
+        \item \textbf{Problem Statement:} The precise gap we are filling.
+        \item \textbf{Core Hypothesis:} The specific technical novelty we are proposing.
+        \item \textbf{Proposed Methodology:} The core of the document. A rigorous walkthrough of the framework. Include mathematical notation, module specifications, and data flow.
+        \item \textbf{Expected Contribution:} The intended theoretical contribution (why this architecture is better in theory).
+    \end{itemize}
+    \item \textbf{Formatting:}
+    \begin{itemize}
+        \item Be self-contained. \textbf{No citations, no URLs, no references to Figure/Table numbers.}
+        \item Fully anonymize authors/titles.
+    \end{itemize}
+\end{enumerate}
+
+\vspace{1em}
+\noindent\textbf{Output Format}\\
+\vspace{0.5em}
+Return \textit{only} the markdown memo in the following structure:
+
+\begin{verbatim}
+```markdown
+## Problem Statement
+(Precise definition of the technical problem.)
+
+## Core Hypothesis
+(The proposed solution.)
+
+## Proposed Methodology (Detailed Technical Approach)
+(A rigorous breakdown of the methodology. Include LaTeX equations, 
+variable definitions, and specific architectural choices. Do not 
+summarize; specify.)
+
+## Expected Contribution
+(The intended theoretical or practical value of this architecture.)
+```
+
+[PAPER CONTENT]
+{paper_content}
+[END PAPER CONTENT]
+\end{verbatim}

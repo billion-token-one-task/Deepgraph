@@ -1,0 +1,85 @@
+\noindent\textbf{Problem Statement}
+
+Referring Audio-Visual Segmentation (Ref-AVS) presents a complex challenge: segmenting objects in dynamic video scenes based on multimodal cues (audio, visual, and textual). Existing approaches, such as Video Object Segmentation (VOS) or Audio-Visual Segmentation (AVS), are limited by their reliance on single-modality cues or labor-intensive frame-level annotations. While Large Visual Foundation Models, specifically the Segment Anything Model (SAM), have revolutionized static image segmentation, they are fundamentally ill-suited for Ref-AVS in their current form. SAM lacks temporal awareness necessary for processing video frames and relies heavily on explicit user-interactive prompts (points, boxes) rather than interpreting the nuanced semantic interactions between audio, text, and visual data. There is currently no architecture that effectively adapts SAM's zero-shot capabilities to the temporal and multimodal requirements of Ref-AVS without requiring explicit user guidance.
+
+\vspace{1em}
+\noindent\textbf{Core Hypothesis}
+
+We propose \textbf{TSAM (Temporal SAM)}, a novel architecture designed to extend SAM for dynamic audio-visual scenes. We hypothesize that by freezing the core SAM image encoder and augmenting it with a parallel \textbf{Temporal Modeling Branch}, we can inject spatio-temporal awareness into the model while preserving pre-trained knowledge. Furthermore, we propose replacing SAM's manual prompting mechanism with \textbf{data-driven multimodal prompts}. By synthesizing sparse queries (from audio-text alignment) and dense embeddings (from cross-modal attention), we can automate the prompting process, effectively guiding the mask decoder to segment targets defined by complex multimodal expressions.
+
+\vspace{1em}
+\noindent\textbf{Proposed Methodology (Detailed Technical Approach)}
+
+\vspace{0.5em}
+\noindent\textbf{1. Input Formulation and Feature Extraction}
+
+We will process a sequence of inputs consisting of video frames, aligned audio, and reference text.
+\begin{itemize}
+    \item \textbf{Visual Input:} $n$ frames sampled at 1-second intervals, where each frame has a resolution of $1024 \times 1024$.
+    \item \textbf{Audio Input:} Encoded offline using a pre-trained VGGish model to produce representations $\boldsymbol{F}_{a} \in \mathbb{R}^{n \times 128}$.
+    \item \textbf{Text Input:} Extracted using a pre-trained RoBERTa model to generate representation $F_{t} \in \mathbb{R}^{l \times 768}$, where $l$ is the sequence length.
+\end{itemize}
+
+To align these modalities with SAM, we will project both audio and text representations into the SAM visual embedding space with dimensionality $d_{emb}$. This yields audio cues $F_{a} \in \mathbb{R}^{n \times 1 \times d_{emb}}$ and text cues $F_{t} \in \mathbb{R}^{n \times l \times d_{emb}}$ (temporally expanded along $n$).
+
+\vspace{0.5em}
+\noindent\textbf{2. Temporal Modality Fusion and Cached Memory}
+
+We will implement a \textbf{Temporal Modality Fusion Layer (TMFL)} to synthesize expression-related multimodal cues. We define the fused cues as:
+\[ F_{a}^{\prime}, F_{t}^{\prime} = \mathrm{SA}(\mathrm{Concat}(F_{a}, F_{t})) \]
+where $\operatorname{SA}(\cdot)$ applies temporal self-attention.
+
+We will also utilize a \textbf{Cached Memory (CM)} mechanism. This will store $\hat{F}_{a}$, an accumulated summary of $F_{a}^{\prime}$ over time, capturing the mean modality cues and evolving audio context. Text cues are enriched via summation: $\hat{F}_{t} = F_{t} + F_{t}^{\prime}$.
+
+\vspace{0.5em}
+\noindent\textbf{3. Temporal Modeling Branch}
+
+To address SAM's lack of temporal dynamics, we will introduce a trainable temporal modeling branch parallel to the final $M$ blocks of the frozen SAM image encoder.
+\begin{itemize}
+    \item \textbf{Structure:} The branch consists of blocks initialized with SAM's pre-trained weights.
+    \item \textbf{Data Flow:} Each $m$-th temporal block ($m = 1, \dots, M$) integrates the output of the previous temporal block $y_{m-1}$, the output of the corresponding frozen SAM block $y_{(N-M)+(m-1)}^{\mathrm{SAM}}$, and the enriched audio cues $\hat{F}_{a}$ via an Adapter Module (AM).
+    \item \textbf{Formulation:}
+    \[ x_{m} = y_{m-1} + \mathbf{CM}_{m}(y_{(N-M)+(m-1)}^{\mathrm{SAM}}) + \mathbf{AM}_{m}(\hat{F}_{a}) \]
+    Here, $\mathbf{CM}_{m}$ is a cached memory applied to the SAM block output, and $\mathbf{AM}_{m}$ is a bottleneck adapter block facilitating deep interaction between audio, visual, and text modalities.
+\end{itemize}
+
+The final video cues $F_{v}$ are derived by summing the output of the temporal branch ($Y_{M}$) and the final SAM encoder output ($Y_{N}^{SAM}$):
+\[ F_{v} = Y_{M} + Y_{N}^{SAM} \]
+
+\vspace{0.5em}
+\noindent\textbf{4. Multimodal Prompting Modules}
+
+We will replace SAM's manual prompts with two specific modules designed to query the mask decoder:
+
+\vspace{0.25em}
+\noindent\textbf{A. Sparse Prompting Module (SPM)}
+
+This module acts as a global context guide. We will employ a language-guided query selection mechanism to identify the $k$ most relevant audio cues associated with the text expression. The indices of these cues, $A_{k}$, are selected via:
+\[ A_{k} = \mathrm{Top}_{k} \left( \operatorname*{max} \mathrm{f} (\hat{F}_{a} \hat{F}_{t}^{\top}) \right) \]
+where $\mathrm{Top}_{k}$ selects the top $k$ indices and $\operatorname{maxf}$ computes the maximum along the cue dimension. These selected cues are fused with visual cues via cross-attention and mapped to sparse prompt embeddings.
+
+\vspace{0.25em}
+\noindent\textbf{B. Dense Prompting Module (DPM)}
+
+This module operates at a fine granularity. It generates spatially comprehensive embeddings through a sequence of cross-attention mechanisms:
+\begin{enumerate}
+    \item \textbf{Audio Cross-Attention:} Aligns audio cues with visual cues.
+    \item \textbf{Text Cross-Attention:} Refines the result with text cues to focus on the specific target object.
+    \item \textbf{Refinement:} A feed-forward network processes the output to create dense embeddings for the SAM mask decoder.
+\end{enumerate}
+
+\vspace{0.5em}
+\noindent\textbf{5. Training Objective}
+
+The model will be trained end-to-end using a weighted sum of Binary Cross-Entropy ($\mathcal{L}_{\mathrm{BCE}}$) and Intersection over Union ($\mathcal{L}_{\mathrm{IoU}}$) losses to compare predicted masks against ground truth:
+\[ \mathcal{L}_{\mathrm{total}} = \mathcal{L}_{\mathrm{BCE}} + \lambda \cdot \mathcal{L}_{\mathrm{IoU}} \]
+We will set $\lambda = 1.0$ to balance the contributions of both loss components.
+
+\vspace{1em}
+\noindent\textbf{Expected Contribution}
+
+\begin{enumerate}
+    \item \textbf{Architecture:} A novel end-to-end framework (TSAM) that repurposes the Segment Anything Model for Referring Audio-Visual Segmentation without requiring extensive retraining of the image backbone.
+    \item \textbf{Temporal Adaptation:} The introduction of a lightweight Temporal Modeling Branch that enables SAM to capture intricate spatio-temporal interactions across video frames, overcoming its static-image limitation.
+    \item \textbf{Automated Multimodal Prompting:} A theoretical framework for converting audio-visual-text correlations into the sparse and dense prompts required by SAM, effectively replacing human interaction with data-driven multimodal guidance.
+\end{enumerate}

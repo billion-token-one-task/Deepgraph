@@ -1,0 +1,18 @@
+# PostgreSQL 16 + pgvector — schema: db/schema_postgres.sql, init: python -m db.pg_init
+# Usage: docker compose -f docker-compose.postgres.yml up -d
+# DEEPGRAPH_DATABASE_URL=postgresql://deepgraph:deepgraph@127.0.0.1:5433/deepgraph
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: deepgraph
+      POSTGRES_PASSWORD: deepgraph
+      POSTGRES_DB: deepgraph
+    ports:
+      - "5433:5432"
+    volumes:
+      - deepgraph_pgdata:/var/lib/postgresql/data
+
+volumes:
+  deepgraph_pgdata:

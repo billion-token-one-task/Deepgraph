@@ -1,0 +1,45 @@
+\noindent You are an expert academic reviewer. Read the following paper text and analyze its references.\\
+Your goal is to categorize the provided references into two priorities:
+
+\vspace{1em}
+\noindent\textbf{Priority Levels}
+\begin{itemize}
+    \item \textbf{P0 (Must-Have):} Core citations strictly necessary for the paper. These MUST include:
+    \begin{itemize}
+        \item Baselines directly compared against in experiments
+        \item Datasets the paper utilizes or evaluates on
+        \item Core methods the paper is directly building upon or modifying
+        \item Metrics or standard numbers heavily relied upon and cited from another paper
+    \end{itemize}
+    \item \textbf{P1 (Good-To-Have):} Supplemental citations. These include:
+    \begin{itemize}
+        \item Standard background references covering broad history
+        \item General related work that is not directly competing or built-upon
+        \item Minor implementations or utility tools mentioned in passing
+    \end{itemize}
+\end{itemize}
+
+\vspace{1em}
+\noindent\textbf{Paper Text:}\\
+\vspace{0.5em}
+\texttt{\{paper\_text\}}
+
+\vspace{1em}
+\noindent\textbf{References List:}\\
+\vspace{0.5em}
+\texttt{\{references\_str\}}
+
+\vspace{1em}
+\noindent\textbf{Output Format}\\
+\vspace{0.5em}
+Please return ONLY a JSON dictionary where the keys are the exact reference numbers (e.g., "1", "2") and the values are either "P0" or "P1". Example output:
+
+\begin{verbatim}
+```json
+{{
+    "1": "P0",
+    "2": "P1",
+    "3": "P0"
+}}
+```
+\end{verbatim}

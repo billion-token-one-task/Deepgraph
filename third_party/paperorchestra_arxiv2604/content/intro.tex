@@ -1,0 +1,14 @@
+\section{Introduction}
+
+The rapid advancement of Large Language Models (LLMs) is transitioning AI from an assistive tool to an active participant in scientific discovery~\citep{eger2025transforming}. While recent end-to-end autonomous frameworks~\citep{lu2024aiscientist, yamada2025aiscientistv2} establish the feasibility of automated research loops, realizing their full potential is hindered by a critical step: translating unstructured materials, such as raw ideas and experimental logs, into rigorous, submission-ready manuscripts.
+
+Early attempts at automated academic writing relied on the parametric memory of LLMs, often leading to factual hallucinations. To mitigate this, recent frameworks employ retrieval-augmented generation (RAG) methods. Systems like AutoSurvey2~\citep{wu2025autosurvey2} and LiRA~\citep{go2025lira} decompose the literature review process into structured stages or specialized agent roles that emulate human review workflows. However, these survey-specific frameworks lack the capacity to transform raw experimental data into a full-length research paper.
+
+On the other hand, full-lifecycle autonomous research agents are tightly coupled to their experimental loops, preventing them from functioning as standalone writing tools capable of processing human-provided materials. Empirical evaluations show critical deficits in their literature synthesis~\citep{beel2025evaluating, tang2025large}. Relying on simple keyword searches, these agents produce shallow reviews with insufficient citations. They also lack the capabilities to generate conceptual diagrams, restricting visuals to code-generated data plots. Furthermore, evaluating automated writing independently remains difficult due to the absence of a standardized benchmark.
+
+To bridge these gaps, our core contributions are:
+\begin{itemize}
+    \item \textbf{\ourmethod{}:} A standalone, multi-agent framework that autonomously authors \mylatex{} manuscripts from unconstrained pre-writing materials. It uses specialized agents to synthesize deep literature reviews, generate plots and conceptual diagrams, and iteratively refine the manuscript for better technical clarity.
+    \item \textbf{\ourdataset{}:} The first standardized benchmark for AI research paper writing, which isolates the writing task by providing reverse-engineered raw materials (ideas and experimental logs) derived from 200 papers published in top-tier AI conferences.
+    \item \textbf{Performance:} In side-by-side human evaluations, \ourmethod{} significantly outperforms autonomous baselines, achieving absolute win rate margins (the difference of our win rate and the baseline's) of \textbf{50\%--68\%} in literature review synthesis and \textbf{14\%--38\%} in overall manuscript quality.
+\end{itemize}

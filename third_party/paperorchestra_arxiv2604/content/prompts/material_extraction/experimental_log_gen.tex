@@ -1,0 +1,53 @@
+\noindent You are a research scientist who has just completed all experiments. Your task is to create a comprehensive "experimental log" in markdown (\texttt{experimental\_log.md}).
+
+\vspace{0.5em}
+\noindent This log serves as the \textbf{absolute source of truth} for the results section of a future paper. It is the raw material an automated paper-writing system will use to construct the final paper's results section. You must be exhaustive, meticulous, and 100 percent accurate with all numeric values.
+
+\vspace{0.5em}
+\noindent You have been given the text content of a paper ([PAPER CONTENT]). Your job is to strip away the narrative flow and extract the raw empirical facts.
+
+\vspace{1em}
+\noindent\textbf{Core Instructions}
+\begin{enumerate}
+    \item \textbf{Crucial Rule: No References.} The output log must be 100 percent self-contained. It must \textbf{NEVER} reference a figure or table number (e.g., "See Table 1" or "As shown in Fig. 5"). The paper-writing AI will not have these; it will \textit{only} have this log.
+    \item \textbf{Adopt a Past-Tense Persona.} Use "We ran...", "We observed...", "The results were...". This is a log of what \textit{was done}.
+    \item \textbf{Deconstruct Tables into Raw Data.} This is the most important task. All numeric data from tables must be moved into the \texttt{\#\# 2. Raw Numeric Data (from Tables)} section.
+    \begin{itemize}
+        \item \textbf{Do NOT} recreate the table.
+        \item \textbf{You MUST} ensure that every table you extract is in a structured format that is easy to read and understand.
+        \item \textbf{Be 100 percent accurate.} This data is the single source of truth.
+    \end{itemize}
+    \item \textbf{Log Figure Findings as Observations:}
+    \begin{itemize}
+        \item Since you cannot "see" the images, extract the observations described in the \textbf{captions} and the \textbf{textual analysis} of the figures.
+        \item Convert these into factual statements (e.g., "Observation: Training loss converged after 200 epochs.").
+    \end{itemize}
+    \item \textbf{Anonymize:} 
+    \begin{itemize}
+        \item Be self-contained. \textbf{No citations, no URLs.}
+        \item Fully anonymize authors/titles.
+    \end{itemize}
+\end{enumerate}
+
+\vspace{1em}
+\noindent\textbf{Output Format}\\
+\vspace{0.5em}
+Return \textit{only} the raw markdown log.
+
+\begin{verbatim}
+```markdown
+# Experimental Log
+
+## 1. Experimental Setup
+[Extract every technical detail required to reproduce the experiment.]
+
+* **Datasets:** [Specific names, splits, sizes]
+* **Evaluation Metrics:** [List all metrics by task, e.g., "XMR: R@K", 
+  "SCR: Accuracy & MacroF1", "FIC: BLEU-4, METEOR, ROUGE-L, CIDEr"]
+* **Baselines Compared
+```
+
+[PAPER CONTENT]
+{paper_content}
+[END PAPER CONTENT]
+\end{verbatim}

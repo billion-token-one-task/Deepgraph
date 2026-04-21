@@ -1,0 +1,17 @@
+\begin{table}[tbp]
+    \centering
+    \resizebox{0.8\linewidth}{!}{%
+    \begin{tabular}{l ccc c ccc}
+        \toprule
+        \multirow{2}{*}{\textbf{Venue}} & \multicolumn{3}{c}{\textbf{Gemini-3.1-Pro}} && \multicolumn{3}{c}{\textbf{GPT-5}} \\
+        \cmidrule{2-4} \cmidrule{6-8}
+        & \textbf{PlotOff Win} & \textbf{Tie} & \textbf{PlotOn Win} && \textbf{PlotOff Win} & \textbf{Tie} & \textbf{PlotOn Win} \\
+        \midrule
+        CVPR 2025 & \cellcolor{best_color}34\% & 32\% & 34\% && \cellcolor{best_color}49\% & 19\% & 32\% \\
+        ICLR 2025 & \cellcolor{best_color}35\% & 37\% & 28\% && \cellcolor{best_color}36\% & 38\% & 26\% \\
+        \bottomrule
+    \end{tabular}%
+    }
+    \caption{Automated SxS Paper Quality evaluating the Plotting Agent. Despite lacking access to data represented by GT visuals, \textit{PlotOn} achieves highly competitive performance against \textit{PlotOff} that use human-authored figures.}
+    \label{tab:ablation_plotting}
+\end{table}

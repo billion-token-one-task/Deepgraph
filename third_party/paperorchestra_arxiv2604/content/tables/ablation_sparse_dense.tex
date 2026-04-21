@@ -1,0 +1,22 @@
+\begin{table}[tbp]
+    \centering
+    \resizebox{0.8\linewidth}{!}{%
+    \begin{tabular}{ll ccc c ccc}
+        \toprule
+        \multirow{2}{*}{\textbf{Venue}} & \multirow{2}{*}{\textbf{Metric}} & \multicolumn{3}{c}{\textbf{Gemini-3.1-Pro}} && \multicolumn{3}{c}{\textbf{GPT-5}} \\
+        \cmidrule{3-5} \cmidrule{7-9}
+        & & \textbf{Sparse Win} & \textbf{Tie} & \textbf{Dense Win} && \textbf{Sparse Win} & \textbf{Tie} & \textbf{Dense Win} \\
+        \midrule
+        \multirow{2}{*}{CVPR 2025} 
+        & Paper Quality & 18\% & 26\% & \cellcolor{best_color}56\% && 24\% & 32\% & \cellcolor{best_color}44\% \\
+        & Lit Review    & 37\% & 24\% & \cellcolor{best_color}39\% && \cellcolor{best_color}40\% & 22\% & 38\% \\
+        \midrule
+        \multirow{2}{*}{ICLR 2025} 
+        & Paper Quality & 24\% & 31\% & \cellcolor{best_color}45\% && 20\% & 37\% & \cellcolor{best_color}43\% \\
+        & Lit Review    & 33\% & 33\% & \cellcolor{best_color}34\% && \cellcolor{best_color}32\% & 40\% & 28\% \\
+        \bottomrule
+    \end{tabular}%
+    }
+    \caption{Automated SxS evaluation of Sparse vs.\ Dense idea settings.}
+    \label{tab:ablation_sparse_dense}
+\end{table}

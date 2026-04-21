@@ -1,0 +1,68 @@
+\noindent You are a Research Scientist in the early brainstorming phase of a project. Your task is to write a high-level "Concept Note" (\texttt{idea.md}) based on a provided text.
+
+\vspace{0.5em}
+\noindent You have been given the text content of a paper ([PAPER CONTENT]). You must distill this into a streamlined, conceptual project proposal.
+
+\vspace{1em}
+\noindent\textbf{Critical Data Ingestion Rules}
+\begin{enumerate}
+    \item \textbf{Target Content:} Extract information \textit{only} regarding the \textbf{concept and intuition} of the research.
+    \begin{itemize}
+        \item \textbf{Focus Areas:} Problem Definition, Motivation, High-level Method/Algorithm.
+    \end{itemize}
+    \item \textbf{Exclusion Zone:} Stop extracting information once the text shifts to \textbf{empirical verification}.
+    \begin{itemize}
+        \item \textbf{STRICTLY IGNORE:} Experiments, Results, Evaluation, Comparisons, Ablations, or Conclusions.
+    \end{itemize}
+\end{enumerate}
+
+\vspace{1em}
+\noindent\textbf{Instructions}
+\begin{enumerate}
+    \item \textbf{Perspective:} Write in \textbf{First-Person Future Tense} (e.g., "We propose to explore...", "We aim to investigate...").
+    \item \textbf{Enforce Sparsity (High-Level Focus):}
+    \begin{itemize}
+        \item \textbf{Conceptual Over Mathematical:} \textbf{Do NOT use LaTeX.} Do not provide formulas. Instead of writing the math, describe the \textit{intuition} or \textit{purpose} of the component (e.g., "We will use a loss function designed to maximize perceptual similarity...").
+        \item \textbf{Strategic Logic:} Describe the methodology at a "whiteboard" level. Avoid hyperparameters (like "\$d=512\$"). Focus on the flow of data and the logic of the modules.
+        \item \textbf{Simulation:} Mimic the early design phase where the intuition is clear, but the exact implementation details are not yet finalized.
+    \end{itemize}
+    \item \textbf{Structure:}
+    \begin{itemize}
+        \item \textbf{Problem Statement:} The gap we are filling.
+        \item \textbf{Core Hypothesis:} The specific technical novelty.
+        \item \textbf{Proposed Methodology:} A conceptual description. Focus on strategy and logical steps. Describe modules by their function, not their math.
+        \item \textbf{Expected Contribution:} The theoretical value.
+    \end{itemize}
+    \item \textbf{Formatting:}
+    \begin{itemize}
+        \item Be self-contained. \textbf{No citations, no URLs, no references to Figure/Table numbers.}
+        \item Fully anonymize authors/titles.
+    \end{itemize}
+\end{enumerate}
+
+\vspace{1em}
+\noindent\textbf{Output Format}\\
+\vspace{0.5em}
+Return \textit{only} the markdown memo in the following structure:
+
+\begin{verbatim}
+```markdown
+## Problem Statement
+(Precise definition of the technical problem.)
+
+## Core Hypothesis
+(The proposed solution/intuition.)
+
+## Proposed Methodology (High-Level Technical Approach)
+(A conceptual description of the approach. Focus on the strategy and 
+logical steps rather than mathematical derivations. Describe the modules 
+and their functions.)
+
+## Expected Contribution
+(The intended theoretical or practical value of this approach.)
+```
+
+[PAPER CONTENT]
+{paper_content}
+[END PAPER CONTENT]
+\end{verbatim}

@@ -1,0 +1,41 @@
+\noindent To overcome the specialization bottleneck in Neural Combinatorial Optimization (NCO), we design a unified architecture comprising a shared central backbone and lightweight, problem-specific adapters. Our approach decouples the semantic formulation of individual optimization tasks from the core reasoning process, enabling a single model to learn a transferable meta-heuristic. 
+
+\vspace{1em}
+\noindent\textbf{Modular Input/Output via Shared Codebooks}
+\vspace{0.5em}
+
+\noindent Combinatorial optimization problems present diverse state spaces, including varying node features (e.g., coordinates, demands, time windows) and edge attributes (e.g., distances, precedence constraints). To bridge the gap between these distinct definitions and our unified backbone, we employ task-specific linear adapters. For a given task, node features $x_i$ and edge features $e_{ij}$ are linearly projected into low-dimensional spaces: $h_i \in \mathbb{R}^8$ and $g_{ij} \in \mathbb{R}^4$, respectively. 
+
+\vspace{0.5em}
+\noindent To ensure that representations from different tasks are mapped into compatible subspaces within the backbone, we enforce a representational bottleneck using a shared codebook. The codebook acts as a continuous projection matrix $C \in \mathbb{R}^{8 \times 128}$ for nodes and $\bar{C} \in \mathbb{R}^{4 \times 128}$ for edges, mapping the low-dimensional task features into the high-dimensional embedding space of the backbone ($D=128$). The projected node embeddings $\hat{h}_i = h_i C$ and edge embeddings $\hat{g}_{ij} = g_{ij} \bar{C}$ force the model to learn a common vocabulary across all tasks, preventing catastrophic interference during multi-task training.
+
+\vspace{1em}
+\noindent\textbf{Mixed-Attention Mechanism}
+\vspace{0.5em}
+
+\noindent Standard Transformers excel at modeling node-to-node interactions but struggle to natively incorporate edge-level constraints, which are critical in routing and scheduling. Instead of relying on structural positional encodings, we introduce a \textit{Mixed-Attention} block that dynamically integrates edge information directly into the attention mechanism. 
+
+\vspace{0.5em}
+\noindent For each attention head, the query $q_i$, key $k_j$, and value $v_j$ are computed from the node embeddings $\hat{h}_i$. Simultaneously, the edge embeddings $\hat{g}_{ij}$ are transformed into edge-specific keys $k^{(e)}_{ij}$ and values $v^{(e)}_{ij}$. The affinity score between node $i$ and node $j$ is computed by additively combining the node-to-node interactions with the edge features:
+\[
+    A_{ij} = \text{softmax} \left( \frac{q_i^\top k_j + q_i^\top k^{(e)}_{ij}}{\sqrt{d_k}} \right)
+\]
+where $d_k$ is the dimensionality of the key vectors. The output of the attention head is then given by $\sum_j A_{ij} (v_j + v^{(e)}_{ij})$. This mechanism allows the model to dynamically weigh the importance of relationships based on explicit edge attributes (e.g., asymmetric distances or temporal constraints). The backbone consists of 9 such layers with 8 attention heads and a feed-forward dimension of 512, regularized via ReZero.
+
+\vspace{1em}
+\noindent\textbf{Multi-Type Transformer Architecture}
+\vspace{0.5em}
+
+\noindent Many scheduling problems, such as the Job Shop Scheduling Problem (JSSP), are defined on multipartite graphs involving heterogeneous entities (e.g., jobs vs. machines). Treating these distinct entities uniformly as generic nodes strips away crucial semantic information. To address this, we propose a \textit{Multi-Type} architecture. 
+
+\vspace{0.5em}
+\noindent When processing a graph with multiple node types, the Mixed-Attention blocks are duplicated to handle specific structural relationships (e.g., job-to-job, job-to-machine, machine-to-machine). Crucially, to maintain the generalist nature of the backbone and prevent parameter explosion, these duplicated blocks strictly share the same parameters. The network dynamically routes computations through the appropriate relation-specific blocks based on the node types present in the current task. This parameter-sharing constraint enables the backbone to process complex, multi-modal graph structures without requiring specialized modules for every new topological configuration.
+
+\vspace{1em}
+\noindent\textbf{Multi-Task Imitation Learning Strategy}
+\vspace{0.5em}
+
+\noindent We train GOAL in a multi-task setting using Imitation Learning. We generate expert trajectories across diverse problem classes using classical oracle solvers. The model is trained to autoregressively construct solutions, effectively framing optimization as a sequential generation task. 
+
+\vspace{0.5em}
+\noindent For tasks requiring a permutation of nodes (e.g., ATSP, CVRP), we apply a standard cross-entropy loss over the predicted probability distribution of the next node. For tasks involving multiple simultaneous decisions (e.g., Knapsack, MVC), we utilize a multi-class cross-entropy loss. The unified backbone is optimized end-to-end using the AdamW optimizer with an initial learning rate of $0.0005$, decayed by a factor of $0.97$ every 10 epochs.

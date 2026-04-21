@@ -1,0 +1,8 @@
+\section{Limitations and Future Work}
+\label{appendix:limitations}
+
+While \ourmethod{} advances the capabilities of autonomous manuscript generation, several areas remain for future exploration. First, relying on external frameworks like PaperBanana~\citep{zhu2026paperbanana} for visual generation limits our direct control over figure hallucinations. Although mitigating these errors falls outside the primary scope of our pipeline, future systems could benefit from integrating targeted Vision-Language Models and dedicated human evaluations to systematically verify that generated visual content is factually sound and optimally placed within the \mylatex{} layout. 
+
+Second, although our current refinement agent effectively improves paper quality using structured, LLM-generated feedback, transitioning this framework toward an interactive, human-in-the-loop (HITL) system would enable researchers to iteratively steer drafts via natural language critiques. This evolution would solidify the framework's intended role as an advanced assistive tool rather than a fully independent writing entity. 
+
+Finally, evaluating foundation models on \ourdataset{} carries an inherent risk of pretraining data contamination. To mitigate this risk, we rigorously de-contextualized and anonymized all input materials. Additionally, since all evaluated baselines share the same underlying language models, any potential knowledge leakage applies uniformly, ensuring a strictly fair relative comparison. To fully isolate generation from memorization, future benchmarks could leverage unpublished research or autonomously generated raw materials.

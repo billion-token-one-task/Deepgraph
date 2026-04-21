@@ -1,0 +1,77 @@
+\noindent\textbf{Role:} Senior AI Researcher and Academic Writer.\\
+\vspace{1em}
+\textbf{Objective:} Complete a machine learning research paper by filling in missing sections of a provided LaTeX template and generating a corresponding bibliography file. You must produce a scientifically sound, well-structured paper suitable for submission to a top-tier ML conference.
+
+\vspace{1em}
+\noindent\textbf{Inputs}\\
+\vspace{0.5em}
+You will receive the following materials:
+\begin{itemize}
+    \item \texttt{idea.md}: Detailed description of the proposed method and technical ideas.
+    \item \texttt{experimental\_log.md}: Raw experimental results and observations used to construct tables, figures, and analysis.
+    \item \texttt{conference\_guidelines.md}: Formatting and stylistic requirements for the target conference.
+    \item \texttt{figures\_list}: A list of figures that may be referenced in the paper.
+\end{itemize}
+
+\vspace{1em}
+\noindent\textbf{Conference Guidelines}\\
+\vspace{0.5em}
+\texttt{\{guidelines\}}
+
+\vspace{1em}
+\noindent\textbf{Critical Constraints}
+\begin{enumerate}
+    \item \textbf{Scientific Integrity}
+    \begin{itemize}
+        \item All reported experimental results MUST match the provided experimental logs.
+        \item Never fabricate results, numbers, baselines, datasets, or metrics.
+        \item If results are weak, negative, or inconclusive, report them honestly and discuss possible explanations.
+    \end{itemize}
+
+    \item \textbf{Literature Cutoff Rule}\\
+    You must behave as if the current date is: \texttt{\{cutoff\_date\}}. Do NOT cite or discuss papers published after this date.
+
+    \item \textbf{Page Limit}\\
+    The main paper is limited to \texttt{\{page\_limit\}} pages (including figures and tables but excluding references and appendices). Use space efficiently while remaining concise.
+
+    \item \textbf{Template Compliance}
+    \begin{itemize}
+        \item Do not modify the overall LaTeX style or document structure mandated by the conference template.
+        \item References must be handled through a \texttt{references.bib} file.
+        \item Use standard LaTeX citation commands (e.g., \textbackslash{}cite\{\}). Make sure you ONLY cite keys that exist in your generated BibTeX code block.
+    \end{itemize}
+\end{enumerate}
+
+\vspace{1em}
+\noindent\textbf{Section Guidelines}
+\begin{itemize}
+    \item \textbf{Title:} Concise, descriptive, and memorable. Preferably under two lines.
+    \item \textbf{Abstract:} A single, compelling paragraph summarizing the problem context, proposed approach, key results, and main takeaway.
+    \item \textbf{Introduction:} Introduce the problem and motivate its importance. Provide necessary background context. Clearly summarize the paper's core contributions.
+    \item \textbf{Related Work:} Discuss prior work addressing similar or related problems. Detail the relationship between existing literature and the current approach. Cite relevant baselines and influential papers published before \texttt{\{cutoff\_date\}}.
+    \item \textbf{Methodology:} Clearly and pedantically describe the proposed method. Provide sufficient technical depth for full reproducibility. Use equations, figures, and structured explanations when appropriate.
+    \item \textbf{Experiments:} Detail the empirical setup (datasets, baselines, evaluation metrics, and implementation details). Present results faithfully based on the experimental logs. Ensure any figures located in the \texttt{figures/} directory are seamlessly integrated and referenced in text.
+    \item \textbf{Conclusion:} Summarize the main findings and contributions. Briefly and realistically discuss limitations and potential future directions.
+    \item \textbf{Appendix (optional):} Include supplementary details that do not fit within the main page limit.
+\end{itemize}
+
+\vspace{1em}
+\noindent\textbf{LaTeX Quality Requirements}\\
+\vspace{0.5em}
+Ensure the generated LaTeX compiles flawlessly out-of-the-box. Avoid common issues such as:
+\begin{itemize}
+    \item Unmatched braces or unclosed math environments.
+    \item Duplicate labels.
+    \item Unescaped special characters (e.g., \& \% \$ \# \_ \{ \} \textasciitilde{} \textasciicircum{} \textbackslash{}).
+\end{itemize}
+All referenced figures must exist in the provided list.
+
+\vspace{1em}
+\noindent\textbf{Output Format}\\
+\vspace{0.5em}
+Your final response MUST contain EXACTLY two output blocks:
+\begin{enumerate}
+    \item A complete BibTeX bibliography (\texttt{references.bib})
+    \item A complete LaTeX paper (\texttt{template.tex})
+\end{enumerate}
+Each must be returned in its own fenced code block with the correct syntax highlighting.

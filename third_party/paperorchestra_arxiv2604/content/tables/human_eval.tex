@@ -1,0 +1,47 @@
+% ==========================================
+% Side-by-Side Figure and Correlation Table
+% ==========================================
+\begin{figure}[tbp]
+    \centering
+    
+    % Left Side: The Bar Chart (Subfigure a)
+    \begin{subfigure}[b]{0.58\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{content/figures/human_eval_bar.png}
+        \caption{Human SxS Evaluation Results}
+        \label{fig:human_sxs_a}
+    \end{subfigure}
+    \hfill
+    % Right Side: The Correlation Table (Subfigure b)
+    \begin{subfigure}[b]{0.4\textwidth}
+        \centering
+        \resizebox{\linewidth}{!}{%
+        \begin{tabular}{llcc}
+            \toprule
+            \textbf{Metric} & \textbf{Judge(s)} & \textbf{Pearson} & \textbf{Spearman} \\
+            \midrule
+            \multicolumn{4}{c}{\cellcolor{gray!15}\textit{Human vs. Autorater Correlation}} \\
+            \midrule
+            \multirow{2}{*}{Lit Review Quality} 
+            & Gemini-3.1-Pro & 0.0868 & 0.0715 \\
+            & GPT-5 & \textbf{0.2764} & \textbf{0.2300} \\
+            \midrule
+            \multirow{2}{*}{Overall Quality} 
+            & Gemini-3.1-Pro & 0.5672 & 0.5727 \\
+            & GPT-5 & \textbf{0.6458} & \textbf{0.6355} \\
+            \midrule
+            \multicolumn{4}{c}{\cellcolor{gray!15}\textit{Inter-Autorater Correlation (Gemini-3.1-Pro vs. GPT-5)}} \\
+            \midrule
+            Lit Review Quality & \multicolumn{1}{c}{--} & 0.5697 & 0.5615 \\
+            Overall Quality & \multicolumn{1}{c}{--} & \textbf{0.7395} & \textbf{0.7454} \\
+            \bottomrule
+        \end{tabular}%
+        }
+        \vspace{0.5em} % Reduced vertical padding since the table is taller now
+        \caption{Autorater Validation Metrics}
+        \label{fig:autorater_correlation_b}
+    \end{subfigure}
+    
+    \caption{Human \& Autorater Evaluation (Sparse Idea Setting). \textbf{(a)} Human preferences for \ourmethod{} vs.\ baselines. \textbf{(b)} GPT-5 strongly correlates with human scores on overall quality, alongside high inter-autorater consistency between distinct LLM judges.}
+    \label{fig:human_eval_combined}
+\end{figure}
