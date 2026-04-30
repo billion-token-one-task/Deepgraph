@@ -36,8 +36,13 @@ Signal Harvester (SQL-based, zero LLM cost)
   │
   ▼
 Experiment Forge → Validation Loop
-  │  scaffold experiments, run baselines,
-  │  test hypotheses, interpret results
+  │  compile research specs, select capabilities,
+  │  run single-script or benchmark-suite validation
+  │
+  ▼
+Evidence Gate → Manuscript → AI Review → Follow-up Plan
+  │  statistical report, publishability status,
+  │  grounded report/candidate, required experiments
   │
   ▼
 Knowledge Loop ◄── Meta-Learner
@@ -74,8 +79,16 @@ Knowledge Loop ◄── Meta-Learner
 - `novelty_verifier` — check if insights already exist in literature
 - `experiment_forge` — translate insights into runnable experiments
 - `validation_loop` — hypothesis-directed experiment engine
+- `research_spec_compiler` — normalize insight titles into reusable research specs
+- `capability_registry` — choose implemented offline experiment capabilities
+- `benchmark_suite` — run configured benchmark harnesses and record results
+- `statistical_reporter` — summarize multi-seed benchmark evidence
+- `evidence_gate` — decide whether outputs are preliminary, need more experiments, or are paper candidates
 - `result_interpreter` — parse outcomes into structured verdicts
 - `knowledge_loop` — feed results back into knowledge graph
+- `manuscript_writer` — generate grounded reports or evidence-gated paper candidates
+- `ai_reviewer` — review manuscript artifacts without changing experiment results
+- `review_planner` — turn reviewer-required experiments into follow-up plan artifacts
 - `meta_learner` — self-improve discovery strategy from experimental history
 
 ## Quick Start
@@ -117,6 +130,25 @@ python3.12 main.py
 
 The SciForge discovery pipeline has additional tuning knobs via `DISCOVERY_BULK_*` environment variables — see [config.py](config.py) for the full list.
 
+### SciForge Experiment Workflow
+
+Current experiment execution reuses `deep_insights` and `experiment_runs`; it does not create a separate research-project API. The workflow is:
+
+```text
+deep_insight
+  -> research_spec.json
+  -> capability selection
+  -> forge
+  -> single-script validation or benchmark-suite validation
+  -> statistical_report.json
+  -> evidence_gate.json
+  -> manuscript report or paper_candidate.md
+  -> AI review
+  -> followup_experiment_plan.json
+```
+
+The first implemented benchmark capability is offline grouped fairness classification. Safe RL/CMDP is registered as a planned capability but is not implemented yet.
+
 ## Science Taxonomy
 
 The `open_science` profile spans:
@@ -155,6 +187,9 @@ DeepGraph has evolved from a passive literature analysis tool into an active dis
 - Entity/relation/evidence graph with auditable entity resolution
 - Plain-language node summaries and opportunity surfacing
 - **Closed-loop discovery**: signal harvesting → insight generation → autonomous experiment → knowledge feedback
+- Auditable experiment artifacts: research specs, execution plans, metrics, benchmark results, statistics, logs, iteration summaries, and manifests
+- Evidence-gated manuscript generation: preliminary reports, additional-experiment reports, negative results, and `paper_candidate.md` only when evidence allows it
+- Structured AI review and follow-up experiment planning for generated manuscript packages
 - Meta-learning from experimental track record
 
 Still improving:
@@ -163,6 +198,10 @@ Still improving:
 - Cross-source deduplication
 - Richer scientific ontologies beyond built-in taxonomy packs
 - Large-scale historical backfills
+- Richer LaTeX templates, SLURM/GPU execution backends, and multi-round rebuttal automation
+- Additional real benchmark capabilities beyond the current offline fairness suite
+
+Generated manuscript packages are grounded in stored paper evidence and experiment artifacts, but they are not a guarantee of publishability. Evidence gates, AI review, and human review are required before submission. Failed runs should be classified by root cause before changing thresholds, seeds, prompts, or configuration.
 
 ## License
 

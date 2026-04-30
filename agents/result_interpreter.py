@@ -9,9 +9,72 @@ After the validation loop completes:
 import json
 import math
 import random
+from pathlib import Path
 from db import database as db
 
 REFUTE_MIN = 30
+
+
+def _load_metrics_artifact(workdir: str | None) -> dict:
+    if not workdir:
+        return {}
+    path = Path(workdir) / "artifacts" / "results" / "metrics.json"
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _load_json_artifact(workdir: str | None, relative_path: str) -> dict:
+    if not workdir:
+        return {}
+    path = Path(workdir) / relative_path
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _benchmark_suite_confirms(workdir: str | None) -> bool:
+    evidence_gate = _load_json_artifact(workdir, "artifacts/results/evidence_gate.json")
+    statistical_report = _load_json_artifact(workdir, "artifacts/results/statistical_report.json")
+    if not bool(statistical_report.get("comparisons")):
+        return False
+    if evidence_gate.get("manuscript_status") == "paper_ready_candidate":
+        return True
+    blocking = set(evidence_gate.get("blocking_reasons") or [])
+    satisfied = set(evidence_gate.get("satisfied_requirements") or [])
+    required = {
+        "has_benchmark_results",
+        "has_baseline_comparison",
+        "has_statistical_report",
+        "has_multi_seed",
+        "has_multi_dataset",
+        "has_ablation",
+    }
+    return blocking == {"review_requires_revision"} and required.issubset(satisfied)
+
+
+def _first_present(*values):
+    for value in values:
+        if value is not None:
+            return value
+    return None
+
+
+def _numbers_disagree(left, right, tolerance: float = 1e-9) -> bool:
+    if left is None or right is None:
+        return False
+    try:
+        return abs(float(left) - float(right)) > tolerance
+    except (TypeError, ValueError):
+        return True
 
 
 def _bootstrap_ci(values: list[float], n_resamples: int = 1000,
@@ -73,6 +136,27 @@ def interpret_run(run_id: int) -> dict:
 
     insight_id = run["deep_insight_id"]
     metric_name = run["baseline_metric_name"] or "metric"
+    metrics_artifact = _load_metrics_artifact(run.get("workdir"))
+    statistical_report = _load_json_artifact(run.get("workdir"), "artifacts/results/statistical_report.json")
+    benchmark_config = _load_json_artifact(run.get("workdir"), "benchmark_config.json")
+    benchmark_confirmed = _benchmark_suite_confirms(run.get("workdir"))
+    if benchmark_confirmed and statistical_report.get("primary_metric"):
+        metric_name = statistical_report.get("primary_metric")
+
+    if _numbers_disagree(run.get("baseline_metric_value"), metrics_artifact.get("baseline")):
+        return {
+            "status": "error",
+            "reason": "artifact_db_mismatch",
+            "run_id": run_id,
+            "field": "baseline",
+        }
+    if _numbers_disagree(run.get("best_metric_value"), metrics_artifact.get("best_value")):
+        return {
+            "status": "error",
+            "reason": "artifact_db_mismatch",
+            "run_id": run_id,
+            "field": "best_value",
+        }
 
     repro_iters = db.fetchall(
         """SELECT metric_value FROM experiment_iterations
@@ -93,8 +177,20 @@ def interpret_run(run_id: int) -> dict:
     all_test_values = [t["metric_value"] for t in test_iters
                        if t["metric_value"] is not None]
 
-    baseline = run["baseline_metric_value"] or (sum(repro_values) / len(repro_values) if repro_values else 0)
-    best = run["best_metric_value"] or (max(kept_values) if kept_values else baseline)
+    repro_baseline = (sum(repro_values) / len(repro_values)) if repro_values else None
+    baseline = _first_present(run.get("baseline_metric_value"), metrics_artifact.get("baseline"), repro_baseline)
+    best = _first_present(run.get("best_metric_value"), metrics_artifact.get("best_value"),
+                          (max(kept_values) if kept_values else None), baseline)
+
+    if baseline is None or best is None:
+        return {
+            "run_id": run_id,
+            "insight_id": insight_id,
+            "verdict": "inconclusive",
+            "reason": "missing_metrics",
+            "baseline": baseline,
+            "best": best,
+        }
 
     criteria_raw = run.get("success_criteria", "{}")
     try:
@@ -102,6 +198,8 @@ def interpret_run(run_id: int) -> dict:
     except (json.JSONDecodeError, TypeError):
         criteria = {}
     direction = criteria.get("metric_direction", "higher")
+    if benchmark_confirmed and statistical_report.get("metric_direction"):
+        direction = statistical_report.get("metric_direction")
 
     effect = best - baseline if direction == "higher" else baseline - best
     effect_pct = (effect / abs(baseline) * 100) if baseline != 0 else 0
@@ -112,7 +210,7 @@ def interpret_run(run_id: int) -> dict:
     _, repro_lo, repro_hi = _bootstrap_ci(repro_values) if repro_values else (0, 0, 0)
     _, kept_lo, kept_hi = _bootstrap_ci(kept_values) if kept_values else (0, 0, 0)
 
-    verdict = run.get("hypothesis_verdict", "inconclusive")
+    verdict = _first_present(run.get("hypothesis_verdict"), metrics_artifact.get("verdict"), "inconclusive")
     if verdict not in ("confirmed", "refuted", "inconclusive"):
         if effect > 0 and p_value < 0.05:
             verdict = "confirmed"
@@ -125,6 +223,9 @@ def interpret_run(run_id: int) -> dict:
     crash_count = sum(1 for t in test_iters if t["status"] == "crash")
     kept_count = sum(1 for t in test_iters if t["status"] == "keep")
 
+    if verdict == "confirmed" and (effect <= 0 or (kept_count == 0 and not benchmark_confirmed)):
+        verdict = "inconclusive"
+
     best_diff = ""
     for t in reversed(test_iters):
         if t["status"] == "keep" and t.get("code_diff"):
@@ -134,7 +235,25 @@ def interpret_run(run_id: int) -> dict:
     insight = db.fetchone("SELECT title, tier FROM deep_insights WHERE id=?", (insight_id,))
     insight_title = insight["title"] if insight else f"Insight {insight_id}"
 
-    if verdict == "confirmed":
+    if verdict == "confirmed" and benchmark_confirmed:
+        baseline_method = statistical_report.get("baseline_method") or "baseline"
+        candidate_method = statistical_report.get("candidate_method") or statistical_report.get("best_method") or "candidate"
+        reference_method = statistical_report.get("absolute_best_method")
+        claim_subject = benchmark_config.get("scoped_claim") or insight_title
+        reference_note = (
+            f" The aggregate reference frontier is reported separately as `{reference_method}`."
+            if reference_method and reference_method != candidate_method
+            else ""
+        )
+        claim_text = (
+            f"Benchmark-suite validation supports the scoped artifact-reporting claim: {str(claim_subject).rstrip('.')}. "
+            f"The configured candidate method `{candidate_method}` achieved {metric_name}={best:.6f} "
+            f"versus `{baseline_method}` baseline {baseline:.6f} "
+            f"(signed aggregate difference: {effect:+.6f}, descriptive percent change: {effect_pct:+.2f}%). "
+            "Dataset-level paired sign tests are reported in the statistical artifact."
+            f"{reference_note}"
+        )
+    elif verdict == "confirmed":
         claim_text = (
             f"Experimental validation confirms: {insight_title}. "
             f"The proposed method achieved {metric_name}={best:.6f} vs baseline {baseline:.6f} "

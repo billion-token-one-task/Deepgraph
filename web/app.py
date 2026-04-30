@@ -163,9 +163,137 @@ def api_taxonomy_opportunities(node_id):
     return jsonify(opp.get_node_opportunities(node_id))
 
 
+def _json_array(value) -> list:
+    if isinstance(value, list):
+        return value
+    if not value:
+        return []
+    try:
+        parsed = json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
+def _json_object(value) -> dict:
+    if isinstance(value, dict):
+        return value
+    if not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _deep_insight_type(row: dict) -> str:
+    return "paradigm_discovery" if int(row.get("tier") or 0) == 1 else "paper_idea"
+
+
+def _deep_insight_node_id(row: dict) -> str:
+    source_nodes = _json_array(row.get("source_node_ids"))
+    if source_nodes:
+        return str(source_nodes[0])
+    for field_name in ("field_a", "field_b"):
+        node_id = _json_object(row.get(field_name)).get("node_id")
+        if node_id:
+            return str(node_id)
+    return ROOT_NODE_ID
+
+
+def _deep_novelty_score(status: str | None) -> float | None:
+    return {
+        "novel": 5.0,
+        "partially_exists": 3.0,
+        "exists": 1.0,
+        "unchecked": None,
+        None: None,
+    }.get(status, None)
+
+
+def _deep_hypothesis(row: dict) -> str:
+    if int(row.get("tier") or 0) == 1:
+        parts = [
+            row.get("formal_structure"),
+            row.get("transformation"),
+            row.get("evidence_summary"),
+        ]
+    else:
+        method = _json_object(row.get("proposed_method"))
+        parts = [
+            row.get("problem_statement"),
+            method.get("one_line") or method.get("definition"),
+            row.get("evidence_summary"),
+        ]
+    return "\n\n".join(str(part) for part in parts if part)
+
+
+def _deep_experiment(row: dict) -> str:
+    if int(row.get("tier") or 0) == 1:
+        predictions = _json_array(row.get("predictions"))
+        lines = [
+            item if isinstance(item, str) else item.get("statement", "")
+            for item in predictions
+        ]
+        if row.get("falsification"):
+            lines.append(f"Falsification: {row.get('falsification')}")
+        return "\n".join(line for line in lines if line)
+    plan = _json_object(row.get("experimental_plan"))
+    return json.dumps(plan, ensure_ascii=False) if plan else ""
+
+
+def _normalize_legacy_insight(row: dict) -> dict:
+    item = dict(row)
+    item.setdefault("source_table", "insights")
+    item.setdefault("source_id", item.get("id"))
+    item.setdefault("deep_insight_id", None)
+    return item
+
+
+def _normalize_deep_insight(row: dict) -> dict:
+    item = dict(row)
+    deep_id = item.get("id")
+    novelty_score = _deep_novelty_score(item.get("novelty_status"))
+    feasibility_score = None
+    if item.get("adversarial_score") is not None:
+        feasibility_score = min(5.0, max(0.0, float(item.get("adversarial_score") or 0) / 2.0))
+    return {
+        "id": deep_id,
+        "source_table": "deep_insights",
+        "source_id": deep_id,
+        "deep_insight_id": deep_id,
+        "node_id": _deep_insight_node_id(item),
+        "insight_type": _deep_insight_type(item),
+        "title": item.get("title") or "Deep insight",
+        "hypothesis": _deep_hypothesis(item),
+        "evidence": item.get("evidence_summary") or "",
+        "experiment": _deep_experiment(item),
+        "impact": item.get("related_work_positioning") or "",
+        "novelty_score": novelty_score,
+        "feasibility_score": feasibility_score,
+        "supporting_papers": item.get("supporting_papers") or "[]",
+        "paradigm_score": item.get("adversarial_score") or 0,
+        "rank_rationale": item.get("adversarial_critique") or item.get("novelty_report") or "",
+        "rank": None,
+        "tier": item.get("tier"),
+        "status": item.get("status"),
+        "novelty_status": item.get("novelty_status"),
+        "created_at": item.get("created_at"),
+        "updated_at": item.get("updated_at"),
+    }
+
+
+def _insight_sort_key(item: dict) -> tuple:
+    novelty = float(item.get("novelty_score") or 0)
+    feasibility = float(item.get("feasibility_score") or 0)
+    created_at = item.get("created_at") or ""
+    return (novelty + feasibility, created_at)
+
+
 @app.route("/api/insights")
 def api_insights():
-    """Get deep research insights from the insight agent."""
+    """Get a unified insight feed for legacy insights and current deep discoveries."""
     limit = request.args.get("limit", 50, type=int)
     node_id = request.args.get("node_id", "")
     insight_type = request.args.get("type", "")
@@ -181,8 +309,32 @@ def api_insights():
     sql += " ORDER BY (novelty_score + feasibility_score) DESC, created_at DESC LIMIT ?"
     params.append(limit)
 
-    rows = db.fetchall(sql, tuple(params))
-    return jsonify(rows)
+    rows = [_normalize_legacy_insight(row) for row in db.fetchall(sql, tuple(params))]
+
+    deep_sql = "SELECT * FROM deep_insights WHERE 1=1"
+    deep_params = []
+    if node_id:
+        like = f"%{node_id}%"
+        deep_sql += " AND (source_node_ids LIKE ? OR field_a LIKE ? OR field_b LIKE ?)"
+        deep_params.extend([like, like, like])
+    if insight_type == "paradigm_discovery":
+        deep_sql += " AND tier=1"
+    elif insight_type == "paper_idea":
+        deep_sql += " AND tier=2"
+    elif insight_type:
+        deep_sql += " AND 0=1"
+    deep_sql += " ORDER BY CASE WHEN adversarial_score IS NOT NULL THEN adversarial_score ELSE 0 END DESC, created_at DESC LIMIT ?"
+    deep_params.append(limit)
+    try:
+        rows.extend(
+            _normalize_deep_insight(row)
+            for row in db.fetchall(deep_sql, tuple(deep_params))
+        )
+    except Exception:
+        pass
+
+    rows.sort(key=_insight_sort_key, reverse=True)
+    return jsonify(rows[:limit])
 
 
 @app.route("/api/patterns")
@@ -820,6 +972,9 @@ def api_experiments():
 @app.route("/api/experiments/<int:run_id>")
 def api_experiment_detail(run_id):
     """Get full detail for one experiment run including iterations."""
+    from pathlib import Path
+    from agents.artifact_manager import list_artifacts
+
     run = db.fetchone(
         """SELECT er.*, di.title as insight_title, di.tier as insight_tier
            FROM experiment_runs er
@@ -839,6 +994,7 @@ def api_experiment_detail(run_id):
         "run": dict(run),
         "iterations": iterations,
         "claims": claims,
+        "artifacts": list_artifacts(Path(run["workdir"])) if run.get("workdir") else [],
     })
 
 
@@ -891,6 +1047,45 @@ def api_run_experiment(run_id):
     return jsonify({"status": "started", "run_id": run_id})
 
 
+@app.route("/api/experiments/<int:run_id>/manuscript", methods=["POST"])
+def api_generate_manuscript(run_id):
+    """Generate a grounded manuscript package for a completed experiment run."""
+    from agents.manuscript_writer import generate_manuscript
+    result = generate_manuscript(run_id)
+    status = 404 if result.get("reason") == "run_not_found" else 200
+    return jsonify(result), status
+
+
+@app.route("/api/experiments/<int:run_id>/review", methods=["POST"])
+def api_review_manuscript(run_id):
+    """Run structured AI review over a generated manuscript package."""
+    from agents.ai_reviewer import review_manuscript
+    result = review_manuscript(run_id)
+    if result.get("reason") == "run_not_found":
+        status = 404
+    elif result.get("status") == "error":
+        status = 400
+    else:
+        from agents.evidence_gate import write_evidence_gate
+        result["evidence_gate"] = write_evidence_gate(run_id)
+        status = 200
+    return jsonify(result), status
+
+
+@app.route("/api/experiments/<int:run_id>/plan_followup", methods=["POST"])
+def api_plan_followup(run_id):
+    """Convert AI review feedback into follow-up experiment plan artifacts."""
+    from agents.review_planner import plan_followup_experiments
+    result = plan_followup_experiments(run_id)
+    if result.get("reason") == "run_not_found":
+        status = 404
+    elif result.get("status") == "error":
+        status = 400
+    else:
+        status = 200
+    return jsonify(result), status
+
+
 @app.route("/api/experiments/run_full", methods=["POST"])
 def api_run_full_experiment():
     """Full pipeline: forge + validation loop + knowledge loop for a deep insight."""
@@ -901,6 +1096,8 @@ def api_run_full_experiment():
     insight_id = request.json.get("insight_id") if request.is_json else None
     if not insight_id:
         return jsonify({"error": "insight_id required"}), 400
+    generate_manuscript_after = bool(request.json.get("generate_manuscript")) if request.is_json else False
+    review_after = bool(request.json.get("review")) if request.is_json else False
 
     def do_full():
         log_event("sciforge", {"step": "full_start", "insight_id": insight_id})
@@ -917,6 +1114,24 @@ def api_run_full_experiment():
                                    "verdict": loop_result.get("verdict", "?")})
 
             process_completed_run(run_id)
+
+            if generate_manuscript_after:
+                from agents.manuscript_writer import generate_manuscript
+                manuscript_result = generate_manuscript(run_id)
+                log_event("sciforge", {"step": "manuscript_done", "run_id": run_id,
+                                       "status": manuscript_result.get("status")})
+
+            if review_after:
+                from agents.ai_reviewer import review_manuscript
+                review_result = review_manuscript(run_id)
+                log_event("sciforge", {"step": "review_done", "run_id": run_id,
+                                       "status": review_result.get("status")})
+                if review_result.get("status") == "complete":
+                    from agents.evidence_gate import write_evidence_gate
+                    gate_result = write_evidence_gate(run_id)
+                    log_event("sciforge", {"step": "evidence_gate_after_review", "run_id": run_id,
+                                           "status": gate_result.get("manuscript_status")})
+
             log_event("sciforge", {"step": "full_done", "run_id": run_id,
                                    "verdict": loop_result.get("verdict", "?")})
         except Exception as e:

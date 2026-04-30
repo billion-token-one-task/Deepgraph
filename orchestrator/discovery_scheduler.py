@@ -36,7 +36,7 @@ def _init_schema_v2():
     schema_path = Path(__file__).parent.parent / "db" / "schema_v2.sql"
     if schema_path.exists():
         conn = db.get_conn()
-        conn.executescript(schema_path.read_text())
+        conn.executescript(schema_path.read_text(encoding="utf-8"))
         conn.commit()
 
 

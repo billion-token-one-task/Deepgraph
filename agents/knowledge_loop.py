@@ -33,6 +33,7 @@ def cascade_from_claim(claim_id: int):
         source_nodes = json.loads(insight.get("source_node_ids") or "[]")
     except (json.JSONDecodeError, TypeError):
         pass
+    source_nodes = _existing_source_nodes(source_nodes)
 
     supporting = []
     try:
@@ -47,6 +48,20 @@ def cascade_from_claim(claim_id: int):
 
     db.execute("UPDATE experimental_claims SET cascaded=1 WHERE id=?", (claim_id,))
     db.commit()
+
+
+def _existing_source_nodes(source_nodes: list) -> list[str]:
+    """Keep only taxonomy nodes that exist, preserving order."""
+    valid = []
+    seen = set()
+    for node_id in source_nodes:
+        node_id = str(node_id)
+        if node_id in seen:
+            continue
+        if db.fetchone("SELECT id FROM taxonomy_nodes WHERE id=?", (node_id,)):
+            valid.append(node_id)
+            seen.add(node_id)
+    return valid
 
 
 def _cascade_confirmation(insight: dict, source_nodes: list, supporting: list, effect_size: float):
@@ -229,6 +244,10 @@ def process_completed_run(run_id: int):
     print(f"[KLOOP] Processing completed run {run_id}...", flush=True)
 
     result = interpret_run(run_id)
+    if result.get("status") == "error":
+        print(f"[KLOOP] Run {run_id} interpretation failed: {result.get('reason')}", flush=True)
+        return result
+
     verdict = result.get("verdict", "inconclusive")
 
     claims = db.fetchall(

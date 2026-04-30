@@ -8,6 +8,10 @@ venv/
 
 .pytest_cache/
 .mypy_cache/
+.tmp/
+.test_tmp/
+.test_runs/
+sciforge_runs/
 
 build/
 dist/
@@ -18,6 +22,7 @@ dist/
 *.db-wal
 server.log
 server_*.log
+web-server.*.log
 logs/
 *.pid
 bulk_discovery_result.json

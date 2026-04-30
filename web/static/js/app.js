@@ -339,6 +339,27 @@ function scrollFeedToBottom() {
     if (feed) feed.scrollTop = feed.scrollHeight;
 }
 
+function insightScoreText(ins) {
+    const novelty = ins.novelty_score == null ? '?' : Number(ins.novelty_score).toFixed(1).replace(/\.0$/, '');
+    const feasibility = ins.feasibility_score == null ? '?' : Number(ins.feasibility_score).toFixed(1).replace(/\.0$/, '');
+    return `N:${novelty}/5 F:${feasibility}/5`;
+}
+
+function insightActionButtons(ins) {
+    const insightId = Number(ins.source_id || ins.id);
+    if (ins.source_table === 'deep_insights') {
+        return `
+            <button class="btn-research" onclick="window._dg.runFullExperiment(${insightId})">SciForge Run</button>
+            <button class="btn-preview" onclick="window._dg.forgeExperiment(${insightId})">Forge Only</button>
+            <button class="btn-preview" onclick="window._dg.launchDeepResearch(${insightId})">Deep Research</button>
+        `;
+    }
+    return `
+        <button class="btn-research" onclick="window._dg.launchResearch(${insightId})">Launch Research</button>
+        <button class="btn-preview" onclick="window._dg.previewProposal(${insightId})">Preview Proposal</button>
+    `;
+}
+
 // ── Recently Discovered (Overview) ───────────────────────────────────
 
 async function loadRecentlyDiscovered() {
@@ -364,7 +385,7 @@ function renderRecentlyDiscovered(data, insights) {
                 type: ins.insight_type || 'insight',
                 title: ins.title || 'Insight',
                 desc: ins.hypothesis || '',
-                meta: `${esc(ins.node_id)} | N:${ins.novelty_score}/5 F:${ins.feasibility_score}/5`,
+                meta: `${esc(ins.node_id)} | ${insightScoreText(ins)}`,
                 nodeId: ins.node_id,
             });
         }
@@ -614,7 +635,7 @@ function renderExploreSummary(data) {
             return `<div class="insight-card" style="border-left: 3px solid ${color};">
                 <div class="insight-header">
                     <span class="insight-type" style="color:${color};">${esc((ins.insight_type || '').replace(/_/g, ' '))}</span>
-                    <span class="insight-scores">N:${ins.novelty_score}/5 F:${ins.feasibility_score}/5</span>
+                    <span class="insight-scores">${insightScoreText(ins)}</span>
                 </div>
                 <div class="insight-title">${esc(ins.title)}</div>
                 ${paperLinks ? `<div class="insight-papers">${paperLinks}</div>` : ''}
@@ -623,8 +644,7 @@ function renderExploreSummary(data) {
                 <div class="insight-experiment"><span class="insight-label">Experiment:</span> ${esc(ins.experiment)}</div>
                 ${ins.impact ? `<div class="insight-impact"><span class="insight-label">Impact:</span> ${esc(ins.impact)}</div>` : ''}
                 <div class="insight-actions">
-                    <button class="btn-research" onclick="window._dg.launchResearch(${ins.id})">Launch Research</button>
-                    <button class="btn-preview" onclick="window._dg.previewProposal(${ins.id})">Preview Proposal</button>
+                    ${insightActionButtons(ins)}
                 </div>
             </div>`;
         }).join('');
@@ -1114,8 +1134,8 @@ async function loadInsightsTab() {
 
         // Sort
         if (sortFilter === 'paradigm') insights.sort((a, b) => (b.paradigm_score || 0) - (a.paradigm_score || 0));
-        else if (sortFilter === 'novelty') insights.sort((a, b) => b.novelty_score - a.novelty_score);
-        else if (sortFilter === 'feasibility') insights.sort((a, b) => b.feasibility_score - a.feasibility_score);
+        else if (sortFilter === 'novelty') insights.sort((a, b) => (b.novelty_score || 0) - (a.novelty_score || 0));
+        else if (sortFilter === 'feasibility') insights.sort((a, b) => (b.feasibility_score || 0) - (a.feasibility_score || 0));
         else if (sortFilter === 'recent') insights.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
         // default: by combined score (already sorted by API)
 
@@ -1151,8 +1171,8 @@ async function loadInsightsTab() {
                 <div class="insight-header">
                     <span class="insight-type" style="color:${color};">${esc((ins.insight_type || '').replace(/_/g, ' '))}</span>
                     ${psBadge}
-                    <span class="insight-scores">N:${ins.novelty_score}/5 F:${ins.feasibility_score}/5</span>
-                    <span class="insight-area" onclick="window._dg.exploreNode('${esc(ins.node_id)}')" style="cursor:pointer;color:#6a7a8a;font-size:0.68rem;">${esc(ins.node_id)}</span>
+                    <span class="insight-scores">${insightScoreText(ins)}</span>
+                    <span class="insight-area" onclick="window._dg.exploreNode('${esc(ins.node_id || '')}')" style="cursor:pointer;color:#6a7a8a;font-size:0.68rem;">${esc(ins.node_id || '')}</span>
                 </div>
                 <div class="insight-title">${esc(ins.title)}</div>
                 ${ins.rank_rationale ? `<div class="insight-rationale">${esc(ins.rank_rationale)}</div>` : ''}
@@ -1161,8 +1181,7 @@ async function loadInsightsTab() {
                 <div class="insight-experiment"><span class="insight-label">Experiment:</span> ${esc(ins.experiment)}</div>
                 ${ins.impact ? `<div class="insight-impact"><span class="insight-label">Impact:</span> ${esc(ins.impact)}</div>` : ''}
                 <div class="insight-actions">
-                    <button class="btn-research" onclick="window._dg.launchResearch(${ins.id})">Generate Full Plan</button>
-                    <button class="btn-preview" onclick="window._dg.previewProposal(${ins.id})">Preview Proposal</button>
+                    ${insightActionButtons(ins)}
                 </div>
             </div>`;
         }).join('');
@@ -1237,11 +1256,11 @@ function renderOpportunities() {
 
         return `<div class="opp-card" style="border-left: 3px solid ${meta.color};">
             <div class="opp-type-badge" style="background:${meta.color}22;color:${meta.color};">${esc(meta.label)}</div>
-            <div class="opp-header">
-                <div class="opp-title">${esc(ins.title)}</div>
-                <div class="opp-score-group">
-                    <span class="opp-score-item" title="Novelty" style="color:${(ins.novelty_score||0) >= 4 ? '#ffaa33' : '#6a7a8a'};">N:${ins.novelty_score || '?'}/5</span>
-                    <span class="opp-score-item" title="Feasibility" style="color:${(ins.feasibility_score||0) >= 4 ? '#44dd88' : '#6a7a8a'};">F:${ins.feasibility_score || '?'}/5</span>
+                <div class="opp-header">
+                    <div class="opp-title">${esc(ins.title)}</div>
+                    <div class="opp-score-group">
+                    <span class="opp-score-item" title="Novelty" style="color:${(ins.novelty_score||0) >= 4 ? '#ffaa33' : '#6a7a8a'};">N:${ins.novelty_score == null ? '?' : ins.novelty_score}/5</span>
+                    <span class="opp-score-item" title="Feasibility" style="color:${(ins.feasibility_score||0) >= 4 ? '#44dd88' : '#6a7a8a'};">F:${ins.feasibility_score == null ? '?' : ins.feasibility_score}/5</span>
                 </div>
             </div>
             ${paperLinks ? `<div class="opp-papers">${paperLinks}</div>` : ''}
@@ -1832,6 +1851,20 @@ window._dg = {
             const run = data.run;
             const iters = data.iterations || [];
             const claims = data.claims || [];
+            const artifacts = data.artifacts || [];
+            const artifactPaths = artifacts.map(a => a.path || '');
+            const hasManuscript = artifactPaths.some(p => (
+                p.includes('artifacts/manuscript/paper_candidate.md') ||
+                p.includes('artifacts/manuscript/paper.md') ||
+                p.includes('artifacts/manuscript/additional_experiments_required.md') ||
+                p.includes('artifacts/manuscript/preliminary_report.md') ||
+                p.includes('artifacts/manuscript/negative_result_report.md')
+            ));
+            const hasReview = artifactPaths.some(p => p.includes('artifacts/reviews/review.json'));
+            const evidenceGate = artifacts.find(a => a.path === 'artifacts/results/evidence_gate.json');
+            const followupPlan = artifacts.find(a => a.path === 'artifacts/results/followup_experiment_plan.json');
+            const manuscriptStatus = evidenceGate?.metadata?.manuscript_status || null;
+            const followupStatus = followupPlan?.metadata?.status || null;
 
             let html = `<div class="proposal-content" style="max-height:80vh;">
                 <div class="proposal-header">
@@ -1844,7 +1877,24 @@ window._dg = {
                 <p>Baseline: ${run.baseline_metric_value || '?'} | Best: ${run.best_metric_value || '?'} | Effect: ${run.effect_pct != null ? run.effect_pct.toFixed(2) + '%' : '?'}</p>
                 <p>Iterations: ${run.iterations_total || 0} total, ${run.iterations_kept || 0} kept</p>
                 ${run.codebase_url ? `<p>Codebase: <a href="${esc(run.codebase_url)}" target="_blank">${esc(run.codebase_url)}</a></p>` : ''}
-                ${run.error_message ? `<p style="color:#c4453a;">Error: ${esc(run.error_message)}</p>` : ''}`;
+                ${run.error_message ? `<p style="color:#c4453a;">Error: ${esc(run.error_message)}</p>` : ''}
+                <div class="insight-actions" style="margin:10px 0;">
+                    ${['completed', 'failed'].includes(run.status) || run.hypothesis_verdict ? `<button class="btn-research" onclick="window._dg.generateManuscript(${run.id})">Generate Manuscript</button>` : ''}
+                    ${hasManuscript ? `<button class="btn-preview" onclick="window._dg.reviewManuscript(${run.id})">AI Review</button>` : ''}
+                    ${hasReview ? `<button class="btn-preview" onclick="window._dg.planFollowup(${run.id})">Plan Follow-up</button>` : ''}
+                </div>`;
+
+            if (manuscriptStatus || followupStatus) {
+                html += `<h4>Evidence Gate</h4>
+                <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:8px;margin:8px 0 14px;">
+                    ${manuscriptStatus ? `<div style="padding:8px;border-left:3px solid var(--accent);background:var(--bg-elevated);font-size:0.78rem;">
+                        <strong>Manuscript status</strong><br>${esc(manuscriptStatus)}
+                    </div>` : ''}
+                    ${followupStatus ? `<div style="padding:8px;border-left:3px solid #a8842a;background:var(--bg-elevated);font-size:0.78rem;">
+                        <strong>Follow-up plan</strong><br>${esc(followupStatus)}${followupPlan?.metadata?.experiment_count != null ? ` · ${followupPlan.metadata.experiment_count} experiments` : ''}
+                    </div>` : ''}
+                </div>`;
+            }
 
             if (iters.length) {
                 html += '<h4>Iteration History</h4><table class="matrix-table" style="font-size:0.72rem;"><thead><tr><th>#</th><th>Phase</th><th>Metric</th><th>Status</th><th>Description</th></tr></thead><tbody>';
@@ -1866,6 +1916,14 @@ window._dg = {
                 }
             }
 
+            if (artifacts.length) {
+                html += '<h4>Artifacts</h4><table class="matrix-table" style="font-size:0.72rem;"><thead><tr><th>Type</th><th>Path</th><th>Created</th></tr></thead><tbody>';
+                for (const art of artifacts) {
+                    html += `<tr><td>${esc(art.type || '')}</td><td>${esc(art.path || '')}</td><td>${esc(art.created_at || '')}</td></tr>`;
+                }
+                html += '</tbody></table>';
+            }
+
             html += '</div></div>';
 
             const modal = document.createElement('div');
@@ -1874,6 +1932,50 @@ window._dg = {
             document.body.appendChild(modal);
         } catch (e) {
             alert('Failed to load: ' + e.message);
+        }
+    },
+
+    async generateManuscript(runId) {
+        if (!confirm('Generate manuscript artifacts for this experiment?')) return;
+        try {
+            const result = await api(`/api/experiments/${runId}/manuscript`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: '{}',
+            });
+            alert(result.status === 'complete' ? 'Manuscript generated.' : `Manuscript step returned: ${result.reason || result.status}`);
+            await this.viewExperiment(runId);
+        } catch (e) {
+            alert('Failed: ' + e.message);
+        }
+    },
+
+    async reviewManuscript(runId) {
+        if (!confirm('Run AI review on the generated manuscript?')) return;
+        try {
+            const result = await api(`/api/experiments/${runId}/review`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: '{}',
+            });
+            alert(result.status === 'complete' ? 'AI review generated.' : `Review step returned: ${result.reason || result.status}`);
+            await this.viewExperiment(runId);
+        } catch (e) {
+            alert('Failed: ' + e.message);
+        }
+    },
+
+    async planFollowup(runId) {
+        try {
+            const result = await api(`/api/experiments/${runId}/plan_followup`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: '{}',
+            });
+            alert(result.status === 'needs_followup' ? 'Follow-up plan generated.' : `Follow-up planner returned: ${result.reason || result.status}`);
+            await this.viewExperiment(runId);
+        } catch (e) {
+            alert('Failed: ' + e.message);
         }
     },
 

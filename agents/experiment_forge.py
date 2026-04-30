@@ -13,9 +13,14 @@ import os
 import subprocess
 import textwrap
 import time
+import uuid
 from pathlib import Path
 
 from agents.llm_client import call_llm, call_llm_json
+from agents.artifact_manager import record_artifact
+from agents.capability_registry import select_capability
+from agents.experiment_plan_compiler import compile_execution_plan
+from agents.research_spec_compiler import compile_research_spec, compile_and_write_research_spec
 from config import (
     EXPERIMENT_EARLY_STOP_THRESHOLD,
     EXPERIMENT_MAX_ITERATIONS,
@@ -36,7 +41,7 @@ You will receive:
 2. An experimental plan (baselines, datasets, metrics, ablations)
 3. A codebase description (what repo was cloned, its structure)
 
-You must output JSON with three keys:
+You must output JSON with these keys:
 
 {
   "program_md": "Complete program.md content in Markdown (instructions for the coding agent)",
@@ -47,7 +52,8 @@ You must output JSON with three keys:
     "exciting": <number>,
     "solid": <number>,
     "disappointing": <number>
-  }
+  },
+  "train_py": "Optional bootstrap experiment script when no runnable training/evaluation entrypoint exists"
 }
 
 ## program.md Requirements
@@ -62,7 +68,7 @@ You must output JSON with three keys:
 - Self-contained Python script
 - Takes a log file or results directory as input
 - Outputs the primary metric value to stdout
-- Handles errors gracefully (outputs 0.0 on failure)
+- Handles errors gracefully without inventing metrics. If the metric cannot be computed, print a diagnostic such as "metric not found" and exit nonzero.
 
 ## success_criteria Requirements
 - Use the primary metric from the experimental plan
@@ -126,6 +132,48 @@ def _parse_insight_fields(insight: dict) -> dict:
     return parsed
 
 
+def _as_dict(value) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+def _text(value, default: str = "") -> str:
+    if value is None:
+        return default
+    return str(value)
+
+
+def _is_fairlearn_codebase(codebase: dict) -> bool:
+    text = " ".join(str(codebase.get(key, "")) for key in ("url", "name", "main_train_file"))
+    return "fairlearn" in text.lower()
+
+
+def _method_context(parsed: dict) -> dict:
+    """Return a method-like context for both Tier 2 and Tier 1 insights."""
+    method = _as_dict(parsed.get("proposed_method"))
+    if method:
+        return method
+
+    title = parsed.get("title") or "Paradigm validation"
+    formal = parsed.get("formal_structure") or parsed.get("evidence_summary") or ""
+    transformation = parsed.get("transformation") or ""
+    predictions = parsed.get("predictions")
+    if isinstance(predictions, list):
+        prediction_text = " ".join(str(p) for p in predictions[:3])
+    else:
+        prediction_text = str(predictions or "")
+
+    definition = "\n".join(
+        part for part in (str(formal)[:900], str(transformation)[:700], prediction_text[:500])
+        if part
+    )
+    return {
+        "name": title[:120],
+        "type": "paradigm_validation",
+        "one_line": (parsed.get("evidence_summary") or title)[:400],
+        "definition": definition or title,
+    }
+
+
 def scout_codebase(insight: dict) -> dict:
     """Find the best codebase for implementing a hypothesis.
 
@@ -133,8 +181,8 @@ def scout_codebase(insight: dict) -> dict:
     knowledge graph context about what methods/datasets are involved.
     """
     parsed = _parse_insight_fields(insight)
-    method = parsed.get("proposed_method", {})
-    plan = parsed.get("experimental_plan", {})
+    method = _method_context(parsed)
+    plan = _as_dict(parsed.get("experimental_plan"))
     node_ids = parsed.get("source_node_ids", [])
 
     context_parts = [f"# Method to Implement\n"]
@@ -160,9 +208,10 @@ def scout_codebase(insight: dict) -> dict:
     context_parts.append(f"\n# Research Area")
     context_parts.append(f"Taxonomy nodes: {', '.join(node_ids[:5])}")
 
-    if parsed.get("problem_statement"):
+    problem_statement = _text(parsed.get("problem_statement"))
+    if problem_statement:
         context_parts.append(f"\n# Problem")
-        context_parts.append(parsed["problem_statement"][:400])
+        context_parts.append(problem_statement[:400])
 
     graph_methods = db.fetchall("""
         SELECT DISTINCT ge.canonical_name, ge.description
@@ -196,7 +245,8 @@ def setup_workspace(insight_id: int, codebase: dict) -> Path:
     safe_title = (insight["title"] if insight else "unknown")[:40]
     safe_title = "".join(c if c.isalnum() or c in "-_" else "_" for c in safe_title)
 
-    workdir = EXPERIMENT_WORKDIR / f"exp_{insight_id}_{safe_title}"
+    run_suffix = uuid.uuid4().hex[:10]
+    workdir = EXPERIMENT_WORKDIR / f"exp_{insight_id}_{safe_title}_{run_suffix}"
     workdir.mkdir(parents=True, exist_ok=True)
 
     code_dir = workdir / "code"
@@ -222,8 +272,8 @@ def setup_workspace(insight_id: int, codebase: dict) -> Path:
 def generate_scaffold(insight: dict, codebase: dict, workdir: Path) -> dict:
     """Generate program.md, evaluate.py, and success_criteria.json using LLM."""
     parsed = _parse_insight_fields(insight)
-    method = parsed.get("proposed_method", {})
-    plan = parsed.get("experimental_plan", {})
+    method = _method_context(parsed)
+    plan = _as_dict(parsed.get("experimental_plan"))
 
     code_dir = workdir / "code"
     code_structure = ""
@@ -240,10 +290,10 @@ def generate_scaffold(insight: dict, codebase: dict, workdir: Path) -> dict:
 
     prompt_parts = [
         f"# Proposed Method",
-        f"Name: {method.get('name', '?')}",
-        f"Type: {method.get('type', '?')}",
-        f"Summary: {method.get('one_line', '')}",
-        f"Definition:\n{method.get('definition', 'N/A')[:800]}",
+        f"Name: {_text(method.get('name'), '?')}",
+        f"Type: {_text(method.get('type'), '?')}",
+        f"Summary: {_text(method.get('one_line'))}",
+        f"Definition:\n{_text(method.get('definition'), 'N/A')[:800]}",
     ]
     if method.get("pseudocode"):
         prompt_parts.append(f"Pseudocode:\n{method['pseudocode'][:500]}")
@@ -266,8 +316,8 @@ def generate_scaffold(insight: dict, codebase: dict, workdir: Path) -> dict:
         prompt_parts.append(f"File structure:\n{code_structure}")
 
     prompt_parts.append(f"\n# Problem Context")
-    prompt_parts.append(parsed.get("problem_statement", "")[:300])
-    prompt_parts.append(f"Weakness: {parsed.get('existing_weakness', '')[:300]}")
+    prompt_parts.append(_text(parsed.get("problem_statement"))[:300])
+    prompt_parts.append(f"Weakness: {_text(parsed.get('existing_weakness'))[:300]}")
 
     prompt = "\n".join(prompt_parts)
 
@@ -290,6 +340,10 @@ def generate_scaffold(insight: dict, codebase: dict, workdir: Path) -> dict:
 
     code_dir = workdir / "code"
     code_dir.mkdir(parents=True, exist_ok=True)
+    has_train_entrypoint = bool(list(code_dir.glob("train*.py")))
+    if not train_py and not has_train_entrypoint:
+        fallback = _fallback_scaffold(method, plan, codebase)
+        train_py = fallback.get("train_py", "")
     if train_py and len(train_py) > 50:
         (code_dir / "train.py").write_text(train_py, encoding="utf-8")
         print(f"[FORGE] Bootstrap train.py written ({len(train_py)} chars)", flush=True)
@@ -312,7 +366,8 @@ def _fallback_scaffold(method: dict, plan: dict, codebase: dict) -> dict:
     train_file = codebase.get("main_train_file", "train.py")
 
     metrics = plan.get("metrics", {})
-    primary_metric = metrics.get("primary", "accuracy") if isinstance(metrics, dict) else "accuracy"
+    explicit_metric = metrics.get("primary") if isinstance(metrics, dict) else None
+    primary_metric = explicit_metric or ("fairness_score" if _is_fairlearn_codebase(codebase) else "accuracy")
 
     program_md = textwrap.dedent(f"""\
     # SciForge Experiment: {method_name}
@@ -358,17 +413,39 @@ def _fallback_scaffold(method: dict, plan: dict, codebase: dict) -> dict:
             if matches:
                 print(f"metric_value: {{matches[-1]}}")
             else:
-                print("metric_value: 0.0")
+                print("metric not found")
+                raise SystemExit(1)
         except Exception as e:
-            print(f"metric_value: 0.0")
+            print(f"metric not found: {{e}}")
+            raise SystemExit(1)
 
     if __name__ == "__main__":
         main()
     """)
 
+    if _is_fairlearn_codebase(codebase):
+        train_py = _fairlearn_fallback_train_py(primary_metric)
+    else:
+        train_py = textwrap.dedent(f"""\
+        # Auto-generated fallback proxy baseline.
+        # This is a minimal synthetic sanity check, not a substitute for a real benchmark.
+        def main():
+            examples = [(i, 1 if i % 5 in (0, 1) else 0) for i in range(100)]
+            correct = 0
+            for x, y in examples:
+                pred = 1 if x % 5 == 0 else 0
+                correct += int(pred == y)
+            metric_value = correct / len(examples)
+            print(f"{primary_metric}: {{metric_value}}")
+
+        if __name__ == "__main__":
+            main()
+        """)
+
     return {
         "program_md": program_md,
         "evaluate_py": evaluate_py,
+        "train_py": train_py,
         "success_criteria": {
             "metric_name": primary_metric,
             "metric_direction": "higher",
@@ -395,6 +472,19 @@ def build_proxy_config(plan: dict) -> dict:
     }
 
 
+def _benchmark_config_from_capability(capability: dict, research_spec: dict) -> dict | None:
+    if not capability.get("implemented") or not capability.get("runner"):
+        return None
+    config = dict(capability.get("default_config") or {})
+    primary = (research_spec.get("primary_metrics") or [None])[0]
+    if primary:
+        config["primary_metric"] = primary
+    config.setdefault("metric_direction", "higher")
+    config["schema_version"] = 1
+    config["capability"] = capability["id"]
+    return config
+
+
 def forge_experiment(insight_id: int) -> dict:
     """Full forge pipeline: scout codebase -> setup workspace -> generate scaffold.
 
@@ -408,7 +498,7 @@ def forge_experiment(insight_id: int) -> dict:
         return {"error": f"Deep insight {insight_id} not found"}
 
     parsed = _parse_insight_fields(dict(insight))
-    plan = parsed.get("experimental_plan", {})
+    plan = _as_dict(parsed.get("experimental_plan"))
 
     # Step 1: Scout codebase
     print(f"[FORGE] Scouting codebase...", flush=True)
@@ -422,6 +512,17 @@ def forge_experiment(insight_id: int) -> dict:
     # Step 3: Generate scaffold
     print(f"[FORGE] Generating scaffold (program.md, evaluate.py, success_criteria)...", flush=True)
     scaffold = generate_scaffold(dict(insight), codebase, workdir)
+
+    # Step 3b: Compile a structured execution plan from existing insight/scaffold data.
+    execution_plan = compile_execution_plan(dict(insight), workdir, codebase, scaffold)
+    research_spec = compile_research_spec(dict(insight))
+    capability = select_capability(research_spec)
+    benchmark_config = _benchmark_config_from_capability(capability, research_spec)
+    if benchmark_config:
+        (workdir / "benchmark_config.json").write_text(
+            json.dumps(benchmark_config, indent=2),
+            encoding="utf-8",
+        )
 
     # Step 4: Build proxy config
     proxy = build_proxy_config(plan)
@@ -451,6 +552,17 @@ def forge_experiment(insight_id: int) -> dict:
     db.commit()
     run_id = cur.lastrowid
 
+    record_artifact(workdir, run_id, "execution_plan", workdir / "execution_plan.json", {
+        "primary_metric": execution_plan.get("primary_metric"),
+        "metric_direction": execution_plan.get("metric_direction"),
+    })
+    research_spec = compile_and_write_research_spec(dict(insight), workdir, run_id)
+    if benchmark_config:
+        record_artifact(workdir, run_id, "benchmark_config", workdir / "benchmark_config.json", {
+            "capability": benchmark_config.get("capability"),
+            "primary_metric": benchmark_config.get("primary_metric"),
+        })
+
     # Update deep_insight status
     db.execute(
         "UPDATE deep_insights SET status='forged', evoscientist_workdir=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
@@ -466,5 +578,89 @@ def forge_experiment(insight_id: int) -> dict:
         "codebase": codebase,
         "success_criteria": success,
         "proxy_config": proxy,
+        "execution_plan": execution_plan,
+        "research_spec": research_spec,
+        "execution_mode": "benchmark_suite" if benchmark_config else "single_script",
         "scaffold_tokens": scaffold.get("tokens", 0),
     }
+
+
+def _fairlearn_fallback_train_py(primary_metric: str) -> str:
+    """A small real Fairlearn benchmark harness for library-only checkouts."""
+    return textwrap.dedent(f"""\
+    # Auto-generated Fairlearn proxy benchmark.
+    # It is intentionally small and deterministic, but it runs the cloned Fairlearn code.
+    import numpy as np
+    from fairlearn.reductions import DemographicParity, ExponentiatedGradient
+    from sklearn.datasets import make_classification
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.metrics import accuracy_score
+    from sklearn.model_selection import train_test_split
+
+
+    USE_CONSTRAINED_METHOD = False
+
+
+    def make_grouped_data(seed=7, n_samples=800):
+        rng = np.random.default_rng(seed)
+        x, y = make_classification(
+            n_samples=n_samples,
+            n_features=8,
+            n_informative=4,
+            n_redundant=1,
+            random_state=seed,
+        )
+        sensitive = (x[:, 0] + 0.8 * rng.normal(size=n_samples) > 0).astype(int)
+        y = np.where((sensitive == 1) & (rng.random(n_samples) < 0.18), 1, y)
+        y = np.where((sensitive == 0) & (rng.random(n_samples) < 0.08), 0, y)
+        x = np.column_stack([x, sensitive])
+        return x, y, sensitive
+
+
+    def demographic_parity_gap(predictions, sensitive_features):
+        rates = []
+        for group in (0, 1):
+            mask = sensitive_features == group
+            rates.append(float(np.mean(predictions[mask])) if np.any(mask) else 0.0)
+        return abs(rates[1] - rates[0])
+
+
+    def build_model():
+        estimator = LogisticRegression(max_iter=1000, solver="lbfgs")
+        if USE_CONSTRAINED_METHOD:
+            return ExponentiatedGradient(
+                estimator,
+                constraints=DemographicParity(),
+                eps=0.02,
+                max_iter=25,
+            )
+        return estimator
+
+
+    def main():
+        x, y, sensitive = make_grouped_data()
+        x_train, x_test, y_train, y_test, a_train, a_test = train_test_split(
+            x, y, sensitive, test_size=0.35, random_state=11, stratify=y
+        )
+        model = build_model()
+        if USE_CONSTRAINED_METHOD:
+            model.fit(x_train, y_train, sensitive_features=a_train)
+        else:
+            model.fit(x_train, y_train)
+        predictions = model.predict(x_test)
+        accuracy = float(accuracy_score(y_test, predictions))
+        dp_gap = demographic_parity_gap(predictions, a_test)
+        fairness_score = accuracy - 0.45 * dp_gap
+        metrics = {{
+            "accuracy": accuracy,
+            "demographic_parity_gap": dp_gap,
+            "fairness_score": fairness_score,
+        }}
+        for name, value in metrics.items():
+            print(f"{{name}}: {{value}}")
+        print(f"{primary_metric}: {{metrics.get('{primary_metric}', fairness_score)}}")
+
+
+    if __name__ == "__main__":
+        main()
+    """)

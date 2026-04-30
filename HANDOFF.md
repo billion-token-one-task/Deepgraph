@@ -1,4 +1,57 @@
-# DeepGraph → EvoScientist: 架构与待完成任务
+# DeepGraph → SciForge: 架构与待完成任务
+
+## 2026-04-29 本地接手状态
+
+当前工作区：`E:\Download\Softwares\Deepgraph`
+
+当前重点已经从外部 EvoScientist 执行，收敛为复用本仓库现有 `deep_insights` / `experiment_runs` 的 SciForge 闭环：
+
+```text
+deep_insight
+  -> research_spec.json
+  -> capability selection
+  -> forge
+  -> single-script validation or benchmark-suite validation
+  -> statistical_report.json
+  -> evidence_gate.json
+  -> manuscript report / paper_candidate.md
+  -> AI review
+  -> followup_experiment_plan.json
+```
+
+本轮新增/补齐的主要模块：
+
+- `agents/research_spec_compiler.py`
+- `agents/capability_registry.py`
+- `agents/benchmark_suite.py`
+- `agents/statistical_reporter.py`
+- `agents/evidence_gate.py`
+- `agents/review_planner.py`
+- `benchmarks/fairness_classification/*`
+- `agents/manuscript_writer.py`
+- `agents/ai_reviewer.py`
+
+关键原则：
+
+- 不新增平行 research-project CRUD；继续以 `experiment_runs` 为唯一实验执行对象。
+- 不写假接口，不写没有 workflow 调用或测试覆盖的冗余接口。
+- 失败后先分类再修改：`bottom_logic_bug`、`dependency_or_environment`、`llm_prompt_or_scaffold`、`data_or_evidence_insufficient`、`scientific_hypothesis_unsupported`。
+- 不通过弱化阈值、减少种子数、改提示词硬跑来掩盖失败。
+
+当前验证命令：
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests
+```
+
+最近一次结果：`Ran 100 tests ... OK`。
+
+已知限制：
+
+- 当前可离线跑通的真实 benchmark capability 是 grouped fairness classification。
+- `safe_rl_cmdp` 只在 capability registry 中声明为 planned，尚未实现 harness。
+- `paper_candidate.md` 只表示 evidence gate 通过后的候选稿，不等价于“可直接投稿”。
+- 真实投稿质量仍需要更多数据集、消融、引用核验和人类审稿。
 
 ## 当前系统状态
 
@@ -50,69 +103,32 @@
   - 风险 + fallback
   - 论文大纲 + 标题 + 摘要草稿
 
-## 未完成的最后一步
+## 当前补齐的最后一步
 
 ```
-[5] 研究方案 ──► [6] 执行实验 ──► [7] 分析结果 ──► [8] 写论文
-                  ❌ 待做          ❌ 待做          ❌ 待做
+[5] 研究方案 ──► [6] 执行实验 ──► [7] 分析结果 ──► [8] 写论文/审稿
+                  ✅ SciForge      ✅ 结构化产物      ✅ manuscript + review
 ```
 
-### 目标
-让 EvoScientist 接收 `final_report.md` 中的研究方案，自动：
-1. 生成可运行的实验代码
-2. 执行实验（或提交到集群）
-3. 收集结果、画图、做统计
-4. 写出论文初稿
+### 已完成
 
-### EvoScientist 已有的 agent 能力
-EvoScientist 内置 6 个 sub-agent，其中后 4 个就是做这件事的：
+- `agents/artifact_manager.py`：每个 experiment workdir 维护 `artifact_manifest.json`，记录 metrics、logs、execution plan、manuscript、review 等产物。
+- `agents/experiment_plan_compiler.py`：把 `deep_insight.experimental_plan`、scaffold 和 codebase 信息编译为 `execution_plan.json`，不新增平行 project 系统。
+- `agents/validation_loop.py`：实验执行后写出 `artifacts/results/metrics.json`、`artifacts/results/iterations.json` 和 `artifacts/logs/run.log`。
+- `agents/result_interpreter.py` + `agents/knowledge_loop.py`：解释 DB 与 artifact 中的实验结果；如果两者不一致，停止 cascade，避免污染知识图谱。
+- `agents/manuscript_writer.py`：从已完成或已反驳的 `experiment_run` 生成 grounded manuscript package。反驳结果生成 `negative_result_report.md`，不会硬写正面论文。
+- `agents/ai_reviewer.py`：对生成的 manuscript package 运行结构化 AI review，输出 `review.json` 和 `review.md`。
+- `web/app.py`：复用现有 `/api/experiments/*`，只新增两个动作端点：
+  - `POST /api/experiments/<run_id>/manuscript`
+  - `POST /api/experiments/<run_id>/review`
+- `web/static/js/app.js`：Experiments 详情页显示 artifacts，并提供 Generate Manuscript / AI Review 按钮。
 
-| Agent | 作用 | 当前状态 |
-|-------|------|----------|
-| Planner | 设计实验阶段 | ✅ 已在用 |
-| Research | 搜索验证新颖性 | ✅ 已在用 |
-| **Code** | **写实验代码** | ⚠️ 能力在但未接入链路 |
-| **Debug** | **调试代码** | ⚠️ 同上 |
-| **Analysis** | **分析结果、画图** | ⚠️ 同上 |
-| **Writing** | **写论文** | ⚠️ 同上 |
+### 仍待加强
 
-### 需要做的事
-
-#### 任务 1：接续执行（核心任务）
-在 `research_bridge.py` 的 `launch_evoscientist()` 之后，加一个 `execute_plan()` 函数：
-- 读取 `final_report.md` 中的实验计划
-- 让 EvoScientist 进入执行模式（不是规划模式）
-- Prompt 类似：`"Read final_report.md. Execute Stage 1. Write code, run it, collect results."`
-- EvoScientist 的 Code Agent 会写代码，Debug Agent 会修 bug，Analysis Agent 会分析结果
-
-实现方式：
-```python
-def execute_plan(insight_id: int, stage: int = 1):
-    """让 EvoScientist 执行研究方案中的某个阶段"""
-    workdir = find_workdir(insight_id)
-    prompt = f"Read final_report.md. Execute Stage {stage}. Write runnable code, execute it, collect results into artifacts/."
-    # Launch EvoScientist with --workdir pointing to existing workspace
-    # It will see final_report.md + todos.md and continue from there
-```
-
-关键点：EvoScientist 的 workspace 是持久的，可以用 `/resume` 在同一个 thread 上继续对话。
-
-#### 任务 2：计算资源适配
-当前机器没有 GPU。两种路径：
-- **路径 A**：挑选不需要 GPU 的 insight（meta-analysis、统计分析、benchmark 审计），在 CPU 上直接跑完
-- **路径 B**：Code Agent 生成代码 + SLURM 脚本，提交到有 GPU 的集群，等结果回来后继续分析
-
-#### 任务 3：结果 → 论文
-EvoScientist 的 Writing Agent 已有论文写作能力。需要：
-- 实验产出的 figures/tables 放在 `artifacts/` 下
-- Prompt Writing Agent：`"Read final_report.md and artifacts/. Write a complete paper draft to paper.md."`
-- 它会产出 Markdown 格式的论文，包括 Introduction、Related Work、Method、Experiments、Results、Discussion、Conclusion
-
-#### 任务 4：Dashboard 集成（可选）
-在 Insights tab 的每个卡片上加：
-- `Execute Stage N` 按钮（依次执行实验阶段）
-- 实时显示执行状态（running/completed/failed）
-- 查看产出的 artifacts（图表、代码、论文草稿）
+- SLURM/GPU 后端：当前重点是本地/CPU/proxy task 闭环，尚未提交远程集群。
+- 更丰富的论文模板：目前输出 Markdown manuscript、BibTeX、reproducibility statement；LaTeX 模板仍可增强。
+- 多轮 rebuttal 自动化：当前有 AI review，尚未实现根据审稿意见自动排队补实验和 rebuttal 草稿。
+- 真实投稿质量仍需要人类把关：系统保证 grounding 和 artifact 可追溯，不保证论文一定可发表。
 
 ## 文件位置
 

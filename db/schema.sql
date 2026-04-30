@@ -46,9 +46,12 @@ CREATE TABLE IF NOT EXISTS patterns (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     pattern_text TEXT NOT NULL,        -- e.g. "automation -> skill atrophy"
     pattern_type TEXT,                 -- problem|solution|phenomenon
+    abstraction_level TEXT DEFAULT 'cross-domain',
+    node_id TEXT REFERENCES taxonomy_nodes(id),
     domain_count INTEGER DEFAULT 1,
     domains TEXT,                      -- JSON array: ["education", "aviation", ...]
     claim_ids TEXT,                    -- JSON array of claim IDs
+    source_claims TEXT,                -- JSON array of source claim IDs for abstracted patterns
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -73,6 +76,25 @@ CREATE TABLE IF NOT EXISTS gaps (
     research_proposal TEXT,            -- auto-generated proposal
     value_score REAL,                  -- 0-5
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS insights (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    node_id TEXT REFERENCES taxonomy_nodes(id),
+    insight_type TEXT NOT NULL,
+    title TEXT NOT NULL,
+    hypothesis TEXT NOT NULL,
+    evidence TEXT,
+    experiment TEXT,
+    impact TEXT,
+    novelty_score REAL DEFAULT 0,
+    feasibility_score REAL DEFAULT 0,
+    supporting_papers TEXT DEFAULT '[]',
+    paradigm_score REAL DEFAULT 0,
+    rank_rationale TEXT,
+    rank INTEGER,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS stats (
@@ -264,6 +286,9 @@ CREATE INDEX IF NOT EXISTS idx_claims_paper ON claims(paper_id);
 CREATE INDEX IF NOT EXISTS idx_claims_type ON claims(claim_type);
 CREATE INDEX IF NOT EXISTS idx_claims_method ON claims(method_name);
 CREATE INDEX IF NOT EXISTS idx_patterns_type ON patterns(pattern_type);
+CREATE INDEX IF NOT EXISTS idx_insights_node ON insights(node_id);
+CREATE INDEX IF NOT EXISTS idx_insights_type ON insights(insight_type);
+CREATE INDEX IF NOT EXISTS idx_insights_scores ON insights(novelty_score DESC, feasibility_score DESC);
 CREATE INDEX IF NOT EXISTS idx_taxonomy_parent ON taxonomy_nodes(parent_id);
 CREATE INDEX IF NOT EXISTS idx_paper_taxonomy_node ON paper_taxonomy(node_id);
 CREATE INDEX IF NOT EXISTS idx_paper_taxonomy_paper ON paper_taxonomy(paper_id);

@@ -22,12 +22,39 @@ def get_conn() -> sqlite3.Connection:
 def init_db():
     conn = get_conn()
     schema_path = Path(__file__).parent / "schema.sql"
-    conn.executescript(schema_path.read_text())
+    conn.executescript(schema_path.read_text(encoding="utf-8"))
+    _migrate_legacy_tables(conn)
     # Also init v2 tables (signal harvester + deep insights)
     schema_v2_path = Path(__file__).parent / "schema_v2.sql"
     if schema_v2_path.exists():
-        conn.executescript(schema_v2_path.read_text())
+        conn.executescript(schema_v2_path.read_text(encoding="utf-8"))
     conn.commit()
+
+
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {row["name"] for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def _add_column_if_missing(
+    conn: sqlite3.Connection,
+    table: str,
+    column: str,
+    ddl: str,
+) -> None:
+    if column not in _table_columns(conn, table):
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {ddl}")
+
+
+def _migrate_legacy_tables(conn: sqlite3.Connection) -> None:
+    """Bring existing SQLite files up to the current schema shape."""
+    _add_column_if_missing(
+        conn,
+        "patterns",
+        "abstraction_level",
+        "abstraction_level TEXT DEFAULT 'cross-domain'",
+    )
+    _add_column_if_missing(conn, "patterns", "node_id", "node_id TEXT")
+    _add_column_if_missing(conn, "patterns", "source_claims", "source_claims TEXT")
 
 
 def execute(sql: str, params: tuple = ()) -> sqlite3.Cursor:

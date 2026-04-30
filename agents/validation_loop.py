@@ -12,11 +12,16 @@ Key difference from autoresearch:
 import json
 import os
 import re
+import sys
 import subprocess
 import textwrap
 import time
 from pathlib import Path
 
+from agents.artifact_manager import artifact_path, ensure_artifact_dirs, record_artifact
+from agents.benchmark_suite import run_benchmark_suite
+from agents.evidence_gate import write_evidence_gate
+from agents.statistical_reporter import write_statistical_report
 from config import (
     EXPERIMENT_MAX_ITERATIONS,
     EXPERIMENT_REFUTE_MIN_ITERS,
@@ -59,6 +64,18 @@ def _parse_metric_from_log(log_path: Path, metric_name: str) -> float | None:
     except OSError:
         return None
 
+    return _parse_metric_from_text(text, metric_name)
+
+
+def _parse_metric_from_text(text: str, metric_name: str) -> float | None:
+    """Extract a numeric metric from raw text or JSON output."""
+    try:
+        payload = json.loads(text)
+        if isinstance(payload, dict) and payload.get("metric_value") is not None:
+            return float(payload["metric_value"])
+    except (json.JSONDecodeError, TypeError, ValueError):
+        pass
+
     patterns = [
         rf'{re.escape(metric_name)}[:\s]+([0-9]+\.?[0-9]*)',
         r'metric_value[:\s]+([0-9]+\.?[0-9]*)',
@@ -76,18 +93,99 @@ def _parse_metric_from_log(log_path: Path, metric_name: str) -> float | None:
     return None
 
 
-def _run_experiment(workdir: Path, code_dir: Path, time_budget: int) -> dict:
+def _parse_eval_metric(eval_stdout: str, log_metric: float | None) -> float | None:
+    """Parse evaluator output without accepting legacy fake-zero fallbacks."""
+    stripped = eval_stdout.strip()
+    try:
+        payload = json.loads(stripped)
+        if isinstance(payload, dict):
+            if payload.get("valid") is False:
+                return None
+            if payload.get("metric_value") is not None:
+                return float(payload["metric_value"])
+    except (json.JSONDecodeError, TypeError, ValueError):
+        pass
+
+    metric = _parse_metric_from_text(stripped, metric_name="metric_value")
+    if (
+        metric == 0.0
+        and log_metric is None
+        and re.fullmatch(r"metric_value\s*:\s*0(?:\.0+)?", stripped, re.IGNORECASE)
+    ):
+        return None
+    return metric
+
+
+def _script_from_program(workdir: Path, code_dir: Path) -> Path | None:
+    """Extract the Python script from the scaffold's documented run command."""
+    program_path = workdir / "program.md"
+    if not program_path.exists():
+        return None
+    try:
+        text = program_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+
+    matches = re.findall(r"`([^`]*\bpython(?:\.exe)?\s+([^`>\s]+)[^`]*)`", text, re.IGNORECASE)
+    for _command, script in matches:
+        script = script.strip().strip("\"'")
+        if not script or script.startswith("-"):
+            continue
+        path = Path(script)
+        if not path.is_absolute():
+            path = code_dir / path
+        try:
+            resolved = path.resolve()
+            resolved.relative_to(code_dir.resolve())
+        except (OSError, ValueError):
+            continue
+        if resolved.exists() and resolved.suffix == ".py":
+            return resolved
+    return None
+
+
+def _select_train_script(workdir: Path, code_dir: Path) -> Path:
+    train_files = list(code_dir.glob("train*.py"))
+    if train_files:
+        return train_files[0]
+    scripted = _script_from_program(workdir, code_dir)
+    if scripted:
+        return scripted
+    return code_dir / "train.py"
+
+
+def _write_json_artifact(workdir: Path, run_id: int, relative_path: str,
+                         artifact_type: str, payload: dict | list,
+                         metadata: dict | None = None):
+    path = artifact_path(workdir, relative_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+    record_artifact(workdir, run_id, artifact_type, path, metadata or {})
+
+
+def _copy_log_artifact(workdir: Path, run_id: int):
+    source = workdir / "run.log"
+    if not source.exists():
+        return
+    target = artifact_path(workdir, "artifacts/logs/run.log")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(source.read_text(encoding="utf-8", errors="replace"), encoding="utf-8")
+    record_artifact(workdir, run_id, "log", target, {"source": "validation_loop"})
+
+
+def _run_experiment(workdir: Path, code_dir: Path, time_budget: int, metric_name: str = "") -> dict:
     """Run a single experiment iteration with time budget."""
     log_path = workdir / "run.log"
     eval_path = workdir / "evaluate.py"
 
-    train_files = list(code_dir.glob("train*.py"))
-    train_script = str(train_files[0]) if train_files else "train.py"
+    train_script = _select_train_script(workdir, code_dir)
 
     start = time.time()
     try:
+        if not train_script.exists():
+            return {"status": "crash", "duration": 0, "error": f"entrypoint not found: {train_script}"}
         proc = subprocess.run(
-            ["python3.12", train_script],
+            [sys.executable, str(train_script)],
             cwd=str(code_dir),
             timeout=time_budget + 60,
             capture_output=True,
@@ -109,28 +207,25 @@ def _run_experiment(workdir: Path, code_dir: Path, time_budget: int) -> dict:
     except Exception as e:
         return {"status": "crash", "duration": time.time() - start, "error": str(e)}
 
-    metric = None
+    log_metric = _parse_metric_from_log(log_path, metric_name)
+    metric = log_metric
     if eval_path.exists():
         try:
             eval_result = subprocess.run(
-                ["python3.12", str(eval_path), str(log_path)],
+                [sys.executable, str(eval_path), str(log_path)],
                 cwd=str(workdir),
                 timeout=60,
                 capture_output=True,
                 text=True,
             )
-            metric = _parse_metric_from_log(
-                Path("/dev/stdin"),  # dummy
-                "metric_value"
-            )
             if eval_result.stdout:
-                match = re.search(r'metric_value[:\s]+([0-9]+\.?[0-9]*)', eval_result.stdout)
-                if match:
-                    metric = float(match.group(1))
+                eval_metric = _parse_eval_metric(eval_result.stdout, log_metric)
+                if eval_metric is not None:
+                    metric = eval_metric
         except Exception:
             pass
 
-    if metric is None:
+    if metric is None and not eval_path.exists():
         metric = _parse_metric_from_log(log_path, "")
 
     peak_mem = None
@@ -150,6 +245,7 @@ def _run_experiment(workdir: Path, code_dir: Path, time_budget: int) -> dict:
 def _git_commit(code_dir: Path, message: str) -> str | None:
     """Commit changes in code_dir, return short hash."""
     try:
+        _ensure_git_identity(code_dir)
         subprocess.run(["git", "add", "-A"], cwd=str(code_dir),
                        capture_output=True, timeout=10)
         subprocess.run(["git", "commit", "-m", message], cwd=str(code_dir),
@@ -161,9 +257,31 @@ def _git_commit(code_dir: Path, message: str) -> str | None:
         return None
 
 
+def _ensure_git_identity(code_dir: Path):
+    subprocess.run(["git", "config", "user.email", "sciforge@example.local"],
+                   cwd=str(code_dir), capture_output=True, timeout=10)
+    subprocess.run(["git", "config", "user.name", "SciForge"],
+                   cwd=str(code_dir), capture_output=True, timeout=10)
+
+
+def _ensure_git_baseline(code_dir: Path) -> str:
+    """Make the current scaffold state reset-safe and return its commit hash."""
+    if not (code_dir / ".git").exists():
+        subprocess.run(["git", "init"], cwd=str(code_dir), capture_output=True, timeout=10)
+    _ensure_git_identity(code_dir)
+    subprocess.run(["git", "add", "-A"], cwd=str(code_dir), capture_output=True, timeout=10)
+    subprocess.run(["git", "commit", "-m", "scaffold baseline"],
+                   cwd=str(code_dir), capture_output=True, timeout=10)
+    result = subprocess.run(["git", "rev-parse", "--short", "HEAD"],
+                            cwd=str(code_dir), capture_output=True, text=True, timeout=5)
+    return result.stdout.strip()
+
+
 def _git_reset(code_dir: Path, commit_hash: str):
     """Reset code_dir to a specific commit."""
     try:
+        if not commit_hash:
+            return
         subprocess.run(["git", "reset", "--hard", commit_hash],
                        cwd=str(code_dir), capture_output=True, timeout=10)
     except Exception:
@@ -194,6 +312,56 @@ def _meets_threshold(value: float, threshold: float, direction: str) -> bool:
     if direction == "lower":
         return value <= threshold
     return value >= threshold
+
+
+def _method_description_from_insight(insight: dict | None) -> str:
+    """Build coding-agent context from both Tier 2 methods and Tier 1 insights."""
+    if not insight:
+        return ""
+
+    try:
+        method = json.loads(insight.get("proposed_method") or "{}")
+    except (json.JSONDecodeError, TypeError):
+        method = {}
+
+    if isinstance(method, dict) and method:
+        return (
+            f"Name: {method.get('name', '?')}\n"
+            f"Type: {method.get('type', '?')}\n"
+            f"Summary: {method.get('one_line', '')}\n"
+            f"Definition: {method.get('definition', '')[:800]}\n"
+            f"Pseudocode: {method.get('pseudocode', '')[:500]}"
+        )
+
+    plan_text = ""
+    raw_plan = insight.get("experimental_plan") or ""
+    if isinstance(raw_plan, str) and raw_plan.strip():
+        try:
+            plan = json.loads(raw_plan)
+            if isinstance(plan, dict):
+                parts = []
+                for key in ("procedure", "success_metric", "compute"):
+                    if plan.get(key):
+                        parts.append(f"{key}: {plan[key]}")
+                for key in ("models", "datasets"):
+                    if plan.get(key):
+                        parts.append(f"{key}: {json.dumps(plan[key])[:700]}")
+                plan_text = "\n".join(parts)
+        except (json.JSONDecodeError, TypeError):
+            plan_text = raw_plan[:1200]
+    elif isinstance(raw_plan, dict):
+        plan_text = json.dumps(raw_plan)[:1200]
+
+    return "\n".join(
+        part for part in (
+            f"Name: {insight.get('title', '?')}",
+            f"Formal structure: {(insight.get('formal_structure') or '')[:900]}",
+            f"Transformation: {(insight.get('transformation') or '')[:700]}",
+            f"Problem: {(insight.get('problem_statement') or '')[:500]}",
+            f"Experimental plan:\n{plan_text[:1500]}" if plan_text else "",
+        )
+        if part and part.strip()
+    )
 
 
 def _launch_coding_agent(workdir: Path, code_dir: Path, iteration: int,
@@ -291,6 +459,103 @@ def _launch_coding_agent(workdir: Path, code_dir: Path, iteration: int,
     return f"No modification applied (iter {iteration})"
 
 
+def _benchmark_metric_summary(workdir: Path) -> dict:
+    path = workdir / "artifacts" / "results" / "statistical_report.json"
+    if not path.exists():
+        return {"baseline": None, "best": None, "effect": None, "effect_pct": None}
+    try:
+        report = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return {"baseline": None, "best": None, "effect": None, "effect_pct": None}
+
+    baseline_method = report.get("baseline_method")
+    best_method = report.get("best_method")
+    summary = report.get("summary") or []
+
+    def mean_for(method):
+        values = [float(row["mean"]) for row in summary if row.get("method") == method and row.get("mean") is not None]
+        return sum(values) / len(values) if values else None
+
+    baseline = mean_for(baseline_method)
+    best = mean_for(best_method)
+    effect = None
+    effect_pct = None
+    if baseline is not None and best is not None:
+        effect = best - baseline
+        effect_pct = (effect / abs(baseline) * 100) if baseline != 0 else 0.0
+    return {"baseline": baseline, "best": best, "effect": effect, "effect_pct": effect_pct}
+
+
+def _benchmark_evidence_confirmed(gate: dict) -> bool:
+    if gate.get("manuscript_status") == "paper_ready_candidate":
+        return True
+    blocking = set(gate.get("blocking_reasons") or [])
+    if blocking != {"review_requires_revision"}:
+        return False
+    satisfied = set(gate.get("satisfied_requirements") or [])
+    required = {
+        "has_benchmark_results",
+        "has_baseline_comparison",
+        "has_statistical_report",
+        "has_multi_seed",
+        "has_multi_dataset",
+        "has_ablation",
+    }
+    return required.issubset(satisfied)
+
+
+def _run_benchmark_mode(run_id: int, workdir: Path) -> dict:
+    db.execute(
+        "UPDATE experiment_runs SET status='testing', phase='benchmark_suite', started_at=CURRENT_TIMESTAMP WHERE id=?",
+        (run_id,),
+    )
+    db.commit()
+    suite_result = run_benchmark_suite(run_id)
+    if suite_result.get("status") != "complete":
+        db.execute(
+            "UPDATE experiment_runs SET status='failed', error_message=?, completed_at=CURRENT_TIMESTAMP WHERE id=?",
+            (json.dumps(suite_result), run_id),
+        )
+        db.commit()
+        return {
+            "run_id": run_id,
+            "execution_mode": "benchmark_suite",
+            "verdict": "failed",
+            "reason": suite_result.get("reason", "benchmark_suite_failed"),
+            "suite": suite_result,
+        }
+
+    stats_result = write_statistical_report(run_id)
+    gate = write_evidence_gate(run_id)
+    summary = _benchmark_metric_summary(workdir)
+    verdict = "confirmed" if _benchmark_evidence_confirmed(gate) else "inconclusive"
+    db.execute(
+        """UPDATE experiment_runs
+           SET status='completed', phase='benchmark_suite', hypothesis_verdict=?,
+               baseline_metric_value=?, best_metric_value=?,
+               effect_size=?, effect_pct=?, completed_at=CURRENT_TIMESTAMP
+           WHERE id=?""",
+        (
+            verdict,
+            summary.get("baseline"),
+            summary.get("best"),
+            summary.get("effect"),
+            summary.get("effect_pct"),
+            run_id,
+        ),
+    )
+    db.commit()
+    return {
+        "run_id": run_id,
+        "execution_mode": "benchmark_suite",
+        "verdict": verdict,
+        "suite": suite_result,
+        "statistics": stats_result,
+        "evidence_gate": gate,
+        **summary,
+    }
+
+
 def run_validation_loop(run_id: int) -> dict:
     """Execute the full two-phase validation loop for an experiment run.
 
@@ -307,8 +572,12 @@ def run_validation_loop(run_id: int) -> dict:
     if not workdir.exists():
         return {"error": f"Workdir {workdir} does not exist"}
 
+    if (workdir / "benchmark_config.json").exists():
+        return _run_benchmark_mode(run_id, workdir)
+
     criteria = _read_success_criteria(workdir)
     proxy = _read_proxy_config(workdir)
+    ensure_artifact_dirs(workdir)
     metric_name = criteria.get("metric_name", "metric")
     direction = criteria.get("metric_direction", "higher")
     time_budget = proxy.get("time_budget_seconds", EXPERIMENT_TIME_BUDGET)
@@ -317,25 +586,9 @@ def run_validation_loop(run_id: int) -> dict:
     refute_min = proxy.get("refute_min_iterations", EXPERIMENT_REFUTE_MIN_ITERS)
 
     insight = db.fetchone("SELECT * FROM deep_insights WHERE id=?", (insight_id,))
-    method_desc = ""
-    if insight:
-        try:
-            method = json.loads(insight.get("proposed_method") or "{}")
-            method_desc = (
-                f"Name: {method.get('name', '?')}\n"
-                f"Type: {method.get('type', '?')}\n"
-                f"Summary: {method.get('one_line', '')}\n"
-                f"Definition: {method.get('definition', '')[:800]}\n"
-                f"Pseudocode: {method.get('pseudocode', '')[:500]}"
-            )
-        except (json.JSONDecodeError, TypeError):
-            method_desc = insight.get("problem_statement", "") or insight.get("title", "")
+    method_desc = _method_description_from_insight(insight)
 
-    if not (code_dir / ".git").exists():
-        subprocess.run(["git", "init"], cwd=str(code_dir), capture_output=True, timeout=10)
-        subprocess.run(["git", "add", "-A"], cwd=str(code_dir), capture_output=True, timeout=10)
-        subprocess.run(["git", "commit", "-m", "initial baseline"],
-                       cwd=str(code_dir), capture_output=True, timeout=10)
+    _ensure_git_baseline(code_dir)
 
     db.execute("UPDATE experiment_runs SET status='reproducing', phase='reproduction', started_at=CURRENT_TIMESTAMP WHERE id=?", (run_id,))
     db.commit()
@@ -343,9 +596,10 @@ def run_validation_loop(run_id: int) -> dict:
     # ── Phase 1: Reproduction ──
     print(f"[LOOP] Phase 1: Reproducing baseline ({repro_iters} iterations)...", flush=True)
     baseline_values = []
+    iteration_records = []
 
     for i in range(repro_iters):
-        result = _run_experiment(workdir, code_dir, time_budget)
+        result = _run_experiment(workdir, code_dir, time_budget, metric_name)
         metric = result.get("metric")
 
         db.execute(
@@ -358,6 +612,18 @@ def run_validation_loop(run_id: int) -> dict:
              result.get("status", "ok"), f"baseline run {i+1}")
         )
         db.commit()
+        iteration_records.append({
+            "run_id": run_id,
+            "iteration_number": i + 1,
+            "phase": "reproduction",
+            "metric_value": metric,
+            "metric_name": metric_name,
+            "status": result.get("status", "ok"),
+            "description": f"baseline run {i+1}",
+            "error": result.get("error"),
+            "duration_seconds": result.get("duration"),
+            "peak_memory_mb": result.get("peak_memory_mb"),
+        })
 
         if metric is not None:
             baseline_values.append(metric)
@@ -366,18 +632,32 @@ def run_validation_loop(run_id: int) -> dict:
             print(f"[LOOP] Reproduction {i+1}/{repro_iters}: no metric (status={result.get('status')})", flush=True)
 
     if not baseline_values:
+        last_error = next(
+            (str(r.get("error")) for r in reversed(iteration_records) if r.get("error")),
+            "no metric obtained",
+        )
+        error_message = f"reproduction failed: {last_error}"
         db.execute(
-            "UPDATE experiment_runs SET status='failed', error_message='reproduction failed: no metric obtained', completed_at=CURRENT_TIMESTAMP WHERE id=?",
-            (run_id,))
+            "UPDATE experiment_runs SET status='failed', error_message=?, completed_at=CURRENT_TIMESTAMP WHERE id=?",
+            (error_message, run_id))
         db.commit()
+        metrics_payload = {
+            "run_id": run_id,
+            "verdict": "failed",
+            "reason": "reproduction_failure",
+            "error": error_message,
+            "metric_name": metric_name,
+            "baseline": None,
+            "best_value": None,
+        }
+        _write_json_artifact(workdir, run_id, "artifacts/results/metrics.json", "metrics", metrics_payload)
+        _write_json_artifact(workdir, run_id, "artifacts/results/iterations.json", "iterations", iteration_records)
+        _copy_log_artifact(workdir, run_id)
         print(f"[LOOP] Phase 1 FAILED: could not obtain baseline metric", flush=True)
         return {"verdict": "failed", "reason": "reproduction_failure"}
 
     baseline = sum(baseline_values) / len(baseline_values)
-    baseline_commit = subprocess.run(
-        ["git", "rev-parse", "--short", "HEAD"],
-        cwd=str(code_dir), capture_output=True, text=True, timeout=5
-    ).stdout.strip()
+    baseline_commit = _ensure_git_baseline(code_dir)
 
     db.execute(
         "UPDATE experiment_runs SET baseline_metric_value=?, best_metric_value=?, phase='hypothesis_testing', status='testing' WHERE id=?",
@@ -394,6 +674,9 @@ def run_validation_loop(run_id: int) -> dict:
     effect_pct = 0.0
     history = []
     loop_start = time.time()
+    exciting = criteria.get("exciting", 0)
+    solid = criteria.get("solid", 0)
+    disappointing = criteria.get("disappointing", 0)
 
     for i in range(max_iters):
         iter_num = repro_iters + i + 1
@@ -403,7 +686,7 @@ def run_validation_loop(run_id: int) -> dict:
 
         commit_hash = _git_commit(code_dir, f"experiment iter {i+1}: {desc[:80]}")
 
-        result = _run_experiment(workdir, code_dir, time_budget)
+        result = _run_experiment(workdir, code_dir, time_budget, metric_name)
         metric = result.get("metric")
 
         status = "crash"
@@ -442,6 +725,19 @@ def run_validation_loop(run_id: int) -> dict:
             (iter_num, total_kept, best_value, effect, effect_pct, run_id)
         )
         db.commit()
+        iteration_records.append({
+            "run_id": run_id,
+            "iteration_number": iter_num,
+            "phase": "hypothesis_testing",
+            "metric_value": metric,
+            "metric_name": metric_name,
+            "status": status,
+            "description": desc[:500],
+            "error": result.get("error"),
+            "duration_seconds": result.get("duration"),
+            "peak_memory_mb": result.get("peak_memory_mb"),
+            "commit_hash": commit_hash,
+        })
 
         history.append({
             "iteration": i + 1,
@@ -455,10 +751,6 @@ def run_validation_loop(run_id: int) -> dict:
                   f"(baseline={baseline:.6f}, kept={total_kept})", flush=True)
 
         # Check termination conditions
-        exciting = criteria.get("exciting", 0)
-        solid = criteria.get("solid", 0)
-        disappointing = criteria.get("disappointing", 0)
-
         if exciting and _meets_threshold(best_value, exciting, direction):
             print(f"[LOOP] EXCITING result reached at iter {i+1}!", flush=True)
             break
@@ -473,10 +765,17 @@ def run_validation_loop(run_id: int) -> dict:
     # ── Determine verdict ──
     effect = best_value - baseline if direction == "higher" else baseline - best_value
     is_improvement = effect > 0
+    all_test_values = [
+        r.get("metric_value")
+        for r in iteration_records
+        if r.get("phase") == "hypothesis_testing" and r.get("metric_value") is not None
+    ]
 
-    if exciting and _meets_threshold(best_value, exciting, direction):
+    if not all_test_values:
+        verdict = "inconclusive"
+    elif is_improvement and exciting and _meets_threshold(best_value, exciting, direction):
         verdict = "confirmed"
-    elif solid and _meets_threshold(best_value, solid, direction):
+    elif is_improvement and solid and _meets_threshold(best_value, solid, direction):
         verdict = "confirmed"
     elif is_improvement and effect_pct > 1.0:
         verdict = "confirmed"
@@ -498,6 +797,23 @@ def run_validation_loop(run_id: int) -> dict:
 
     print(f"[LOOP] Completed: verdict={verdict}, effect={effect:.6f} ({effect_pct:.2f}%), "
           f"iters={iter_num}, kept={total_kept}, time={total_time:.0f}s", flush=True)
+
+    metrics_payload = {
+        "run_id": run_id,
+        "verdict": verdict,
+        "metric_name": metric_name,
+        "metric_direction": direction,
+        "baseline": baseline,
+        "best_value": best_value,
+        "effect_size": effect,
+        "effect_pct": effect_pct,
+        "iterations_total": iter_num,
+        "iterations_kept": total_kept,
+        "total_seconds": total_time,
+    }
+    _write_json_artifact(workdir, run_id, "artifacts/results/metrics.json", "metrics", metrics_payload)
+    _write_json_artifact(workdir, run_id, "artifacts/results/iterations.json", "iterations", iteration_records)
+    _copy_log_artifact(workdir, run_id)
 
     return {
         "run_id": run_id,

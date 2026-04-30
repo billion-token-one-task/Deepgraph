@@ -1,0 +1,1 @@
+"""Fairness classification benchmark capability."""
