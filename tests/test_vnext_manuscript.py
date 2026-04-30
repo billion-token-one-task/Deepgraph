@@ -6,6 +6,7 @@ from unittest import mock
 from pathlib import Path
 
 from agents.manuscript_pipeline import generate_submission_bundle
+from agents import workspace_layout
 from db import database
 
 
@@ -26,6 +27,9 @@ class ManuscriptBundleTests(unittest.TestCase):
         database.DATABASE_URL = ""
         database.DB_PATH = self.db_path
         database.init_db()
+        self.workspace_root = Path(self.tmpdir.name) / "ideas"
+        self.workspace_patch = mock.patch.object(workspace_layout, "IDEA_WORKSPACE_DIR", self.workspace_root)
+        self.workspace_patch.start()
 
         database.execute(
             """
@@ -80,6 +84,7 @@ class ManuscriptBundleTests(unittest.TestCase):
                 setattr(database._local, attr, None)
         database.DATABASE_URL = self._old_database_url
         database.DB_PATH = self.old_db_path
+        self.workspace_patch.stop()
         if self._saved_pg_url is not None:
             os.environ["DEEPGRAPH_DATABASE_URL"] = self._saved_pg_url
         self.tmpdir.cleanup()
@@ -158,6 +163,7 @@ class ManuscriptBundleTests(unittest.TestCase):
         self.assertTrue((bundle_path / "figures" / "figure_manifest.json").exists())
         self.assertIn("cite_a", (bundle_path / "references.bib").read_text(encoding="utf-8"))
         self.assertIn("fig_metric_trajectory.svg", (bundle_path / "main.tex").read_text(encoding="utf-8"))
+        self.assertTrue((self.workspace_root / "idea_1" / "paper" / "current" / "main.tex").exists())
 
     def test_generate_submission_bundle_blocks_non_formal_run(self):
         database.execute(

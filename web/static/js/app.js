@@ -626,7 +626,6 @@ function renderExploreSummary(data) {
                 <div class="insight-experiment"><span class="insight-label">Experiment:</span> ${esc(ins.experiment)}</div>
                 ${ins.impact ? `<div class="insight-impact"><span class="insight-label">Impact:</span> ${esc(ins.impact)}</div>` : ''}
                 <div class="insight-actions">
-                    <button class="btn-research" onclick="window._dg.launchResearch(${ins.id})">Launch Research</button>
                     <button class="btn-preview" onclick="window._dg.previewProposal(${ins.id})">Preview Proposal</button>
                 </div>
             </div>`;
@@ -1164,7 +1163,6 @@ async function loadInsightsTab() {
                 <div class="insight-experiment"><span class="insight-label">Experiment:</span> ${esc(ins.experiment)}</div>
                 ${ins.impact ? `<div class="insight-impact"><span class="insight-label">Impact:</span> ${esc(ins.impact)}</div>` : ''}
                 <div class="insight-actions">
-                    <button class="btn-research" onclick="window._dg.launchResearch(${ins.id})">Generate Full Plan</button>
                     <button class="btn-preview" onclick="window._dg.previewProposal(${ins.id})">Preview Proposal</button>
                 </div>
             </div>`;
@@ -1391,28 +1389,9 @@ function renderDiscoveries(discoveries) {
             <div class="insight-title">${esc(d.title)}</div>
             ${bodyHtml}
             ${d.evidence_summary ? `<div class="insight-evidence"><span class="insight-label">Evidence:</span> ${esc(trunc(d.evidence_summary, 250))}</div>` : ''}
-            <div class="insight-actions">
-                ${d.novelty_status === 'unchecked' ? `<button class="btn-preview" onclick="window._dg.verifyDiscovery(${d.id})">Verify Novelty</button>` : ''}
-                <button class="btn-research" onclick="window._dg.runFullExperiment(${d.id})">SciForge Run</button>
-                <button class="btn-preview" onclick="window._dg.forgeExperiment(${d.id})">Forge Only</button>
-                <button class="btn-preview" onclick="window._dg.launchDeepResearch(${d.id})">Deep Research</button>
-            </div>
+            <div class="insight-impact"><span class="insight-label">Mode:</span> Fixed automatic pipeline</div>
         </div>`;
     }).join('');
-}
-
-async function generateDiscoveries(tier) {
-    try {
-        const body = tier ? {tier: String(tier)} : {};
-        await api('/api/deep_insights/generate', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify(body),
-        });
-        el('discoveriesList').innerHTML = '<p class="empty-msg">Discovery pipeline started... This may take 5-15 minutes. Refresh to see results.</p>';
-    } catch (e) {
-        alert('Failed to start discovery: ' + e.message);
-    }
 }
 
 // ── Experiments Tab (SciForge) ────────────────────────────────────────
@@ -1426,10 +1405,10 @@ async function loadExperimentsTab() {
         const autoJobs = await api('/api/auto_research/jobs?limit=30');
         renderAutoResearchJobs(autoJobs);
 
-        let url = '/api/experiments?limit=50';
+        let url = '/api/experiment_groups?limit=50';
         if (statusFilter) url += `&status=${statusFilter}`;
-        const runs = await api(url);
-        renderExperiments(runs);
+        const groups = await api(url);
+        renderExperimentGroups(groups);
 
         const meta = await api('/api/meta_report');
         renderMetaReport(meta);
@@ -1543,11 +1522,112 @@ function renderExperiments(runs) {
             </div>
             ${r.codebase_url && r.codebase_url !== 'scratch' ? `<div style="font-size:0.7rem;color:var(--text-dim);">Repo: ${esc(r.codebase_url)}</div>` : ''}
             <div class="insight-actions">
-                ${r.status === 'scaffolding' ? `<button class="btn-research" onclick="window._dg.runExperiment(${r.id})">Start Loop</button>` : ''}
                 <button class="btn-preview" onclick="window._dg.viewExperiment(${r.id})">View Details</button>
             </div>
         </div>`;
     }).join('');
+}
+
+function experimentStatusColor(status) {
+    return {
+        pending: '#9a9088',
+        scaffolding: '#a8842a',
+        reproducing: '#2e86ab',
+        testing: '#c4704b',
+        completed: '#3d8b5e',
+        bundle_ready: '#3d8b5e',
+        failed: '#c4453a',
+        running_gpu: '#7a5ea8',
+        running_cpu: '#7a5ea8',
+    }[status] || '#888';
+}
+
+function verdictColor(verdict) {
+    return {
+        confirmed: '#3d8b5e',
+        refuted: '#c4453a',
+        inconclusive: '#a8842a',
+    }[verdict] || '#888';
+}
+
+function renderTrackChips(tracks) {
+    return (tracks || []).map(track => {
+        const color = track.enabled ? '#3d8b5e' : '#9a9088';
+        return `<span class="chip" style="border-color:${color};color:${color};">${esc(track.label)}: ${esc(track.state || (track.enabled ? 'enabled' : 'off'))}</span>`;
+    }).join('');
+}
+
+function renderExperimentGroups(groups) {
+    const list = el('experimentsList');
+    if (!groups || !groups.length) {
+        list.innerHTML = '<p class="empty-msg">No experiment ideas yet. Forge an experiment from a deep discovery to start.</p>';
+        return;
+    }
+
+    list.innerHTML = groups.map(group => {
+        const insight = group.insight || {};
+        const auto = group.auto_job || {};
+        const currentRun = group.canonical_run || group.latest_run || null;
+        const color = experimentStatusColor((currentRun || {}).status || auto.status);
+        const verdict = currentRun && currentRun.hypothesis_verdict
+            ? `<span style="color:${verdictColor(currentRun.hypothesis_verdict)};font-weight:700;text-transform:uppercase;">${esc(currentRun.hypothesis_verdict)}</span>`
+            : '';
+        const effect = currentRun && currentRun.effect_pct != null
+            ? `${currentRun.effect_pct >= 0 ? '+' : ''}${currentRun.effect_pct.toFixed(2)}%`
+            : '';
+        const progress = auto.stage
+            ? `${auto.status || 'queued'} / ${auto.stage}`
+            : ((currentRun || {}).status || 'not_started');
+        const currentRunLabel = currentRun
+            ? `主实验 Run #${currentRun.id}`
+            : '尚未创建 run';
+        const previewUrl = (((group || {}).paper_preview_urls || {}).index) || '';
+        return `<div class="insight-card" style="border-left: 3px solid ${color};">
+            <div class="insight-header">
+                <span class="insight-type" style="color:${color};font-weight:700;">IDEA #${insight.id}</span>
+                <span class="insight-scores">${esc(currentRunLabel)}</span>
+                ${verdict}
+                ${effect ? `<span class="insight-scores">Effect: ${effect}</span>` : ''}
+                <span style="color:var(--text-dim);font-size:0.68rem;">Tier ${insight.tier || '?'}</span>
+            </div>
+            <div class="insight-title">${esc(insight.title || 'Deep Insight')}</div>
+            <div class="insight-impact"><span class="insight-label">当前进度:</span> ${esc(progress)}</div>
+            <div style="display:flex;gap:16px;margin:6px 0;font-size:0.75rem;color:var(--text-secondary);flex-wrap:wrap;">
+                <span>历史 runs: ${group.run_count || 0}</span>
+                <span>最新状态: ${esc((group.latest_run || {}).status || 'none')}</span>
+                <span>Bundle: ${esc(insight.submission_status || 'not_started')}</span>
+            </div>
+            <div style="display:flex;gap:16px;margin:6px 0;font-size:0.75rem;color:var(--text-secondary);flex-wrap:wrap;">
+                <span>实验区: ${esc(group.experiment_root || '-')}</span>
+                <span>方案区: ${esc(group.plan_root || '-')}</span>
+                <span>论文区: ${esc(group.paper_root || '-')}</span>
+            </div>
+            <div class="chip-row" style="margin:8px 0;">${renderTrackChips(group.planned_tracks)}</div>
+            ${auto.last_note ? `<div class="insight-experiment"><span class="insight-label">Latest:</span> ${esc(trunc(auto.last_note, 220))}</div>` : ''}
+            ${auto.last_error ? `<div class="insight-impact" style="color:#c4453a;"><span class="insight-label">Error:</span> ${esc(trunc(auto.last_error, 220))}</div>` : ''}
+            <div class="insight-actions">
+                <button class="btn-preview" onclick="window._dg.viewExperimentGroup(${insight.id})">查看实验历史</button>
+                ${currentRun ? `<button class="btn-preview" onclick="window._dg.viewExperiment(${currentRun.id})">查看主实验详情</button>` : ''}
+                ${previewUrl ? `<button class="btn-preview" onclick="window.open('${esc(previewUrl)}','_blank')">打开论文预览</button>` : ''}
+            </div>
+        </div>`;
+    }).join('');
+}
+
+function jsonPreview(obj, emptyText = '暂无') {
+    if (!obj || (typeof obj === 'object' && Object.keys(obj).length === 0)) {
+        return `<p class="empty-msg">${esc(emptyText)}</p>`;
+    }
+    return `<pre style="white-space:pre-wrap;word-break:break-word;background:var(--bg-elevated);padding:10px;border-radius:8px;font-size:0.72rem;">${esc(JSON.stringify(obj, null, 2))}</pre>`;
+}
+
+function renderPaperAssetLinks(insightId, assets) {
+    if (!assets || !assets.length) {
+        return '<p class="empty-msg">暂无论文资产。</p>';
+    }
+    return `<div style="display:flex;flex-direction:column;gap:6px;">${assets.slice(0, 20).map(asset => `
+        <a href="/papers/${insightId}/view/${encodeURI(asset.path)}" target="_blank">${esc(asset.path)}</a>
+    `).join('')}</div>`;
 }
 
 function renderMetaReport(meta) {
@@ -1804,32 +1884,6 @@ function searchNav(type, id) {
     }
 }
 
-// ── Pipeline Controls ────────────────────────────────────────────────
-
-async function startPipeline(n) {
-    try {
-        await fetch('/api/start', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ max_papers: n })
-        });
-    } catch (e) {
-        console.error('Start pipeline error:', e);
-    }
-}
-
-async function triggerTaxonomyExpansion() {
-    try {
-        await fetch('/api/taxonomy/expand', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ min_papers: 10 })
-        });
-    } catch (e) {
-        console.error('Taxonomy expansion error:', e);
-    }
-}
-
 // ── Public API (for onclick handlers in HTML strings) ────────────────
 
 window._dg = {
@@ -1842,62 +1896,102 @@ window._dg = {
     updateMatrixMetric,
     searchNav,
 
-    async launchResearch(insightId) {
-        if (!confirm('Launch EvoScientist research for this insight? This will start a background research session.')) return;
+    async viewExperimentGroup(insightId) {
         try {
-            const res = await api('/api/research/launch', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({insight_id: insightId}),
-            });
-            alert(`Research launched!\n\nWorkdir: ${res.workdir}\nPID: ${res.pid}\n\nEvoScientist is now working in the background.`);
-        } catch (e) {
-            alert('Failed to launch: ' + e.message);
-        }
-    },
+            const data = await api(`/api/experiment_groups/${insightId}`);
+            const insight = data.insight || {};
+            const auto = data.auto_job || {};
+            const runs = data.runs || [];
+            const canonical = data.canonical_run || data.latest_run || null;
+            const plan = data.plan_snapshot || {};
+            const paperUrls = data.paper_preview_urls || {};
+            const paperAssets = data.paper_assets || [];
 
-    async forgeExperiment(insightId) {
-        if (!confirm('Forge an experiment from this discovery? This will find a codebase, generate scaffold, and prepare for the validation loop.')) return;
-        try {
-            await api('/api/experiments/forge', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({insight_id: insightId}),
-            });
-            alert('Experiment forge started! Switch to the Experiments tab to monitor.');
-            setTimeout(() => { switchTab('experiments'); loadExperimentsTab(); }, 2000);
-        } catch (e) {
-            alert('Failed: ' + e.message);
-        }
-    },
+            let html = `<div class="proposal-content" style="max-height:80vh;">
+                <div class="proposal-header">
+                    <h3>Idea #${insight.id}: ${esc(insight.title || '')}</h3>
+                    <span class="proposal-stats">主实验: ${esc(canonical ? `Run #${canonical.id} / ${canonical.status}` : 'not started')}</span>
+                    <button class="btn-close" onclick="this.closest('.proposal-modal').remove()">×</button>
+                </div>
+                <div class="proposal-body">
+                <h4>Idea Progress</h4>
+                <p>Auto Research: ${esc(auto.status || 'not_started')} ${auto.stage ? `/ ${esc(auto.stage)}` : ''}</p>
+                <p>Submission: ${esc(insight.submission_status || 'not_started')} | Run count: ${runs.length}</p>
+                <p>Workspace: ${esc(data.workspace_root || '-')}</p>
+                <div class="chip-row" style="margin:8px 0 14px;">${renderTrackChips(data.planned_tracks)}</div>
+                ${auto.last_note ? `<p><b>Latest:</b> ${esc(auto.last_note)}</p>` : ''}
+                ${auto.last_error ? `<p style="color:#c4453a;"><b>Error:</b> ${esc(auto.last_error)}</p>` : ''}
+                <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px;margin:16px 0;">
+                    <div style="background:var(--bg-elevated);padding:12px;border-radius:10px;">
+                        <h4 style="margin-top:0;">实验区</h4>
+                        <p><b>实验根目录:</b> ${esc(data.experiment_root || '-')}</p>
+                        <p><b>Canonical Run:</b> ${esc(data.canonical_run_id || canonical?.id || '-')}</p>
+                    </div>
+                    <div style="background:var(--bg-elevated);padding:12px;border-radius:10px;">
+                        <h4 style="margin-top:0;">实验方案区</h4>
+                        <p><b>方案根目录:</b> ${esc(data.plan_root || '-')}</p>
+                        ${jsonPreview(plan.latest_status, '暂无 latest_status.json')}
+                    </div>
+                    <div style="background:var(--bg-elevated);padding:12px;border-radius:10px;">
+                        <h4 style="margin-top:0;">论文区</h4>
+                        <p><b>论文根目录:</b> ${esc(data.paper_root || '-')}</p>
+                        <div class="insight-actions" style="margin:8px 0;">
+                            ${paperUrls.index ? `<button class="btn-preview" onclick="window.open('${esc(paperUrls.index)}','_blank')">打开论文页</button>` : ''}
+                            ${paperUrls.pdf ? `<button class="btn-preview" onclick="window.open('${esc(paperUrls.pdf)}','_blank')">打开 PDF</button>` : ''}
+                            ${paperUrls.tex ? `<button class="btn-preview" onclick="window.open('${esc(paperUrls.tex)}','_blank')">打开 TeX</button>` : ''}
+                        </div>
+                        ${renderPaperAssetLinks(insight.id, paperAssets)}
+                    </div>
+                </div>`;
 
-    async runFullExperiment(insightId) {
-        if (!confirm('Run FULL SciForge pipeline? This will:\n1. Find/clone codebase\n2. Generate scaffold\n3. Run validation loop (may take hours)\n4. Update knowledge graph\n\nContinue?')) return;
-        try {
-            await api('/api/experiments/run_full', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({insight_id: insightId}),
-            });
-            alert('Full SciForge pipeline started! Monitor in the Experiments tab.');
-            setTimeout(() => { switchTab('experiments'); loadExperimentsTab(); }, 2000);
-        } catch (e) {
-            alert('Failed: ' + e.message);
-        }
-    },
+            html += `<h4>方案快照</h4>
+                ${jsonPreview(plan.experiment_spec, '暂无 experiment_spec.json')}
+                ${jsonPreview(plan.manuscript_input_state, '暂无 manuscript_input_state.json')}`;
 
-    async runExperiment(runId) {
-        if (!confirm('Start the validation loop for this experiment?')) return;
-        try {
-            await api(`/api/experiments/${runId}/run`, {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: '{}',
-            });
-            alert('Validation loop started!');
-            setTimeout(loadExperimentsTab, 3000);
+            if (runs.length) {
+                html += '<h4>Experiment History</h4>';
+                for (const run of runs) {
+                    const color = experimentStatusColor(run.status);
+                    const artifactSummary = Object.entries(run.artifact_counts || {})
+                        .map(([k, v]) => `${k}:${v}`).join(' · ');
+                    const verdict = run.hypothesis_verdict
+                        ? `<span style="color:${verdictColor(run.hypothesis_verdict)};font-weight:700;">${esc(run.hypothesis_verdict.toUpperCase())}</span>`
+                        : '';
+                    const badges = [];
+                    if (canonical && canonical.id === run.id) badges.push('主实验');
+                    if (run.has_plot_artifacts) badges.push('可视化');
+                    if (run.has_bundle) badges.push('论文包');
+                    html += `<div style="padding:10px;margin:8px 0;border-left:3px solid ${color};background:var(--bg-elevated);border-radius:8px;">
+                        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+                            <strong style="color:${color};">Run #${run.id}</strong>
+                            <span>${esc(run.status || 'unknown')}</span>
+                            ${verdict}
+                            ${badges.map(label => `<span class="chip">${esc(label)}</span>`).join('')}
+                        </div>
+                        <div style="margin-top:6px;font-size:0.78rem;color:var(--text-secondary);display:flex;gap:12px;flex-wrap:wrap;">
+                            <span>Iterations: ${run.iterations_total || 0} (${run.iterations_kept || 0} kept)</span>
+                            <span>Claims: ${run.claim_count || 0}</span>
+                            ${run.effect_pct != null ? `<span>Effect: ${run.effect_pct.toFixed(2)}%</span>` : ''}
+                            ${artifactSummary ? `<span>Artifacts: ${esc(artifactSummary)}</span>` : ''}
+                        </div>
+                        ${run.error_message ? `<div style="margin-top:6px;color:#c4453a;font-size:0.76rem;">${esc(trunc(run.error_message, 220))}</div>` : ''}
+                        <div class="insight-actions" style="margin-top:8px;">
+                            <button class="btn-preview" onclick="window._dg.viewExperiment(${run.id})">View Run Details</button>
+                        </div>
+                    </div>`;
+                }
+            } else {
+                html += '<p>No runs yet for this idea.</p>';
+            }
+
+            html += '</div></div>';
+
+            const modal = document.createElement('div');
+            modal.className = 'proposal-modal';
+            modal.innerHTML = `<div class="proposal-overlay" onclick="this.parentElement.remove()"></div>${html}`;
+            document.body.appendChild(modal);
         } catch (e) {
-            alert('Failed: ' + e.message);
+            alert('Failed to load idea history: ' + e.message);
         }
     },
 
@@ -1952,61 +2046,6 @@ window._dg = {
         }
     },
 
-    async verifyDiscovery(insightId) {
-        if (!confirm('Launch novelty verification for this discovery? EvoScientist will search the literature (5-15 min).')) return;
-        try {
-            const res = await api(`/api/deep_insights/${insightId}/verify`, {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: '{}',
-            });
-            alert(`Verification launched!\nWorkdir: ${res.workdir}\nPID: ${res.pid}`);
-            setTimeout(loadDiscoveriesTab, 3000);
-        } catch (e) {
-            alert('Failed to launch verification: ' + e.message);
-        }
-    },
-
-    async launchDeepResearch(insightId) {
-        if (!confirm('Launch full EvoScientist research for this deep insight? This will start a longer background session.')) return;
-        try {
-            const res = await api(`/api/deep_insights/${insightId}/research`, {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: '{}',
-            });
-            alert(`Research launched!\nWorkdir: ${res.workdir}\nPID: ${res.pid}`);
-        } catch (e) {
-            alert('Failed to launch: ' + e.message);
-        }
-    },
-
-    async startAutoResearch() {
-        try {
-            await api('/api/auto_research/start', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: '{}',
-            });
-            loadExperimentsTab();
-        } catch (e) {
-            alert('Failed to start auto research: ' + e.message);
-        }
-    },
-
-    async stopAutoResearch() {
-        try {
-            await api('/api/auto_research/stop', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: '{}',
-            });
-            loadExperimentsTab();
-        } catch (e) {
-            alert('Failed to stop auto research: ' + e.message);
-        }
-    },
-
     async previewProposal(insightId) {
         try {
             const res = await api(`/api/research/proposal/${insightId}`);
@@ -2040,9 +2079,6 @@ window._dg = {
                         <button class="btn-close" onclick="this.closest('.proposal-modal').remove()">\u00D7</button>
                     </div>
                     <div class="proposal-body">${bodyHtml}</div>
-                    <div class="proposal-footer">
-                        <button class="btn-research" onclick="window._dg.launchResearch(${insightId}); this.closest('.proposal-modal').remove();">Launch Research</button>
-                    </div>
                 </div>`;
             document.body.appendChild(modal);
         } catch (e) {
@@ -2071,27 +2107,16 @@ function init() {
     // Discovery filters + generate button
     const dtf = el('discoveryTierFilter');
     if (dtf) dtf.addEventListener('change', loadDiscoveriesTab);
-    const btnGen = el('btnGenerateDiscoveries');
-    if (btnGen) btnGen.addEventListener('click', () => generateDiscoveries());
 
     // Experiment filters
     const esf = el('experimentStatusFilter');
     if (esf) esf.addEventListener('change', loadExperimentsTab);
-    const autoStart = el('btnAutoResearchStart');
-    if (autoStart) autoStart.addEventListener('click', () => window._dg.startAutoResearch());
-    const autoStop = el('btnAutoResearchStop');
-    if (autoStop) autoStop.addEventListener('click', () => window._dg.stopAutoResearch());
 
     // Insight filters
     const itf = el('insightTypeFilter');
     const isf = el('insightSortFilter');
     if (itf) itf.addEventListener('change', loadInsightsTab);
     if (isf) isf.addEventListener('change', loadInsightsTab);
-
-    // Pipeline controls
-    el('btnStart20').addEventListener('click', () => startPipeline(20));
-    el('btnStart100').addEventListener('click', () => startPipeline(100));
-    el('btnExpand').addEventListener('click', triggerTaxonomyExpansion);
 
     // Evidence node select
     el('evidenceNodeSelect').addEventListener('change', (e) => {

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import threading
@@ -31,7 +32,21 @@ from orchestrator.tracking import log_artifact, log_metrics, tracked_run
 _scheduler_thread: threading.Thread | None = None
 _scheduler_lock = threading.Lock()
 _stop_event = threading.Event()
+_process_lock_handle = None
 GPU_SCHEDULER_CONSUMER = "gpu_scheduler"
+# Serialize claim-worker + pick-job + thread.start to avoid two jobs racing the same idle worker.
+_job_dispatch_lock = threading.Lock()
+
+
+def _try_start_next_gpu_job() -> bool:
+    with _job_dispatch_lock:
+        worker = _claim_idle_worker()
+        job = _next_job()
+        if not worker or not job:
+            return False
+        thread = threading.Thread(target=_run_job, args=(job, worker), daemon=True)
+        thread.start()
+        return True
 
 
 def register_default_workers() -> list[dict]:
@@ -143,6 +158,36 @@ def register_default_workers() -> list[dict]:
         )
     db.commit()
     return workers
+
+
+def _try_acquire_process_lock() -> bool:
+    global _process_lock_handle
+    if _process_lock_handle is not None:
+        return True
+    lock_path = Path("/tmp/deepgraph-gpu-scheduler.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(lock_path, "a+", encoding="utf-8")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        return False
+    _process_lock_handle = handle
+    return True
+
+
+def _release_process_lock() -> None:
+    global _process_lock_handle
+    if _process_lock_handle is None:
+        return
+    try:
+        fcntl.flock(_process_lock_handle.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        pass
+    try:
+        _process_lock_handle.close()
+    finally:
+        _process_lock_handle = None
 
 
 def list_workers() -> list[dict]:
@@ -300,6 +345,19 @@ def _next_job() -> dict | None:
     return rows[0] if rows else None
 
 
+def _append_error(prefix: str, exc: Exception) -> str:
+    return f"{prefix}: {exc}"
+
+
+def _current_run_is_successful(run_id: int) -> bool:
+    run = db.fetchone("SELECT status, hypothesis_verdict FROM experiment_runs WHERE id=?", (run_id,))
+    if not run:
+        return False
+    if run.get("status") in {"completed", "bundle_ready"}:
+        return True
+    return bool(run.get("hypothesis_verdict"))
+
+
 def _run_job(job: dict, worker: dict) -> None:
     job_id = job["id"]
     run_id = job["experiment_run_id"]
@@ -337,33 +395,55 @@ def _run_job(job: dict, worker: dict) -> None:
     db.commit()
 
     try:
+        post_run_errors: list[str] = []
+        bundle: dict = {}
         with tracked_run(
             f"deepgraph-gpu-run-{run_id}",
             tags={"insight_id": insight_id, "resource_class": job.get("resource_class", "gpu_small")},
         ):
             result = run_validation_loop(run_id, execution_context={"worker": worker, "job": job})
-            process_completed_run(run_id)
-            collect_run_artifacts(run_id)
-            bundle = generate_submission_bundle(run_id)
+            try:
+                process_completed_run(run_id)
+            except Exception as exc:
+                post_run_errors.append(_append_error("knowledge_loop_failed", exc))
+            try:
+                collect_run_artifacts(run_id)
+            except Exception as exc:
+                post_run_errors.append(_append_error("artifact_collection_failed", exc))
+            try:
+                bundle = generate_submission_bundle(run_id)
+            except Exception as exc:
+                bundle = {"error": str(exc)}
+                post_run_errors.append(_append_error("submission_bundle_failed", exc))
+            if "error" in bundle:
+                post_run_errors.append(f"submission_bundle_result_error: {bundle['error']}")
             log_metrics(
                 {
                     "effect_pct": db.fetchone("SELECT effect_pct FROM experiment_runs WHERE id=?", (run_id,)).get("effect_pct"),
                 }
             )
-            for artifact in db.fetchall("SELECT path FROM experiment_artifacts WHERE run_id=?", (run_id,)):
-                log_artifact(artifact["path"])
+            try:
+                for artifact in db.fetchall("SELECT path FROM experiment_artifacts WHERE run_id=?", (run_id,)):
+                    log_artifact(artifact["path"])
+            except Exception as exc:
+                post_run_errors.append(_append_error("artifact_logging_failed", exc))
+        gpu_error = "\n".join(post_run_errors) if post_run_errors else None
         db.execute(
             """
             UPDATE gpu_jobs
-            SET status='completed', completed_at=CURRENT_TIMESTAMP, artifact_uri=?
+            SET status='completed', completed_at=CURRENT_TIMESTAMP, artifact_uri=?, error_message=?
             WHERE id=?
             """,
-            (db.fetchone("SELECT workdir FROM experiment_runs WHERE id=?", (run_id,)).get("workdir"), job_id),
+            (
+                db.fetchone("SELECT workdir FROM experiment_runs WHERE id=?", (run_id,)).get("workdir"),
+                gpu_error,
+                job_id,
+            ),
         )
         db.execute(
             """
             UPDATE auto_research_jobs
-            SET status=?, stage=?, artifact_bundle_id=?, last_note=?
+            SET status=?, stage=?, artifact_bundle_id=?, last_note=?, last_error=?
             WHERE deep_insight_id=?
             """,
             (
@@ -371,6 +451,7 @@ def _run_job(job: dict, worker: dict) -> None:
                 "writing_submission" if "error" not in bundle else "closed_loop_complete",
                 (bundle.get("bundle_ids") or [None])[-1],
                 f"GPU run completed with verdict={result.get('verdict', 'unknown')}. Submission bundle status={'ok' if 'error' not in bundle else 'failed'}.",
+                gpu_error,
                 insight_id,
             ),
         )
@@ -394,13 +475,23 @@ def _run_job(job: dict, worker: dict) -> None:
             "UPDATE gpu_jobs SET status='failed', error_message=?, completed_at=CURRENT_TIMESTAMP WHERE id=?",
             (str(exc), job_id),
         )
+        if _current_run_is_successful(run_id):
+            db.execute(
+                "UPDATE experiment_runs SET error_message=? WHERE id=?",
+                (str(exc), run_id),
+            )
+            auto_research_status = "completed"
+            auto_research_stage = "post_run_failed"
+        else:
+            db.execute(
+                "UPDATE experiment_runs SET status='failed', error_message=? WHERE id=?",
+                (str(exc), run_id),
+            )
+            auto_research_status = "failed"
+            auto_research_stage = "gpu_failed"
         db.execute(
-            "UPDATE experiment_runs SET status='failed', error_message=? WHERE id=?",
-            (str(exc), run_id),
-        )
-        db.execute(
-            "UPDATE auto_research_jobs SET status='failed', stage='gpu_failed', last_error=? WHERE deep_insight_id=?",
-            (str(exc), insight_id),
+            "UPDATE auto_research_jobs SET status=?, stage=?, last_error=? WHERE deep_insight_id=?",
+            (auto_research_status, auto_research_stage, str(exc), insight_id),
         )
         db.commit()
         db.emit_pipeline_event(
@@ -429,11 +520,7 @@ def consume_pipeline_events_once(limit: int = 50) -> dict:
     last_event_id = 0
     for event in events:
         last_event_id = int(event["id"])
-        worker = _claim_idle_worker()
-        job = _next_job()
-        if worker and job:
-            thread = threading.Thread(target=_run_job, args=(job, worker), daemon=True)
-            thread.start()
+        if _try_start_next_gpu_job():
             processed += 1
     if last_event_id:
         db.ack_pipeline_events(GPU_SCHEDULER_CONSUMER, last_event_id)
@@ -444,11 +531,7 @@ def _loop() -> None:
     while not _stop_event.is_set():
         stats = consume_pipeline_events_once(limit=50)
         if not stats.get("events"):
-            worker = _claim_idle_worker()
-            job = _next_job()
-            if worker and job:
-                thread = threading.Thread(target=_run_job, args=(job, worker), daemon=True)
-                thread.start()
+            _try_start_next_gpu_job()
             _stop_event.wait(max(1, GPU_POLL_SECONDS))
 
 
@@ -459,6 +542,8 @@ def start() -> dict:
     with _scheduler_lock:
         if _scheduler_thread and _scheduler_thread.is_alive():
             return {"status": "already_running"}
+        if not _try_acquire_process_lock():
+            return {"status": "already_running_elsewhere", "workers": list_workers()}
         _stop_event.clear()
         _scheduler_thread = threading.Thread(target=_loop, daemon=True, name="deepgraph-gpu-scheduler")
         _scheduler_thread.start()
@@ -467,4 +552,5 @@ def start() -> dict:
 
 def stop() -> dict:
     _stop_event.set()
+    _release_process_lock()
     return {"status": "stopping"}

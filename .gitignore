@@ -16,6 +16,8 @@ dist/
 *.db
 *.db-shm
 *.db-wal
+deepgraph.db.backup*
+
 server.log
 server_*.log
 logs/

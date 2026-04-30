@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Idea {{ insight.id }} 论文预览</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 24px; background: #111827; color: #f3f4f6; }
+    a { color: #60a5fa; }
+    .meta { color: #9ca3af; font-size: 14px; margin-bottom: 20px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin: 20px 0; }
+    .card { background: #1f2937; border-radius: 12px; padding: 16px; }
+    iframe { width: 100%; min-height: 70vh; border: 1px solid #374151; border-radius: 12px; background: white; }
+    code, pre { white-space: pre-wrap; word-break: break-word; }
+    ul { padding-left: 18px; }
+  </style>
+</head>
+<body>
+  <h1>Idea {{ insight.id }}: {{ insight.title }}</h1>
+  <div class="meta">
+    论文区只读预览。若存在已编译 PDF，将直接嵌入；否则可查看当前 `main.tex` 与 bundle 资产。
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h2>预览入口</h2>
+      <ul>
+        <li><a href="{{ preview_urls.index }}">当前页面</a></li>
+        {% if preview_urls.pdf %}
+        <li><a href="{{ preview_urls.pdf }}" target="_blank">打开 main.pdf</a></li>
+        {% endif %}
+        {% if preview_urls.tex %}
+        <li><a href="{{ preview_urls.tex }}" target="_blank">打开 main.tex</a></li>
+        {% endif %}
+      </ul>
+    </div>
+    <div class="card">
+      <h2>方案快照</h2>
+      <pre>{{ plan_snapshot.latest_status | tojson(indent=2) }}</pre>
+    </div>
+  </div>
+
+  {% if preview_urls.pdf %}
+  <h2>PDF 预览</h2>
+  <iframe src="{{ preview_urls.pdf }}"></iframe>
+  {% elif preview_urls.tex %}
+  <h2>TeX 预览</h2>
+  <iframe src="{{ preview_urls.tex }}"></iframe>
+  {% else %}
+  <div class="card">
+    <h2>尚无可预览主稿</h2>
+    <p>当前 idea 还没有 `main.pdf` 或 `main.tex`。</p>
+  </div>
+  {% endif %}
+
+  <div class="card" style="margin-top: 20px;">
+    <h2>论文资产</h2>
+    <ul>
+      {% for asset in paper_assets %}
+      <li>
+        <a href="/papers/{{ insight.id }}/view/{{ asset.path }}" target="_blank">{{ asset.path }}</a>
+        <span class="meta">({{ asset.size }} bytes)</span>
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+</body>
+</html>

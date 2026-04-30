@@ -657,6 +657,10 @@ def run_continuous(max_papers: int = 0):
 
                     discovery_scheduler.consume_pipeline_events_once(limit=200)
                 except Exception as e:
+                    try:
+                        db.rollback()
+                    except Exception:
+                        pass
                     logger.error("Event-driven discovery refresh failed: %s", e)
                     log_event("error", {"step": "discovery_event_consume", "error": str(e)})
             else:

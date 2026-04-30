@@ -93,21 +93,10 @@
                 </button>
             </div>
 
-            <!-- Pipeline controls at bottom -->
             <div class="sidebar-footer">
-                <div class="pipeline-controls">
-                    <button class="btn-pipeline" id="btnStart20" title="Analyze 20 papers">
-                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><polygon points="3,1 12,7 3,13" fill="currentColor"/></svg>
-                        <span>Run 20</span>
-                    </button>
-                    <button class="btn-pipeline" id="btnStart100" title="Analyze 100 papers">
-                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><polygon points="2,1 7,7 2,13" fill="currentColor"/><polygon points="7,1 12,7 7,13" fill="currentColor"/></svg>
-                        <span>Run 100</span>
-                    </button>
-                    <button class="btn-pipeline btn-expand" id="btnExpand" title="Expand taxonomy">
-                        <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 2v10M2 7h10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-                        <span>Expand</span>
-                    </button>
+                <div class="pipeline-controls" style="font-size:0.72rem;color:var(--text-dim);line-height:1.5;">
+                    Fixed-flow mode:
+                    pipeline, discovery, experiments, and manuscript generation run automatically.
                 </div>
             </div>
         </nav>
@@ -304,14 +293,10 @@
                                     <option value="1">Tier 1: Paradigm</option>
                                     <option value="2">Tier 2: Paper Ideas</option>
                                 </select>
-                                <button class="btn-pipeline" id="btnGenerateDiscoveries" title="Generate new discoveries">
-                                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><polygon points="3,1 12,7 3,13" fill="currentColor"/></svg>
-                                    <span>Generate</span>
-                                </button>
                             </div>
                         </div>
                         <div id="discoveriesList" class="insights-list">
-                            <p class="empty-msg">No deep discoveries yet. Click Generate to run the discovery pipeline.</p>
+                            <p class="empty-msg">No deep discoveries yet. Discovery runs in fixed automatic mode.</p>
                         </div>
                     </div>
                 </div>
@@ -323,13 +308,8 @@
                     <div class="card">
                         <div class="card-header">
                             <h3>Auto Research</h3>
-                            <div class="opp-controls">
-                                <button class="btn-pipeline" id="btnAutoResearchStart" title="Start auto research loop">
-                                    Start
-                                </button>
-                                <button class="btn-pipeline" id="btnAutoResearchStop" title="Stop auto research loop">
-                                    Stop
-                                </button>
+                            <div class="opp-controls" style="font-size:0.72rem;color:var(--text-dim);">
+                                Fixed automatic mode
                             </div>
                         </div>
                         <div id="autoResearchStatus" style="margin-bottom:12px;color:var(--text-secondary);font-size:0.8rem;">
@@ -341,7 +321,7 @@
                     </div>
                     <div class="card">
                         <div class="card-header">
-                            <h3>SciForge Experiments</h3>
+                            <h3>Idea Experiments</h3>
                             <div class="opp-controls">
                                 <select id="experimentStatusFilter" class="select-input-sm">
                                     <option value="">All</option>
@@ -355,7 +335,7 @@
                             </div>
                         </div>
                         <div id="experimentsList" class="insights-list">
-                            <p class="empty-msg">No experiments yet. Forge an experiment from a deep discovery to start.</p>
+                            <p class="empty-msg">No experiment ideas yet. Forge an experiment from a deep discovery to start.</p>
                         </div>
                     </div>
                     <div class="card" id="metaReportCard" style="display:none;">

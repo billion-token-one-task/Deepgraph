@@ -16,6 +16,7 @@ import time
 from pathlib import Path
 
 from agents.insight_validation import get_evosci_input_issue
+from agents.research_bridge import active_research_session, get_research_status, write_session_pid
 from config import (
     LLM_API_KEY,
     LLM_BASE_URL,
@@ -218,6 +219,18 @@ def launch_verification(insight_id: int, timeout_minutes: int = None) -> dict:
     if input_issue:
         return input_issue
 
+    existing_workdir = str(insight.get("evoscientist_workdir") or "").strip()
+    if existing_workdir:
+        existing = active_research_session(existing_workdir)
+        if existing:
+            return {
+                "status": "running",
+                "insight_id": insight_id,
+                "workdir": existing["workdir"],
+                "pid": existing.get("pid"),
+                "reused": True,
+            }
+
     prompt = _build_verification_prompt(insight)
 
     safe_title = insight["title"][:40].replace(" ", "_").replace("/", "-").replace("'", "")
@@ -252,6 +265,7 @@ def launch_verification(insight_id: int, timeout_minutes: int = None) -> dict:
         cwd=workdir,
         env=env,
     )
+    write_session_pid(Path(workdir), proc.pid)
 
     db.execute(
         "UPDATE deep_insights SET novelty_status='verifying', evoscientist_workdir=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
@@ -368,6 +382,19 @@ def launch_full_research(insight_id: int) -> dict:
     if input_issue:
         return input_issue
 
+    existing_workdir = str(insight.get("evoscientist_workdir") or "").strip()
+    if existing_workdir:
+        existing = active_research_session(existing_workdir)
+        if existing:
+            return {
+                "status": "running",
+                "insight_id": insight_id,
+                "workdir": existing["workdir"],
+                "pid": existing.get("pid"),
+                "reused": True,
+                "research_status": get_research_status(existing["workdir"]),
+            }
+
     tier = insight["tier"]
     title = insight["title"]
 
@@ -435,6 +462,7 @@ Write your findings to final_report.md."""
         cwd=workdir,
         env=env,
     )
+    write_session_pid(Path(workdir), proc.pid)
 
     db.execute(
         "UPDATE deep_insights SET evoscientist_workdir=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",

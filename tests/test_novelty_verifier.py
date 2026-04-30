@@ -1,9 +1,11 @@
 import unittest
+from unittest import mock
 
 from agents.insight_validation import (
     INSIGHT_INPUT_MISSING_ERROR_CODE,
     get_evosci_input_issue,
 )
+from agents import novelty_verifier
 
 
 class EvoSciInputIssueTests(unittest.TestCase):
@@ -41,6 +43,38 @@ class EvoSciInputIssueTests(unittest.TestCase):
         issue = get_evosci_input_issue(insight, mode="verification")
 
         self.assertIsNone(issue)
+
+
+class EvoSciLaunchReuseTests(unittest.TestCase):
+    def test_launch_full_research_reuses_active_session(self):
+        insight = {
+            "id": 21,
+            "tier": 2,
+            "title": "Reusable research session",
+            "problem_statement": "Test whether deep research reuses an active session.",
+            "proposed_method": '{"name":"ReuseNet","definition":"Reuse active EvoSci sessions."}',
+            "evoscientist_workdir": "/tmp/deep-research-21",
+        }
+
+        with (
+            mock.patch.object(novelty_verifier.db, "fetchone", return_value=insight),
+            mock.patch.object(
+                novelty_verifier,
+                "active_research_session",
+                return_value={"workdir": "/tmp/deep-research-21", "pid": 4242, "active": True},
+            ),
+            mock.patch.object(
+                novelty_verifier,
+                "get_research_status",
+                return_value={"workdir": "/tmp/deep-research-21", "active": True},
+            ),
+        ):
+            result = novelty_verifier.launch_full_research(21)
+
+        self.assertEqual(result["status"], "running")
+        self.assertTrue(result["reused"])
+        self.assertEqual(result["pid"], 4242)
+        self.assertEqual(result["workdir"], "/tmp/deep-research-21")
 
 
 if __name__ == "__main__":

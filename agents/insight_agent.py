@@ -159,7 +159,7 @@ def gather_node_evidence(node_id: str, max_papers: int = 30) -> dict:
         FROM results r
         JOIN result_taxonomy rt ON rt.result_id = r.id
         WHERE (rt.node_id = ? OR rt.node_id LIKE ? || '.%')
-          AND r.metric_value IS NOT NULL AND r.metric_value != ''
+          AND NULLIF(TRIM(CAST(r.metric_value AS TEXT)), '') IS NOT NULL
         ORDER BY r.id DESC LIMIT 80
     """, (node_id, node_id))
 

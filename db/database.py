@@ -12,6 +12,7 @@ import sqlite3
 import threading
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from config import DB_PATH, DATABASE_URL, PGVECTOR_EMBEDDING_DIM
 from ingestion.arxiv_ids import arxiv_base_id
@@ -27,6 +28,8 @@ except ImportError:
 _local = threading.local()
 _pg_init_lock = threading.Lock()
 _pg_init_done = False
+_backend_notice_lock = threading.Lock()
+_backend_notice_emitted = False
 
 
 def _use_pg() -> bool:
@@ -37,6 +40,57 @@ def _adapt_sql(sql: str) -> str:
     if not _use_pg():
         return sql
     return to_postgres(sql)
+
+
+def _redact_database_url(url: str) -> str:
+    parts = urlsplit((url or "").strip())
+    if not parts.scheme:
+        return ""
+    netloc = parts.hostname or ""
+    if parts.username:
+        netloc = parts.username
+        if parts.password:
+            netloc += ":***"
+        if parts.hostname:
+            netloc += f"@{parts.hostname}"
+    if parts.port:
+        netloc += f":{parts.port}"
+    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+
+
+def describe_backend() -> dict[str, Any]:
+    backend = "postgresql" if _use_pg() else "sqlite"
+    info: dict[str, Any] = {
+        "backend": backend,
+        "database_url_configured": _use_pg(),
+        "sqlite_path": str(DB_PATH),
+        "sqlite_exists": DB_PATH.exists(),
+    }
+    if _use_pg():
+        info["target"] = _redact_database_url(DATABASE_URL)
+        info["shadow_sqlite_path"] = str(DB_PATH)
+        info["shadow_sqlite_exists"] = DB_PATH.exists()
+    else:
+        info["target"] = str(DB_PATH)
+    return info
+
+
+def _emit_backend_notice_once() -> None:
+    global _backend_notice_emitted
+    if _backend_notice_emitted:
+        return
+    with _backend_notice_lock:
+        if _backend_notice_emitted:
+            return
+        info = describe_backend()
+        print(f"[DB] Backend={info['backend']} target={info['target']}", flush=True)
+        if info["backend"] == "postgresql" and info.get("shadow_sqlite_exists"):
+            print(
+                f"[DB] WARNING: legacy SQLite file still exists at {info['shadow_sqlite_path']} "
+                "but runtime is using PostgreSQL. Do not use the SQLite file as source of truth.",
+                flush=True,
+            )
+        _backend_notice_emitted = True
 
 
 def _pg_connect():
@@ -74,13 +128,44 @@ def _apply_postgres_schema_file() -> None:
     statements = [s.strip() for s in sql_text.split(";") if s.strip() and not s.strip().startswith("--")]
     conn = get_conn()
     with conn.cursor() as cur:
+        # Startup should not block indefinitely on existing hot tables when the
+        # schema is already mostly present. Best-effort index creation is enough.
+        cur.execute("SET lock_timeout = '5s'")
+        cur.execute("SET statement_timeout = '60s'")
         for stmt in statements:
+            cur.execute("SAVEPOINT schema_stmt")
             try:
                 cur.execute(stmt)
+                cur.execute("RELEASE SAVEPOINT schema_stmt")
             except Exception as e:
                 msg = str(e).lower()
-                if "already exists" in msg or "duplicate" in msg or "extension" in msg:
+                normalized = " ".join(stmt.lower().split())
+                best_effort_stmt = (
+                    normalized.startswith("create index if not exists")
+                    or normalized.startswith("create unique index if not exists")
+                    or (
+                        " if not exists " in f" {normalized} "
+                        and (
+                            normalized.startswith("alter table ")
+                            or normalized.startswith("create table ")
+                            or normalized.startswith("create extension ")
+                        )
+                    )
+                )
+                if (
+                    "already exists" in msg
+                    or "duplicate" in msg
+                    or "extension" in msg
+                    or ("lock timeout" in msg and best_effort_stmt)
+                    or ("canceling statement due to lock timeout" in msg and best_effort_stmt)
+                ):
+                    cur.execute("ROLLBACK TO SAVEPOINT schema_stmt")
+                    cur.execute("RELEASE SAVEPOINT schema_stmt")
+                    if "lock timeout" in msg and best_effort_stmt:
+                        print(f"[DB] Skipping locked startup schema statement: {stmt[:120]}", flush=True)
                     continue
+                cur.execute("ROLLBACK TO SAVEPOINT schema_stmt")
+                cur.execute("RELEASE SAVEPOINT schema_stmt")
                 raise
     conn.commit()
 
@@ -114,6 +199,34 @@ def _column_names(table: str) -> set[str]:
     return {row["name"] for row in rows}
 
 
+def _execute_startup_statement(
+    conn,
+    stmt: str,
+    params: tuple = (),
+    *,
+    best_effort_if_locked: bool = False,
+) -> bool:
+    if not _use_pg():
+        conn.execute(stmt, params)
+        return True
+    with conn.cursor() as cur:
+        cur.execute("SAVEPOINT startup_stmt")
+        try:
+            cur.execute(stmt, params)
+            cur.execute("RELEASE SAVEPOINT startup_stmt")
+            return True
+        except Exception as e:
+            msg = str(e).lower()
+            cur.execute("ROLLBACK TO SAVEPOINT startup_stmt")
+            cur.execute("RELEASE SAVEPOINT startup_stmt")
+            if best_effort_if_locked and (
+                "lock timeout" in msg or "canceling statement due to lock timeout" in msg
+            ):
+                print(f"[DB] Skipping locked startup schema statement: {stmt[:120]}", flush=True)
+                return False
+            raise
+
+
 def _ensure_columns(table: str, additions: dict[str, str]) -> None:
     if not _table_exists(table):
         return
@@ -121,7 +234,11 @@ def _ensure_columns(table: str, additions: dict[str, str]) -> None:
     conn = get_conn()
     for name, ddl in additions.items():
         if name not in cols:
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+            _execute_startup_statement(
+                conn,
+                f"ALTER TABLE {table} ADD COLUMN {name} {ddl}",
+                best_effort_if_locked=_use_pg(),
+            )
     if not _use_pg():
         conn.commit()
 
@@ -175,6 +292,11 @@ def _ensure_vnext_migrations() -> None:
             "experimentability": "TEXT",
             "resource_class": "TEXT DEFAULT 'cpu'",
             "submission_status": "TEXT DEFAULT 'not_started'",
+            "workspace_root": "TEXT",
+            "experiment_root": "TEXT",
+            "plan_root": "TEXT",
+            "paper_root": "TEXT",
+            "canonical_run_id": "INTEGER",
         },
     )
     _ensure_columns(
@@ -194,9 +316,26 @@ def _ensure_vnext_migrations() -> None:
         },
     )
 
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_deep_insights_mechanism ON deep_insights(mechanism_type)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_deep_insights_resource ON deep_insights(resource_class)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_auto_research_jobs_resource ON auto_research_jobs(resource_class)")
+    _execute_startup_statement(
+        conn,
+        "CREATE INDEX IF NOT EXISTS idx_deep_insights_mechanism ON deep_insights(mechanism_type)",
+        best_effort_if_locked=_use_pg(),
+    )
+    _execute_startup_statement(
+        conn,
+        "CREATE INDEX IF NOT EXISTS idx_deep_insights_resource ON deep_insights(resource_class)",
+        best_effort_if_locked=_use_pg(),
+    )
+    _execute_startup_statement(
+        conn,
+        "CREATE INDEX IF NOT EXISTS idx_deep_insights_canonical_run ON deep_insights(canonical_run_id)",
+        best_effort_if_locked=_use_pg(),
+    )
+    _execute_startup_statement(
+        conn,
+        "CREATE INDEX IF NOT EXISTS idx_auto_research_jobs_resource ON auto_research_jobs(resource_class)",
+        best_effort_if_locked=_use_pg(),
+    )
     conn.commit()
 
 
@@ -250,14 +389,28 @@ def _ensure_claim_dedup_schema() -> None:
         },
     )
     conn = get_conn()
-    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_claims_claim_key ON claims(claim_key)")
-    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_results_result_key ON results(result_key)")
+    _execute_startup_statement(
+        conn,
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_claims_claim_key ON claims(claim_key)",
+        best_effort_if_locked=_use_pg(),
+    )
+    _execute_startup_statement(
+        conn,
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_results_result_key ON results(result_key)",
+        best_effort_if_locked=_use_pg(),
+    )
     if _use_pg():
         try:
-            conn.execute(f"ALTER TABLE claims ADD COLUMN IF NOT EXISTS embedding_vector vector({PGVECTOR_EMBEDDING_DIM})")
-            conn.execute(
+            _execute_startup_statement(
+                conn,
+                f"ALTER TABLE claims ADD COLUMN IF NOT EXISTS embedding_vector vector({PGVECTOR_EMBEDDING_DIM})",
+                best_effort_if_locked=True,
+            )
+            _execute_startup_statement(
+                conn,
                 "CREATE INDEX IF NOT EXISTS idx_claims_embedding_vector "
-                "ON claims USING hnsw (embedding_vector vector_cosine_ops)"
+                "ON claims USING hnsw (embedding_vector vector_cosine_ops)",
+                best_effort_if_locked=True,
             )
         except Exception:
             pass
@@ -312,8 +465,16 @@ def _ensure_pipeline_event_schema() -> None:
             )
             """
         )
-    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_pipeline_events_dedupe ON pipeline_events(dedupe_key)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_pipeline_events_type_id ON pipeline_events(event_type, id)")
+    _execute_startup_statement(
+        conn,
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_pipeline_events_dedupe ON pipeline_events(dedupe_key)",
+        best_effort_if_locked=_use_pg(),
+    )
+    _execute_startup_statement(
+        conn,
+        "CREATE INDEX IF NOT EXISTS idx_pipeline_events_type_id ON pipeline_events(event_type, id)",
+        best_effort_if_locked=_use_pg(),
+    )
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS paper_stage_checkpoints (
@@ -327,7 +488,11 @@ def _ensure_pipeline_event_schema() -> None:
         )
         """
     )
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_paper_stage_checkpoints_stage ON paper_stage_checkpoints(stage)")
+    _execute_startup_statement(
+        conn,
+        "CREATE INDEX IF NOT EXISTS idx_paper_stage_checkpoints_stage ON paper_stage_checkpoints(stage)",
+        best_effort_if_locked=_use_pg(),
+    )
     conn.commit()
 
 
@@ -336,71 +501,95 @@ def _sync_postgres_sequences() -> None:
     if not _use_pg():
         return
     conn = get_conn()
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT
-                table_name,
-                column_name,
-                pg_get_serial_sequence(format('%I.%I', table_schema, table_name), column_name) AS sequence_name
-            FROM information_schema.columns
-            WHERE table_schema = 'public'
-              AND column_default LIKE 'nextval(%'
-            """
-        )
-        rows = cur.fetchall()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    table_name,
+                    column_name,
+                    pg_get_serial_sequence(format('%I.%I', table_schema, table_name), column_name) AS sequence_name
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND column_default LIKE 'nextval(%'
+                """
+            )
+            rows = cur.fetchall()
 
-    with conn.cursor() as cur:
-        for row in rows:
-            table_name = row["table_name"] if isinstance(row, dict) else row[0]
-            column_name = row["column_name"] if isinstance(row, dict) else row[1]
-            sequence_name = row["sequence_name"] if isinstance(row, dict) else row[2]
-            if not sequence_name:
-                continue
+        with conn.cursor() as cur:
+            for row in rows:
+                table_name = row["table_name"] if isinstance(row, dict) else row[0]
+                column_name = row["column_name"] if isinstance(row, dict) else row[1]
+                sequence_name = row["sequence_name"] if isinstance(row, dict) else row[2]
+                if not sequence_name:
+                    continue
 
-            safe_table = str(table_name).replace('"', '""')
-            safe_column = str(column_name).replace('"', '""')
-            cur.execute(f'SELECT MAX("{safe_column}") AS max_id FROM "{safe_table}"')
-            max_row = cur.fetchone()
-            max_id = (max_row["max_id"] if isinstance(max_row, dict) else max_row[0]) or 0
-            if max_id:
-                cur.execute("SELECT setval(%s, %s, true)", (sequence_name, int(max_id)))
-            else:
-                cur.execute("SELECT setval(%s, %s, false)", (sequence_name, 1))
+                safe_table = str(table_name).replace('"', '""')
+                safe_column = str(column_name).replace('"', '""')
+                cur.execute(f'SELECT MAX("{safe_column}") AS max_id FROM "{safe_table}"')
+                max_row = cur.fetchone()
+                max_id = (max_row["max_id"] if isinstance(max_row, dict) else max_row[0]) or 0
+                if max_id:
+                    cur.execute("SELECT setval(%s, %s, true)", (sequence_name, int(max_id)))
+                else:
+                    cur.execute("SELECT setval(%s, %s, false)", (sequence_name, 1))
+    except Exception as e:
+        if "lock timeout" in str(e).lower():
+            print("[DB] Skipping startup sequence sync due to lock timeout", flush=True)
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return
+        raise
 
 
 def init_db():
     if _use_pg():
         global _pg_init_done
         if _pg_init_done:
+            _emit_backend_notice_once()
             return
         with _pg_init_lock:
             if _pg_init_done:
+                _emit_backend_notice_once()
                 return
-            _apply_postgres_schema_file()
-            _ensure_vnext_migrations()
-            _ensure_grounding_schema()
-            schema_feedback = Path(__file__).parent / "schema_insight_feedback.sql"
-            if schema_feedback.exists():
-                # insight_feedback may contain SQLite-only fragments; apply best-effort
+            conn = get_conn()
+            conn.execute("SET lock_timeout = '5s'")
+            conn.execute("SET statement_timeout = '60s'")
+            try:
+                _apply_postgres_schema_file()
+                _ensure_vnext_migrations()
+                _ensure_grounding_schema()
+                schema_feedback = Path(__file__).parent / "schema_insight_feedback.sql"
+                if schema_feedback.exists():
+                    # insight_feedback may contain SQLite-only fragments; apply best-effort
+                    try:
+                        for stmt in schema_feedback.read_text().split(";"):
+                            s = stmt.strip()
+                            if s and not s.startswith("--"):
+                                try:
+                                    get_conn().execute(s)
+                                except Exception:
+                                    pass
+                        get_conn().commit()
+                    except Exception:
+                        pass
+                _ensure_insight_feedback_schema()
+                _ensure_papers_checkpoint_columns()
+                _ensure_claim_dedup_schema()
+                _ensure_pipeline_event_schema()
+                _sync_postgres_sequences()
+                get_conn().commit()
+                _pg_init_done = True
+            finally:
                 try:
-                    for stmt in schema_feedback.read_text().split(";"):
-                        s = stmt.strip()
-                        if s and not s.startswith("--"):
-                            try:
-                                get_conn().execute(s)
-                            except Exception:
-                                pass
-                    get_conn().commit()
+                    conn.execute("SET lock_timeout = '0'")
+                    conn.execute("SET statement_timeout = '0'")
+                    conn.commit()
                 except Exception:
                     pass
-            _ensure_insight_feedback_schema()
-            _ensure_papers_checkpoint_columns()
-            _ensure_claim_dedup_schema()
-            _ensure_pipeline_event_schema()
-            _sync_postgres_sequences()
-            get_conn().commit()
-            _pg_init_done = True
+        _emit_backend_notice_once()
         return
 
     conn = get_conn()
@@ -420,6 +609,7 @@ def init_db():
     _ensure_claim_dedup_schema()
     _ensure_pipeline_event_schema()
     conn.commit()
+    _emit_backend_notice_once()
 
 
 def _ensure_papers_checkpoint_columns() -> None:
@@ -437,8 +627,16 @@ def _ensure_papers_checkpoint_columns() -> None:
         },
     )
     conn = get_conn()
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_papers_arxiv_base ON papers(arxiv_base_id)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_papers_processing_stage ON papers(processing_stage)")
+    _execute_startup_statement(
+        conn,
+        "CREATE INDEX IF NOT EXISTS idx_papers_arxiv_base ON papers(arxiv_base_id)",
+        best_effort_if_locked=_use_pg(),
+    )
+    _execute_startup_statement(
+        conn,
+        "CREATE INDEX IF NOT EXISTS idx_papers_processing_stage ON papers(processing_stage)",
+        best_effort_if_locked=_use_pg(),
+    )
     conn.commit()
 
 
