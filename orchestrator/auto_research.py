@@ -9,6 +9,7 @@ Flow:
 """
 from __future__ import annotations
 
+import fcntl
 import json
 import threading
 import time
@@ -44,9 +45,11 @@ from orchestrator.pipeline import log_event
 _worker_thread: threading.Thread | None = None
 _worker_lock = threading.Lock()
 _stop_event = threading.Event()
+_process_lock_handle = None
 AUTO_RESEARCH_CONSUMER = "auto_research"
 VERIFY_STALE_SECONDS = 60 * 60
 RESEARCH_STALE_SECONDS = 6 * 60 * 60
+REVIEW_PENDING_STALE_SECONDS = 15 * 60
 MAX_PARALLEL_VERIFICATIONS = 2
 
 HEAVY_KEYWORDS = {
@@ -78,6 +81,25 @@ def _run_is_formal(run: dict | None) -> bool:
         return False
     proxy = _load_json(run.get("proxy_config"), {})
     return bool(proxy.get("formal_experiment")) and not bool(proxy.get("smoke_test_only"))
+
+
+def _run_review_decision_ready(run: dict | None) -> bool:
+    if not run:
+        return False
+    proxy = _load_json(run.get("proxy_config"), {})
+    return "formal_experiment" in proxy or "smoke_test_only" in proxy
+
+
+def _run_scaffold_ready(run: dict | None) -> bool:
+    if not run:
+        return False
+    if not _run_review_decision_ready(run):
+        return False
+    return bool(
+        (run.get("workdir") or "").strip()
+        and (run.get("program_md") or "").strip()
+        and (run.get("success_criteria") or "").strip()
+    )
 
 
 def _coerce_datetime(value):
@@ -169,14 +191,8 @@ def _parse_gpu_hours(plan: dict) -> float | None:
 
 def assess_experiment_route(insight: dict) -> tuple[str, str]:
     """Route insights into cpu / gpu_small / gpu_large lanes."""
-    tier = insight.get("tier")
     resource_class = infer_resource_class(insight)
     experimentability = infer_experimentability(insight)
-    if tier == 1:
-        predictions = _load_json(insight.get("predictions"), [])
-        if predictions:
-            return "cpu", "Tier-1 insight has testable predictions; verify/research on CPU lane."
-        return "cpu", "Tier-1 insight is research-only; experiment lane optional."
     return resource_class, f"Experimentability={experimentability}; routed to {resource_class}."
 
 
@@ -184,6 +200,40 @@ def _research_report_ready(workdir: str | None) -> bool:
     if not workdir:
         return False
     return (Path(workdir) / "final_report.md").exists()
+
+
+def _try_acquire_process_lock() -> bool:
+    global _process_lock_handle
+    if _process_lock_handle is not None:
+        return True
+    lock_path = Path("/tmp/deepgraph-auto-research.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(lock_path, "a+", encoding="utf-8")
+    try:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        return False
+    handle.seek(0)
+    handle.truncate()
+    handle.write(f"{Path('/proc/self').resolve().name}\n")
+    handle.flush()
+    _process_lock_handle = handle
+    return True
+
+
+def _release_process_lock() -> None:
+    global _process_lock_handle
+    if _process_lock_handle is None:
+        return
+    try:
+        fcntl.flock(_process_lock_handle.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        pass
+    try:
+        _process_lock_handle.close()
+    finally:
+        _process_lock_handle = None
 
 
 def list_jobs(limit: int = 50) -> list[dict]:
@@ -234,7 +284,16 @@ def _execution_active_job_count() -> int:
     row = db.fetchone(
         """SELECT COUNT(*) AS c
            FROM auto_research_jobs
-           WHERE status IN ('researching', 'running_experiment', 'running_gpu', 'running_cpu', 'queued_gpu')"""
+           WHERE status IN ('running_experiment', 'running_gpu', 'running_cpu', 'queued_gpu')"""
+    )
+    return row["c"] if row else 0
+
+
+def _research_job_count() -> int:
+    row = db.fetchone(
+        """SELECT COUNT(*) AS c
+           FROM auto_research_jobs
+           WHERE status IN ('researching')"""
     )
     return row["c"] if row else 0
 
@@ -249,7 +308,7 @@ def _verification_job_count() -> int:
 
 
 def _active_job_count() -> int:
-    return _execution_active_job_count() + _verification_job_count()
+    return _execution_active_job_count() + _verification_job_count() + _research_job_count()
 
 
 def _candidate_pool() -> list[dict]:
@@ -264,6 +323,14 @@ def _candidate_pool() -> list[dict]:
              AND (
                arj.status IS NULL
                OR arj.status IN ('queued', 'eligible', 'failed', 'queued_cpu', 'queued_gpu')
+               OR (
+                    arj.status='completed'
+                    AND arj.stage='tier1_research_complete'
+                    AND NOT EXISTS (
+                        SELECT 1 FROM experiment_runs er
+                        WHERE er.deep_insight_id = di.id
+                    )
+                  )
                OR (
                     arj.status='blocked'
                     AND (
@@ -314,7 +381,7 @@ def _refresh_running_jobs() -> None:
         """SELECT arj.*, di.novelty_status
            FROM auto_research_jobs arj
            JOIN deep_insights di ON di.id = arj.deep_insight_id
-           WHERE arj.status IN ('verifying', 'researching', 'running_experiment', 'queued_gpu', 'running_gpu', 'running_cpu')"""
+           WHERE arj.status IN ('verifying', 'researching', 'review_pending', 'running_experiment', 'queued_gpu', 'running_gpu', 'running_cpu')"""
     )
     for job in jobs:
         insight_id = job["deep_insight_id"]
@@ -363,6 +430,25 @@ def _refresh_running_jobs() -> None:
                         last_error="Deep research stalled; released slot for retry.",
                     )
                     log_event("warning", {"step": "auto_research_research_stale", "insight_id": insight_id})
+        elif job["status"] == "review_pending":
+            if job.get("last_error") and not job.get("experiment_run_id"):
+                note = job.get("last_note") or job["last_error"]
+                _upsert_job(
+                    insight_id,
+                    status="blocked",
+                    stage="experiment_review_blocked",
+                    last_error=job["last_error"],
+                    last_note=note,
+                )
+            elif _job_age_seconds(job) >= REVIEW_PENDING_STALE_SECONDS and not job.get("experiment_run_id"):
+                _upsert_job(
+                    insight_id,
+                    status="queued",
+                    stage="review_retry",
+                    last_error=None,
+                    last_note="Structured experiment review stalled; requeued for retry.",
+                )
+                log_event("warning", {"step": "auto_research_review_stale", "insight_id": insight_id})
         elif job["status"] in {"running_experiment", "running_gpu", "running_cpu", "queued_gpu"} and job.get("experiment_run_id"):
             run = db.fetchone("SELECT * FROM experiment_runs WHERE id=?", (job["experiment_run_id"],))
             if not run:
@@ -498,6 +584,7 @@ def _process_candidate(insight: dict) -> None:
         _upsert_job(insight_id, status="blocked", stage="prior_work_exists", last_note="Insight already exists in prior work.")
         return
 
+    background_research_note = None
     if evosci_available():
         workdir = insight.get("evoscientist_workdir")
         if not _research_report_ready(workdir):
@@ -508,13 +595,12 @@ def _process_candidate(insight: dict) -> None:
                     note = "Waiting for required insight fields before deep research can run."
                     if missing:
                         note = f"{note} Missing: {missing}."
+                    background_research_note = f"{note} Continuing to experiment pipeline without deep research report."
                     _upsert_job(
                         insight_id,
-                        status="blocked",
-                        stage="research_input_missing",
-                        cpu_eligible=0,
+                        stage="research_skipped_input_missing",
                         last_error=result["error"],
-                        last_note=note,
+                        last_note=background_research_note,
                     )
                     log_event(
                         "warning",
@@ -525,13 +611,12 @@ def _process_candidate(insight: dict) -> None:
                             "missing_fields": result.get("missing_fields", []),
                         },
                     )
-                    return
-                _upsert_job(
-                    insight_id,
-                    status="failed",
-                    stage="research_launch_failed",
-                    last_error=result["error"],
-                )
+                upsert_fields = {
+                    "stage": "research_launch_failed",
+                    "last_error": result["error"],
+                    "last_note": "Deep research launch failed; continuing to experiment pipeline.",
+                }
+                _upsert_job(insight_id, **upsert_fields)
                 log_event(
                     "error",
                     {
@@ -540,17 +625,21 @@ def _process_candidate(insight: dict) -> None:
                         "error": result["error"],
                     },
                 )
-                return
+                background_research_note = "Deep research launch failed; continuing to experiment pipeline."
+            reused_research = bool(result.get("reused"))
+            background_research_note = (
+                "Reusing active EvoScientist deep research while continuing experiment pipeline."
+                if reused_research
+                else "Launched EvoScientist deep research in background while continuing experiment pipeline."
+            )
             _upsert_job(
                 insight_id,
-                status="researching",
-                stage="deep_research",
+                stage="deep_research_background",
                 research_workdir=result.get("workdir"),
-                last_note="Launched EvoScientist deep research.",
+                last_note=background_research_note,
                 last_error=None,
             )
             log_event("auto_research", {"step": "deep_research_started", "insight_id": insight_id})
-            return
     else:
         _upsert_job(
             insight_id,
@@ -558,25 +647,21 @@ def _process_candidate(insight: dict) -> None:
             last_note="EvoScientist binary not found; continuing with experiment-only path.",
         )
 
-    if tier == 1:
-        _upsert_job(
-            insight_id,
-            status="completed",
-            stage="tier1_research_complete",
-            last_note="Tier-1 auto research complete. Deep research finished; no paper-idea scaffold required.",
+    existing_run = None
+    canonical_run_id = insight.get("canonical_run_id")
+    if canonical_run_id:
+        existing_run = db.fetchone("SELECT * FROM experiment_runs WHERE id=?", (canonical_run_id,))
+    if not existing_run:
+        existing_run = db.fetchone(
+            "SELECT * FROM experiment_runs WHERE deep_insight_id=? ORDER BY id DESC LIMIT 1",
+            (insight_id,),
         )
-        return
-
-    existing_run = db.fetchone(
-        "SELECT * FROM experiment_runs WHERE deep_insight_id=? ORDER BY id DESC LIMIT 1",
-        (insight_id,),
-    )
     if not existing_run:
         _upsert_job(
             insight_id,
             status="review_pending",
             stage="experiment_review",
-            last_note="Running structured experiment review before forge.",
+            last_note=background_research_note or "Running structured experiment review before forge.",
         )
         forged = forge_experiment(insight_id)
         if "error" in forged:
@@ -607,22 +692,36 @@ def _process_candidate(insight: dict) -> None:
                 stage="experiment_review_smoke_only",
                 experiment_run_id=forged["run_id"],
                 resource_class=resource_class,
-                last_note=(forged.get("judgement") or {}).get("summary", "Experiment is smoke-test only and blocked from formal pipeline."),
+                last_note=(forged.get("judgement") or {}).get(
+                    "summary",
+                    "Experiment is smoke-test only; continuing with compute validation (formal manuscript path remains blocked).",
+                ),
             )
-            return
-        _upsert_job(
-            insight_id,
-            status="eligible",
-            stage="formal_ready",
-            experiment_run_id=forged["run_id"],
-            resource_class=resource_class,
-            last_note="Structured review passed and experiment was forged.",
-        )
+        else:
+            _upsert_job(
+                insight_id,
+                status="eligible",
+                stage="formal_ready",
+                experiment_run_id=forged["run_id"],
+                resource_class=resource_class,
+                last_note="Structured review passed and experiment was forged.",
+            )
         db.execute(
             "UPDATE experiment_runs SET resource_class=? WHERE id=?",
             (resource_class, forged["run_id"]),
         )
         db.commit()
+    elif not _run_scaffold_ready(existing_run) and existing_run.get("status") in {"scaffolding"}:
+        _upsert_job(
+            insight_id,
+            status="review_pending",
+            stage="experiment_review",
+            experiment_run_id=existing_run["id"],
+            resource_class=resource_class,
+            last_note="Experiment forge is still preparing workspace, review, or scaffold metadata.",
+            last_error=None,
+        )
+        return
     elif not _run_is_formal(existing_run):
         _upsert_job(
             insight_id,
@@ -630,9 +729,13 @@ def _process_candidate(insight: dict) -> None:
             stage="experiment_review_smoke_only",
             experiment_run_id=existing_run["id"],
             resource_class=resource_class,
-            last_note="Existing experiment run is marked non-formal; manuscript path remains blocked.",
+            last_note="Existing experiment run is marked non-formal; continuing with compute validation (formal manuscript path remains blocked).",
         )
-        return
+        db.execute(
+            "UPDATE experiment_runs SET resource_class=? WHERE id=?",
+            (resource_class, existing_run["id"]),
+        )
+        db.commit()
 
     if existing_run["status"] in {"completed"}:
         note = f"Verdict={existing_run.get('hypothesis_verdict')}, effect_pct={existing_run.get('effect_pct')}"
@@ -775,6 +878,8 @@ def start() -> dict:
     with _worker_lock:
         if _worker_thread and _worker_thread.is_alive():
             return {"status": "already_running"}
+        if not _try_acquire_process_lock():
+            return {"status": "already_running_elsewhere"}
         _stop_event.clear()
         _worker_thread = threading.Thread(target=_run_loop, daemon=True, name="deepgraph-auto-research")
         _worker_thread.start()
@@ -784,5 +889,6 @@ def start() -> dict:
 
 def stop() -> dict:
     _stop_event.set()
+    _release_process_lock()
     log_event("auto_research", {"step": "stopped"})
     return {"status": "stopping"}

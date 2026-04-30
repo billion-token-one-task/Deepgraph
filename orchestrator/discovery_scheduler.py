@@ -14,6 +14,7 @@ from datetime import datetime
 from agents.llm_client import is_llm_auth_error, is_llm_provider_unavailable_error
 from config import (
     DISCOVERY_AUTO_TRIGGER_PAPERS,
+    DISCOVERY_MIN_TIER2_BACKLOG,
     DISCOVERY_BULK_TIER1_CANDIDATES,
     DISCOVERY_BULK_TIER1_OVERLAPS,
     DISCOVERY_BULK_TIER1_PATTERNS,
@@ -260,6 +261,42 @@ def _eligible_tier2_backlog() -> int:
     return int(row["c"]) if row else 0
 
 
+def _warm_tier2_backlog() -> int:
+    row = db.fetchone(
+        """
+        SELECT COUNT(*) AS c
+        FROM deep_insights di
+        LEFT JOIN auto_research_jobs arj ON arj.deep_insight_id = di.id
+        WHERE di.tier = 2
+          AND COALESCE(di.status, 'candidate') NOT IN ('exists')
+          AND (
+            arj.status IS NULL
+            OR arj.status IN (
+                'queued',
+                'eligible',
+                'failed',
+                'queued_cpu',
+                'queued_gpu',
+                'verifying',
+                'researching',
+                'review_pending',
+                'running_experiment',
+                'running_cpu',
+                'running_gpu'
+            )
+            OR (
+                arj.status='blocked'
+                AND (
+                    arj.cpu_eligible=1
+                    OR arj.stage IN ('verification_input_missing', 'research_input_missing')
+                )
+            )
+          )
+        """
+    )
+    return int(row["c"]) if row else 0
+
+
 def _reasoned_paper_count() -> int:
     row = db.fetchone("SELECT COUNT(*) AS c FROM papers WHERE status='reasoned'")
     return int(row["c"]) if row else 0
@@ -267,11 +304,21 @@ def _reasoned_paper_count() -> int:
 
 def _run_parallel_tier2_discovery() -> None:
     try:
-        if _eligible_tier2_backlog() > 0:
+        target_backlog = max(1, DISCOVERY_MIN_TIER2_BACKLOG)
+        deficit = max(0, target_backlog - _warm_tier2_backlog())
+        if deficit <= 0:
             return
         harvest_signals()
-        stored = run_tier2_discovery(max_problems=1, max_papers=DISCOVERY_TIER2_PAPERS)
-        log_event("discovery", {"step": "parallel_tier2_done", "count": len(stored)})
+        stored = run_tier2_discovery(max_problems=deficit, max_papers=DISCOVERY_TIER2_PAPERS)
+        log_event(
+            "discovery",
+            {
+                "step": "parallel_tier2_done",
+                "count": len(stored),
+                "target_backlog": target_backlog,
+                "requested_problems": deficit,
+            },
+        )
     except Exception as exc:
         print(f"[DISCOVERY] Parallel Tier 2 failed: {exc}", flush=True)
         print(traceback.format_exc(), flush=True)
@@ -280,16 +327,18 @@ def _run_parallel_tier2_discovery() -> None:
 
 def _maybe_launch_parallel_tier2_discovery(trigger: str) -> dict:
     global _tier2_thread, _last_parallel_tier2_at
-    if _eligible_tier2_backlog() > 0:
-        return {"status": "backlog_ready"}
+    warm_backlog = _warm_tier2_backlog()
+    target_backlog = max(1, DISCOVERY_MIN_TIER2_BACKLOG)
+    if warm_backlog >= target_backlog:
+        return {"status": "backlog_ready", "warm_backlog": warm_backlog, "target_backlog": target_backlog}
     if _reasoned_paper_count() < max(5, DISCOVERY_TIER2_PAPERS):
-        return {"status": "insufficient_reasoned_papers"}
+        return {"status": "insufficient_reasoned_papers", "warm_backlog": warm_backlog, "target_backlog": target_backlog}
     now = time.time()
     with _tier2_lock:
         if _tier2_thread and _tier2_thread.is_alive():
-            return {"status": "already_running"}
+            return {"status": "already_running", "warm_backlog": warm_backlog, "target_backlog": target_backlog}
         if now - _last_parallel_tier2_at < PARALLEL_TIER2_MIN_INTERVAL_SECONDS:
-            return {"status": "cooldown"}
+            return {"status": "cooldown", "warm_backlog": warm_backlog, "target_backlog": target_backlog}
         _last_parallel_tier2_at = now
         _tier2_thread = threading.Thread(
             target=_run_parallel_tier2_discovery,
@@ -297,8 +346,16 @@ def _maybe_launch_parallel_tier2_discovery(trigger: str) -> dict:
             name="deepgraph-parallel-tier2",
         )
         _tier2_thread.start()
-    log_event("discovery", {"step": "parallel_tier2_started", "trigger": trigger})
-    return {"status": "started"}
+    log_event(
+        "discovery",
+        {
+            "step": "parallel_tier2_started",
+            "trigger": trigger,
+            "warm_backlog": warm_backlog,
+            "target_backlog": target_backlog,
+        },
+    )
+    return {"status": "started", "warm_backlog": warm_backlog, "target_backlog": target_backlog}
 
 
 def _refresh_node_outputs(node_id: str) -> dict:
@@ -373,6 +430,10 @@ def _event_loop() -> None:
             if not stats.get("events"):
                 _stop_event.wait(max(1, PIPELINE_EVENT_POLL_SECONDS))
         except Exception as exc:
+            try:
+                db.rollback()
+            except Exception:
+                pass
             print(f"[DISCOVERY] Event loop failed: {exc}", flush=True)
             print(traceback.format_exc(), flush=True)
             _stop_event.wait(max(1, PIPELINE_EVENT_POLL_SECONDS))

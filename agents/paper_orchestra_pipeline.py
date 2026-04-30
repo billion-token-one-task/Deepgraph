@@ -14,13 +14,13 @@ from pathlib import Path
 
 from contracts import ContractValidationError
 from agents.manuscript_pipeline import (
-    MANUSCRIPT_WORKDIR,
     _bundle_manifest,
     _ensure_dirs,
     _store_assets,
     _write,
     build_manuscript_input_state,
 )
+from agents.workspace_layout import get_idea_workspace, paper_bundle_root, write_latest_status, write_plan_files
 from config import SUBMISSION_BUNDLE_FORMATS
 from db import database as db
 from db.insight_outcomes import OUTCOME_BECAME_MANUSCRIPT, set_outcome
@@ -216,10 +216,6 @@ def pick_main_tex(orchestrated: dict, state: dict, bundle_format: str) -> str:
 
 
 def _bundle_dir_for_format(root: Path, bundle_format: str) -> Path:
-    if bundle_format == "conference":
-        return root / "conference_submission"
-    if bundle_format == "journal":
-        return root / "journal_draft"
     return root / bundle_format
 
 
@@ -249,11 +245,24 @@ def generate_bundle_paper_orchestra(
     state = state_contract.to_dict()
     paper_ids = [str(x) for x in _json_list(insight.get("supporting_papers")) if x]
     literature_block = insight.get("evidence_summary") or insight.get("related_work_positioning") or ""
-
-    manuscript_root = MANUSCRIPT_WORKDIR / f"run_{run_id}"
+    layout = get_idea_workspace(int(run["deep_insight_id"]), insight=insight, create=True, sync_db=True)
+    manuscript_root = Path(layout["paper_current_root"])
     _ensure_dirs(manuscript_root)
     shared_fig = manuscript_root / "paperorchestra_figures"
     _ensure_dirs(shared_fig)
+    write_plan_files(
+        int(run["deep_insight_id"]),
+        run_id=run_id,
+        insight=insight,
+        files={"manuscript_input_state.json": state},
+        mirror_to_run_spec=False,
+    )
+    write_latest_status(
+        int(run["deep_insight_id"]),
+        {"stage": "writing_submission", "status": "drafting", "paper_root": str(layout["paper_root"])},
+        run_id=run_id,
+        insight=insight,
+    )
 
     orchestrated = _run_full_pipeline(
         state,
@@ -271,6 +280,14 @@ def generate_bundle_paper_orchestra(
 
     existing = db.fetchone("SELECT * FROM manuscript_runs WHERE experiment_run_id=?", (run_id,))
     canonical_state_json = json.dumps({**state, "paper_orchestra": orchestrated}, default=str)
+    _write(Path(layout["paper_manifests_root"]) / "canonical_state.json", canonical_state_json)
+    write_plan_files(
+        int(run["deep_insight_id"]),
+        run_id=run_id,
+        insight=insight,
+        files={"canonical_state.json": json.loads(canonical_state_json)},
+        mirror_to_run_spec=False,
+    )
     if existing:
         manuscript_run_id = existing["id"]
         db.execute(
@@ -297,8 +314,9 @@ def generate_bundle_paper_orchestra(
     db.execute("DELETE FROM manuscript_assets WHERE manuscript_run_id=?", (manuscript_run_id,))
     db.execute("DELETE FROM submission_bundles WHERE manuscript_run_id=?", (manuscript_run_id,))
 
+    preferred_bundle_dir: Path | None = None
     for bundle_format in bundle_formats:
-        bundle_dir = _bundle_dir_for_format(manuscript_root, bundle_format)
+        bundle_dir = paper_bundle_root(int(run["deep_insight_id"]), bundle_format, insight=insight)
         figures_dir = bundle_dir / "figures"
         _ensure_dirs(figures_dir)
         if shared_fig.exists():
@@ -348,8 +366,25 @@ def generate_bundle_paper_orchestra(
         )
         manifest = _bundle_manifest(bundle_dir)
         _write(bundle_dir / "artifact_manifest.json", json.dumps(manifest, indent=2))
+        if preferred_bundle_dir is None or bundle_format == "conference":
+            preferred_bundle_dir = bundle_dir
         bundle_ids.append(_store_assets(manuscript_run_id, bundle_dir, bundle_format))
         log_artifact(str(bundle_dir / "artifact_manifest.json"))
+
+    if preferred_bundle_dir is not None:
+        for child in sorted(manuscript_root.iterdir()):
+            if child == shared_fig:
+                continue
+            if child.is_dir():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
+        for path in sorted(preferred_bundle_dir.rglob("*")):
+            if not path.is_file():
+                continue
+            target = manuscript_root / path.relative_to(preferred_bundle_dir)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, target)
 
     db.execute(
         """
@@ -370,6 +405,18 @@ def generate_bundle_paper_orchestra(
             (run["deep_insight_id"],),
         )
     db.commit()
+    write_latest_status(
+        int(run["deep_insight_id"]),
+        {
+            "stage": "bundle_ready",
+            "status": "bundle_ready",
+            "manuscript_run_id": manuscript_run_id,
+            "bundle_ids": bundle_ids,
+            "paper_current_root": str(manuscript_root),
+        },
+        run_id=run_id,
+        insight=insight,
+    )
 
     if bundle_ids:
         if hasattr(db, "emit_pipeline_event"):

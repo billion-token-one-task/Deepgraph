@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from db import database
 from orchestrator import gpu_scheduler
@@ -99,6 +100,59 @@ class GpuSchedulerTests(unittest.TestCase):
         self.assertIsNotNone(first)
         self.assertIn('"backend": "ssh"', first["metadata"])
         self.assertIn('"ssh_host": "gpu.example.com"', first["metadata"])
+
+    def test_run_job_bundle_failure_does_not_overwrite_completed_experiment(self):
+        workers = gpu_scheduler.register_default_workers()
+        worker = workers[0]
+        job_id = gpu_scheduler.queue_run(
+            insight_id=1,
+            run_id=1,
+            resource_class="gpu_small",
+            priority=1,
+            vram_required_gb=16,
+        )
+        database.execute(
+            """
+            INSERT INTO auto_research_jobs (deep_insight_id, status, stage, experiment_run_id)
+            VALUES (1, 'queued_gpu', 'queued', 1)
+            """
+        )
+        database.commit()
+        job = database.fetchone("SELECT * FROM gpu_jobs WHERE id=?", (job_id,))
+
+        def _fake_validation_loop(run_id, execution_context=None):
+            database.execute(
+                """
+                UPDATE experiment_runs
+                SET status='completed', hypothesis_verdict='confirmed', effect_pct=12.5
+                WHERE id=?
+                """,
+                (run_id,),
+            )
+            database.commit()
+            return {"run_id": run_id, "verdict": "confirmed"}
+
+        with (
+            mock.patch.object(gpu_scheduler, "run_validation_loop", side_effect=_fake_validation_loop),
+            mock.patch.object(gpu_scheduler, "process_completed_run"),
+            mock.patch.object(gpu_scheduler, "collect_run_artifacts", return_value=[]),
+            mock.patch.object(gpu_scheduler, "generate_submission_bundle", return_value={"error": "latex failed"}),
+            mock.patch.object(gpu_scheduler, "log_metrics"),
+            mock.patch.object(gpu_scheduler, "log_artifact"),
+        ):
+            gpu_scheduler._run_job(job, worker)
+
+        run = database.fetchone("SELECT status, hypothesis_verdict FROM experiment_runs WHERE id=1")
+        gpu_job = database.fetchone("SELECT status, error_message FROM gpu_jobs WHERE id=?", (job_id,))
+        auto_job = database.fetchone("SELECT status, stage, last_error FROM auto_research_jobs WHERE deep_insight_id=1")
+
+        self.assertEqual(run["status"], "completed")
+        self.assertEqual(run["hypothesis_verdict"], "confirmed")
+        self.assertEqual(gpu_job["status"], "completed")
+        self.assertIn("latex failed", gpu_job["error_message"])
+        self.assertEqual(auto_job["status"], "completed")
+        self.assertEqual(auto_job["stage"], "closed_loop_complete")
+        self.assertIn("latex failed", auto_job["last_error"])
 
 
 if __name__ == "__main__":

@@ -53,6 +53,11 @@ CREATE TABLE IF NOT EXISTS deep_insights (
     outcome_updated_at TIMESTAMP,
     human_score REAL,
     human_notes TEXT,
+    workspace_root TEXT,
+    experiment_root TEXT,
+    plan_root TEXT,
+    paper_root TEXT,
+    canonical_run_id INTEGER,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );

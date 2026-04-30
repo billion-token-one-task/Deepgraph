@@ -11,7 +11,11 @@ import tempfile
 from pathlib import Path
 from typing import Any, Mapping
 
-from config import GPU_REMOTE_SSH_PASSWORD
+from config import (
+    GPU_REMOTE_AUTO_PIP_INSTALL,
+    GPU_REMOTE_SETUP_TIMEOUT_SECONDS,
+    GPU_REMOTE_SSH_PASSWORD,
+)
 
 
 def _load_metadata(worker: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -158,6 +162,35 @@ def _remote_paths(worker: Mapping[str, Any], run_id: int, local_workdir: Path) -
     return remote_workdir, remote_code_dir
 
 
+def _install_remote_repo_deps(*, worker: Mapping[str, Any], remote_code_dir: str, remote_python: str) -> None:
+    """Best-effort install of cloned repo dependencies on the SSH worker before training."""
+    if not GPU_REMOTE_AUTO_PIP_INSTALL:
+        return
+    script = "\n".join(
+        [
+            "set -euo pipefail",
+            f"cd {shlex.quote(remote_code_dir)}",
+            "export PIP_DISABLE_PIP_VERSION_CHECK=1",
+            "export PIP_DEFAULT_TIMEOUT=120",
+            f"{shlex.quote(remote_python)} -m pip install -U pip setuptools wheel",
+            (
+                f"if [ -f pyproject.toml ] || [ -f setup.py ] || [ -f setup.cfg ]; then "
+                f"echo '[deepgraph-remote] pip install -e .'; "
+                f"{shlex.quote(remote_python)} -m pip install -e . || "
+                f"{shlex.quote(remote_python)} -m pip install .; "
+                f"elif [ -f requirements.txt ]; then "
+                f"echo '[deepgraph-remote] pip install -r requirements.txt'; "
+                f"{shlex.quote(remote_python)} -m pip install -r requirements.txt; "
+                f"else echo '[deepgraph-remote] skip auto pip (no pyproject/setup/requirements)'; fi"
+            ),
+        ]
+    )
+    result = _run_ssh(worker, script, timeout=max(120, int(GPU_REMOTE_SETUP_TIMEOUT_SECONDS)))
+    if result.returncode != 0:
+        msg = (result.stderr or result.stdout or "").strip() or "remote dependency install failed"
+        raise RuntimeError(msg)
+
+
 def run_remote_experiment(
     *,
     worker: Mapping[str, Any],
@@ -176,6 +209,8 @@ def run_remote_experiment(
     remote_tokens = _remote_python(worker, command_tokens, local_python)
     if not remote_tokens:
         raise RuntimeError("remote experiment received an empty command")
+
+    _install_remote_repo_deps(worker=worker, remote_code_dir=remote_code_dir, remote_python=remote_tokens[0])
 
     remote_lines = [
         "set -euo pipefail",

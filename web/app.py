@@ -3,7 +3,10 @@ import json
 import threading
 import time
 import traceback
-from flask import Flask, render_template, jsonify, Response, request
+from pathlib import Path
+from typing import Any
+from flask import Flask, Response, abort, jsonify, render_template, request, send_file, url_for
+from agents.workspace_layout import get_idea_workspace, list_paper_assets, plan_file_path, resolve_paper_asset
 from config import APP_NAME, APP_SUBTITLE, PROFILE, ROOT_NODE_ID
 from db import database as db
 from db import evidence_graph as graph
@@ -19,6 +22,286 @@ app = Flask(__name__,
 _pipeline_running = False
 _pipeline_lock = threading.Lock()
 
+_ACTIVE_EXPERIMENT_STATUSES = {"pending", "scaffolding", "reproducing", "testing", "running_gpu", "running_cpu"}
+
+
+def _json_load(value: Any, default: Any) -> Any:
+    if value is None:
+        return default
+    if isinstance(value, (dict, list)):
+        return value
+    try:
+        return json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return default
+
+
+def _manual_api_removed_response():
+    return jsonify(
+        {
+            "error": "Manual web actions have been removed. This deployment is fixed-flow and read-only from the UI.",
+            "mode": "fixed_flow_read_only",
+        }
+    ), 410
+
+
+@app.before_request
+def block_manual_post_apis():
+    if request.method == "POST" and request.path.startswith("/api/"):
+        return _manual_api_removed_response()
+
+
+def _pick_canonical_run(runs: list[dict], canonical_run_id: int | None = None) -> dict | None:
+    if not runs:
+        return None
+    if canonical_run_id:
+        for run in runs:
+            if int(run.get("id") or 0) == int(canonical_run_id):
+                return run
+    for run in runs:
+        if (run.get("status") or "") in _ACTIVE_EXPERIMENT_STATUSES:
+            return run
+    return runs[0]
+
+
+def _read_json_file(path: Path) -> Any:
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _plan_snapshot(insight: dict) -> dict[str, Any]:
+    insight_id = int(insight["id"])
+    return {
+        "experiment_spec": _read_json_file(plan_file_path(insight_id, "experiment_spec.json", insight=insight)),
+        "proxy_config": _read_json_file(plan_file_path(insight_id, "proxy_config.json", insight=insight)),
+        "evidence_plan": _read_json_file(plan_file_path(insight_id, "evidence_plan.json", insight=insight)),
+        "manuscript_input_state": _read_json_file(plan_file_path(insight_id, "manuscript_input_state.json", insight=insight)),
+        "latest_status": _read_json_file(plan_file_path(insight_id, "latest_status.json", insight=insight)),
+    }
+
+
+def _paper_preview_urls(insight_id: int, assets: list[dict]) -> dict[str, str | None]:
+    asset_paths = {str(asset.get("path") or "") for asset in assets}
+    pdf_path = next((path for path in sorted(asset_paths) if path.endswith("/main.pdf") or path == "current/main.pdf"), None)
+    tex_path = next((path for path in sorted(asset_paths) if path.endswith("/main.tex") or path == "current/main.tex"), None)
+    return {
+        "index": url_for("paper_preview_index", insight_id=insight_id),
+        "pdf": url_for("paper_preview_pdf", insight_id=insight_id) if pdf_path else None,
+        "tex": url_for("paper_preview_tex", insight_id=insight_id) if tex_path else None,
+    }
+
+
+def _workspace_payload(insight: dict) -> dict[str, Any]:
+    layout = get_idea_workspace(int(insight["id"]), insight=insight, create=True, sync_db=True)
+    assets = list_paper_assets(int(insight["id"]), insight=insight)
+    preview_urls = _paper_preview_urls(int(insight["id"]), assets)
+    return {
+        "workspace_root": str(layout["workspace_root"]),
+        "experiment_root": str(layout["experiment_root"]),
+        "plan_root": str(layout["plan_root"]),
+        "paper_root": str(layout["paper_root"]),
+        "canonical_run_id": insight.get("canonical_run_id"),
+        "plan_snapshot": _plan_snapshot(insight),
+        "paper_assets": assets,
+        "paper_preview_urls": preview_urls,
+    }
+
+
+def _artifact_counts_for_runs(run_ids: list[int]) -> dict[int, dict[str, int]]:
+    if not run_ids:
+        return {}
+    placeholders = ",".join("?" for _ in run_ids)
+    rows = db.fetchall(
+        f"""
+        SELECT run_id, artifact_type, COUNT(*) AS c
+        FROM experiment_artifacts
+        WHERE run_id IN ({placeholders})
+        GROUP BY run_id, artifact_type
+        """,
+        tuple(run_ids),
+    )
+    grouped: dict[int, dict[str, int]] = {}
+    for row in rows:
+        run_id = int(row["run_id"])
+        grouped.setdefault(run_id, {})[str(row["artifact_type"])] = int(row["c"])
+    return grouped
+
+
+def _claim_counts_for_runs(run_ids: list[int]) -> dict[int, int]:
+    if not run_ids:
+        return {}
+    placeholders = ",".join("?" for _ in run_ids)
+    rows = db.fetchall(
+        f"""
+        SELECT run_id, COUNT(*) AS c
+        FROM experimental_claims
+        WHERE run_id IN ({placeholders})
+        GROUP BY run_id
+        """,
+        tuple(run_ids),
+    )
+    return {int(row["run_id"]): int(row["c"]) for row in rows}
+
+
+def _summarize_run(run: dict, artifact_counts: dict[str, int] | None = None, claim_count: int = 0) -> dict:
+    artifact_counts = artifact_counts or {}
+    return {
+        **dict(run),
+        "artifact_counts": artifact_counts,
+        "artifact_total": sum(artifact_counts.values()),
+        "has_plot_artifacts": artifact_counts.get("plot", 0) > 0,
+        "has_bundle": bool(run.get("submission_bundle_id")),
+        "claim_count": claim_count,
+    }
+
+
+def _planned_tracks(insight: dict, runs: list[dict]) -> list[dict]:
+    evidence_plan = _json_load(insight.get("evidence_plan"), {})
+    experimental_plan = _json_load(insight.get("experimental_plan"), {})
+    ablations = experimental_plan.get("ablations") or []
+    has_plot = any((run.get("artifact_counts") or {}).get("plot", 0) > 0 for run in runs)
+    has_bundle = any(run.get("has_bundle") for run in runs) or (insight.get("submission_status") == "bundle_ready")
+    main_state = "not_started"
+    canonical = _pick_canonical_run(runs, insight.get("canonical_run_id"))
+    if canonical:
+        main_state = canonical.get("status") or "unknown"
+    return [
+        {"key": "main", "label": "主实验", "enabled": True, "state": main_state},
+        {
+            "key": "ablation",
+            "label": "消融",
+            "enabled": bool((evidence_plan.get("ablation") or {}).get("enabled") or ablations),
+            "state": f"{len(ablations)} planned" if ablations else ("enabled" if (evidence_plan.get("ablation") or {}).get("enabled") else "not_planned"),
+        },
+        {
+            "key": "visualization",
+            "label": "可视化",
+            "enabled": bool((evidence_plan.get("visualization") or {}).get("enabled") or has_plot),
+            "state": "artifacts_ready" if has_plot else ("planned" if (evidence_plan.get("visualization") or {}).get("enabled") else "not_planned"),
+        },
+        {
+            "key": "bundle",
+            "label": "论文包",
+            "enabled": True,
+            "state": "bundle_ready" if has_bundle else (insight.get("submission_status") or "not_started"),
+        },
+    ]
+
+
+def _build_experiment_group_payload(*, insight: dict, auto_job: dict | None, runs: list[dict]) -> dict:
+    runs = sorted(
+        runs,
+        key=lambda row: (str(row.get("created_at") or ""), int(row.get("id") or 0)),
+        reverse=True,
+    )
+    latest_run = runs[0] if runs else None
+    canonical_run = _pick_canonical_run(runs, insight.get("canonical_run_id"))
+    run_status_counts: dict[str, int] = {}
+    for run in runs:
+        key = str(run.get("status") or "unknown")
+        run_status_counts[key] = run_status_counts.get(key, 0) + 1
+    updated_at = (
+        (auto_job or {}).get("updated_at")
+        or (canonical_run or {}).get("created_at")
+        or (latest_run or {}).get("created_at")
+        or insight.get("updated_at")
+        or insight.get("created_at")
+    )
+    workspace = _workspace_payload(insight)
+    return {
+        "insight": insight,
+        "auto_job": auto_job,
+        "latest_run": latest_run,
+        "canonical_run": canonical_run,
+        "run_count": len(runs),
+        "run_status_counts": run_status_counts,
+        "planned_tracks": _planned_tracks(insight, runs),
+        "updated_at": updated_at,
+        "runs": runs,
+        **workspace,
+    }
+
+
+def _load_experiment_groups() -> list[dict]:
+    insights = db.fetchall(
+        """
+        SELECT di.*, arj.id AS auto_job_id, arj.status AS auto_status, arj.stage AS auto_stage,
+               arj.cpu_eligible, arj.cpu_reason, arj.assigned_worker, arj.artifact_bundle_id,
+               arj.experiment_run_id AS auto_experiment_run_id, arj.research_workdir,
+               arj.last_note, arj.last_error, arj.updated_at AS auto_updated_at,
+               arj.created_at AS auto_created_at
+        FROM deep_insights di
+        LEFT JOIN auto_research_jobs arj ON arj.deep_insight_id = di.id
+        WHERE arj.id IS NOT NULL
+           OR EXISTS (SELECT 1 FROM experiment_runs er WHERE er.deep_insight_id = di.id)
+        ORDER BY COALESCE(arj.updated_at, di.updated_at, di.created_at) DESC
+        """
+    )
+    if not insights:
+        return []
+
+    insight_ids = [int(row["id"]) for row in insights]
+    placeholders = ",".join("?" for _ in insight_ids)
+    run_rows = db.fetchall(
+        f"""
+        SELECT er.*, di.title AS insight_title, di.tier AS insight_tier
+        FROM experiment_runs er
+        JOIN deep_insights di ON di.id = er.deep_insight_id
+        WHERE er.deep_insight_id IN ({placeholders})
+        ORDER BY er.created_at DESC, er.id DESC
+        """,
+        tuple(insight_ids),
+    )
+    run_ids = [int(row["id"]) for row in run_rows]
+    artifact_counts = _artifact_counts_for_runs(run_ids)
+    claim_counts = _claim_counts_for_runs(run_ids)
+
+    grouped_runs: dict[int, list[dict]] = {}
+    for run in run_rows:
+        deep_insight_id = int(run["deep_insight_id"])
+        grouped_runs.setdefault(deep_insight_id, []).append(
+            _summarize_run(
+                run,
+                artifact_counts=artifact_counts.get(int(run["id"]), {}),
+                claim_count=claim_counts.get(int(run["id"]), 0),
+            )
+        )
+
+    groups = []
+    for row in insights:
+        insight = dict(row)
+        insight_id = int(insight["id"])
+        auto_job = None
+        if insight.get("auto_job_id") is not None:
+            auto_job = {
+                "id": insight.get("auto_job_id"),
+                "status": insight.get("auto_status"),
+                "stage": insight.get("auto_stage"),
+                "cpu_eligible": insight.get("cpu_eligible"),
+                "cpu_reason": insight.get("cpu_reason"),
+                "assigned_worker": insight.get("assigned_worker"),
+                "artifact_bundle_id": insight.get("artifact_bundle_id"),
+                "experiment_run_id": insight.get("auto_experiment_run_id"),
+                "research_workdir": insight.get("research_workdir"),
+                "last_note": insight.get("last_note"),
+                "last_error": insight.get("last_error"),
+                "updated_at": insight.get("auto_updated_at"),
+                "created_at": insight.get("auto_created_at"),
+            }
+        groups.append(
+            _build_experiment_group_payload(
+                insight=insight,
+                auto_job=auto_job,
+                runs=grouped_runs.get(insight_id, []),
+            )
+        )
+    groups.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+    return groups
+
 
 @app.route("/")
 def index():
@@ -33,11 +316,13 @@ def index():
 
 @app.route("/api/meta")
 def api_meta():
+    backend = db.describe_backend()
     return jsonify({
         "app_name": APP_NAME,
         "subtitle": APP_SUBTITLE,
         "root_node_id": ROOT_NODE_ID,
         "profile": PROFILE,
+        "database": backend,
     })
 
 
@@ -548,7 +833,7 @@ def api_events():
         while True:
             events = get_events(last_seq)
             for e in events:
-                yield f"data: {json.dumps(e)}\n\n"
+                yield f"data: {json.dumps(e, ensure_ascii=False, default=str)}\n\n"
                 last_seq = e["seq"] + 1
             time.sleep(2)  # slower polling = less browser load
 
@@ -845,6 +1130,93 @@ def api_experiments():
         return jsonify(rows)
     except Exception:
         return jsonify([])
+
+
+@app.route("/api/experiment_groups")
+def api_experiment_groups():
+    """List idea-centric experiment groups for the dashboard."""
+    status = request.args.get("status", "")
+    limit = request.args.get("limit", 50, type=int)
+    groups = _load_experiment_groups()
+    if status:
+        groups = [
+            group
+            for group in groups
+            if ((group.get("canonical_run") or {}).get("status") == status)
+        ]
+    return jsonify(groups[:limit])
+
+
+@app.route("/api/experiment_groups/<int:insight_id>")
+def api_experiment_group_detail(insight_id):
+    """Get one idea-centric experiment group with run history."""
+    groups = _load_experiment_groups()
+    for group in groups:
+        if int(group["insight"]["id"]) == insight_id:
+            return jsonify(group)
+    return jsonify({"error": "Not found"}), 404
+
+
+def _load_paper_preview_context(insight_id: int) -> tuple[dict, dict]:
+    insight = db.fetchone("SELECT * FROM deep_insights WHERE id=?", (insight_id,))
+    if not insight:
+        abort(404)
+    payload = _workspace_payload(dict(insight))
+    return dict(insight), payload
+
+
+def _pick_main_asset(assets: list[dict], suffix: str) -> str | None:
+    for asset in assets:
+        path = str(asset.get("path") or "")
+        if path.endswith(f"/main{suffix}") or path == f"current/main{suffix}":
+            return path
+    return None
+
+
+@app.route("/papers/<int:insight_id>")
+def paper_preview_index(insight_id):
+    insight, payload = _load_paper_preview_context(insight_id)
+    return render_template(
+        "paper_preview.html",
+        insight=insight,
+        paper_assets=payload["paper_assets"],
+        preview_urls=payload["paper_preview_urls"],
+        plan_snapshot=payload["plan_snapshot"],
+    )
+
+
+@app.route("/papers/<int:insight_id>/view/<path:asset>")
+def paper_preview_asset(insight_id, asset):
+    insight = db.fetchone("SELECT * FROM deep_insights WHERE id=?", (insight_id,))
+    if not insight:
+        abort(404)
+    try:
+        resolved = resolve_paper_asset(insight_id, asset, insight=dict(insight))
+    except ValueError:
+        abort(404)
+    if not resolved.exists() or not resolved.is_file():
+        abort(404)
+    return send_file(resolved, as_attachment=False)
+
+
+@app.route("/papers/<int:insight_id>/pdf")
+def paper_preview_pdf(insight_id):
+    insight, payload = _load_paper_preview_context(insight_id)
+    pdf_asset = _pick_main_asset(payload["paper_assets"], ".pdf")
+    if not pdf_asset:
+        return jsonify({"error": "Compiled PDF not found for this idea"}), 404
+    resolved = resolve_paper_asset(insight_id, pdf_asset, insight=insight)
+    return send_file(resolved, as_attachment=False)
+
+
+@app.route("/papers/<int:insight_id>/tex")
+def paper_preview_tex(insight_id):
+    insight, payload = _load_paper_preview_context(insight_id)
+    tex_asset = _pick_main_asset(payload["paper_assets"], ".tex")
+    if not tex_asset:
+        return jsonify({"error": "main.tex not found for this idea"}), 404
+    resolved = resolve_paper_asset(insight_id, tex_asset, insight=insight)
+    return send_file(resolved, as_attachment=False)
 
 
 @app.route("/api/experiments/<int:run_id>")

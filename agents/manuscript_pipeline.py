@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from config import MANUSCRIPT_WORKDIR, SUBMISSION_BUNDLE_FORMATS
+from config import SUBMISSION_BUNDLE_FORMATS
 from contracts import ContractValidationError, ManuscriptInputState
 from db import database as db
 

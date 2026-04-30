@@ -20,8 +20,16 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
+from agents.discovery_metadata import infer_resource_class
 from agents.experiment_review import review_experiment_candidate
 from agents.llm_client import call_llm, call_llm_json
+from agents.workspace_layout import (
+    ensure_run_workspace,
+    get_idea_workspace,
+    promote_canonical_run,
+    write_latest_status,
+    write_plan_files,
+)
 from config import (
     EXPERIMENT_EARLY_STOP_THRESHOLD,
     EXPERIMENT_MAX_ITERATIONS,
@@ -30,7 +38,6 @@ from config import (
     EXPERIMENT_REFUTE_MIN_ITERS,
     EXPERIMENT_REPRODUCTION_ITERS,
     EXPERIMENT_TIME_BUDGET,
-    EXPERIMENT_WORKDIR,
 )
 from contracts import DeepInsightSpec, ExperimentSpec
 from db import database as db
@@ -142,6 +149,226 @@ def _parse_insight_fields(insight: dict) -> dict:
     return parsed
 
 
+def _non_empty_text(value) -> str:
+    return str(value or "").strip()
+
+
+def _unique_non_empty(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in items:
+        text = _non_empty_text(item)
+        if not text:
+            continue
+        key = text.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(text)
+    return result
+
+
+def _named_values(rows, *, keys: tuple[str, ...] = ("name", "model")) -> list[str]:
+    values: list[str] = []
+    for row in rows or []:
+        if isinstance(row, dict):
+            for key in keys:
+                text = _non_empty_text(row.get(key))
+                if text:
+                    values.append(text)
+                    break
+        else:
+            text = _non_empty_text(row)
+            if text:
+                values.append(text)
+    return values
+
+
+def _fallback_metric_name(parsed: dict, plan: dict) -> str:
+    corpus = " ".join(
+        [
+            _non_empty_text(parsed.get("title")),
+            _non_empty_text(parsed.get("problem_statement")),
+            _non_empty_text(plan.get("procedure")),
+            json.dumps(plan.get("metrics", {}), ensure_ascii=False),
+        ]
+    ).lower()
+    if "bit error" in corpus or "ber" in corpus:
+        return "bit_error_rate"
+    if "auc" in corpus:
+        return "auc"
+    if "accuracy" in corpus:
+        return "accuracy"
+    if "reward" in corpus:
+        return "reward"
+    if "utility" in corpus:
+        return "utility"
+    if "latency" in corpus:
+        return "latency"
+    if "success" in corpus:
+        return "task_success_rate"
+    return "primary_score"
+
+
+def _default_dataset_name(parsed: dict) -> str:
+    corpus = " ".join(
+        [
+            _non_empty_text(parsed.get("title")),
+            _non_empty_text((parsed.get("proposed_method") or {}).get("type")),
+        ]
+    ).lower()
+    if any(token in corpus for token in ("gpu", "cuda", "systems_validation", "smoke")):
+        return "synthetic_remote_gpu_probe"
+    return "synthetic_stress_test"
+
+
+def _enrich_proposed_method(parsed: dict, plan: dict) -> dict:
+    method = dict(parsed.get("proposed_method") or {})
+    title = _non_empty_text(parsed.get("title")) or f"insight_{parsed.get('id', 'unknown')}"
+    if not _non_empty_text(method.get("name")):
+        method["name"] = title.split(" as ", 1)[0][:120]
+    if not _non_empty_text(method.get("type")):
+        method["type"] = _non_empty_text(parsed.get("mechanism_type")) or "hypothesis"
+    if not _non_empty_text(method.get("one_line")):
+        method["one_line"] = title[:200]
+    if not _non_empty_text(method.get("definition")):
+        definition_bits = [f"Hypothesis: {title}."]
+        problem = _non_empty_text(parsed.get("problem_statement") or parsed.get("existing_weakness"))
+        if problem:
+            definition_bits.append(problem[:280])
+        procedure = _non_empty_text(plan.get("procedure"))
+        if procedure:
+            definition_bits.append(f"Operationalization: {procedure[:420]}")
+        method["definition"] = " ".join(bit for bit in definition_bits if bit).strip()
+    return method
+
+
+def _enrich_experimental_plan(parsed: dict, method: dict) -> dict:
+    plan = dict(parsed.get("experimental_plan") or {})
+
+    baseline_names = _unique_non_empty(
+        _named_values(plan.get("baselines"), keys=("name", "model"))
+        + _named_values(plan.get("models"), keys=("name", "model"))
+        + _named_values(parsed.get("supporting_papers"), keys=("name",))
+    )
+    if len(baseline_names) < 2:
+        method_name = _non_empty_text(method.get("name")) or "candidate_method"
+        baseline_names.extend(
+            [
+                f"{method_name}_reference_baseline",
+                f"{method_name}_ablation",
+            ]
+        )
+        baseline_names = _unique_non_empty(baseline_names)
+    plan["baselines"] = [{"name": name} for name in baseline_names[:4]]
+
+    dataset_names = _unique_non_empty(_named_values(plan.get("datasets"), keys=("name",)))
+    if not dataset_names:
+        dataset_names = [_default_dataset_name(parsed)]
+    plan["datasets"] = [{"name": name} for name in dataset_names[:4]]
+
+    metrics = plan.get("metrics")
+    if isinstance(metrics, dict):
+        primary_metric = _non_empty_text(metrics.get("primary") or metrics.get("name"))
+        normalized_metrics = dict(metrics)
+    elif isinstance(metrics, list):
+        metric_names = _unique_non_empty(_named_values(metrics, keys=("name",)))
+        primary_metric = metric_names[0] if metric_names else ""
+        normalized_metrics = {"primary": primary_metric}
+        if len(metric_names) > 1:
+            normalized_metrics["secondary"] = metric_names[1:]
+    else:
+        primary_metric = _non_empty_text(metrics)
+        normalized_metrics = {"primary": primary_metric} if primary_metric else {}
+    if not _non_empty_text(normalized_metrics.get("primary")):
+        normalized_metrics["primary"] = _fallback_metric_name(parsed, plan)
+    plan["metrics"] = normalized_metrics
+
+    compute = dict(plan.get("compute_budget") or {}) if isinstance(plan.get("compute_budget"), dict) else {}
+    gpu_hours = (
+        compute.get("total_gpu_hours")
+        or compute.get("gpu_hours")
+        or compute.get("gpu")
+    )
+    inferred_resource = _non_empty_text(parsed.get("resource_class")) or infer_resource_class(
+        {
+            **parsed,
+            "proposed_method": method,
+            "experimental_plan": plan,
+        }
+    )
+    if gpu_hours in (None, "", "unknown") and inferred_resource != "cpu":
+        gpu_hours = 24.0 if inferred_resource == "gpu_large" else 4.0
+    elif inferred_resource == "cpu" and gpu_hours in (None, "", "unknown"):
+        gpu_hours = 0.0
+    if gpu_hours not in (None, ""):
+        compute["total_gpu_hours"] = gpu_hours
+    plan["compute_budget"] = compute
+    return plan
+
+
+def _autofill_experiment_contracts(insight: dict) -> dict:
+    parsed = _parse_insight_fields(insight)
+    method = _enrich_proposed_method(parsed, dict(parsed.get("experimental_plan") or {}))
+    plan = _enrich_experimental_plan(parsed, method)
+    parsed["proposed_method"] = method
+    parsed["experimental_plan"] = plan
+    parsed["resource_class"] = _non_empty_text(parsed.get("resource_class")) or infer_resource_class(parsed)
+    return parsed
+
+
+def _persist_enriched_insight(insight_id: int, parsed: dict) -> None:
+    db.execute(
+        """
+        UPDATE deep_insights
+        SET proposed_method=?, experimental_plan=?, resource_class=?, updated_at=CURRENT_TIMESTAMP
+        WHERE id=?
+        """,
+        (
+            json.dumps(parsed.get("proposed_method") or {}, ensure_ascii=False),
+            json.dumps(parsed.get("experimental_plan") or {}, ensure_ascii=False),
+            parsed.get("resource_class") or "cpu",
+            insight_id,
+        ),
+    )
+    db.commit()
+
+
+def _checkpoint_run_state(
+    run_id: int,
+    *,
+    phase: str,
+    workdir: Path | str | None = None,
+    codebase: dict | None = None,
+    program_md: str | None = None,
+    proxy_config: dict | None = None,
+    success_criteria: dict | None = None,
+    baseline_metric_name: str | None = None,
+) -> None:
+    fields: dict[str, object] = {
+        "status": "scaffolding",
+        "phase": phase,
+    }
+    if workdir is not None:
+        fields["workdir"] = str(workdir)
+    if codebase is not None:
+        fields["codebase_url"] = codebase.get("url", "scratch")
+        fields["codebase_ref"] = codebase.get("name", "")
+    if program_md is not None:
+        fields["program_md"] = program_md
+    if proxy_config is not None:
+        fields["proxy_config"] = json.dumps(proxy_config)
+    if success_criteria is not None:
+        fields["success_criteria"] = json.dumps(success_criteria)
+    if baseline_metric_name is not None:
+        fields["baseline_metric_name"] = baseline_metric_name
+
+    assignments = ", ".join(f"{key}=?" for key in fields)
+    params = list(fields.values()) + [run_id]
+    db.execute(f"UPDATE experiment_runs SET {assignments} WHERE id=?", tuple(params))
+    db.commit()
+
+
 def _git_binary() -> str | None:
     return shutil.which("git")
 
@@ -199,6 +426,64 @@ def _codebase_has_expected_entrypoint(code_dir: Path, codebase: dict) -> bool:
     return expected_path.exists()
 
 
+def _candidate_train_entrypoints(code_dir: Path) -> list[Path]:
+    """Heuristically locate a plausible training entrypoint inside a cloned repo."""
+    if not code_dir.exists():
+        return []
+
+    candidates: list[Path] = []
+    for path in code_dir.rglob("train.py"):
+        try:
+            path.relative_to(code_dir / ".git")
+            continue
+        except ValueError:
+            pass
+        rel = path.relative_to(code_dir).as_posix()
+        if rel.startswith(".git/"):
+            continue
+        candidates.append(path)
+
+    # Prefer conventional locations first (stable ordering for deterministic picks).
+    preference = (
+        "train.py",
+        "src/train.py",
+        "scripts/train.py",
+        "training/train.py",
+    )
+    rank = {name: idx for idx, name in enumerate(preference)}
+
+    def sort_key(p: Path) -> tuple[int, int, str]:
+        rel = p.relative_to(code_dir).as_posix()
+        return (rank.get(rel, 999), len(rel), rel)
+
+    candidates.sort(key=sort_key)
+    return candidates
+
+
+def repair_codebase_entrypoint(code_dir: Path, codebase: dict) -> dict:
+    """If the declared train entrypoint is missing, try to infer a better one from disk."""
+    if (codebase or {}).get("url") in {None, "", "scratch"}:
+        return codebase
+
+    repaired = dict(codebase)
+    if _codebase_has_expected_entrypoint(code_dir, repaired):
+        return repaired
+
+    candidates = _candidate_train_entrypoints(code_dir)
+    if not candidates:
+        return repaired
+
+    chosen = candidates[0]
+    rel = chosen.relative_to(code_dir).as_posix()
+    repaired["main_train_file"] = rel
+
+    eval_cmd = _non_empty_text(repaired.get("main_eval_command"))
+    if not eval_cmd or eval_cmd.lower() in {"python train.py", "python ./train.py"}:
+        repaired["main_eval_command"] = f"python {rel}"
+
+    return repaired
+
+
 def _scratch_codebase(reason: str = "") -> dict:
     return {
         "url": "scratch",
@@ -207,6 +492,20 @@ def _scratch_codebase(reason: str = "") -> dict:
         "main_train_file": "train.py",
         "main_eval_command": "python train.py",
     }
+
+
+def _normalize_codebase_metadata(codebase: dict) -> dict:
+    normalized = dict(codebase or {})
+    repo_url = _non_empty_text(normalized.get("url"))
+    if repo_url and repo_url != "scratch":
+        placeholder_values = {"scratch", "minimal", "n/a", "none", "unknown"}
+        main_train_file = _non_empty_text(normalized.get("main_train_file")).lower()
+        if main_train_file in placeholder_values:
+            normalized["main_train_file"] = ""
+        main_eval_command = _non_empty_text(normalized.get("main_eval_command")).lower()
+        if main_eval_command in placeholder_values:
+            normalized["main_eval_command"] = ""
+    return normalized
 
 
 def scout_codebase(insight: dict) -> dict:
@@ -268,25 +567,21 @@ def scout_codebase(insight: dict) -> dict:
 
     try:
         result, _ = call_llm_json(CODE_SCOUT_SYSTEM, prompt)
-        return result.get("codebase", {"url": "scratch", "name": "minimal", "reason": "no suitable repo found"})
+        codebase = result.get("codebase", {"url": "scratch", "name": "minimal", "reason": "no suitable repo found"})
+        return _normalize_codebase_metadata(codebase)
     except Exception as e:
         print(f"[FORGE] Code scout failed: {e}", flush=True)
         return {"url": "scratch", "name": "minimal", "reason": f"scout error: {e}"}
 
 
-def setup_workspace(insight_id: int, codebase: dict) -> Path:
+def setup_workspace(insight_id: int, run_id: int, codebase: dict, *, insight: dict | None = None) -> Path:
     """Create the experiment workspace directory with the codebase."""
-    insight = db.fetchone("SELECT title FROM deep_insights WHERE id=?", (insight_id,))
-    safe_title = (insight["title"] if insight else "unknown")[:40]
-    safe_title = "".join(c if c.isalnum() or c in "-_" else "_" for c in safe_title)
-
-    workdir = EXPERIMENT_WORKDIR / f"exp_{insight_id}_{safe_title}"
-    workdir.mkdir(parents=True, exist_ok=True)
-
-    code_dir = workdir / "code"
-    (workdir / "results").mkdir(exist_ok=True)
-    (workdir / "spec").mkdir(exist_ok=True)
-    (workdir / "codex").mkdir(exist_ok=True)
+    run_info = ensure_run_workspace(insight_id, run_id, insight=insight)
+    workdir = Path(run_info["run_root"])
+    code_dir = Path(run_info["code_root"])
+    Path(run_info["results_root"]).mkdir(parents=True, exist_ok=True)
+    Path(run_info["spec_root"]).mkdir(parents=True, exist_ok=True)
+    Path(run_info["codex_root"]).mkdir(parents=True, exist_ok=True)
     url = codebase.get("url", "scratch")
 
     if url != "scratch" and not _code_dir_has_content(code_dir):
@@ -345,15 +640,15 @@ def generate_scaffold(insight: dict, codebase: dict, workdir: Path) -> dict:
         f"# Proposed Method",
         f"Name: {method.get('name', '?')}",
         f"Type: {method.get('type', '?')}",
-        f"Summary: {method.get('one_line', '')}",
-        f"Definition:\n{method.get('definition', 'N/A')[:800]}",
+        f"Summary: {method.get('one_line') or ''}",
+        f"Definition:\n{(method.get('definition') or 'N/A')[:800]}",
     ]
     if method.get("pseudocode"):
-        prompt_parts.append(f"Pseudocode:\n{method['pseudocode'][:500]}")
+        prompt_parts.append(f"Pseudocode:\n{(method.get('pseudocode') or '')[:500]}")
     if method.get("key_properties"):
-        prompt_parts.append(f"Key Properties: {json.dumps(method['key_properties'][:5])}")
+        prompt_parts.append(f"Key Properties: {json.dumps((method.get('key_properties') or [])[:5])}")
     if method.get("hyperparameters"):
-        prompt_parts.append(f"Hyperparameters: {json.dumps(method['hyperparameters'][:5])}")
+        prompt_parts.append(f"Hyperparameters: {json.dumps((method.get('hyperparameters') or [])[:5])}")
 
     prompt_parts.append(f"\n# Experimental Plan")
     prompt_parts.append(f"Baselines: {json.dumps(plan.get('baselines', []))[:500]}")
@@ -373,8 +668,8 @@ def generate_scaffold(insight: dict, codebase: dict, workdir: Path) -> dict:
         prompt_parts.append(f"File structure:\n{code_structure}")
 
     prompt_parts.append(f"\n# Problem Context")
-    prompt_parts.append(parsed.get("problem_statement", "")[:300])
-    prompt_parts.append(f"Weakness: {parsed.get('existing_weakness', '')[:300]}")
+    prompt_parts.append((parsed.get("problem_statement") or "")[:300])
+    prompt_parts.append(f"Weakness: {(parsed.get('existing_weakness') or '')[:300]}")
 
     prompt = "\n".join(prompt_parts)
 
@@ -575,19 +870,45 @@ def forge_experiment(insight_id: int) -> dict:
     if not insight:
         return {"error": f"Deep insight {insight_id} not found"}
 
-    parsed = _parse_insight_fields(dict(insight))
+    parsed = _autofill_experiment_contracts(dict(insight))
+    _persist_enriched_insight(insight_id, parsed)
     spec = DeepInsightSpec.from_raw(parsed)
     plan = spec.experimental_plan
     evidence_plan = spec.evidence_plan
+    layout = get_idea_workspace(insight_id, insight=parsed, create=True, sync_db=True)
 
     # Step 1: Scout codebase
     print(f"[FORGE] Scouting codebase...", flush=True)
     codebase = scout_codebase(parsed)
     print(f"[FORGE] Selected: {codebase.get('name', '?')} ({codebase.get('url', '?')})", flush=True)
 
+    run_id = db.insert_returning_id(
+        """
+        INSERT INTO experiment_runs (deep_insight_id, status, phase, workdir, codebase_url, codebase_ref, baseline_metric_name)
+        VALUES (?, 'scaffolding', 'setup', ?, ?, ?, ?)
+        RETURNING id
+        """,
+        (
+            insight_id,
+            "",
+            codebase.get("url", "scratch"),
+            codebase.get("name", ""),
+            "metric",
+        ),
+    )
+    db.commit()
+
     # Step 2: Setup workspace
-    workdir = setup_workspace(insight_id, codebase)
+    workdir = setup_workspace(insight_id, run_id, codebase, insight=parsed)
+    _checkpoint_run_state(
+        run_id,
+        phase="workspace_ready",
+        workdir=workdir,
+        codebase=codebase,
+        baseline_metric_name="metric",
+    )
     code_dir = workdir / "code"
+    codebase = repair_codebase_entrypoint(code_dir, codebase)
     entrypoint_available = None
     if codebase.get("url") != "scratch" and not _codebase_has_expected_entrypoint(
         code_dir, codebase
@@ -617,6 +938,8 @@ def forge_experiment(insight_id: int) -> dict:
         entrypoint_available=entrypoint_available,
     )
     if judgement.recommended_route == "blocked":
+        db.execute("DELETE FROM experiment_runs WHERE id=?", (run_id,))
+        db.commit()
         return {
             "error": judgement.summary or "Experiment review blocked formalization",
             "judgement": judgement.to_dict(),
@@ -628,45 +951,36 @@ def forge_experiment(insight_id: int) -> dict:
         flush=True,
     )
 
+    proxy = build_proxy_config(plan, codebase=codebase, judgement=judgement)
+    proxy["evidence_plan"] = evidence_plan
+    _checkpoint_run_state(
+        run_id,
+        phase="review_decision_ready",
+        workdir=workdir,
+        codebase=codebase,
+        proxy_config=proxy,
+        baseline_metric_name="metric",
+    )
+
     # Step 3: Generate scaffold
     print(f"[FORGE] Generating scaffold (program.md, evaluate.py, success_criteria)...", flush=True)
     scaffold = generate_scaffold(parsed, codebase, workdir)
 
     # Step 4: Build proxy config
-    proxy = build_proxy_config(plan, codebase=codebase, judgement=judgement)
-    proxy["evidence_plan"] = evidence_plan
-    spec_dir = workdir / "spec"
-    spec_dir.mkdir(parents=True, exist_ok=True)
-    (spec_dir / "proxy_config.json").write_text(json.dumps(proxy, indent=2), encoding="utf-8")
-    (spec_dir / "evidence_plan.json").write_text(json.dumps(evidence_plan, indent=2), encoding="utf-8")
-    (spec_dir / "experiment_judgement.json").write_text(
-        json.dumps(judgement.to_dict(), indent=2),
-        encoding="utf-8",
-    )
-
-    # Step 5: Create experiment_run row
     success = scaffold.get("success_criteria", {})
-    run_id = db.insert_returning_id(
-        """INSERT INTO experiment_runs
-           (deep_insight_id, status, phase, workdir, codebase_url, codebase_ref,
-            program_md, proxy_config, success_criteria,
-            baseline_metric_name)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-           RETURNING id""",
-        (
-            insight_id,
-            "scaffolding",
-            "setup",
-            str(workdir),
-            codebase.get("url", "scratch"),
-            codebase.get("name", ""),
-            scaffold.get("program_md", ""),
-            json.dumps(proxy),
-            json.dumps(success),
-            success.get("metric_name", "metric"),
-        ),
+    plan_paths = write_plan_files(
+        insight_id,
+        run_id=run_id,
+        insight=parsed,
+        files={
+            "program.md": scaffold.get("program_md", ""),
+            "evaluate.py": scaffold.get("evaluate_py", ""),
+            "success_criteria.json": success,
+            "proxy_config.json": proxy,
+            "evidence_plan.json": evidence_plan,
+            "experiment_judgement.json": judgement.to_dict(),
+        },
     )
-    db.commit()
 
     experiment_spec = ExperimentSpec.from_sources(
         run_id=run_id,
@@ -677,17 +991,31 @@ def forge_experiment(insight_id: int) -> dict:
         success_criteria=success,
         proxy_config=proxy,
         artifact_paths={
-            "program_md": str(spec_dir / "program.md"),
-            "evaluate_py": str(spec_dir / "evaluate.py"),
-            "success_criteria": str(spec_dir / "success_criteria.json"),
-            "proxy_config": str(spec_dir / "proxy_config.json"),
-            "evidence_plan": str(spec_dir / "evidence_plan.json"),
-            "experiment_judgement": str(spec_dir / "experiment_judgement.json"),
+            "program_md": plan_paths["program.md"],
+            "evaluate_py": plan_paths["evaluate.py"],
+            "success_criteria": plan_paths["success_criteria.json"],
+            "proxy_config": plan_paths["proxy_config.json"],
+            "evidence_plan": plan_paths["evidence_plan.json"],
+            "experiment_judgement": plan_paths["experiment_judgement.json"],
         },
     )
-    (spec_dir / "experiment_spec.json").write_text(
-        json.dumps(experiment_spec.to_dict(), indent=2),
-        encoding="utf-8",
+    plan_paths.update(
+        write_plan_files(
+            insight_id,
+            run_id=run_id,
+            insight=parsed,
+            files={"experiment_spec.json": experiment_spec.to_dict()},
+        )
+    )
+    _checkpoint_run_state(
+        run_id,
+        phase="scaffold_ready",
+        workdir=workdir,
+        codebase=codebase,
+        program_md=scaffold.get("program_md", ""),
+        proxy_config=proxy,
+        success_criteria=success,
+        baseline_metric_name=success.get("metric_name", "metric"),
     )
     db.execute(
         """
@@ -697,7 +1025,7 @@ def forge_experiment(insight_id: int) -> dict:
         (
             run_id,
             "source_data",
-            str(spec_dir / "experiment_spec.json"),
+            plan_paths["experiment_spec.json"],
             json.dumps({"contract_type": "ExperimentSpec"}),
         ),
     )
@@ -709,7 +1037,7 @@ def forge_experiment(insight_id: int) -> dict:
         (
             run_id,
             "source_data",
-            str(spec_dir / "experiment_judgement.json"),
+            plan_paths["experiment_judgement.json"],
             json.dumps({"contract_type": "ExperimentJudgement"}),
         ),
     )
@@ -719,9 +1047,25 @@ def forge_experiment(insight_id: int) -> dict:
     new_insight_status = "forged" if judgement.formal_experiment else "smoke_only"
     db.execute(
         "UPDATE deep_insights SET status=?, evoscientist_workdir=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-        (new_insight_status, str(workdir), insight_id),
+        (new_insight_status, str(layout["workspace_root"]), insight_id),
     )
     db.commit()
+    promote_canonical_run(insight_id, run_id, insight=parsed)
+    write_latest_status(
+        insight_id,
+        {
+            "stage": "experiment_forged",
+            "status": new_insight_status,
+            "workdir": str(workdir),
+            "canonical_run_id": run_id,
+            "formal_experiment": judgement.formal_experiment,
+            "smoke_test_only": judgement.smoke_test_only,
+            "proxy_config_path": plan_paths["proxy_config.json"],
+            "experiment_spec_path": plan_paths["experiment_spec.json"],
+        },
+        run_id=run_id,
+        insight=parsed,
+    )
 
     if judgement.formal_experiment:
         apply_experiment_queued_deep(insight_id, note=f"experiment_run_id={run_id}")

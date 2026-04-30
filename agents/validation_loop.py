@@ -22,6 +22,7 @@ from pathlib import Path
 
 from agents import codex_executor
 from agents import experiment_supervisor
+from agents.workspace_layout import ensure_run_workspace, plan_file_path, promote_canonical_run, write_latest_status
 from contracts import DeepInsightSpec, ExperimentIterationPacket, ExperimentSpec
 from config import (
     EXPERIMENT_MAX_ITERATIONS,
@@ -38,9 +39,13 @@ def _git_binary() -> str | None:
     return shutil.which("git")
 
 
-def _read_success_criteria(workdir: Path) -> dict:
+def _read_success_criteria(workdir: Path, insight_id: int | None = None) -> dict:
     """Load success criteria from the workspace."""
-    for path in (workdir / "spec" / "success_criteria.json", workdir / "success_criteria.json"):
+    candidates = []
+    if insight_id is not None:
+        candidates.append(plan_file_path(insight_id, "success_criteria.json"))
+    candidates.extend((workdir / "spec" / "success_criteria.json", workdir / "success_criteria.json"))
+    for path in candidates:
         if path.exists():
             try:
                 return json.loads(path.read_text(encoding="utf-8"))
@@ -50,9 +55,13 @@ def _read_success_criteria(workdir: Path) -> dict:
             "exciting": 0, "solid": 0, "disappointing": 0}
 
 
-def _read_proxy_config(workdir: Path) -> dict:
+def _read_proxy_config(workdir: Path, insight_id: int | None = None) -> dict:
     """Load proxy task configuration."""
-    for path in (workdir / "spec" / "proxy_config.json", workdir / "proxy_config.json"):
+    candidates = []
+    if insight_id is not None:
+        candidates.append(plan_file_path(insight_id, "proxy_config.json"))
+    candidates.extend((workdir / "spec" / "proxy_config.json", workdir / "proxy_config.json"))
+    for path in candidates:
         if path.exists():
             try:
                 return json.loads(path.read_text(encoding="utf-8"))
@@ -187,9 +196,13 @@ def _run_experiment(
 ) -> dict:
     """Run a single experiment iteration with time budget."""
     log_path = workdir / "run.log"
-    eval_path = workdir / "spec" / "evaluate.py"
-    if not eval_path.exists():
-        eval_path = workdir / "evaluate.py"
+    eval_candidates = []
+    if run_id is not None:
+        row = db.fetchone("SELECT deep_insight_id FROM experiment_runs WHERE id=?", (run_id,))
+        if row and row.get("deep_insight_id") is not None:
+            eval_candidates.append(plan_file_path(int(row["deep_insight_id"]), "evaluate.py"))
+    eval_candidates.extend((workdir / "spec" / "evaluate.py", workdir / "evaluate.py"))
+    eval_path = next((path for path in eval_candidates if path.exists()), workdir / "spec" / "evaluate.py")
 
     python_bin = RUNTIME_PYTHON or sys.executable
     command_tokens = _normalize_command_tokens(baseline_command, python_bin)
@@ -507,9 +520,12 @@ def _read_experiment_spec(
     proxy: dict,
 ) -> ExperimentSpec:
     insight_spec = DeepInsightSpec.from_raw(insight)
-    spec_path = workdir / "spec" / "experiment_spec.json"
-    if not spec_path.exists():
-        spec_path = workdir / "experiment_spec.json"
+    candidates = [
+        plan_file_path(int(run["deep_insight_id"]), "experiment_spec.json"),
+        workdir / "spec" / "experiment_spec.json",
+        workdir / "experiment_spec.json",
+    ]
+    spec_path = next((path for path in candidates if path.exists()), candidates[0])
     payload = _read_json_file(spec_path, {})
     if isinstance(payload, dict):
         artifact_paths = payload.get("artifact_paths") if isinstance(payload.get("artifact_paths"), dict) else {}
@@ -803,18 +819,23 @@ def run_validation_loop(run_id: int, execution_context: dict | None = None) -> d
     if not run:
         return {"error": f"Run {run_id} not found"}
 
-    workdir = Path(run["workdir"])
-    code_dir = workdir / "code"
     insight_id = run["deep_insight_id"]
+    insight = db.fetchone("SELECT * FROM deep_insights WHERE id=?", (insight_id,))
+    if not insight:
+        return {"error": f"Insight {insight_id} not found"}
+    run_layout = ensure_run_workspace(insight_id, run_id, insight=insight)
+    workdir = Path(run["workdir"]) if run.get("workdir") else Path(run_layout["run_root"])
+    if not workdir.exists() and Path(run_layout["run_root"]).exists():
+        workdir = Path(run_layout["run_root"])
+        db.execute("UPDATE experiment_runs SET workdir=? WHERE id=?", (str(workdir), run_id))
+        db.commit()
+    code_dir = workdir / "code"
 
     if not workdir.exists():
         return {"error": f"Workdir {workdir} does not exist"}
 
-    criteria = _read_success_criteria(workdir)
-    proxy = _read_proxy_config(workdir)
-    insight = db.fetchone("SELECT * FROM deep_insights WHERE id=?", (insight_id,))
-    if not insight:
-        return {"error": f"Insight {insight_id} not found"}
+    criteria = _read_success_criteria(workdir, insight_id)
+    proxy = _read_proxy_config(workdir, insight_id)
 
     spec = _read_experiment_spec(run, insight, workdir, criteria=criteria, proxy=proxy)
     metric_name = criteria.get("metric_name", "metric")
@@ -832,6 +853,7 @@ def run_validation_loop(run_id: int, execution_context: dict | None = None) -> d
             (error, run_id),
         )
         db.commit()
+        write_latest_status(insight_id, {"stage": "validation_blocked", "status": "failed", "error": error}, run_id=run_id, insight=insight)
         return {"run_id": run_id, "verdict": "blocked", "reason": "non_formal_experiment"}
 
     method = spec.proposed_method
@@ -857,6 +879,7 @@ def run_validation_loop(run_id: int, execution_context: dict | None = None) -> d
             (error, run_id),
         )
         db.commit()
+        write_latest_status(insight_id, {"stage": "environment_failed", "status": "failed", "error": error}, run_id=run_id, insight=insight)
         return {"run_id": run_id, "verdict": "failed", "reason": "environment_not_ready"}
 
     git_bin = _git_binary()
@@ -880,6 +903,13 @@ def run_validation_loop(run_id: int, execution_context: dict | None = None) -> d
 
     db.execute("UPDATE experiment_runs SET status='reproducing', phase='reproduction', started_at=CURRENT_TIMESTAMP WHERE id=?", (run_id,))
     db.commit()
+    promote_canonical_run(insight_id, run_id, insight=insight)
+    write_latest_status(
+        insight_id,
+        {"stage": "reproduction", "status": "reproducing", "workdir": str(workdir), "metric_name": metric_name},
+        run_id=run_id,
+        insight=insight,
+    )
 
     # ── Phase 1: Reproduction ──
     print(f"[LOOP] Phase 1: Reproducing baseline ({repro_iters} iterations)...", flush=True)
@@ -960,6 +990,12 @@ def run_validation_loop(run_id: int, execution_context: dict | None = None) -> d
             "UPDATE experiment_runs SET status='failed', error_message='reproduction failed: no metric obtained', completed_at=CURRENT_TIMESTAMP WHERE id=?",
             (run_id,))
         db.commit()
+        write_latest_status(
+            insight_id,
+            {"stage": "reproduction", "status": "failed", "error": "reproduction failed: no metric obtained"},
+            run_id=run_id,
+            insight=insight,
+        )
         print(f"[LOOP] Phase 1 FAILED: could not obtain baseline metric", flush=True)
         return {"verdict": "failed", "reason": "reproduction_failure"}
 
@@ -981,6 +1017,18 @@ def run_validation_loop(run_id: int, execution_context: dict | None = None) -> d
         "UPDATE experiment_runs SET baseline_metric_value=?, best_metric_value=?, phase='hypothesis_testing', status='testing' WHERE id=?",
         (baseline, best_value, run_id))
     db.commit()
+    write_latest_status(
+        insight_id,
+        {
+            "stage": "hypothesis_testing",
+            "status": "testing",
+            "baseline_metric_value": baseline,
+            "best_metric_value": best_value,
+            "metric_name": metric_name,
+        },
+        run_id=run_id,
+        insight=insight,
+    )
     if benchmark_mode:
         print(
             f"[LOOP] Benchmark baseline established: best_non_target_{metric_name}={baseline:.6f}, "
@@ -1183,6 +1231,7 @@ def run_validation_loop(run_id: int, execution_context: dict | None = None) -> d
         (verdict, effect, effect_pct, stop_reason or None, run_id)
     )
     db.commit()
+    promote_canonical_run(insight_id, run_id, insight=insight)
 
     summary_path = workdir / "results" / "validation_summary.json"
     summary_path.write_text(
@@ -1212,6 +1261,23 @@ def run_validation_loop(run_id: int, execution_context: dict | None = None) -> d
         metadata={"contract_type": "ValidationSummary"},
     )
     db.commit()
+    write_latest_status(
+        insight_id,
+        {
+            "stage": "validation_complete",
+            "status": "completed",
+            "verdict": verdict,
+            "baseline": baseline,
+            "best_value": best_value,
+            "effect_size": effect,
+            "effect_pct": effect_pct,
+            "iterations_total": iter_num,
+            "iterations_kept": total_kept,
+            "summary_path": str(summary_path),
+        },
+        run_id=run_id,
+        insight=insight,
+    )
 
     print(f"[LOOP] Completed: verdict={verdict}, effect={effect:.6f} ({effect_pct:.2f}%), "
           f"iters={iter_num}, kept={total_kept}, time={total_time:.0f}s", flush=True)

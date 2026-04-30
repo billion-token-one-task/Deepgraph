@@ -6,17 +6,22 @@ import httpx
 from config import (
     LLM_API_KEY,
     LLM_BASE_URL,
+    LLM_CONNECT_TIMEOUT_SECONDS,
     LLM_MAX_OUTPUT_TOKENS,
     LLM_MODEL,
     LLM_PROTOCOL,
     LLM_REASONING_EFFORT,
     LLM_RPM,
+    LLM_REQUEST_TIMEOUT_SECONDS,
     LLM_SECONDARY_API_KEY,
     LLM_SECONDARY_BASE_URL,
     LLM_SECONDARY_ENABLED,
     LLM_SECONDARY_MODEL,
     LLM_SECONDARY_PROTOCOL,
     LLM_SECONDARY_RPM,
+    LLM_TRANSIENT_BACKOFF_SECONDS,
+    LLM_TRANSIENT_COOLDOWN_SECONDS,
+    LLM_TRANSIENT_RETRIES,
     LLM_USE_TABCODE,
     MINIMAX_API_KEY,
     MINIMAX_BASE_URL,
@@ -54,6 +59,10 @@ class _RateLimiter:
             if now < earliest:
                 time.sleep(earliest - now)
             self._last_call = time.time()
+
+
+def _http_timeout() -> httpx.Timeout:
+    return httpx.Timeout(float(LLM_REQUEST_TIMEOUT_SECONDS), connect=float(LLM_CONNECT_TIMEOUT_SECONDS))
 
 
 def _init_providers():
@@ -304,7 +313,7 @@ def _call_chat_completions(provider: dict, system_prompt: str, user_prompt: str,
     endpoint = provider.get("chat_endpoint", "/chat/completions")
     chunk_count = 0
     all_lines = []
-    with httpx.Client(timeout=httpx.Timeout(300.0, connect=30.0)) as client:
+    with httpx.Client(timeout=_http_timeout()) as client:
         if not stream_chat:
             resp = client.post(f"{provider['base_url']}{endpoint}", json=payload, headers=headers)
             resp.raise_for_status()
@@ -418,7 +427,7 @@ def _call_responses_api(provider: dict, system_prompt: str, user_prompt: str,
     cached_tokens = 0
     input_tokens = 0
 
-    with httpx.Client(timeout=httpx.Timeout(300.0, connect=30.0)) as client:
+    with httpx.Client(timeout=_http_timeout()) as client:
         with client.stream("POST", f"{provider['base_url']}/responses",
                            json=payload, headers=headers) as resp:
             resp.raise_for_status()
@@ -483,6 +492,10 @@ def is_llm_transient_provider_error(exc: Exception) -> bool:
         return True
     msg = str(exc).lower()
     markers = (
+        "connection refused",
+        "connecterror",
+        "all connection attempts failed",
+        "temporary failure in name resolution",
         "timed out",
         "timeout",
         "gateway time-out",
@@ -595,7 +608,18 @@ def call_llm(system_prompt: str, user_prompt: str, temperature: float = 0.0,
                         continue  # retry same provider
 
                 if is_llm_transient_provider_error(e):
-                    cooldown_secs = 180
+                    if retry < max(0, LLM_TRANSIENT_RETRIES):
+                        backoff = max(1, LLM_TRANSIENT_BACKOFF_SECONDS) * (2 ** retry)
+                        with _provider_lock:
+                            stats["errors"] += 1
+                        print(
+                            f"[LLM] transient failure from {provider['name']}, "
+                            f"retry {retry+1}/{LLM_TRANSIENT_RETRIES} after {backoff}s: {e}",
+                            flush=True,
+                        )
+                        time.sleep(backoff)
+                        continue
+                    cooldown_secs = max(1, LLM_TRANSIENT_COOLDOWN_SECONDS)
                     with _provider_lock:
                         _provider_cooldown[provider["name"]] = max(
                             _provider_cooldown.get(provider["name"], 0),
