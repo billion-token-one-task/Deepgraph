@@ -33,6 +33,85 @@ class ValidationLoopGitFallbackTests(unittest.TestCase):
 
         self.assertEqual(resolved, target)
 
+    def test_generate_validation_figures_records_plot_artifacts(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workdir = Path(tmpdir)
+            summary_path = workdir / "results" / "validation_summary.json"
+            summary_path.parent.mkdir(parents=True, exist_ok=True)
+            summary_path.write_text("{}", encoding="utf-8")
+
+            def fake_generate(iterations, baseline, metric_name, out_svg, **kwargs):
+                out_svg.parent.mkdir(parents=True, exist_ok=True)
+                out_svg.write_text("<svg>accuracy trajectory</svg>", encoding="utf-8")
+                out_pdf = out_svg.with_suffix(".pdf")
+                out_pdf.write_text("%PDF", encoding="utf-8")
+                code_path = out_svg.with_suffix(".py")
+                code_path.write_text("print('plot')\n", encoding="utf-8")
+                return {
+                    "ok": True,
+                    "score": 0.9,
+                    "notes": "critic_pass",
+                    "attempts": 1,
+                    "svg_path": str(out_svg),
+                    "pdf_path": str(out_pdf),
+                    "code_path": str(code_path),
+                    "used_fallback": False,
+                }
+
+            with (
+                mock.patch.object(
+                    validation_loop.db,
+                    "fetchall",
+                    return_value=[
+                        {"iteration_number": 1, "metric_value": 0.5, "status": "ok"},
+                        {"iteration_number": 2, "metric_value": 0.62, "status": "keep"},
+                    ],
+                ),
+                mock.patch.object(validation_loop.db, "execute") as execute,
+                mock.patch.object(
+                    validation_loop.figure_agent,
+                    "generate_metric_figure_with_retry",
+                    side_effect=fake_generate,
+                ) as generate,
+            ):
+                assets = validation_loop._generate_validation_figures(
+                    7,
+                    workdir,
+                    metric_name="accuracy",
+                    baseline_metric_value=0.5,
+                    summary_path=summary_path,
+                )
+
+            self.assertEqual(len(assets), 3)
+            self.assertTrue((workdir / "figures" / "figure_manifest.json").exists())
+            generate.assert_called_once()
+            artifact_types = [call.args[0].strip() for call in execute.call_args_list]
+            self.assertTrue(all("INSERT INTO experiment_artifacts" in sql for sql in artifact_types))
+            params = [call.args[1] for call in execute.call_args_list]
+            self.assertEqual([row[1] for row in params], ["plot", "plot", "plot", "source_data"])
+
+    def test_generate_validation_figures_is_non_blocking_on_render_error(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workdir = Path(tmpdir)
+            with (
+                mock.patch.object(validation_loop.db, "fetchall", return_value=[]),
+                mock.patch.object(validation_loop.db, "execute") as execute,
+                mock.patch.object(
+                    validation_loop.figure_agent,
+                    "generate_metric_figure_with_retry",
+                    side_effect=RuntimeError("renderer unavailable"),
+                ),
+            ):
+                assets = validation_loop._generate_validation_figures(
+                    8,
+                    workdir,
+                    metric_name="accuracy",
+                    baseline_metric_value=0.5,
+                )
+
+        self.assertEqual(assets, [])
+        execute.assert_not_called()
+
     def test_run_validation_loop_blocks_non_formal_experiment(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             workdir = Path(tmpdir)
