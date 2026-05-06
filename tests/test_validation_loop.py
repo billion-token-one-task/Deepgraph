@@ -40,45 +40,67 @@ class ValidationLoopGitFallbackTests(unittest.TestCase):
             summary_path.parent.mkdir(parents=True, exist_ok=True)
             summary_path.write_text("{}", encoding="utf-8")
 
-            def fake_generate(iterations, baseline, metric_name, out_svg, **kwargs):
-                out_svg.parent.mkdir(parents=True, exist_ok=True)
+            def fake_generate(**kwargs):
+                figures_dir = kwargs["workdir"] / "figures"
+                figures_dir.mkdir(parents=True, exist_ok=True)
+                out_svg = figures_dir / "fig_metric_trajectory.svg"
                 out_svg.write_text("<svg>accuracy trajectory</svg>", encoding="utf-8")
-                out_pdf = out_svg.with_suffix(".pdf")
+                out_pdf = figures_dir / "fig_metric_trajectory.pdf"
                 out_pdf.write_text("%PDF", encoding="utf-8")
-                code_path = out_svg.with_suffix(".py")
+                code_path = figures_dir / "fig_metric_trajectory.py"
                 code_path.write_text("print('plot')\n", encoding="utf-8")
+                manifest_path = figures_dir / "figure_manifest.json"
+                manifest_path.write_text("{}", encoding="utf-8")
                 return {
-                    "ok": True,
-                    "score": 0.9,
-                    "notes": "critic_pass",
-                    "attempts": 1,
-                    "svg_path": str(out_svg),
-                    "pdf_path": str(out_pdf),
-                    "code_path": str(code_path),
-                    "used_fallback": False,
+                    "assets": [
+                        {
+                            "figure_id": "fig_metric_trajectory",
+                            "figure_kind": "metric_trajectory",
+                            "asset_kind": "svg",
+                            "path": str(out_svg),
+                            "caption": "Metric trajectory.",
+                            "source": "experiment_iterations",
+                            "metric_name": "accuracy",
+                        },
+                        {
+                            "figure_id": "fig_metric_trajectory",
+                            "figure_kind": "metric_trajectory",
+                            "asset_kind": "pdf",
+                            "path": str(out_pdf),
+                            "caption": "Metric trajectory.",
+                            "source": "experiment_iterations",
+                            "metric_name": "accuracy",
+                        },
+                        {
+                            "figure_id": "fig_metric_trajectory",
+                            "figure_kind": "metric_trajectory",
+                            "asset_kind": "source",
+                            "path": str(code_path),
+                            "caption": "Metric trajectory.",
+                            "source": "experiment_iterations",
+                            "metric_name": "accuracy",
+                        },
+                    ],
+                    "manifest_path": str(manifest_path),
+                    "references_path": "",
                 }
 
             with (
-                mock.patch.object(
-                    validation_loop.db,
-                    "fetchall",
-                    return_value=[
-                        {"iteration_number": 1, "metric_value": 0.5, "status": "ok"},
-                        {"iteration_number": 2, "metric_value": 0.62, "status": "keep"},
-                    ],
-                ),
                 mock.patch.object(validation_loop.db, "execute") as execute,
                 mock.patch.object(
-                    validation_loop.figure_agent,
-                    "generate_metric_figure_with_retry",
+                    validation_loop.visualization_agent,
+                    "generate_visualization_bundle",
                     side_effect=fake_generate,
                 ) as generate,
             ):
                 assets = validation_loop._generate_validation_figures(
                     7,
                     workdir,
+                    insight={"id": 3, "title": "Insight"},
                     metric_name="accuracy",
                     baseline_metric_value=0.5,
+                    best_metric_value=0.62,
+                    verdict="confirmed",
                     summary_path=summary_path,
                 )
 
@@ -88,23 +110,23 @@ class ValidationLoopGitFallbackTests(unittest.TestCase):
             artifact_types = [call.args[0].strip() for call in execute.call_args_list]
             self.assertTrue(all("INSERT INTO experiment_artifacts" in sql for sql in artifact_types))
             params = [call.args[1] for call in execute.call_args_list]
-            self.assertEqual([row[1] for row in params], ["plot", "plot", "plot", "source_data"])
+            self.assertEqual([row[1] for row in params], ["plot", "plot", "source_data", "source_data"])
 
     def test_generate_validation_figures_is_non_blocking_on_render_error(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             workdir = Path(tmpdir)
             with (
-                mock.patch.object(validation_loop.db, "fetchall", return_value=[]),
                 mock.patch.object(validation_loop.db, "execute") as execute,
                 mock.patch.object(
-                    validation_loop.figure_agent,
-                    "generate_metric_figure_with_retry",
+                    validation_loop.visualization_agent,
+                    "generate_visualization_bundle",
                     side_effect=RuntimeError("renderer unavailable"),
                 ),
             ):
                 assets = validation_loop._generate_validation_figures(
                     8,
                     workdir,
+                    insight={"id": 4, "title": "Insight"},
                     metric_name="accuracy",
                     baseline_metric_value=0.5,
                 )

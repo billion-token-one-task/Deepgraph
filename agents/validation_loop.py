@@ -22,7 +22,7 @@ from pathlib import Path
 
 from agents import codex_executor
 from agents import experiment_supervisor
-from agents import figure_agent
+from agents import visualization_agent
 from agents.workspace_layout import ensure_run_workspace, plan_file_path, promote_canonical_run, write_latest_status
 from contracts import DeepInsightSpec, ExperimentIterationPacket, ExperimentSpec
 from config import (
@@ -516,94 +516,65 @@ def _generate_validation_figures(
     run_id: int,
     workdir: Path,
     *,
+    insight: dict,
     metric_name: str,
     baseline_metric_value: float | None,
+    best_metric_value: float | None = None,
+    verdict: str | None = None,
     summary_path: Path | None = None,
 ) -> list[dict]:
     """Generate validation-loop figure artifacts for a completed run."""
-    rows = db.fetchall(
-        """
-        SELECT iteration_number, phase, metric_value, metric_name, status, description
-        FROM experiment_iterations
-        WHERE run_id=?
-        ORDER BY iteration_number
-        """,
-        (run_id,),
-    )
-    iterations = [dict(row) for row in rows]
-    figures_dir = workdir / "figures"
-    out_svg = figures_dir / "fig_metric_trajectory.svg"
     try:
-        meta = figure_agent.generate_metric_figure_with_retry(
-            iterations,
-            baseline_metric_value,
-            metric_name,
-            out_svg,
-            title=f"{metric_name} trajectory",
-            objective="Show validation-loop metric trajectory against the reproduced baseline.",
+        bundle = visualization_agent.generate_visualization_bundle(
+            run_id=run_id,
+            workdir=workdir,
+            insight=insight,
+            metric_name=metric_name,
+            baseline_metric_value=baseline_metric_value,
+            best_metric_value=best_metric_value,
+            verdict=verdict,
+            summary_path=summary_path,
         )
     except Exception as exc:
         print(f"[LOOP] Figure generation skipped for run {run_id}: {exc}", flush=True)
         return []
 
-    manifest = {
-        "run_id": run_id,
-        "metric_name": metric_name,
-        "baseline_metric_value": baseline_metric_value,
-        "validation_summary": str(summary_path) if summary_path else "",
-        "assets": [],
-        "generation": {
-            "ok": meta.get("ok"),
-            "score": meta.get("score"),
-            "notes": meta.get("notes"),
-            "attempts": meta.get("attempts"),
-            "used_fallback": meta.get("used_fallback"),
-        },
-    }
-    for key, asset_kind in (
-        ("svg_path", "svg"),
-        ("pdf_path", "pdf"),
-        ("code_path", "source"),
-    ):
-        raw_path = str(meta.get(key) or "").strip()
-        if not raw_path:
-            continue
-        path = Path(raw_path)
+    assets = [dict(asset) for asset in bundle.get("assets") or [] if isinstance(asset, dict)]
+    for asset in assets:
+        path = Path(str(asset.get("path") or ""))
         if not path.exists():
             continue
-        asset = {
-            "figure_id": "fig_metric_trajectory",
-            "kind": asset_kind,
-            "path": str(path),
-            "metric_name": metric_name,
-        }
-        manifest["assets"].append(asset)
+        asset_kind = str(asset.get("asset_kind") or "")
+        artifact_type = "plot" if asset_kind in {"svg", "pdf", "png", "jpg", "jpeg"} else "source_data"
         _record_artifact(
             run_id,
-            "plot",
+            artifact_type,
             path,
-            metric_key=metric_name,
+            metric_key=asset.get("metric_name") or metric_name,
             metadata={
-                "figure_id": "fig_metric_trajectory",
-                "figure_kind": "metric_trajectory",
+                "figure_id": asset.get("figure_id"),
+                "figure_kind": asset.get("figure_kind"),
                 "asset_kind": asset_kind,
-                "score": meta.get("score"),
-                "notes": meta.get("notes"),
-                "validation_summary": str(summary_path) if summary_path else "",
+                "caption": asset.get("caption"),
+                "source": asset.get("source"),
+                **(asset.get("metadata") if isinstance(asset.get("metadata"), dict) else {}),
             },
         )
 
-    if manifest["assets"]:
-        manifest_path = figures_dir / "figure_manifest.json"
-        manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-        _record_artifact(
-            run_id,
-            "source_data",
-            manifest_path,
-            metric_key=metric_name,
-            metadata={"contract_type": "ValidationFigureManifest"},
-        )
-    return manifest["assets"]
+    for key, contract_type in (
+        ("manifest_path", "ValidationFigureManifest"),
+        ("references_path", "ValidationFigureReferences"),
+    ):
+        raw_path = str(bundle.get(key) or "").strip()
+        if raw_path and Path(raw_path).exists():
+            _record_artifact(
+                run_id,
+                "source_data",
+                Path(raw_path),
+                metric_key=metric_name,
+                metadata={"contract_type": contract_type},
+            )
+    return assets
 
 
 def _read_experiment_spec(
@@ -1345,8 +1316,11 @@ def run_validation_loop(run_id: int, execution_context: dict | None = None) -> d
     figure_assets = _generate_validation_figures(
         run_id,
         workdir,
+        insight=insight,
         metric_name=metric_name,
         baseline_metric_value=baseline,
+        best_metric_value=best_value,
+        verdict=verdict,
         summary_path=summary_path,
     )
     if figure_assets:

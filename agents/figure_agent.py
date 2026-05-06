@@ -129,7 +129,14 @@ def render_metric_figure_artifacts(
     )
     used_fallback = False
     try:
-        subprocess.run([RUNTIME_PYTHON, str(script)], check=True, cwd=str(out_svg.parent), timeout=120)
+        subprocess.run(
+            [RUNTIME_PYTHON, str(script)],
+            check=True,
+            cwd=str(out_svg.parent),
+            timeout=120,
+            capture_output=True,
+            text=True,
+        )
     except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
         used_fallback = True
         out_svg.write_text(
