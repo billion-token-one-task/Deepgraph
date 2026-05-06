@@ -134,6 +134,48 @@ class ValidationLoopGitFallbackTests(unittest.TestCase):
         self.assertEqual(assets, [])
         execute.assert_not_called()
 
+    def test_generate_validation_figures_is_non_blocking_on_artifact_registration_error(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workdir = Path(tmpdir)
+            figures_dir = workdir / "figures"
+            figures_dir.mkdir(parents=True, exist_ok=True)
+            out_svg = figures_dir / "fig_metric_trajectory.svg"
+            out_svg.write_text("<svg/>", encoding="utf-8")
+            manifest_path = figures_dir / "figure_manifest.json"
+            manifest_path.write_text("{}", encoding="utf-8")
+
+            with (
+                mock.patch.object(
+                    validation_loop.visualization_agent,
+                    "generate_visualization_bundle",
+                    return_value={
+                        "assets": [
+                            {
+                                "figure_id": "fig_metric_trajectory",
+                                "figure_kind": "metric_trajectory",
+                                "asset_kind": "svg",
+                                "path": str(out_svg),
+                                "caption": "Metric trajectory.",
+                                "source": "experiment_iterations",
+                                "metric_name": "accuracy",
+                            }
+                        ],
+                        "manifest_path": str(manifest_path),
+                        "references_path": "",
+                    },
+                ),
+                mock.patch.object(validation_loop.db, "execute", side_effect=RuntimeError("db unavailable")),
+            ):
+                assets = validation_loop._generate_validation_figures(
+                    9,
+                    workdir,
+                    insight={"id": 5, "title": "Insight"},
+                    metric_name="accuracy",
+                    baseline_metric_value=0.5,
+                )
+
+        self.assertEqual(len(assets), 1)
+
     def test_run_validation_loop_blocks_non_formal_experiment(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             workdir = Path(tmpdir)

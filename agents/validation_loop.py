@@ -546,20 +546,23 @@ def _generate_validation_figures(
             continue
         asset_kind = str(asset.get("asset_kind") or "")
         artifact_type = "plot" if asset_kind in {"svg", "pdf", "png", "jpg", "jpeg"} else "source_data"
-        _record_artifact(
-            run_id,
-            artifact_type,
-            path,
-            metric_key=asset.get("metric_name") or metric_name,
-            metadata={
-                "figure_id": asset.get("figure_id"),
-                "figure_kind": asset.get("figure_kind"),
-                "asset_kind": asset_kind,
-                "caption": asset.get("caption"),
-                "source": asset.get("source"),
-                **(asset.get("metadata") if isinstance(asset.get("metadata"), dict) else {}),
-            },
-        )
+        try:
+            _record_artifact(
+                run_id,
+                artifact_type,
+                path,
+                metric_key=asset.get("metric_name") or metric_name,
+                metadata={
+                    "figure_id": asset.get("figure_id"),
+                    "figure_kind": asset.get("figure_kind"),
+                    "asset_kind": asset_kind,
+                    "caption": asset.get("caption"),
+                    "source": asset.get("source"),
+                    **(asset.get("metadata") if isinstance(asset.get("metadata"), dict) else {}),
+                },
+            )
+        except Exception as exc:
+            print(f"[LOOP] Figure artifact registration skipped for {path}: {exc}", flush=True)
 
     for key, contract_type in (
         ("manifest_path", "ValidationFigureManifest"),
@@ -567,13 +570,16 @@ def _generate_validation_figures(
     ):
         raw_path = str(bundle.get(key) or "").strip()
         if raw_path and Path(raw_path).exists():
-            _record_artifact(
-                run_id,
-                "source_data",
-                Path(raw_path),
-                metric_key=metric_name,
-                metadata={"contract_type": contract_type},
-            )
+            try:
+                _record_artifact(
+                    run_id,
+                    "source_data",
+                    Path(raw_path),
+                    metric_key=metric_name,
+                    metadata={"contract_type": contract_type},
+                )
+            except Exception as exc:
+                print(f"[LOOP] Figure manifest registration skipped for {raw_path}: {exc}", flush=True)
     return assets
 
 
