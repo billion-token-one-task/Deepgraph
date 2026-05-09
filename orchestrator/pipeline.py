@@ -8,6 +8,7 @@ from datetime import datetime
 
 from config import (
     PIPELINE_CONCURRENCY,
+    PIPELINE_MAX_RETRYABLE_FAILURES,
     GROUNDING_MIN_STORE_SCORE,
 )
 from contracts import StructuredPaperRecord
@@ -34,6 +35,20 @@ STAGE_ORDER = {
     "contradiction_checked": 4,
     "reasoned": 5,
 }
+
+RETRYABLE_ERROR_MARKERS = (
+    "all llm providers are cooling down",
+    "transient failure",
+    "connection refused",
+    "connection reset",
+    "temporarily unavailable",
+    "timeout",
+    "timed out",
+    "rate limit",
+    "too many requests",
+    "postgresql text fields cannot contain nul",
+    "0x00",
+)
 
 # Global event log for SSE
 _event_log: list[dict] = []
@@ -70,6 +85,11 @@ def _stage_at_least(current: str | None, target: str) -> bool:
     return _stage_rank(current) >= _stage_rank(target)
 
 
+def _is_retryable_pipeline_error(error: str | Exception | None) -> bool:
+    text = str(error or "").strip().lower()
+    return any(marker in text for marker in RETRYABLE_ERROR_MARKERS)
+
+
 def _emit_stage_event(paper_id: str, stage: str, payload: dict) -> None:
     db.emit_pipeline_event(
         f"paper_{stage}",
@@ -84,8 +104,51 @@ def _load_checkpoint_payload(paper_id: str, stage: str) -> dict | None:
     checkpoint = db.get_paper_checkpoint(paper_id, stage)
     if not checkpoint:
         return None
+    if checkpoint.get("error_message"):
+        return None
     payload = checkpoint.get("payload")
+    if isinstance(payload, dict) and payload.get("error"):
+        return None
     return payload if isinstance(payload, dict) else None
+
+
+def recover_retryable_papers(limit: int = 1000) -> int:
+    """Move known transient historical failures back into the processing queue."""
+    markers = [f"%{marker}%" for marker in RETRYABLE_ERROR_MARKERS]
+    where = (
+        "status='error' AND ("
+        + " OR ".join("LOWER(COALESCE(stage_last_error, error_msg, '')) LIKE ?" for _ in markers)
+        + ")"
+    )
+    params: list = list(markers)
+    if PIPELINE_MAX_RETRYABLE_FAILURES > 0:
+        where += " AND COALESCE(processing_attempts, 0) < ?"
+        params.append(PIPELINE_MAX_RETRYABLE_FAILURES)
+    rows = db.fetchall(
+        f"""
+        SELECT id
+        FROM papers
+        WHERE {where}
+        ORDER BY updated_at DESC
+        LIMIT ?
+        """,
+        tuple(params + [max(1, int(limit or 1))]),
+    )
+    for row in rows:
+        db.execute(
+            """
+            UPDATE papers
+            SET status='failed_retryable',
+                updated_at=CURRENT_TIMESTAMP
+            WHERE id=?
+            """,
+            (row["id"],),
+        )
+    if rows:
+        db.commit()
+        log_event("recovery", {"retryable_error_papers": len(rows)})
+    return len(rows)
+
 
 def _run_incremental_insights(papers_so_far: int):
     """Run insight discovery in a background thread so it doesn't block paper processing."""
@@ -102,7 +165,7 @@ def _run_incremental_insights(papers_so_far: int):
                FROM taxonomy_nodes t
                JOIN paper_taxonomy pt ON pt.node_id = t.id
                GROUP BY t.id
-               HAVING pc >= 10
+               HAVING COUNT(DISTINCT pt.paper_id) >= 10
                ORDER BY pc DESC LIMIT 15"""
         )
         new_insights = 0
@@ -500,8 +563,12 @@ def process_single_paper(paper_id: str) -> dict:
         except Exception:
             pass
         try:
-            db.mark_paper_stage_failure(paper_id, active_stage, str(e))
-            db.update_paper_status(paper_id, "error", str(e))
+            db.mark_paper_stage_failure(
+                paper_id,
+                active_stage,
+                str(e),
+                retryable=_is_retryable_pipeline_error(e),
+            )
         except Exception:
             try:
                 db.rollback()
@@ -534,6 +601,10 @@ def run_continuous(max_papers: int = 0):
         db.commit()
         log_event("recovery", {"recovered_papers": len(stuck)})
         logger.info("Recovered %d stuck papers back to 'ingested'", len(stuck))
+
+    recovered_retryable = recover_retryable_papers(limit=max(max_papers or 1000, 100))
+    if recovered_retryable:
+        print(f"[PIPELINE] Recovered {recovered_retryable} retryable paper failures.", flush=True)
 
     # Step 1: Ingest (skip if we already have enough ingested papers)
     ingested_available = db.fetchone("SELECT COUNT(*) as c FROM papers WHERE status IN ('ingested', 'failed_retryable')")["c"]
@@ -652,19 +723,23 @@ def run_continuous(max_papers: int = 0):
                 _submit_next(len(done_futures))
                 if processed % 10 == 0:
                     print(f"[PIPELINE] Progress: {processed}/{target} processed, {len(futures)} active", flush=True)
-                try:
-                    from orchestrator import discovery_scheduler
-
-                    discovery_scheduler.consume_pipeline_events_once(limit=200)
-                except Exception as e:
-                    try:
-                        db.rollback()
-                    except Exception:
-                        pass
-                    logger.error("Event-driven discovery refresh failed: %s", e)
-                    log_event("error", {"step": "discovery_event_consume", "error": str(e)})
             else:
                 _time.sleep(1)
+
+    # Refresh touched nodes after extraction finishes so LLM-heavy node summaries do not
+    # compete with paper extraction when only one provider is configured.
+    try:
+        from orchestrator import discovery_scheduler
+
+        stats = discovery_scheduler.consume_pipeline_events_once(limit=200)
+        log_event("discovery_event_consume", stats)
+    except Exception as e:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        logger.error("Event-driven discovery refresh failed: %s", e)
+        log_event("error", {"step": "discovery_event_consume", "error": str(e)})
 
     # Step 2.5: Run abstraction to extract cross-domain patterns
     from agents.abstraction_agent import run_abstraction_for_nodes, run_bridge_discovery
@@ -688,7 +763,7 @@ def run_continuous(max_papers: int = 0):
            FROM taxonomy_nodes t
            JOIN paper_taxonomy pt ON pt.node_id = t.id
            GROUP BY t.id
-           HAVING pc >= 10
+           HAVING COUNT(DISTINCT pt.paper_id) >= 10
            ORDER BY pc DESC LIMIT 15"""
     )
     total_insight_tokens = 0

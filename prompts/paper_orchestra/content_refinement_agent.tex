@@ -48,8 +48,12 @@
 
     \item \textbf{LaTeX \& Citation Integrity}
     \begin{itemize}
-        \item \textbf{Structure:} Do not break the LaTeX compilation. Keep packages and environments stable. If using \texttt{figure*} for wide figures, ensure they are closed with \textbackslash{}end\{figure*\} (not \textbackslash{}end\{figure\}). Check for completeness.
-        \item \textbf{Citations:} Use ONLY keys from \texttt{citation\_map.json}.
+    \item \textbf{Structure:} Do not break the LaTeX compilation. Keep packages and environments stable. If using \texttt{figure*} for wide figures, ensure they are closed with \textbackslash{}end\{figure*\} (not \textbackslash{}end\{figure\}). Check for completeness.
+    \item \textbf{Conference polish:} The final paper must use an abstract environment rather than a numbered Abstract section, must include a bibliography style before \textbackslash{}bibliography, and must only reference figure files that are present in the supplied figure list.
+    \item \textbf{Evidence tone:} Avoid repeatedly saying "available log", "supplied artifact", or "provided materials" in the main body. Keep limitations concise and centralized, while preserving calibrated claims.
+    \item \textbf{Human-paper standard:} Make the draft read like a compact conference paper: contribution list in the Introduction, clear problem gap, method equations only when grounded, dense results paragraphs, and no internal workflow narration.
+    \item \textbf{Figures:} Prefer real benchmark panels, seed/error-bar plots, ablation curves, and budget allocation plots. Keep at most one conceptual diagram in the main narrative and ensure every figure is discussed with a concrete takeaway.
+        \item \textbf{Citations:} Use ONLY keys from \texttt{citation\_map.json}. Do not use loosely related citations as analogies; each citation must directly support a task, method family, benchmark, or decision-theoretic framing.
     \end{itemize}
 \end{enumerate}
 

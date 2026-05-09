@@ -42,6 +42,25 @@ def _adapt_sql(sql: str) -> str:
     return to_postgres(sql)
 
 
+def _strip_text_nul(value: Any) -> Any:
+    """PostgreSQL text values cannot contain NUL bytes; strip them at DB edge."""
+    if isinstance(value, str):
+        return value.replace("\x00", "")
+    if isinstance(value, tuple):
+        return tuple(_strip_text_nul(item) for item in value)
+    if isinstance(value, list):
+        return [_strip_text_nul(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _strip_text_nul(item) for key, item in value.items()}
+    return value
+
+
+def _sanitize_params(params):
+    if not params:
+        return ()
+    return _strip_text_nul(params)
+
+
 def _redact_database_url(url: str) -> str:
     parts = urlsplit((url or "").strip())
     if not parts.scheme:
@@ -304,6 +323,7 @@ def _ensure_vnext_migrations() -> None:
         {
             "resource_class": "TEXT DEFAULT 'cpu'",
             "submission_bundle_id": "INTEGER",
+            "experiment_suite": "TEXT DEFAULT 'main'",
         },
     )
     _ensure_columns(
@@ -565,7 +585,7 @@ def init_db():
                 if schema_feedback.exists():
                     # insight_feedback may contain SQLite-only fragments; apply best-effort
                     try:
-                        for stmt in schema_feedback.read_text().split(";"):
+                        for stmt in schema_feedback.read_text(encoding="utf-8").split(";"):
                             s = stmt.strip()
                             if s and not s.startswith("--"):
                                 try:
@@ -595,15 +615,15 @@ def init_db():
     conn = get_conn()
     _ensure_legacy_migrations()
     schema_path = Path(__file__).parent / "schema.sql"
-    conn.executescript(schema_path.read_text())
+    conn.executescript(schema_path.read_text(encoding="utf-8"))
     schema_v2_path = Path(__file__).parent / "schema_v2.sql"
     if schema_v2_path.exists():
-        conn.executescript(schema_v2_path.read_text())
+        conn.executescript(schema_v2_path.read_text(encoding="utf-8"))
     _ensure_vnext_migrations()
     _ensure_grounding_schema()
     schema_feedback = Path(__file__).parent / "schema_insight_feedback.sql"
     if schema_feedback.exists():
-        conn.executescript(schema_feedback.read_text())
+        conn.executescript(schema_feedback.read_text(encoding="utf-8"))
     _ensure_insight_feedback_schema()
     _ensure_papers_checkpoint_columns()
     _ensure_claim_dedup_schema()
@@ -684,22 +704,32 @@ def _ensure_insight_feedback_schema() -> None:
 
 def execute(sql: str, params: tuple = ()):
     sql_a = _adapt_sql(sql)
+    params_a = _sanitize_params(params)
     conn = get_conn()
     if _use_pg():
         cur = conn.cursor()
-        cur.execute(sql_a, params or ())
+        try:
+            cur.execute(sql_a, params_a or ())
+        except Exception:
+            conn.rollback()
+            raise
         return cur
-    return conn.execute(sql_a, params)
+    return conn.execute(sql_a, params_a)
 
 
 def executemany(sql: str, params_list: list):
     sql_a = _adapt_sql(sql)
+    params_a = [_sanitize_params(params) for params in params_list]
     conn = get_conn()
     if _use_pg():
         cur = conn.cursor()
-        cur.executemany(sql_a, params_list)
+        try:
+            cur.executemany(sql_a, params_a)
+        except Exception:
+            conn.rollback()
+            raise
         return cur
-    return conn.executemany(sql_a, params_list)
+    return conn.executemany(sql_a, params_a)
 
 
 def commit():
@@ -889,12 +919,13 @@ def mark_paper_stage_failure(paper_id: str, stage: str, error_message: str, *, r
         UPDATE papers
         SET status=?,
             processing_stage=?,
+            error_msg=?,
             stage_last_error=?,
             stage_completed_at=CURRENT_TIMESTAMP,
             updated_at=CURRENT_TIMESTAMP
         WHERE id=?
         """,
-        ("failed_retryable" if retryable else "error", stage, error_message, paper_id),
+        ("failed_retryable" if retryable else "error", stage, error_message, error_message, paper_id),
     )
     record_paper_checkpoint(paper_id, stage, {"error": error_message}, error_message=error_message)
 

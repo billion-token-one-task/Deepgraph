@@ -22,6 +22,9 @@ Your task is to convert the provided methodology and experimental logs into a de
 Synthesize \texttt{experimental\_log.md} and \texttt{idea.md} to identify the most compelling evidence.
 \begin{itemize}
     \item Determine which figures are essential to visually prove the hypothesis (e.g., convergence rates, qualitative visual comparisons).
+    \item Benchmark-first rule: if \texttt{experimental\_log.md} contains per-method metrics, seed results, standard deviations, budget histograms, ablations, or reproduction summaries, the first figures MUST be real evidence plots drawn from those data. Prefer method-comparison panels, error bars, ablation curves, seed variability plots, budget-allocation plots, and keep/discard search dynamics.
+    \item Use at most one conceptual framework diagram in the main paper. Do not fill the plotting plan with decorative pipeline diagrams when benchmark evidence is available.
+    \item Every plot objective must name the exact evidence it will display, such as metric names, compared methods, seeds, budgets, or ablation variables. Avoid vague objectives like "illustrate the framework" unless it is the single conceptual diagram.
     \item The \texttt{plot\_type} MUST be exactly "plot" or "diagram". If it is a plot, specify the specific chart type (e.g., Radar Chart) inside the \texttt{objective}.
     \item The \texttt{data\_source} MUST be exactly "idea.md", "experimental\_log.md", or "both".
     \item Determine the ideal \texttt{aspect\_ratio} for each figure. The \texttt{aspect\_ratio} MUST be exactly one of: "1:1", "1:4", "2:3", "3:2", "3:4", "4:1", "4:3", "4:5", "5:4", "9:16", "16:9", "21:9".

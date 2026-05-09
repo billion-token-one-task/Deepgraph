@@ -81,7 +81,120 @@ class ManuscriptInputStateTests(unittest.TestCase):
         with self.assertRaises(ContractValidationError):
             state.require_submission_ready()
 
-    def test_submission_ready_allows_benchmark_backed_reproduction(self):
+    def test_submission_ready_blocks_bootstrap_probe_evidence(self):
+        state = ManuscriptInputState(
+            run_id=1,
+            deep_insight_id=2,
+            formal_experiment=True,
+            smoke_test_only=False,
+            title="Pilot",
+            method_name="Method",
+            claims=[{"claim_text": "x"}],
+            citation_seed_paper_ids=["2401.1"],
+            result_packet={
+                "formal_experiment": True,
+                "verdict": "confirmed",
+                "hypothesis_iterations": [{"iteration_number": 1}],
+                "evidence_tier": "bootstrap_probe",
+                "blocks_manuscript": True,
+            },
+        )
+
+        with self.assertRaises(ContractValidationError):
+            state.require_submission_ready()
+
+    def test_submission_ready_blocks_sanity_real_benchmark_evidence(self):
+        state = ManuscriptInputState(
+            run_id=1,
+            deep_insight_id=2,
+            formal_experiment=True,
+            smoke_test_only=False,
+            title="Pilot",
+            method_name="Method",
+            claims=[{"claim_text": "x"}],
+            citation_seed_paper_ids=["2401.1"],
+            result_packet={
+                "formal_experiment": True,
+                "verdict": "confirmed",
+                "hypothesis_iterations": [{"iteration_number": 1}],
+                "evidence_tier": "sanity_real_benchmark",
+                "blocks_manuscript": True,
+            },
+        )
+
+        with self.assertRaises(ContractValidationError):
+            state.require_submission_ready()
+
+    def test_submission_ready_requires_full_benchmark_package_when_gate_is_set(self):
+        state = ManuscriptInputState(
+            run_id=1,
+            deep_insight_id=2,
+            formal_experiment=True,
+            smoke_test_only=False,
+            title="Full Gate",
+            method_name="Method",
+            claims=[{"claim_text": "x"}],
+            citation_seed_paper_ids=["2401.1"],
+            result_packet={
+                "formal_experiment": True,
+                "verdict": "confirmed",
+                "hypothesis_iterations": [{"iteration_number": 1}],
+                "evidence_tier": "benchmark_plan",
+                "quality_gates": {"requires_full_benchmark_package": True},
+            },
+        )
+
+        with self.assertRaises(ContractValidationError):
+            state.require_submission_ready()
+
+    def test_submission_ready_blocks_non_full_paper_claim_route(self):
+        state = ManuscriptInputState(
+            run_id=1,
+            deep_insight_id=2,
+            formal_experiment=True,
+            smoke_test_only=False,
+            title="Workshop Route",
+            method_name="Method",
+            claims=[{"claim_text": "x"}],
+            citation_seed_paper_ids=["2401.1"],
+            result_packet={
+                "formal_experiment": True,
+                "verdict": "confirmed",
+                "hypothesis_iterations": [{"iteration_number": 1}],
+                "evidence_tier": "benchmark_plan",
+                "claim_route": {
+                    "route": "workshop",
+                    "paper_allowed": False,
+                },
+            },
+        )
+
+        with self.assertRaises(ContractValidationError):
+            state.require_submission_ready()
+
+    def test_submission_ready_blocks_benchmark_semantic_warnings(self):
+        state = ManuscriptInputState(
+            run_id=1,
+            deep_insight_id=2,
+            formal_experiment=True,
+            smoke_test_only=False,
+            title="Upper Bound Warning",
+            method_name="Method",
+            claims=[{"claim_text": "x"}],
+            citation_seed_paper_ids=["2401.1"],
+            result_packet={
+                "formal_experiment": True,
+                "verdict": "confirmed",
+                "hypothesis_iterations": [{"iteration_number": 1}],
+                "evidence_tier": "benchmark_plan",
+                "benchmark_semantic_warnings": ["candidate exceeds upper_bound comparator"],
+            },
+        )
+
+        with self.assertRaises(ContractValidationError):
+            state.require_submission_ready()
+
+    def test_submission_ready_blocks_reproduction_only_even_with_benchmark_summary(self):
         state = ManuscriptInputState(
             run_id=1,
             deep_insight_id=2,
@@ -97,6 +210,42 @@ class ManuscriptInputStateTests(unittest.TestCase):
                 "hypothesis_iterations": [],
                 "benchmark_summary": {
                     "primary_metric": "utility",
+                    "per_method": {
+                        "baseline": {"utility": 0.7},
+                        "cggr": {"utility": 0.8},
+                    },
+                },
+            },
+        )
+
+        with self.assertRaises(ContractValidationError):
+            state.require_submission_ready()
+
+    def test_submission_ready_allows_confirmed_full_benchmark_package(self):
+        state = ManuscriptInputState(
+            run_id=1,
+            deep_insight_id=2,
+            formal_experiment=True,
+            smoke_test_only=False,
+            title="Pilot",
+            method_name="Method",
+            claims=[{"claim_text": "x"}],
+            citation_seed_paper_ids=["2401.1"],
+            result_packet={
+                "formal_experiment": True,
+                "verdict": "confirmed",
+                "hypothesis_iterations": [{"iteration_number": 1}],
+                "evidence_tier": "benchmark_plan",
+                "full_benchmark_completed": True,
+                "artifact_paths": {"artifact_manifest": "/tmp/manifest.json"},
+                "quality_gates": {
+                    "requires_full_benchmark_package": True,
+                    "minimum_seeds": 3,
+                },
+                "benchmark_summary": {
+                    "primary_metric": "utility",
+                    "num_seeds": 3,
+                    "seed_results": [{"seed": 0}, {"seed": 1}, {"seed": 2}],
                     "per_method": {
                         "baseline": {"utility": 0.7},
                         "cggr": {"utility": 0.8},

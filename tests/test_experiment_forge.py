@@ -28,8 +28,10 @@ class GenerateScaffoldTests(unittest.TestCase):
         self.assertGreaterEqual(len(enriched["experimental_plan"]["baselines"]), 2)
         self.assertEqual(enriched["experimental_plan"]["metrics"]["primary"], "bit_error_rate")
         self.assertEqual(enriched["experimental_plan"]["datasets"][0]["name"], "WikiText-103")
+        self.assertIn("publication_evidence_contract", enriched["experimental_plan"])
+        self.assertIn("paper_intent", enriched["experimental_plan"])
 
-    def test_autofill_experiment_contracts_makes_gpu_smoke_plan_reviewable(self):
+    def test_autofill_experiment_contracts_makes_gpu_plan_real_benchmark_reviewable(self):
         enriched = experiment_forge._autofill_experiment_contracts(
             {
                 "id": 16,
@@ -50,9 +52,11 @@ class GenerateScaffoldTests(unittest.TestCase):
         )
 
         self.assertGreaterEqual(len(enriched["experimental_plan"]["baselines"]), 2)
-        self.assertEqual(enriched["experimental_plan"]["datasets"][0]["name"], "synthetic_remote_gpu_probe")
+        self.assertEqual(enriched["experimental_plan"]["datasets"][0]["name"], "GSM8K")
         self.assertEqual(enriched["experimental_plan"]["metrics"]["primary"], "gpu_probe_score")
         self.assertEqual(enriched["experimental_plan"]["compute_budget"]["total_gpu_hours"], 0.01)
+        self.assertTrue(enriched["experimental_plan"]["real_benchmark_required"])
+        self.assertTrue(enriched["experimental_plan"]["model_targets"])
 
         judgement = review_experiment_candidate(
             enriched,
@@ -60,6 +64,69 @@ class GenerateScaffoldTests(unittest.TestCase):
             entrypoint_available=True,
         )
         self.assertEqual(judgement.recommended_route, "formal")
+
+    def test_benchmark_plan_blocks_manuscript_until_full_artifacts(self):
+        contract = experiment_forge._publication_evidence_contract(
+            {
+                "title": "CGGR",
+                "problem_statement": "Selective deliberation needs fair QA benchmarks.",
+                "proposed_method": {
+                    "name": "CGGR",
+                    "definition": "Estimate counterfactual reasoning gain before spending extra inference budget.",
+                },
+            },
+            {
+                "datasets": [{"name": "GSM8K"}],
+                "baselines": [{"name": "Direct"}, {"name": "Always-CoT"}, {"name": "Random Budget-Matched"}],
+                "model_targets": [{"name": "Qwen/Qwen2.5-7B-Instruct"}],
+                "metrics": {"primary": "cost_adjusted_accuracy"},
+                "ablations": [{"name": "no_counterfactual_delta"}, {"name": "compute_matched_baseline"}],
+                "minimum_seeds": 5,
+                "real_benchmark_required": True,
+            },
+            codebase={"url": "scratch", "name": "minimal"},
+            scaffold_kind="full_benchmark_compiled",
+        )
+
+        self.assertEqual(contract["evidence_tier"], "benchmark_plan")
+        self.assertTrue(contract["claim_route"]["paper_allowed"])
+        self.assertTrue(contract["quality_gates"]["requires_full_benchmark_package"])
+        self.assertTrue(contract["blocks_manuscript"])
+        self.assertFalse(contract["quality_gates"]["manuscript_allowed"])
+        self.assertIn("full_benchmark_completed=true", contract["reviewer_objections"][0])
+
+    def test_unknown_benchmark_target_does_not_fallback_to_gsm8k(self):
+        target = experiment_forge._normalize_benchmark_target({"name": "Spider"})
+
+        self.assertEqual(target["name"], "Spider")
+        self.assertEqual(target["hf_candidates"], [])
+        self.assertEqual(target["hf_dataset"], "")
+        self.assertFalse(target["generated_runner_supported"])
+        self.assertIn("no concrete Hugging Face dataset id", target["generated_runner_blocker"])
+
+    def test_unsupported_benchmark_targets_block_generated_runner(self):
+        plan = experiment_forge._ensure_real_benchmark_plan(
+            {
+                "title": "CGGR",
+                "problem_statement": "Selective deliberation needs fair QA benchmarks.",
+            },
+            {
+                "name": "CGGR",
+                "definition": "Estimate counterfactual reasoning gain before spending extra inference budget.",
+            },
+            {
+                "datasets": [{"name": "Spider"}, {"name": "SAMSum"}],
+                "baselines": [{"name": "Direct"}, {"name": "Always-CoT"}],
+                "metrics": {"primary": "cost_adjusted_accuracy"},
+            },
+            "gpu_large",
+        )
+
+        self.assertFalse(plan["generated_runner_supported"])
+        self.assertEqual(plan["deferred_benchmark_targets"], ["Spider", "SAMSum"])
+        self.assertEqual([row["name"] for row in plan["benchmark_recipe_blockers"]], ["Spider", "SAMSum"])
+        with self.assertRaisesRegex(ValueError, "executable recipes"):
+            experiment_forge._real_benchmark_defaults(plan)
 
     def test_generate_scaffold_accepts_evidence_plan(self):
         insight = {
@@ -114,6 +181,76 @@ class GenerateScaffoldTests(unittest.TestCase):
         self.assertEqual(scaffold["tokens"], 17)
         self.assertIn("Adaptive Evidence Plan", captured["prompt"])
         self.assertIn("Honor this plan", captured["prompt"])
+        self.assertIn("Publication Evidence Contract", captured["prompt"])
+        self.assertIn("Benchmark Manifest", captured["prompt"])
+        self.assertIn("Role: Experiment Contract Architect", experiment_forge.SCAFFOLD_SYSTEM)
+        self.assertIn("Role: Full Benchmark Compiler", experiment_forge.SCAFFOLD_SYSTEM)
+        self.assertIn("publication_evidence_contract", scaffold["success_criteria"])
+        self.assertIn("benchmark_manifest", scaffold["success_criteria"]["publication_evidence_contract"])
+        self.assertIn("claim_route", scaffold["success_criteria"]["publication_evidence_contract"])
+        self.assertIn("claim_route", scaffold["benchmark_manifest"])
+        self.assertIn("full_benchmark_stage", scaffold["benchmark_manifest"])
+        self.assertIn("required_ablations", scaffold["success_criteria"])
+
+    def test_generate_scaffold_injects_real_benchmark_runner_for_gpu_route(self):
+        insight = {
+            "resource_class": "gpu_large",
+            "proposed_method": {
+                "name": "Large GPU Method",
+                "type": "training",
+                "definition": "Train a large CUDA-backed model.",
+            },
+            "experimental_plan": {
+                "baselines": ["baseline-a"],
+                "datasets": ["dataset-a"],
+                "metrics": {"primary": "gpu_score"},
+                "compute_budget": {"total_gpu_hours": 50},
+            },
+        }
+        codebase = {
+            "url": "https://github.com/example/gpu-repo",
+            "name": "gpu-repo",
+            "main_train_file": "train.py",
+            "main_eval_command": "python train.py",
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workdir = Path(tmpdir)
+
+            def _fake_call_llm_json(system: str, prompt: str):
+                return (
+                    {
+                        "program_md": "# program",
+                        "evaluate_py": "print('ok')",
+                        "success_criteria": {"metric_name": "gpu_score"},
+                        "train_py": "import numpy as np\nprint('gpu_score: 0.1')\n",
+                    },
+                    17,
+                )
+
+            with mock.patch.object(
+                experiment_forge, "call_llm_json", side_effect=_fake_call_llm_json
+            ):
+                scaffold = experiment_forge.generate_scaffold(
+                    insight, codebase, workdir
+                )
+
+            train_py = (workdir / "code" / "train.py").read_text(encoding="utf-8")
+
+        self.assertEqual(scaffold["baseline_command_override"], "python train.py")
+        self.assertIn("torch.cuda.is_available", train_py)
+        self.assertIn("load_dataset", train_py)
+        self.assertIn("AutoModelForCausalLM", train_py)
+        self.assertIn("DEFAULT_REPAIR_MAX_EXAMPLES_CAP", train_py)
+        self.assertIn("DEEPGRAPH_BENCHMARK_FULL_RUN", train_py)
+        self.assertIn("BENCHMARK_STAGE: eval_method_done", train_py)
+        self.assertIn("_method_specs_for_run", train_py)
+        self.assertIn("peak_vram_mb", train_py)
+        self.assertNotEqual(scaffold["success_criteria"]["evidence_tier"], "bootstrap_probe")
+        self.assertEqual(scaffold["success_criteria"]["evidence_tier"], "benchmark_plan")
+        self.assertTrue(scaffold["success_criteria"]["blocks_manuscript"])
+        self.assertIn("claim_route", scaffold["success_criteria"])
+        self.assertFalse(scaffold["benchmark_manifest"]["sanity_only"])
 
     def test_setup_workspace_falls_back_to_archive_when_git_missing(self):
         codebase = {
@@ -133,11 +270,11 @@ class GenerateScaffoldTests(unittest.TestCase):
                     experiment_forge,
                     "ensure_run_workspace",
                     return_value={
-                        "run_root": workroot / "idea_7" / "experiment" / "runs" / "run_70",
-                        "code_root": workroot / "idea_7" / "experiment" / "runs" / "run_70" / "code",
-                        "results_root": workroot / "idea_7" / "experiment" / "runs" / "run_70" / "results",
-                        "spec_root": workroot / "idea_7" / "experiment" / "runs" / "run_70" / "spec",
-                        "codex_root": workroot / "idea_7" / "experiment" / "runs" / "run_70" / "codex",
+                        "run_root": workroot / "idea_7" / "experiments" / "main" / "runs" / "run_70",
+                        "code_root": workroot / "idea_7" / "experiments" / "main" / "runs" / "run_70" / "code",
+                        "results_root": workroot / "idea_7" / "experiments" / "main" / "runs" / "run_70" / "results",
+                        "spec_root": workroot / "idea_7" / "experiments" / "main" / "runs" / "run_70" / "spec",
+                        "codex_root": workroot / "idea_7" / "experiments" / "main" / "runs" / "run_70" / "codex",
                     },
                 ),
                 mock.patch.object(experiment_forge, "_git_binary", return_value=None),
@@ -165,6 +302,12 @@ class GenerateScaffoldTests(unittest.TestCase):
             proxy["baseline_command"],
             "python src/qa/inference.py --dataset strategyqa",
         )
+        self.assertEqual(proxy["estimated_gpu_hours"], 12)
+        self.assertIn("budget_policy", proxy)
+        self.assertEqual(proxy["budget_policy"]["estimated_gpu_hours"], 12)
+        self.assertIn("benchmark_model", proxy)
+        self.assertIn("benchmark_seeds", proxy)
+        self.assertIn("benchmark_max_examples_per_seed", proxy)
 
     def test_normalize_codebase_metadata_clears_placeholder_entrypoint_for_real_repo(self):
         normalized = experiment_forge._normalize_codebase_metadata(
@@ -201,7 +344,7 @@ class GenerateScaffoldTests(unittest.TestCase):
         self.assertTrue(any("formal_experiment" in str(value) for value in params))
         commit.assert_called_once()
 
-    def test_fallback_scaffold_produces_bootstrap_train_py(self):
+    def test_fallback_scaffold_produces_real_benchmark_train_py(self):
         scaffold = experiment_forge._fallback_scaffold(
             {"name": "CGGR", "definition": "Adaptive reasoning gate."},
             {"metrics": {"primary": "cost_adjusted_utility"}},
@@ -209,7 +352,25 @@ class GenerateScaffoldTests(unittest.TestCase):
         )
 
         self.assertIn("train_py", scaffold)
-        self.assertIn("metric_value", scaffold["train_py"])
+        self.assertIn("load_dataset", scaffold["train_py"])
+        self.assertIn("AutoModelForCausalLM", scaffold["train_py"])
+        self.assertIn("DEEPGRAPH_BENCHMARK_TARGET_NAMES", scaffold["train_py"])
+        self.assertIn("DEEPGRAPH_BENCHMARK_SEED_OFFSET", scaffold["train_py"])
+        self.assertIn("DEEPGRAPH_BENCHMARK_SEED_COUNT", scaffold["train_py"])
+        self.assertIn('"sharded_run": sharded_run', scaffold["train_py"])
+        self.assertIn('_difficulty_proxy(question, target.get("task_type") or "qa")', scaffold["train_py"])
+        self.assertIn('score = max(score, 0.46)', scaffold["train_py"])
+        self.assertIn('max_new_tokens <= 80', scaffold["train_py"])
+        self.assertIn('prompt_kind = "direct" if kind == "direct" or (selective_kind and max_new_tokens <= 80) else kind', scaffold["train_py"])
+        self.assertIn("apply_chat_template", scaffold["train_py"])
+        self.assertIn("return_dict=True", scaffold["train_py"])
+        self.assertIn("_coerce_tokenizer_encoding", scaffold["train_py"])
+        self.assertIn("LLM generation returned zero new tokens", scaffold["train_py"])
+        self.assertIn("DEEPGRAPH_BENCHMARK_CONTINUE_ON_ERROR", scaffold["train_py"])
+        self.assertIn("use at most two concise reasoning sentences", scaffold["train_py"])
+        self.assertIn("Do not repeat the final answer", scaffold["train_py"])
+        self.assertNotEqual(scaffold["success_criteria"]["evidence_tier"], "bootstrap_probe")
+        self.assertTrue(scaffold["success_criteria"]["blocks_manuscript"])
 
     def test_codebase_entrypoint_check_requires_expected_file(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -222,26 +383,28 @@ class GenerateScaffoldTests(unittest.TestCase):
                 )
             )
 
-    def test_review_routes_scratch_to_smoke_only(self):
+    def test_review_routes_generated_real_benchmark_runner_to_formal(self):
         judgement = review_experiment_candidate(
             {
                 "id": 9,
                 "tier": 2,
                 "title": "CGGR",
-                "resource_class": "cpu",
+                "resource_class": "gpu_large",
                 "proposed_method": {"name": "CGGR", "definition": "Adaptive gate."},
                 "experimental_plan": {
                     "baselines": [{"name": "A"}, {"name": "B"}],
-                    "datasets": [{"name": "dataset-a"}],
+                    "datasets": [{"name": "GSM8K"}],
+                    "model_targets": [{"name": "Qwen/Qwen2.5-7B-Instruct"}],
                     "metrics": {"primary": "accuracy"},
+                    "compute_budget": {"total_gpu_hours": 12},
                 },
             },
             codebase={"url": "scratch", "name": "minimal"},
             entrypoint_available=False,
         )
 
-        self.assertTrue(judgement.smoke_test_only)
-        self.assertFalse(judgement.formal_experiment)
+        self.assertFalse(judgement.smoke_test_only)
+        self.assertTrue(judgement.formal_experiment)
 
 
 if __name__ == "__main__":

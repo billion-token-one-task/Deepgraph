@@ -52,6 +52,9 @@ Return JSON:
       "formal_statement": "Minimize/maximize formulation or formal desideratum",
       "current_failure_mode": "What property of current methods causes this (be mechanistic)",
       "desideratum": "What a solution must guarantee",
+      "central_question": "One crisp question the paper will answer",
+      "motivation": "Why this question matters now and what prior papers leave unresolved",
+      "result_that_would_change_belief": "The smallest concrete empirical result that would convince a skeptical top-conference reviewer",
       "mechanism_type": "protocol_artifact|mechanism_mismatch|negative_space_gap|hidden_variable_bridge|claim_method_gap|plateau",
       "non_numeric_evidence": ["limitations / protocol / explanation evidence 1", "evidence 2"],
       "difficulty": "hard|medium",
@@ -165,6 +168,12 @@ You will receive the problem statement and proposed method.
    - Technical risks and mitigation
    - What's plan B if the primary method doesn't work
 
+8. **Problem Awareness**: Make the paper spine explicit
+   - What exact problem is the paper answering?
+   - What motivates the problem relative to the closest real papers?
+   - What method mechanism resolves the failure mode?
+   - What result would support or falsify the claim?
+
 Output: one raw JSON object only (no markdown fences; strict JSON).
 
 Return JSON:
@@ -221,6 +230,13 @@ Return JSON:
     "abstract_sketch": "2-3 sentence abstract draft",
     "contributions": ["Contribution 1", "Contribution 2", "Contribution 3"],
     "related_work_sections": ["Section 1 title", "Section 2 title"]
+  },
+  "problem_awareness": {
+    "central_question": "What problem does the paper answer?",
+    "motivation": "Why the problem matters and why prior methods do not settle it",
+    "method_answer": "How the proposed mechanism answers the question",
+    "result_claim": "What experiment/result would support the answer",
+    "falsification_result": "What concrete result would kill the paper claim"
   },
   "submission_keywords": ["keyword 1", "keyword 2"]
 }"""
@@ -490,6 +506,29 @@ def discover_paper_ideas(
                 print(f"[PAPER_IDEA] Experiment design failed: {e}", flush=True)
                 result3 = {}
 
+        generated_problem_awareness = result3.get("problem_awareness")
+        if not isinstance(generated_problem_awareness, dict):
+            generated_problem_awareness = {}
+        expected_results = result3.get("expected_results")
+        if not isinstance(expected_results, dict):
+            expected_results = {}
+        problem_awareness = {
+            "central_question": generated_problem_awareness.get("central_question")
+            or problem.get("central_question")
+            or title,
+            "motivation": generated_problem_awareness.get("motivation")
+            or problem.get("motivation")
+            or problem.get("current_failure_mode", ""),
+            "method_answer": generated_problem_awareness.get("method_answer")
+            or method.get("mechanism_repair")
+            or method.get("one_line", ""),
+            "result_claim": generated_problem_awareness.get("result_claim")
+            or expected_results.get("solid")
+            or problem.get("result_that_would_change_belief", ""),
+            "falsification_result": generated_problem_awareness.get("falsification_result")
+            or method.get("falsification_hook", ""),
+        }
+
         deep_insight = {
             "tier": 2,
             "status": "candidate",
@@ -510,6 +549,7 @@ def discover_paper_ideas(
             "source_node_ids": json.dumps(problem.get("related_node_ids", [])),
             "evidence_summary": problem.get("source_evidence", ""),
             "mechanism_type": problem.get("mechanism_type", "mechanism_mismatch"),
+            "problem_awareness": json.dumps(problem_awareness),
             "signal_mix": json.dumps(
                 sorted(
                     {

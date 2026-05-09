@@ -40,7 +40,7 @@ include-package-data = true
 py-modules = ["config", "main"]
 
 [tool.setuptools.packages.find]
-include = ["agents*", "db*", "ingestion*", "orchestrator*", "web*"]
+include = ["compat*", "agents*", "db*", "ingestion*", "orchestrator*", "web*"]
 
 [tool.setuptools.package-data]
 db = ["schema.sql"]

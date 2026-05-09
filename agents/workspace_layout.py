@@ -1,6 +1,34 @@
 from __future__ import annotations
 
+"""Idea workspace layout (one repo per deep_insight).
+
+Layout on disk::
+
+    idea_<id>/
+      papers/                 # 论文与投稿产物 (current/, bundles/, manifests/)
+      plan/                   # 计划与状态
+      experiments/            # 实验大类根目录（不是单条「实验记录」）
+        main/                 # 主表 / 主实验线
+          current/            -> 指向当前 canonical run（符号链接或占位）
+          runs/
+            run_<db_id>/      # 一次可复现执行（才是以前的「run」语义）
+        ablation/
+          current/
+          runs/
+        visualization/
+          current/
+          runs/
+
+Database:
+  - ``deep_insights.experiment_root`` → ``.../idea_N/experiments``（所有 suite 的父目录）
+  - ``experiment_runs.experiment_suite`` → ``main`` | ``ablation`` | ``visualization`` | 自定义
+
+Legacy ``idea_*/paper`` / ``idea_*/experiment`` 在首次 ``get_idea_workspace(create=True)`` 时自动迁移为
+``papers`` / ``experiments/main``。
+"""
+
 import json
+import os
 import shutil
 from pathlib import Path
 from typing import Any
@@ -8,9 +36,35 @@ from typing import Any
 from config import IDEA_WORKSPACE_DIR
 from db import database as db
 
+PAPERS_DIR = "papers"
+EXPERIMENTS_DIR = "experiments"
+SUITE_MAIN = "main"
+SUITE_ABLATION = "ablation"
+SUITE_VISUALIZATION = "visualization"
+DEFAULT_EXPERIMENT_SUITE = SUITE_MAIN
+KNOWN_EXPERIMENT_SUITES = (SUITE_MAIN, SUITE_ABLATION, SUITE_VISUALIZATION)
+
 
 def _workspace_root_for_insight(insight_id: int) -> Path:
     return IDEA_WORKSPACE_DIR / f"idea_{int(insight_id)}"
+
+
+def _looks_foreign_restored_path(raw: str) -> bool:
+    """Detect Unix absolute paths restored into a Windows runtime."""
+    text = str(raw or "").strip().replace("\\", "/")
+    if os.name != "nt" or not text:
+        return False
+    return text.startswith("/home/") or text.startswith("/root/") or text.startswith("/data/")
+
+
+def _path_within(path: Path, root: Path) -> bool:
+    try:
+        resolved = path.resolve()
+        resolved_root = root.resolve()
+    except OSError:
+        resolved = path.absolute()
+        resolved_root = root.absolute()
+    return resolved == resolved_root or resolved_root in resolved.parents
 
 
 def _write_text(path: Path, content: str) -> None:
@@ -24,18 +78,57 @@ def _serialize_content(content: Any) -> str:
     return json.dumps(content, indent=2, ensure_ascii=False, default=str)
 
 
+def _migrate_legacy_idea_workspace(workspace_root: Path) -> None:
+    """Rename legacy ``paper`` / ``experiment`` trees to ``papers`` / ``experiments/main``."""
+    legacy_paper = workspace_root / "paper"
+    modern_paper = workspace_root / PAPERS_DIR
+    if legacy_paper.is_dir() and not modern_paper.exists():
+        modern_paper.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(legacy_paper), str(modern_paper))
+
+    legacy_exp = workspace_root / "experiment"
+    suite_main = workspace_root / EXPERIMENTS_DIR / DEFAULT_EXPERIMENT_SUITE
+    if legacy_exp.is_dir() and not suite_main.exists():
+        suite_main.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(legacy_exp), str(suite_main))
+
+
+def _resolve_suite_for_run(run_id: int) -> str:
+    row = db.fetchone("SELECT experiment_suite FROM experiment_runs WHERE id=?", (int(run_id),))
+    if row:
+        s = str(row.get("experiment_suite") or "").strip()
+        if s:
+            return s
+    return DEFAULT_EXPERIMENT_SUITE
+
+
 def get_idea_workspace(insight_id: int, insight: dict | None = None, *, create: bool = True, sync_db: bool = True) -> dict[str, Any]:
     insight = insight or db.fetchone("SELECT * FROM deep_insights WHERE id=?", (insight_id,)) or {"id": insight_id}
-    workspace_root = Path(str(insight.get("workspace_root") or _workspace_root_for_insight(insight_id)))
-    experiment_root = Path(str(insight.get("experiment_root") or (workspace_root / "experiment")))
-    plan_root = Path(str(insight.get("plan_root") or (workspace_root / "plan")))
-    paper_root = Path(str(insight.get("paper_root") or (workspace_root / "paper")))
+    stored_workspace = str(insight.get("workspace_root") or "").strip()
+    if stored_workspace and not _looks_foreign_restored_path(stored_workspace):
+        workspace_root = Path(stored_workspace)
+    else:
+        workspace_root = _workspace_root_for_insight(insight_id)
+    if create:
+        _migrate_legacy_idea_workspace(workspace_root)
+
+    experiments_root = workspace_root / EXPERIMENTS_DIR
+    stored_plan = str(insight.get("plan_root") or "").strip()
+    if stored_plan and not _looks_foreign_restored_path(stored_plan):
+        candidate_plan = Path(stored_plan)
+        plan_root = candidate_plan if _path_within(candidate_plan, workspace_root) else workspace_root / "plan"
+    else:
+        plan_root = workspace_root / "plan"
+    paper_root = workspace_root / PAPERS_DIR
+
     layout = {
         "insight_id": int(insight_id),
         "workspace_root": workspace_root,
-        "experiment_root": experiment_root,
-        "experiment_current_root": experiment_root / "current",
-        "experiment_runs_root": experiment_root / "runs",
+        "experiments_root": experiments_root,
+        # DB column experiment_root: parent of all suites (…/experiments), not a single run bucket
+        "experiment_root": experiments_root,
+        "experiment_current_root": experiments_root / DEFAULT_EXPERIMENT_SUITE / "current",
+        "experiment_runs_root": experiments_root / DEFAULT_EXPERIMENT_SUITE / "runs",
         "plan_root": plan_root,
         "paper_root": paper_root,
         "paper_current_root": paper_root / "current",
@@ -44,22 +137,19 @@ def get_idea_workspace(insight_id: int, insight: dict | None = None, *, create: 
         "canonical_run_id": insight.get("canonical_run_id"),
     }
     if create:
-        for key in (
-            "workspace_root",
-            "experiment_root",
-            "experiment_current_root",
-            "experiment_runs_root",
-            "plan_root",
-            "paper_root",
-            "paper_current_root",
-            "paper_bundles_root",
-            "paper_manifests_root",
-        ):
+        workspace_root.mkdir(parents=True, exist_ok=True)
+        plan_root.mkdir(parents=True, exist_ok=True)
+        for key in ("paper_root", "paper_current_root", "paper_bundles_root", "paper_manifests_root"):
             Path(layout[key]).mkdir(parents=True, exist_ok=True)
+        experiments_root.mkdir(parents=True, exist_ok=True)
+        for suite in KNOWN_EXPERIMENT_SUITES:
+            (experiments_root / suite / "runs").mkdir(parents=True, exist_ok=True)
+            (experiments_root / suite / "current").mkdir(parents=True, exist_ok=True)
+
     if sync_db and insight.get("id") is not None:
         desired = {
             "workspace_root": str(workspace_root),
-            "experiment_root": str(experiment_root),
+            "experiment_root": str(experiments_root),
             "plan_root": str(plan_root),
             "paper_root": str(paper_root),
         }
@@ -83,17 +173,32 @@ def get_idea_workspace(insight_id: int, insight: dict | None = None, *, create: 
     return layout
 
 
-def ensure_run_workspace(insight_id: int, run_id: int, insight: dict | None = None) -> dict[str, Any]:
+def ensure_run_workspace(
+    insight_id: int,
+    run_id: int,
+    insight: dict | None = None,
+    *,
+    suite: str | None = None,
+) -> dict[str, Any]:
     layout = get_idea_workspace(insight_id, insight=insight, create=True, sync_db=True)
-    run_root = Path(layout["experiment_runs_root"]) / f"run_{int(run_id)}"
+    experiments_root = Path(layout["experiments_root"])
+    resolved_suite = (suite or _resolve_suite_for_run(run_id)).strip() or DEFAULT_EXPERIMENT_SUITE
+    suite_runs_root = experiments_root / resolved_suite / "runs"
+    suite_current_root = experiments_root / resolved_suite / "current"
+    run_root = suite_runs_root / f"run_{int(run_id)}"
     info = {
         **layout,
+        "experiment_suite": resolved_suite,
+        "suite_runs_root": suite_runs_root,
+        "suite_current_root": suite_current_root,
         "run_root": run_root,
         "code_root": run_root / "code",
         "results_root": run_root / "results",
         "spec_root": run_root / "spec",
         "codex_root": run_root / "codex",
     }
+    suite_runs_root.mkdir(parents=True, exist_ok=True)
+    suite_current_root.mkdir(parents=True, exist_ok=True)
     for key in ("run_root", "code_root", "results_root", "spec_root", "codex_root"):
         Path(info[key]).mkdir(parents=True, exist_ok=True)
     return info
@@ -152,12 +257,13 @@ def promote_canonical_run(insight_id: int, run_id: int, insight: dict | None = N
         (int(run_id), int(insight_id)),
     )
     db.commit()
-    _refresh_current_link(Path(info["experiment_current_root"]), Path(info["run_root"]))
+    _refresh_current_link(Path(info["suite_current_root"]), Path(info["run_root"]))
     write_latest_status(
         insight_id,
         {
             "canonical_run_id": int(run_id),
-            "experiment_current_root": str(info["experiment_current_root"]),
+            "experiment_suite": info["experiment_suite"],
+            "suite_current_root": str(info["suite_current_root"]),
             "run_root": str(info["run_root"]),
             "status": "canonical_promoted",
         },
@@ -168,15 +274,25 @@ def promote_canonical_run(insight_id: int, run_id: int, insight: dict | None = N
 
 
 def _refresh_current_link(link_path: Path, target_path: Path) -> None:
-    if link_path.is_symlink() or link_path.is_file():
-        link_path.unlink()
-    elif link_path.is_dir():
-        shutil.rmtree(link_path)
+    def _write_marker() -> None:
+        link_path.mkdir(parents=True, exist_ok=True)
+        _write_text(link_path / "CURRENT_RUN.txt", str(target_path))
+
+    try:
+        if link_path.is_symlink() or link_path.is_file():
+            link_path.unlink()
+        elif link_path.is_dir():
+            shutil.rmtree(link_path)
+    except OSError:
+        # Windows can transiently lock the placeholder current/ directory while
+        # another scheduler thread is collecting artifacts. Keep the pipeline
+        # moving by updating the marker instead of failing the whole GPU job.
+        _write_marker()
+        return
     try:
         link_path.symlink_to(target_path, target_is_directory=True)
     except OSError:
-        link_path.mkdir(parents=True, exist_ok=True)
-        _write_text(link_path / "CURRENT_RUN.txt", str(target_path))
+        _write_marker()
 
 
 def list_paper_assets(insight_id: int, insight: dict | None = None) -> list[dict[str, Any]]:

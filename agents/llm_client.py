@@ -7,6 +7,7 @@ from config import (
     LLM_API_KEY,
     LLM_BASE_URL,
     LLM_CONNECT_TIMEOUT_SECONDS,
+    LLM_EXTRA_PROVIDERS_JSON,
     LLM_MAX_OUTPUT_TOKENS,
     LLM_MODEL,
     LLM_PROTOCOL,
@@ -63,6 +64,59 @@ class _RateLimiter:
 
 def _http_timeout() -> httpx.Timeout:
     return httpx.Timeout(float(LLM_REQUEST_TIMEOUT_SECONDS), connect=float(LLM_CONNECT_TIMEOUT_SECONDS))
+
+
+def _extra_openai_providers() -> list[dict]:
+    """Parse optional extra OpenAI-compatible provider routes from JSON config."""
+    raw = (LLM_EXTRA_PROVIDERS_JSON or "").strip()
+    if not raw:
+        return []
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        print(f"[LLM] Ignoring invalid DEEPGRAPH_LLM_EXTRA_PROVIDERS_JSON: {exc}", flush=True)
+        return []
+    if isinstance(payload, dict):
+        payload = payload.get("providers") or payload.get("routes") or []
+    if not isinstance(payload, list):
+        print("[LLM] Ignoring DEEPGRAPH_LLM_EXTRA_PROVIDERS_JSON: expected a JSON list", flush=True)
+        return []
+
+    def _as_int(value, default: int = 0) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _as_bool(value, default: bool = False) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return default
+        return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+    providers: list[dict] = []
+    for idx, item in enumerate(payload, start=1):
+        if not isinstance(item, dict) or item.get("enabled") is False:
+            continue
+        api_key = str(item.get("api_key") or "").strip()
+        base_url = str(item.get("base_url") or "").strip().rstrip("/")
+        if not api_key or not base_url:
+            continue
+        providers.append(
+            {
+                "name": str(item.get("name") or f"extra_{idx}").strip() or f"extra_{idx}",
+                "base_url": base_url,
+                "api_key": api_key,
+                "model": str(item.get("model") or LLM_MODEL).strip() or LLM_MODEL,
+                "protocol": str(item.get("protocol") or LLM_PROTOCOL).strip().lower() or LLM_PROTOCOL,
+                "rpm": _as_int(item.get("rpm"), 0),
+                "stream_chat_completions": _as_bool(item.get("stream_chat_completions"), False),
+                "chat_endpoint": str(item.get("chat_endpoint") or "/chat/completions"),
+                "extra_headers": item.get("extra_headers") if isinstance(item.get("extra_headers"), dict) else {},
+            }
+        )
+    return providers
 
 
 def _init_providers():
@@ -127,6 +181,30 @@ def _init_providers():
             protocol=LLM_SECONDARY_PROTOCOL,
             rpm=LLM_SECONDARY_RPM,
         )
+
+    for extra in _extra_openai_providers():
+        _append_openai_provider(
+            name=extra["name"],
+            base_url=extra["base_url"],
+            api_key=extra["api_key"],
+            model=extra["model"],
+            protocol=extra["protocol"],
+            rpm=extra["rpm"],
+        )
+        _providers[-1]["stream_chat_completions"] = extra["stream_chat_completions"]
+        _providers[-1]["chat_endpoint"] = extra["chat_endpoint"]
+        _providers[-1]["extra_headers"] = extra["extra_headers"]
+
+    seen_names: set[str] = set()
+    for idx, provider in enumerate(_providers, start=1):
+        base_name = str(provider.get("name") or f"provider_{idx}")
+        name = base_name
+        suffix = 2
+        while name in seen_names:
+            name = f"{base_name}_{suffix}"
+            suffix += 1
+        provider["name"] = name
+        seen_names.add(name)
 
     # Init stats + rate limiters
     for p in _providers:
@@ -321,9 +399,10 @@ def _call_chat_completions(provider: dict, system_prompt: str, user_prompt: str,
             choices = body.get("choices", [])
             if choices:
                 message = choices[0].get("message", {})
-                content = message.get("content") or ""
+                reasoning = message.get("reasoning_content") or ""
+                content = message.get("content")
                 if isinstance(content, str):
-                    response_text = content
+                    response_text = content.strip() or reasoning
                 elif isinstance(content, list):
                     parts = []
                     for item in content:
@@ -331,7 +410,10 @@ def _call_chat_completions(provider: dict, system_prompt: str, user_prompt: str,
                             text = item.get("text") or item.get("content") or ""
                             if text:
                                 parts.append(text)
-                    response_text = "".join(parts)
+                    joined = "".join(parts)
+                    response_text = joined.strip() or reasoning
+                else:
+                    response_text = reasoning
             usage = body.get("usage") or {}
             total_tokens = usage.get("total_tokens", 0)
             input_tokens = usage.get("prompt_tokens", 0)

@@ -8,6 +8,8 @@ from typing import Any
 
 from config import SUBMISSION_BUNDLE_FORMATS
 from contracts import ContractValidationError, ManuscriptInputState
+from agents.benchmark_audit import best_iteration_benchmark_summary
+from agents.paper_completeness import audit_evidence_completeness
 from db import database as db
 
 
@@ -60,18 +62,93 @@ def _best_iteration(iterations: list[dict]) -> dict | None:
     return max(kept, key=lambda item: item.get("metric_value") or 0)
 
 
+def _as_float(value: Any) -> float | None:
+    if value in (None, "", []):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _result_contribution(run: dict, result_packet: dict) -> str:
+    metric_name = run.get("baseline_metric_name") or result_packet.get("metric_name") or "metric"
+    baseline = _as_float(result_packet.get("baseline", run.get("baseline_metric_value")))
+    best = _as_float(result_packet.get("best", run.get("best_metric_value")))
+    direction = str(result_packet.get("metric_direction") or "higher").lower()
+    effect = _as_float(result_packet.get("effect_size"))
+    if effect is None and baseline is not None and best is not None:
+        effect = best - baseline if direction == "higher" else baseline - best
+    effect_pct = _as_float(result_packet.get("effect_pct", run.get("effect_pct")))
+    if baseline is None or best is None or effect is None:
+        return f"Evaluated {metric_name} with baseline {baseline} and best metric {best}."
+    pct_text = f", {effect_pct:+.2f}%" if effect_pct is not None else ""
+    if effect > 1e-12:
+        return f"Best {metric_name}={best:.6f} exceeds baseline {baseline:.6f} by {effect:+.6f}{pct_text}."
+    if effect < -1e-12:
+        return f"Best {metric_name}={best:.6f} remains below baseline {baseline:.6f} by {effect:+.6f}{pct_text}."
+    return f"Best {metric_name}={best:.6f} ties baseline {baseline:.6f}; no positive effect has been established."
+
+
 def _load_result_packet(run: dict, claims: list[dict]) -> dict[str, Any]:
     workdir_raw = str(run.get("workdir") or "").strip()
+    benchmark_summary: dict[str, Any] = {}
+    benchmark_artifact_manifest: dict[str, Any] = {}
+    artifact_paths: dict[str, Any] = {}
     if workdir_raw:
         workdir = Path(workdir_raw)
+        summary_path = workdir / "results" / "benchmark_summary.json"
+        manifest_path = workdir / "results" / "benchmark_artifact_manifest.json"
+        if summary_path.exists():
+            benchmark_summary = _json_dict(summary_path.read_text(encoding="utf-8"))
+        success_hint = _json_dict(run.get("success_criteria"))
+        best_summary = best_iteration_benchmark_summary(
+            workdir,
+            best_metric=_as_float(run.get("best_metric_value")),
+            direction=str(success_hint.get("metric_direction") or "higher"),
+        )
+        if best_summary:
+            benchmark_summary = best_summary
+        if manifest_path.exists():
+            benchmark_artifact_manifest = _json_dict(manifest_path.read_text(encoding="utf-8"))
+            artifact_paths["artifact_manifest"] = str(manifest_path)
         packet_path = workdir / "results" / "experiment_result_packet.json"
         if packet_path.exists():
-            return _json_dict(packet_path.read_text(encoding="utf-8"))
+            packet = _json_dict(packet_path.read_text(encoding="utf-8"))
+            if benchmark_summary:
+                packet["benchmark_summary"] = benchmark_summary
+            if benchmark_artifact_manifest and not packet.get("benchmark_artifact_manifest"):
+                packet["benchmark_artifact_manifest"] = benchmark_artifact_manifest
+            if artifact_paths:
+                packet["artifact_paths"] = {**_json_dict(packet.get("artifact_paths")), **artifact_paths}
+            return packet
     for claim in claims:
         packet = _json_dict(_json_dict(claim.get("supporting_data")).get("result_packet"))
         if packet:
             return packet
     proxy = _json_dict(run.get("proxy_config"))
+    success = _json_dict(run.get("success_criteria"))
+    if not success and workdir_raw:
+        criteria_path = Path(workdir_raw) / "spec" / "success_criteria.json"
+        if criteria_path.exists():
+            success = _json_dict(criteria_path.read_text(encoding="utf-8"))
+    publication_contract = (
+        success.get("publication_evidence_contract")
+        or success.get("publication_evidence")
+        or proxy.get("publication_evidence_contract")
+        or {}
+    )
+    if not isinstance(publication_contract, dict):
+        publication_contract = {}
+    paper_intent = success.get("paper_intent") or publication_contract.get("paper_intent") or proxy.get("paper_intent") or {}
+    if not isinstance(paper_intent, dict):
+        paper_intent = {}
+    quality_gates = success.get("quality_gates") or publication_contract.get("quality_gates") or {}
+    if not isinstance(quality_gates, dict):
+        quality_gates = {}
+    claim_route = success.get("claim_route") or publication_contract.get("claim_route") or proxy.get("claim_route") or {}
+    if not isinstance(claim_route, dict):
+        claim_route = {}
     return {
         "run_id": run.get("id"),
         "deep_insight_id": run.get("deep_insight_id"),
@@ -82,6 +159,242 @@ def _load_result_packet(run: dict, claims: list[dict]) -> dict[str, Any]:
         "baseline": run.get("baseline_metric_value"),
         "best": run.get("best_metric_value"),
         "effect_pct": run.get("effect_pct"),
+        "benchmark_summary": benchmark_summary,
+        "benchmark_artifact_manifest": benchmark_artifact_manifest,
+        "full_benchmark_completed": bool(benchmark_artifact_manifest.get("full_benchmark_completed")),
+        "artifact_paths": artifact_paths,
+        "evidence_tier": success.get("evidence_tier") or publication_contract.get("evidence_tier") or proxy.get("evidence_tier") or "",
+        "publication_ready": success.get("publication_ready", publication_contract.get("publication_ready")),
+        "blocks_manuscript": bool(
+            success.get("blocks_manuscript")
+            or publication_contract.get("blocks_manuscript")
+            or proxy.get("blocks_manuscript")
+        ),
+        "publication_evidence_contract": publication_contract,
+        "claim_route": claim_route,
+        "paper_intent": paper_intent,
+        "quality_gates": quality_gates,
+        "reviewer_objections": success.get("reviewer_objections") or publication_contract.get("reviewer_objections") or [],
+    }
+
+
+def _publication_contract_from_inputs(result_packet: dict, plan: dict, run: dict) -> dict[str, Any]:
+    contract = _json_dict(result_packet.get("publication_evidence_contract"))
+    if not contract:
+        contract = _json_dict(plan.get("publication_evidence_contract"))
+    if not contract:
+        proxy = _json_dict(run.get("proxy_config"))
+        contract = _json_dict(proxy.get("publication_evidence_contract"))
+    if contract:
+        return contract
+
+    def _names(rows) -> list[str]:
+        values: list[str] = []
+        for row in rows or []:
+            if isinstance(row, dict):
+                value = row.get("name") or row.get("model") or row.get("dataset")
+            else:
+                value = row
+            text = str(value or "").strip()
+            if text and text not in values:
+                values.append(text)
+        return values
+
+    datasets = _names(plan.get("datasets"))
+    baselines = _names(plan.get("baselines"))
+    real_datasets = [
+        name for name in datasets
+        if not any(marker in name.lower() for marker in ("synthetic", "toy", "smoke", "probe", "dummy"))
+    ]
+    metrics = _json_dict(plan.get("metrics"))
+    metric_name = result_packet.get("metric_name") or metrics.get("primary") or "metric"
+    evidence_tier = result_packet.get("evidence_tier") or (
+        "benchmark_plan" if real_datasets and len(baselines) >= 2 else "formal_proxy"
+    )
+    return {
+        "claim_to_validate": result_packet.get("claim_text") or "",
+        "evidence_tier": evidence_tier,
+        "publication_ready": False,
+        "blocks_manuscript": bool(result_packet.get("blocks_manuscript")),
+        "minimum_seeds": 3,
+        "required_datasets": datasets,
+        "required_real_benchmarks": real_datasets,
+        "required_baselines": baselines,
+        "required_ablations": _names(plan.get("ablations")) or ["method_removed", "compute_matched_baseline"],
+        "primary_metric": metric_name,
+        "statistical_test": "paired bootstrap confidence interval plus paired permutation test across seeds/tasks",
+        "required_artifacts": ["main_results_table", "ablation_table", "seed_variance_table", "raw_metrics_jsonl"],
+        "quality_gates": {
+            "has_real_benchmark": bool(real_datasets),
+            "baseline_count": len(baselines),
+            "minimum_seeds": 3,
+            "requires_ablation_table": True,
+            "requires_full_benchmark_package": bool(evidence_tier == "benchmark_plan"),
+        },
+        "reviewer_objections": [
+            "Are baselines fair and current?",
+            "Do ablations isolate the claimed mechanism?",
+            "Are results stable across seeds with statistical uncertainty?",
+            "Are proxy limitations clearly separated from benchmark claims?",
+        ],
+    }
+
+
+def _named_rows(rows: Any, *, keys: tuple[str, ...] = ("name", "model", "dataset")) -> list[str]:
+    values: list[str] = []
+    for row in rows or []:
+        if isinstance(row, dict):
+            value = next((row.get(key) for key in keys if row.get(key)), "")
+        else:
+            value = row
+        text = str(value or "").strip()
+        if text and text not in values:
+            values.append(text)
+    return values
+
+
+def _build_problem_awareness(
+    *,
+    insight: dict,
+    method: dict,
+    plan: dict,
+    result_packet: dict,
+    publication_contract: dict,
+) -> dict[str, Any]:
+    existing = (
+        _json_dict(insight.get("problem_awareness"))
+        or _json_dict(result_packet.get("problem_awareness"))
+        or _json_dict(plan.get("problem_awareness"))
+        or _json_dict(publication_contract.get("problem_awareness"))
+    )
+    benchmark_summary = _json_dict(result_packet.get("benchmark_summary"))
+    datasets = _named_rows(
+        publication_contract.get("required_real_benchmarks")
+        or publication_contract.get("required_datasets")
+        or benchmark_summary.get("datasets")
+        or plan.get("datasets"),
+        keys=("name", "dataset", "id"),
+    )
+    baselines = _named_rows(
+        publication_contract.get("required_baselines")
+        or benchmark_summary.get("per_method", {}).keys()
+        or plan.get("baselines"),
+        keys=("name", "model", "method"),
+    )
+    metric = (
+        result_packet.get("metric_name")
+        or _json_dict(plan.get("metrics")).get("primary")
+        or publication_contract.get("primary_metric")
+        or "metric"
+    )
+    central_question = (
+        existing.get("central_question")
+        or existing.get("question")
+        or publication_contract.get("claim_to_validate")
+        or insight.get("problem_statement")
+        or insight.get("title")
+        or ""
+    )
+    motivation = (
+        existing.get("motivation")
+        or insight.get("existing_weakness")
+        or insight.get("evidence_summary")
+        or "Prior results leave the claimed mechanism unresolved."
+    )
+    method_answer = (
+        existing.get("method_answer")
+        or existing.get("method")
+        or method.get("mechanism_repair")
+        or method.get("one_line")
+        or method.get("definition")
+        or f"{method.get('name') or insight.get('title') or 'The proposed method'} is the intervention evaluated by the benchmark."
+        or ""
+    )
+    if result_packet.get("baseline") is not None or result_packet.get("best") is not None:
+        result_claim = (
+            f"{metric}: baseline={result_packet.get('baseline')}, "
+            f"best={result_packet.get('best')}, effect_pct={result_packet.get('effect_pct')}, "
+            f"verdict={result_packet.get('verdict')}."
+        )
+    else:
+        result_claim = str(existing.get("result_claim") or publication_contract.get("claim_to_validate") or "")
+    return {
+        **existing,
+        "central_question": central_question,
+        "motivation": motivation,
+        "method_answer": method_answer,
+        "result_claim": existing.get("result_claim") or result_claim,
+        "falsification_result": existing.get("falsification_result")
+        or method.get("falsification_hook")
+        or "The method fails if it cannot beat matched baselines under the required datasets, seeds, and statistical tests.",
+        "benchmark_context": {
+            "datasets": datasets,
+            "baselines": baselines,
+            "primary_metric": metric,
+        },
+        "required_story_order": ["problem", "motivation", "method", "result", "limitations"],
+        "top_venue_questions": [
+            "What exact failure mode do current papers leave unresolved?",
+            "Why is the proposed mechanism necessary rather than a stronger baseline?",
+            "Which completed result supports the central claim, with uncertainty?",
+            "What result would falsify or sharply weaken the paper?",
+        ],
+    }
+
+
+def _build_paper_intent(
+    *,
+    insight: dict,
+    method: dict,
+    plan: dict,
+    result_packet: dict,
+    claim_records: list[dict],
+    publication_contract: dict,
+    problem_awareness: dict[str, Any],
+) -> dict[str, Any]:
+    existing = _json_dict(result_packet.get("paper_intent")) or _json_dict(plan.get("paper_intent"))
+    if not existing:
+        existing = _json_dict(publication_contract.get("paper_intent"))
+    method_name = method.get("name") or insight.get("title") or "DeepGraph Method"
+    primary_metric = (
+        result_packet.get("metric_name")
+        or _json_dict(plan.get("metrics")).get("primary")
+        or "metric"
+    )
+    claim_text = (
+        publication_contract.get("claim_to_validate")
+        or (claim_records[0].get("claim_text") if claim_records else "")
+        or result_packet.get("claim_text")
+        or insight.get("title")
+        or ""
+    )
+    evidence_tier = result_packet.get("evidence_tier") or publication_contract.get("evidence_tier") or "unknown"
+    narrative_spine = existing.get("narrative_spine") if isinstance(existing.get("narrative_spine"), list) else []
+    if not narrative_spine:
+        narrative_spine = [
+            f"Gap: {insight.get('existing_weakness') or insight.get('problem_statement') or ''}",
+            f"Mechanism: {method_name} is the proposed intervention.",
+            f"Evidence: report baseline, proposed method, ablations, seed variance, and {primary_metric}.",
+            f"Boundary: evidence tier is {evidence_tier}; do not overclaim beyond completed experiments.",
+        ]
+    return {
+        **existing,
+        "problem_awareness": problem_awareness,
+        "central_question": existing.get("central_question") or problem_awareness.get("central_question"),
+        "motivation": existing.get("motivation") or problem_awareness.get("motivation"),
+        "method_answer": existing.get("method_answer") or problem_awareness.get("method_answer"),
+        "result_claim": existing.get("result_claim") or problem_awareness.get("result_claim"),
+        "central_claim": existing.get("central_claim") or claim_text,
+        "claim_route": existing.get("claim_route")
+        or _json_dict(publication_contract.get("claim_route")).get("route"),
+        "claim_strength": existing.get("claim_strength")
+        or publication_contract.get("claim_strength"),
+        "target_venue": existing.get("target_venue") or "top-tier ML venue",
+        "reader_takeaway": existing.get("reader_takeaway")
+        or f"{method_name} should be accepted only if the completed evidence supports the stated mechanism.",
+        "evidence_tier": evidence_tier,
+        "narrative_spine": narrative_spine,
+        "do_not_overclaim": True,
     }
 
 
@@ -153,7 +466,7 @@ def build_manuscript_input_state(run: dict, insight: dict, iterations: list[dict
 
     contributions = [
         method.get("one_line") or "Mechanism-first insight generation and automated experiment loop.",
-        f"Validated with baseline {run.get('baseline_metric_value')} and best metric {run.get('best_metric_value')}.",
+        _result_contribution(run, result_packet),
         f"Generated as a {insight.get('mechanism_type') or 'mechanism-first'} DeepGraph insight.",
     ]
 
@@ -163,8 +476,42 @@ def build_manuscript_input_state(run: dict, insight: dict, iterations: list[dict
         fallback_nodes=source_node_ids,
         evidence_summary=str(evidence_summary),
     )
+    publication_contract = _publication_contract_from_inputs(result_packet, plan, run)
+    problem_awareness = _build_problem_awareness(
+        insight=insight,
+        method=method,
+        plan=plan,
+        result_packet=result_packet,
+        publication_contract=publication_contract,
+    )
+    paper_intent = _build_paper_intent(
+        insight=insight,
+        method=method,
+        plan=plan,
+        result_packet=result_packet,
+        claim_records=claim_records,
+        publication_contract=publication_contract,
+        problem_awareness=problem_awareness,
+    )
+    quality_gates = _json_dict(result_packet.get("quality_gates")) or _json_dict(publication_contract.get("quality_gates"))
+    claim_route = (
+        _json_dict(result_packet.get("claim_route"))
+        or _json_dict(publication_contract.get("claim_route"))
+    )
+    required_evidence = {
+        "datasets": publication_contract.get("required_datasets") or plan.get("datasets", []),
+        "real_benchmarks": publication_contract.get("required_real_benchmarks") or [],
+        "baselines": publication_contract.get("required_baselines") or plan.get("baselines", []),
+        "ablations": publication_contract.get("required_ablations") or plan.get("ablations", []),
+        "minimum_seeds": publication_contract.get("minimum_seeds"),
+        "statistical_test": publication_contract.get("statistical_test"),
+        "artifacts": publication_contract.get("required_artifacts") or [],
+    }
+    reviewer_objections = result_packet.get("reviewer_objections") or publication_contract.get("reviewer_objections") or []
+    if not isinstance(reviewer_objections, list):
+        reviewer_objections = []
 
-    return ManuscriptInputState(
+    state = ManuscriptInputState(
         run_id=run.get("id"),
         deep_insight_id=run.get("deep_insight_id"),
         formal_experiment=bool(result_packet.get("formal_experiment")),
@@ -199,7 +546,21 @@ def build_manuscript_input_state(run: dict, insight: dict, iterations: list[dict
         experimental_plan=plan,
         submission_keywords=related.get("submission_keywords", [insight.get("mechanism_type"), insight.get("resource_class")]),
         result_packet=result_packet,
+        publication_evidence_contract=publication_contract,
+        claim_route=claim_route,
+        paper_intent=paper_intent,
+        problem_awareness=problem_awareness,
+        quality_gates=quality_gates,
+        required_evidence=required_evidence,
+        reviewer_objections=[str(x) for x in reviewer_objections if x],
     )
+    completeness = audit_evidence_completeness(state.to_dict())
+    state.evidence_manifest = completeness.get("evidence_manifest") or {}
+    state.claim_evidence_matrix = completeness.get("claim_evidence_matrix") or []
+    state.reviewer_report = completeness.get("reviewer_report") or {}
+    state.method_reproducibility_requirements = completeness.get("method_reproducibility_requirements") or {}
+    state.missing_evidence_report = completeness.get("missing_evidence_report") or {}
+    return state
 
 
 def _build_canonical_state(run: dict, insight: dict, iterations: list[dict], claims: list[dict]) -> dict:

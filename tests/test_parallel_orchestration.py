@@ -1,5 +1,6 @@
 import unittest
 from unittest import mock
+from datetime import timedelta
 
 from orchestrator import auto_research, discovery_scheduler
 
@@ -41,6 +42,24 @@ class AutoResearchSchedulingTests(unittest.TestCase):
         sql = fetchall.call_args.args[0]
         self.assertNotIn("'review_pending'", sql)
 
+    def test_candidate_pool_query_does_not_let_generic_failed_jobs_block_queue(self):
+        with mock.patch.object(auto_research.db, "fetchall", return_value=[] ) as fetchall:
+            auto_research._candidate_pool()
+
+        sql = fetchall.call_args.args[0]
+        self.assertNotIn("'queued', 'eligible', 'failed'", sql)
+        self.assertIn("arj.status='failed'", sql)
+        self.assertIn("'retry_failed_run'", sql)
+
+    def test_candidate_pool_query_does_not_retry_all_blocked_cpu_eligible_jobs(self):
+        with mock.patch.object(auto_research.db, "fetchall", return_value=[] ) as fetchall:
+            auto_research._candidate_pool()
+
+        sql = fetchall.call_args.args[0]
+        self.assertNotIn("arj.cpu_eligible=1", sql)
+        self.assertIn("arj.stage='cpu_ineligible'", sql)
+        self.assertIn("'verification_input_missing'", sql)
+
     def test_process_candidate_blocks_underspecified_verification(self):
         candidate = {"id": 12, "tier": 1, "novelty_status": "unchecked"}
         upserts = []
@@ -49,6 +68,7 @@ class AutoResearchSchedulingTests(unittest.TestCase):
             upserts.append((insight_id, fields))
 
         with (
+            mock.patch.object(auto_research, "REQUIRE_EVOSCIENTIST_FOR_EXPERIMENTS", True),
             mock.patch.object(auto_research, "assess_experiment_route", return_value=("cpu", "ready")),
             mock.patch.object(auto_research, "evosci_available", return_value=True),
             mock.patch.object(
@@ -141,6 +161,42 @@ class AutoResearchSchedulingTests(unittest.TestCase):
         self.assertEqual(upserts[-1][1]["status"], "queued")
         self.assertEqual(upserts[-1][1]["stage"], "review_retry")
 
+    def test_job_age_seconds_handles_naive_local_database_timestamps(self):
+        stale = (auto_research.datetime.now() - timedelta(minutes=26)).replace(microsecond=0)
+        age = auto_research._job_age_seconds({"updated_at": stale.isoformat()})
+
+        self.assertGreater(age, 15 * 60)
+
+    def test_refresh_running_jobs_surfaces_testing_progress(self):
+        job = {
+            "deep_insight_id": 16,
+            "status": "running_gpu",
+            "experiment_run_id": 9,
+        }
+        run = {
+            "id": 9,
+            "status": "testing",
+            "phase": "hypothesis_testing",
+            "best_metric_value": 1.5,
+            "baseline_metric_value": 1.2,
+        }
+        upserts = []
+
+        def _capture_upsert(insight_id, **fields):
+            upserts.append((insight_id, fields))
+
+        with (
+            mock.patch.object(auto_research.db, "fetchall", return_value=[job]),
+            mock.patch.object(auto_research.db, "fetchone", return_value=run),
+            mock.patch.object(auto_research, "_upsert_job", side_effect=_capture_upsert),
+        ):
+            auto_research._refresh_running_jobs()
+
+        self.assertEqual(upserts[-1][0], 16)
+        self.assertEqual(upserts[-1][1]["status"], "running_gpu")
+        self.assertEqual(upserts[-1][1]["stage"], "hypothesis_testing")
+        self.assertIn("best=1.5", upserts[-1][1]["last_note"])
+
     def test_process_candidate_runs_cpu_validation_for_smoke_only_forge(self):
         candidate = {"id": 21, "tier": 2, "novelty_status": "novel"}
         upserts = []
@@ -169,6 +225,63 @@ class AutoResearchSchedulingTests(unittest.TestCase):
 
         self.assertEqual(upserts[-1][1]["status"], "completed")
         self.assertEqual(upserts[-1][1]["stage"], "closed_loop_complete")
+
+    def test_existing_run_lookup_skips_superseded_canonical_run(self):
+        with mock.patch.object(
+            auto_research.db,
+            "fetchone",
+            side_effect=[
+                {"id": 7, "status": "superseded"},
+                {"id": 8, "status": "scaffolding"},
+            ],
+        ):
+            run = auto_research._existing_run_for_candidate({"id": 21, "canonical_run_id": 7})
+
+        self.assertEqual(run["id"], 8)
+
+    def test_reset_completed_stage_reforges_terminal_runs(self):
+        insight = {"id": 21, "auto_stage": "reset_completed_experiments"}
+
+        self.assertTrue(auto_research._manual_reforge_requested(insight, {"id": 7, "status": "completed"}))
+        self.assertTrue(auto_research._manual_reforge_requested(insight, {"id": 8, "status": "bundle_ready"}))
+
+    def test_benchmark_completion_stage_does_not_reforge_completed_run(self):
+        insight = {"id": 21, "auto_stage": auto_research.BENCHMARK_COMPLETION_STAGE}
+
+        self.assertFalse(auto_research._manual_reforge_requested(insight, {"id": 7, "status": "completed"}))
+
+    def test_process_candidate_queues_completed_run_for_benchmark_completion(self):
+        candidate = {
+            "id": 25,
+            "tier": 2,
+            "novelty_status": "novel",
+            "canonical_run_id": 11,
+            "auto_stage": auto_research.BENCHMARK_COMPLETION_STAGE,
+        }
+        existing_run = {
+            "id": 11,
+            "status": "completed",
+            "proxy_config": '{"formal_experiment": true, "smoke_test_only": false}',
+            "resource_class": "gpu_large",
+        }
+
+        with (
+            mock.patch.object(auto_research, "assess_experiment_route", return_value=("gpu_large", "ready")),
+            mock.patch.object(auto_research, "evosci_available", return_value=False),
+            mock.patch.object(auto_research, "_existing_run_for_candidate", return_value=existing_run),
+            mock.patch.object(auto_research, "_auto_job_stage", return_value=auto_research.BENCHMARK_COMPLETION_STAGE),
+            mock.patch.object(auto_research, "_upsert_job"),
+            mock.patch.object(auto_research, "_queue_benchmark_completion_run", return_value=True) as queue_completion,
+            mock.patch.object(auto_research, "log_event"),
+        ):
+            auto_research._process_candidate(candidate)
+
+        queue_completion.assert_called_once_with(25, existing_run, "gpu_large")
+
+    def test_review_retry_reforges_failed_latest_run(self):
+        insight = {"id": 24, "auto_stage": "review_retry"}
+
+        self.assertTrue(auto_research._manual_reforge_requested(insight, {"id": 10, "status": "failed"}))
 
     def test_process_candidate_keeps_scaffolding_run_in_review_pending_until_decision_ready(self):
         candidate = {"id": 22, "tier": 2, "novelty_status": "novel", "canonical_run_id": 8}

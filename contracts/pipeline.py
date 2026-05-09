@@ -36,6 +36,7 @@ DEEP_INSIGHT_JSON_FIELDS = {
     "source_signal_ids",
     "novelty_report",
     "exemplars_used",
+    "problem_awareness",
 }
 
 
@@ -195,6 +196,7 @@ class DeepInsightSpec(ContractRecord):
     signal_mix: list[str] = field(default_factory=list)
     evidence_packet: dict[str, Any] = field(default_factory=dict)
     evidence_plan: dict[str, Any] = field(default_factory=dict)
+    problem_awareness: dict[str, Any] = field(default_factory=dict)
     adversarial_score: float | None = None
     adversarial_critique: dict[str, Any] = field(default_factory=dict)
     novelty_report: dict[str, Any] = field(default_factory=dict)
@@ -245,6 +247,7 @@ class DeepInsightSpec(ContractRecord):
             signal_mix=ensure_string_list(raw.get("signal_mix")),
             evidence_packet=ensure_dict(raw.get("evidence_packet")),
             evidence_plan=ensure_dict(raw.get("evidence_plan")),
+            problem_awareness=ensure_dict(raw.get("problem_awareness")),
             adversarial_score=coerce_optional_float(raw.get("adversarial_score")),
             adversarial_critique=ensure_dict(raw.get("adversarial_critique")),
             novelty_report=ensure_dict(raw.get("novelty_report")),
@@ -285,6 +288,7 @@ class DeepInsightSpec(ContractRecord):
                 "signal_mix": self.signal_mix,
                 "evidence_packet": self.evidence_packet,
                 "evidence_plan": self.evidence_plan,
+                "problem_awareness": self.problem_awareness,
                 "adversarial_score": self.adversarial_score,
                 "adversarial_critique": self.adversarial_critique,
                 "novelty_report": self.novelty_report,
@@ -496,6 +500,19 @@ class ExperimentResultPacket(ContractRecord):
     source_paper_ids: list[str] = field(default_factory=list)
     source_node_ids: list[str] = field(default_factory=list)
     benchmark_summary: dict[str, Any] = field(default_factory=dict)
+    evidence_tier: str = ""
+    publication_ready: bool | None = None
+    blocks_manuscript: bool = False
+    full_benchmark_completed: bool = False
+    benchmark_artifact_manifest: dict[str, Any] = field(default_factory=dict)
+    publication_evidence_contract: dict[str, Any] = field(default_factory=dict)
+    claim_route: dict[str, Any] = field(default_factory=dict)
+    paper_intent: dict[str, Any] = field(default_factory=dict)
+    problem_awareness: dict[str, Any] = field(default_factory=dict)
+    quality_gates: dict[str, Any] = field(default_factory=dict)
+    reviewer_objections: list[str] = field(default_factory=list)
+    benchmark_semantic_warnings: list[str] = field(default_factory=list)
+    benchmark_diagnostic_notes: list[str] = field(default_factory=list)
     artifact_paths: dict[str, Any] = field(default_factory=dict)
 
     def validate(self) -> None:
@@ -549,6 +566,20 @@ class ManuscriptInputState(ContractRecord):
     experimental_plan: dict[str, Any] = field(default_factory=dict)
     submission_keywords: list[Any] = field(default_factory=list)
     result_packet: dict[str, Any] = field(default_factory=dict)
+    publication_evidence_contract: dict[str, Any] = field(default_factory=dict)
+    claim_route: dict[str, Any] = field(default_factory=dict)
+    paper_intent: dict[str, Any] = field(default_factory=dict)
+    problem_awareness: dict[str, Any] = field(default_factory=dict)
+    quality_gates: dict[str, Any] = field(default_factory=dict)
+    required_evidence: dict[str, Any] = field(default_factory=dict)
+    reviewer_objections: list[str] = field(default_factory=list)
+    evidence_manifest: dict[str, Any] = field(default_factory=dict)
+    claim_evidence_matrix: list[dict[str, Any]] = field(default_factory=list)
+    reviewer_report: dict[str, Any] = field(default_factory=dict)
+    method_reproducibility_requirements: dict[str, Any] = field(default_factory=dict)
+    missing_evidence_report: dict[str, Any] = field(default_factory=dict)
+    citation_audit: dict[str, Any] = field(default_factory=dict)
+    latex_sanity_report: dict[str, Any] = field(default_factory=dict)
 
     def validate(self) -> None:
         super().validate()
@@ -561,7 +592,89 @@ class ManuscriptInputState(ContractRecord):
             raise ContractValidationError("Only formal experiment states may generate submission bundles")
         if not self.result_packet:
             raise ContractValidationError("ManuscriptInputState missing ExperimentResultPacket")
+        evidence_tier = str(self.result_packet.get("evidence_tier") or "").strip().lower()
+        if self.result_packet.get("blocks_manuscript") or evidence_tier in {"bootstrap_probe", "sanity_real_benchmark"}:
+            raise ContractValidationError(
+                "Sanity/bootstrap/probe evidence cannot enter manuscript generation; complete benchmark-backed experiments first"
+            )
+        if ensure_list(self.result_packet.get("benchmark_semantic_warnings")):
+            raise ContractValidationError(
+                "Benchmark semantic warnings must be resolved before submission generation"
+            )
+        publication_contract = (
+            ensure_dict(self.result_packet.get("publication_evidence_contract"))
+            or self.publication_evidence_contract
+        )
+        claim_route = (
+            ensure_dict(self.result_packet.get("claim_route"))
+            or ensure_dict(publication_contract.get("claim_route"))
+            or self.claim_route
+        )
+        if claim_route:
+            route = str(claim_route.get("route") or "").strip().lower()
+            paper_allowed = claim_route.get("paper_allowed")
+            if route and route != "full_paper":
+                raise ContractValidationError(
+                    "Claim route is not full_paper; complete route requirements before submission generation"
+                )
+            if paper_allowed is False:
+                raise ContractValidationError(
+                    "Claim route blocks manuscript generation"
+                )
+        quality_gates = ensure_dict(self.result_packet.get("quality_gates")) or self.quality_gates
         verdict = str(self.result_packet.get("verdict") or self.verdict or "").strip().lower()
+        if verdict and verdict not in {"confirmed", "supported"}:
+            raise ContractValidationError(
+                "Only confirmed benchmark results may generate submission bundles"
+            )
+        benchmark_summary = ensure_dict(self.result_packet.get("benchmark_summary"))
+        artifact_paths = ensure_dict(self.result_packet.get("artifact_paths"))
+        benchmark_artifact_manifest = ensure_dict(self.result_packet.get("benchmark_artifact_manifest"))
+        benchmark_manifest = ensure_dict(publication_contract.get("benchmark_manifest"))
+        scaffold_kind = str(
+            self.result_packet.get("scaffold_kind")
+            or publication_contract.get("scaffold_kind")
+            or benchmark_manifest.get("scaffold_kind")
+            or ""
+        ).strip().lower()
+        benchmark_required = bool(
+            evidence_tier == "benchmark_plan"
+            or quality_gates.get("requires_full_benchmark_package")
+            or publication_contract.get("required_real_benchmarks")
+            or quality_gates.get("has_real_benchmark")
+        )
+        if scaffold_kind in {"bootstrap_probe", "fallback_bootstrap", "real_benchmark_fallback"}:
+            benchmark_required = True
+        seed_results = ensure_list(benchmark_summary.get("seed_results"))
+        per_method = ensure_dict(benchmark_summary.get("per_method"))
+        try:
+            num_seeds = int(benchmark_summary.get("num_seeds") or len(seed_results) or 0)
+        except (TypeError, ValueError):
+            num_seeds = 0
+        try:
+            minimum_seeds = int(
+                self.result_packet.get("minimum_seeds")
+                or publication_contract.get("minimum_seeds")
+                or quality_gates.get("minimum_seeds")
+                or 3
+            )
+        except (TypeError, ValueError):
+            minimum_seeds = 3
+        full_done = bool(
+            self.result_packet.get("full_benchmark_completed")
+            or benchmark_summary.get("full_benchmark_completed")
+            or benchmark_artifact_manifest.get("full_benchmark_completed")
+        )
+        has_artifact_manifest = bool(
+            artifact_paths.get("artifact_manifest")
+            or benchmark_artifact_manifest.get("artifacts")
+            or benchmark_artifact_manifest.get("path")
+        )
+        has_benchmark_matrix = bool(per_method and len(per_method) >= 2 and num_seeds >= minimum_seeds)
+        if benchmark_required and not (full_done and has_artifact_manifest and has_benchmark_matrix):
+            raise ContractValidationError(
+                "Full benchmark artifact package is required before manuscript generation"
+            )
         benchmark_summary = self.result_packet.get("benchmark_summary")
         if verdict == "reproduced":
             if not isinstance(benchmark_summary, dict) or not benchmark_summary.get("per_method"):

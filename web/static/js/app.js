@@ -1280,18 +1280,28 @@ async function loadDiscoveriesTab() {
         renderDiscoveries(insights);
     } catch (e) {
         const list = el('discoveriesList');
-        if (list) list.innerHTML = '<p class="empty-msg">No deep discoveries yet. Click Generate to run the discovery pipeline.</p>';
+        if (list) list.innerHTML = '<p class="empty-msg">No ready discoveries yet. Automatic discovery is still filtering candidates.</p>';
     }
+}
+
+function isDisplayableDiscovery(d) {
+    const title = String(d.title || '').trim().toLowerCase();
+    if (title === 'mechanism-first insight' || title === 'mechanism first insight') return false;
+    return Boolean(
+        d.formal_structure || d.transformation || d.problem_statement ||
+        d.proposed_method || d.experimental_plan || d.evidence_summary
+    );
 }
 
 function renderDiscoveries(discoveries) {
     const list = el('discoveriesList');
-    if (!discoveries || discoveries.length === 0) {
-        list.innerHTML = '<p class="empty-msg">No deep discoveries yet. Click Generate to run the discovery pipeline.</p>';
+    const visible = (discoveries || []).filter(isDisplayableDiscovery);
+    if (visible.length === 0) {
+        list.innerHTML = '<p class="empty-msg">No ready discoveries yet. Automatic discovery is still filtering candidates.</p>';
         return;
     }
 
-    list.innerHTML = discoveries.map(d => {
+    list.innerHTML = visible.map(d => {
         const isTier1 = d.tier === 1;
         const tierColor = isTier1 ? '#c4453a' : '#2e86ab';
         const tierLabel = isTier1 ? 'PARADIGM' : 'PAPER IDEA';
@@ -1323,7 +1333,7 @@ function renderDiscoveries(discoveries) {
                 bodyHtml += `<div class="insight-evidence">
                     <span class="insight-label">Fields:</span>
                     ${fieldA.node_id ? `<span class="chip" onclick="window._dg.exploreNode('${esc(fieldA.node_id)}')">${esc(fieldA.node_id)}</span>` : ''}
-                    <span style="margin:0 4px;">↔</span>
+                    <span style="margin:0 4px;">-&gt;</span>
                     ${fieldB.node_id ? `<span class="chip" onclick="window._dg.exploreNode('${esc(fieldB.node_id)}')">${esc(fieldB.node_id)}</span>` : ''}
                 </div>`;
             }
@@ -1384,7 +1394,6 @@ function renderDiscoveries(discoveries) {
                 <span class="insight-type" style="color:${tierColor};font-weight:700;">TIER ${d.tier}: ${tierLabel}</span>
                 ${noveltyBadge}
                 ${scoreBadge}
-                <span style="color:var(--text-dim);font-size:0.68rem;">${esc(d.status || '')}</span>
             </div>
             <div class="insight-title">${esc(d.title)}</div>
             ${bodyHtml}
@@ -1399,8 +1408,9 @@ function renderDiscoveries(discoveries) {
 async function loadExperimentsTab() {
     const statusFilter = el('experimentStatusFilter')?.value || '';
     try {
-        const autoStatus = await api('/api/auto_research/status');
-        renderAutoResearchStatus(autoStatus);
+        const automation = await api('/api/automation');
+        renderAutomationOverview(automation);
+        renderAutoResearchStatus(automation.auto_research);
 
         const autoJobs = await api('/api/auto_research/jobs?limit=30');
         renderAutoResearchJobs(autoJobs);
@@ -1408,14 +1418,97 @@ async function loadExperimentsTab() {
         let url = '/api/experiment_groups?limit=50';
         if (statusFilter) url += `&status=${statusFilter}`;
         const groups = await api(url);
-        renderExperimentGroups(groups);
+        renderExperimentGroupsV2(groups);
 
         const meta = await api('/api/meta_report');
         renderMetaReport(meta);
     } catch (e) {
         const list = el('experimentsList');
-        if (list) list.innerHTML = '<p class="empty-msg">No experiments yet.</p>';
+        if (list) list.innerHTML = `<p class="empty-msg">Automation status failed to load: ${esc(e.message)}</p>`;
     }
+}
+
+function serviceState(name, ok, active) {
+    if (ok === false) return { label: 'missing', color: '#c4453a' };
+    if (active) return { label: 'active', color: '#3d8b5e' };
+    return { label: 'ready', color: '#a8842a' };
+}
+
+function serviceCard(title, state, detail) {
+    return `<div class="service-card">
+        <div class="service-card-top">
+            <div class="service-title">${esc(title)}</div>
+            <div class="service-state" style="color:${state.color};">${esc(state.label)}</div>
+        </div>
+        <div class="service-detail">${detail}</div>
+    </div>`;
+}
+
+function renderAutomationOverview(snapshot) {
+    const grid = el('automationServicesGrid');
+    const work = el('currentWorkGrid');
+    if (!grid || !work || !snapshot) return;
+
+    const paper = snapshot.paper_worker || {};
+    const auto = snapshot.auto_research || {};
+    const evo = snapshot.evoscientist || {};
+    const po = snapshot.paperorchestra || {};
+    const gpu = snapshot.gpu_scheduler || {};
+    const current = snapshot.current_work || {};
+
+    grid.innerHTML = [
+        serviceCard(
+            'Paper Pipeline',
+            serviceState('paper', true, paper.running),
+            `Batch ${esc(paper.batch_size || '?')}, ${esc(paper.status || 'idle')}`
+        ),
+        serviceCard(
+            'Auto Research',
+            serviceState('auto', true, auto.running),
+            `${auto.total || 0} jobs, ${auto.running_experiment || 0} experiments, ${auto.blocked || 0} blocked`
+        ),
+        serviceCard(
+            'EvoScientist',
+            serviceState('evoscientist', evo.available, (evo.active_count || 0) > 0),
+            `${evo.active_count || 0} active sessions`
+        ),
+        serviceCard(
+            'PaperOrchestra',
+            serviceState('paperorchestra', po.available, (po.active_count || 0) > 0),
+            `${(po.counts || {}).bundle_ready || 0} bundles, ${(po.counts || {}).drafting || 0} drafting`
+        ),
+        serviceCard(
+            'GPU Scheduler',
+            serviceState('gpu', true, (gpu.running_jobs || 0) > 0),
+            `${gpu.running_jobs || 0} running, ${gpu.queued_jobs || 0} queued, ${(gpu.workers || []).length} workers`
+        ),
+    ].join('');
+
+    work.innerHTML = [
+        workLane('Pipeline activity', current.pipeline, item =>
+            `${esc(item.status || '')} / ${esc(item.stage || '')}`, item => item.title),
+        workLane('Processing papers', current.papers, item =>
+            `${esc(item.id || '')} · ${esc(item.processing_stage || item.status || '')}`, item => item.title),
+        workLane('Generating experiment plans', current.experiment_plans, item =>
+            `${esc(item.status || '')} / ${esc(item.stage || '')}`, item => item.title),
+        workLane('Running experiments', current.experiments, item =>
+            `Run #${esc(item.id || '')} · ${esc(item.status || '')} · ${esc(item.phase || '')}`, item => item.title),
+        workLane('Writing papers', current.manuscripts, item =>
+            `Manuscript #${esc(item.id || '')} · ${esc(item.status || '')}`, item => item.title),
+    ].join('');
+}
+
+function workLane(title, items, metaFn, titleFn) {
+    const rows = (items || []).slice(0, 4);
+    const body = rows.length
+        ? rows.map(item => `<div class="work-item">
+            <div class="work-item-title">${esc(trunc(titleFn(item) || 'Untitled', 80))}</div>
+            <div>${metaFn(item)}</div>
+            ${item.last_note ? `<div>${esc(trunc(item.last_note, 110))}</div>` : ''}
+            ${item.last_error ? `<div style="color:#c4453a;">${esc(trunc(item.last_error, 110))}</div>` : ''}
+        </div>`).join('')
+        : '<div class="work-item">Idle</div>';
+    return `<div class="work-lane"><div class="work-lane-title">${esc(title)}</div>${body}</div>`;
 }
 
 function renderAutoResearchStatus(status) {
@@ -1435,6 +1528,20 @@ function renderAutoResearchStatus(status) {
         <span style="margin-left:10px;">Completed: ${status.completed || 0}</span>
         <span style="margin-left:10px;">Blocked: ${status.blocked || 0}</span>
     `;
+}
+
+function friendlyAutomationStage(status, stage) {
+    const key = String(stage || status || '').toLowerCase();
+    if (key.includes('verification')) return 'Checking novelty';
+    if (key.includes('research')) return 'Running EvoScientist research';
+    if (key.includes('review') || key.includes('forge') || key.includes('formal')) return 'Generating experiment plan';
+    if (key.includes('gpu')) return 'Running on GPU';
+    if (key.includes('validation') || key.includes('experiment')) return 'Running experiment';
+    if (key.includes('writing') || key.includes('submission') || key.includes('bundle')) return 'Writing paper';
+    if (key.includes('blocked')) return 'Blocked';
+    if (key.includes('failed')) return 'Failed';
+    if (key.includes('complete')) return 'Complete';
+    return stage || status || 'Queued';
 }
 
 function renderAutoResearchJobs(jobs) {
@@ -1467,15 +1574,16 @@ function renderAutoResearchJobs(jobs) {
         const verdict = j.hypothesis_verdict
             ? `<span class="insight-scores">Verdict: ${esc(j.hypothesis_verdict)}</span>`
             : '';
+        const friendly = friendlyAutomationStage(j.status, j.stage);
         return `<div class="insight-card" style="border-left: 3px solid ${color};">
             <div class="insight-header">
-                <span class="insight-type" style="color:${color};font-weight:700;">AUTO ${esc(j.status || 'queued').toUpperCase()}</span>
+                <span class="insight-type" style="color:${color};font-weight:700;">${esc(friendly).toUpperCase()}</span>
                 <span class="insight-scores">${esc(cpu)}</span>
                 ${exp}
                 ${verdict}
             </div>
             <div class="insight-title">${esc(j.title || 'Deep Insight')}</div>
-            <div class="insight-impact"><span class="insight-label">Stage:</span> ${esc(j.stage || '')}</div>
+            <div class="insight-impact"><span class="insight-label">Internal stage:</span> ${esc(j.stage || '')}</div>
             ${j.novelty_status ? `<div class="insight-impact"><span class="insight-label">Novelty:</span> ${esc(j.novelty_status)}</div>` : ''}
             ${j.cpu_reason ? `<div class="insight-evidence"><span class="insight-label">CPU Check:</span> ${esc(j.cpu_reason)}</div>` : ''}
             ${j.last_note ? `<div class="insight-experiment"><span class="insight-label">Latest:</span> ${esc(trunc(j.last_note, 220))}</div>` : ''}
@@ -1487,7 +1595,7 @@ function renderAutoResearchJobs(jobs) {
 function renderExperiments(runs) {
     const list = el('experimentsList');
     if (!runs || !runs.length) {
-        list.innerHTML = '<p class="empty-msg">No experiments yet. Forge an experiment from a deep discovery to start.</p>';
+        list.innerHTML = '<p class="empty-msg">No experiments are active yet. The automatic queue will start them when a discovery is ready.</p>';
         return;
     }
 
@@ -1557,10 +1665,88 @@ function renderTrackChips(tracks) {
     }).join('');
 }
 
+function renderManuscriptBlockers(report, limit = 4) {
+    const blockers = (report || {}).blockers || [];
+    if (!blockers.length) return '';
+    return `<div class="insight-impact" style="border-left:3px solid #c4453a;padding-left:10px;color:#c4453a;">
+        <span class="insight-label">Paper blocked:</span>
+        ${blockers.slice(0, limit).map(x => `<div>${esc(trunc(x, 160))}</div>`).join('')}
+        ${blockers.length > limit ? `<div>${blockers.length - limit} more blocker(s)</div>` : ''}
+    </div>`;
+}
+
+function renderExperimentGroupsV2(groups) {
+    const list = el('experimentsList');
+    if (!groups || !groups.length) {
+        list.innerHTML = '<p class="empty-msg">No experiment ideas are active yet. The automatic queue will start them when ready.</p>';
+        return;
+    }
+
+    list.innerHTML = groups.map(group => {
+        const insight = group.insight || {};
+        const auto = group.auto_job || {};
+        const currentRun = group.canonical_run || group.latest_run || null;
+        const color = experimentStatusColor((currentRun || {}).status || auto.status);
+        const verdict = currentRun && currentRun.hypothesis_verdict
+            ? `<span style="color:${verdictColor(currentRun.hypothesis_verdict)};font-weight:700;text-transform:uppercase;">${esc(currentRun.hypothesis_verdict)}</span>`
+            : '';
+        const effect = currentRun && currentRun.effect_pct != null
+            ? `${currentRun.effect_pct >= 0 ? '+' : ''}${currentRun.effect_pct.toFixed(2)}%`
+            : '';
+        const progress = auto.stage
+            ? friendlyAutomationStage(auto.status, auto.stage)
+            : ((currentRun || {}).status || 'not_started');
+        const currentRunLabel = currentRun ? `Main run #${currentRun.id}` : 'No run created yet';
+        const previewUrl = (((group || {}).paper_preview_urls || {}).index) || '';
+        const plan = group.plan_snapshot || {};
+        const latest = plan.latest_status || {};
+        const manuscriptBlockers = plan.manuscript_blockers || {};
+        const planReady = [
+            plan.experiment_spec ? 'experiment spec' : '',
+            plan.evidence_plan ? 'evidence plan' : '',
+            plan.manuscript_input_state ? 'manuscript state' : '',
+            plan.manuscript_blockers ? 'manuscript blockers' : '',
+        ].filter(Boolean).join(', ') || 'waiting for plan files';
+        return `<div class="insight-card" style="border-left: 3px solid ${color};">
+            <div class="insight-header">
+                <span class="insight-type" style="color:${color};font-weight:700;">IDEA #${insight.id}</span>
+                <span class="insight-scores">${esc(currentRunLabel)}</span>
+                ${verdict}
+                ${effect ? `<span class="insight-scores">Effect: ${effect}</span>` : ''}
+                <span style="color:var(--text-dim);font-size:0.68rem;">Tier ${insight.tier || '?'}</span>
+            </div>
+            <div class="insight-title">${esc(insight.title || 'Deep Insight')}</div>
+            <div class="insight-impact"><span class="insight-label">Current work:</span> ${esc(progress)}</div>
+            ${latest.stage ? `<div class="insight-experiment"><span class="insight-label">Latest file status:</span> ${esc(latest.stage)} / ${esc(latest.status || '')}</div>` : ''}
+            ${latest.error ? `<div class="insight-impact" style="color:#c4453a;"><span class="insight-label">Latest error:</span> ${esc(trunc(latest.error, 180))}</div>` : ''}
+            ${renderManuscriptBlockers(manuscriptBlockers)}
+            <div class="insight-evidence"><span class="insight-label">Plan files:</span> ${esc(planReady)}</div>
+            <div style="display:flex;gap:16px;margin:6px 0;font-size:0.75rem;color:var(--text-secondary);flex-wrap:wrap;">
+                <span>Runs: ${group.run_count || 0}</span>
+                <span>Latest run: ${esc((group.latest_run || {}).status || 'none')}</span>
+                <span>Bundle: ${esc(insight.submission_status || 'not_started')}</span>
+            </div>
+            <div style="display:flex;gap:16px;margin:6px 0;font-size:0.75rem;color:var(--text-secondary);flex-wrap:wrap;">
+                <span>Experiment: ${esc(group.experiment_root || '-')}</span>
+                <span>Plan: ${esc(group.plan_root || '-')}</span>
+                <span>Paper: ${esc(group.paper_root || '-')}</span>
+            </div>
+            <div class="chip-row" style="margin:8px 0;">${renderTrackChips(group.planned_tracks)}</div>
+            ${auto.last_note ? `<div class="insight-experiment"><span class="insight-label">Latest:</span> ${esc(trunc(auto.last_note, 220))}</div>` : ''}
+            ${auto.last_error ? `<div class="insight-impact" style="color:#c4453a;"><span class="insight-label">Error:</span> ${esc(trunc(auto.last_error, 220))}</div>` : ''}
+            <div class="insight-actions">
+                <button class="btn-preview" onclick="window._dg.viewExperimentGroup(${insight.id})">View automation history</button>
+                ${currentRun ? `<button class="btn-preview" onclick="window._dg.viewExperiment(${currentRun.id})">View main run</button>` : ''}
+                ${previewUrl ? `<button class="btn-preview" onclick="window.open('${esc(previewUrl)}','_blank')">Open paper preview</button>` : ''}
+            </div>
+        </div>`;
+    }).join('');
+}
+
 function renderExperimentGroups(groups) {
     const list = el('experimentsList');
     if (!groups || !groups.length) {
-        list.innerHTML = '<p class="empty-msg">No experiment ideas yet. Forge an experiment from a deep discovery to start.</p>';
+        list.innerHTML = '<p class="empty-msg">No experiment ideas are active yet. The automatic queue will start them when ready.</p>';
         return;
     }
 
@@ -1919,6 +2105,7 @@ window._dg = {
                 <p>Submission: ${esc(insight.submission_status || 'not_started')} | Run count: ${runs.length}</p>
                 <p>Workspace: ${esc(data.workspace_root || '-')}</p>
                 <div class="chip-row" style="margin:8px 0 14px;">${renderTrackChips(data.planned_tracks)}</div>
+                ${renderManuscriptBlockers(plan.manuscript_blockers || {}, 8)}
                 ${auto.last_note ? `<p><b>Latest:</b> ${esc(auto.last_note)}</p>` : ''}
                 ${auto.last_error ? `<p style="color:#c4453a;"><b>Error:</b> ${esc(auto.last_error)}</p>` : ''}
                 <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px;margin:16px 0;">
@@ -1946,6 +2133,7 @@ window._dg = {
 
             html += `<h4>方案快照</h4>
                 ${jsonPreview(plan.experiment_spec, '暂无 experiment_spec.json')}
+                ${jsonPreview(plan.manuscript_blockers, 'No manuscript blockers')}
                 ${jsonPreview(plan.manuscript_input_state, '暂无 manuscript_input_state.json')}`;
 
             if (runs.length) {
@@ -2149,6 +2337,11 @@ function init() {
 
     // Periodically refresh recently discovered (every 30s)
     setInterval(loadRecentlyDiscovered, 30000);
+
+    setInterval(() => {
+        if (activeTab === 'experiments') loadExperimentsTab();
+        if (activeTab === 'discoveries') loadDiscoveriesTab();
+    }, 10000);
 }
 
 // Start when DOM is ready

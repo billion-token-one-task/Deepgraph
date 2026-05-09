@@ -21,6 +21,7 @@ from agents.paper_orchestra_prompts import (
     load_prompt_tex,
 )
 from agents.paperorchestra.literature_discovery import run_literature_discovery
+from agents.paperorchestra.figure_orchestra import run_postwriting_api_figure_stage
 from agents.paperorchestra.plotting_orchestra import default_paperbanana_cmd, run_plotting_stage
 from agents.paperorchestra.refinement_loop import iterative_refine_with_agentreview
 from config import (
@@ -30,6 +31,22 @@ from config import (
 )
 
 CITE_PATTERN = re.compile(r"\\cite[a-zA-Z*]*\{([^}]*)\}")
+
+DEEPGRAPH_WRITING_GUARD = """DeepGraph writing constraints:
+- Treat paper_intent.json as the thesis and narrative spine.
+- Treat problem_awareness.json as a binding problem-motivation-method-result contract.
+- The abstract and first two Introduction paragraphs must answer: what problem, why now, what method, what result, and what limitation.
+- Treat publication_evidence_contract.json as binding. Do not claim evidence that is not present.
+- Treat evidence_manifest.json and claim_evidence_matrix.json as hard gates, not suggestions.
+- Every empirical claim must be grounded in result_packet, iterations, tables/figures, or claim_citation_map.
+- A claim may appear in Abstract, Introduction, or Conclusion only when claim_evidence_matrix marks it as allowed there.
+- Unverified design intentions belong only in motivation, limitations, or future work.
+- Method sections must be implementation-level: training data construction, gain estimator, uncertainty estimation, threshold/budget tuning, deployment pseudocode, complexity, and additional inference cost.
+- For routing/gating/selective reasoning methods, include route rate, cost saving, easy/medium/hard breakdown, always/never/confidence/disagreement/random/oracle baselines, simple-case degradation, calibration/reliability, and multi-seed mean/std when present in evidence_manifest.
+- Prefer data figures and tables over conceptual diagrams. Never include prompt text, TODOs, placeholders, or artifact-audit wording in the paper body or captions.
+- API-generated conceptual figures must be requested only after a manuscript draft exists; early plotting is for artifact-backed data figures.
+- Explicitly discuss baseline fairness, required ablations, seed variance, statistical testing, and limitations once, without repeatedly self-disqualifying the contribution.
+- Bootstrap/proxy evidence may be reported as engineering validation only, never as full benchmark proof."""
 
 
 def _cutoff_year() -> int:
@@ -81,14 +98,67 @@ def run_paperorchestra_full(
     exp_log_md = build_experimental_log_md(state, [dict(x) for x in iterations])
     template_tex = build_minimal_template_tex(state)
     guidelines = build_conference_guidelines()
+    paper_intent_json = json.dumps(state.get("paper_intent") or {}, ensure_ascii=False, default=str)[:12000]
+    problem_awareness_json = json.dumps(state.get("problem_awareness") or {}, ensure_ascii=False, default=str)[:12000]
+    evidence_contract_json = json.dumps(
+        state.get("publication_evidence_contract") or {},
+        ensure_ascii=False,
+        default=str,
+    )[:16000]
+    evidence_manifest_json = json.dumps(
+        state.get("evidence_manifest") or {},
+        ensure_ascii=False,
+        default=str,
+    )[:24000]
+    claim_matrix_json = json.dumps(
+        state.get("claim_evidence_matrix") or [],
+        ensure_ascii=False,
+        default=str,
+    )[:18000]
+    reviewer_report_json = json.dumps(
+        state.get("reviewer_report") or {},
+        ensure_ascii=False,
+        default=str,
+    )[:18000]
+    method_requirements_json = json.dumps(
+        state.get("method_reproducibility_requirements") or {},
+        ensure_ascii=False,
+        default=str,
+    )[:12000]
+    quality_gates_json = json.dumps(
+        {
+            "quality_gates": state.get("quality_gates") or {},
+            "required_evidence": state.get("required_evidence") or {},
+            "reviewer_objections": state.get("reviewer_objections") or [],
+            "result_packet": state.get("result_packet") or {},
+        },
+        ensure_ascii=False,
+        default=str,
+    )[:20000]
 
     # ── Step 1: Outline Agent ─────────────────────────────────────────────
-    outline_sys = apply_cutoff_to_outline_tex(load_prompt_tex("outline_agent"), cutoff)
+    outline_sys = DEEPGRAPH_WRITING_GUARD + "\n\n" + apply_cutoff_to_outline_tex(load_prompt_tex("outline_agent"), cutoff)
     outline_user = (
         "--- idea.md ---\n"
         + idea_md
         + "\n--- experimental_log.md ---\n"
         + exp_log_md
+        + "\n--- paper_intent.json ---\n"
+        + paper_intent_json
+        + "\n--- problem_awareness.json ---\n"
+        + problem_awareness_json
+        + "\n--- publication_evidence_contract.json ---\n"
+        + evidence_contract_json
+        + "\n--- evidence_manifest.json ---\n"
+        + evidence_manifest_json
+        + "\n--- claim_evidence_matrix.json ---\n"
+        + claim_matrix_json
+        + "\n--- reviewer_report.json ---\n"
+        + reviewer_report_json
+        + "\n--- method_reproducibility_requirements.json ---\n"
+        + method_requirements_json
+        + "\n--- quality_gates.json ---\n"
+        + quality_gates_json
         + "\n--- template.tex ---\n"
         + template_tex
         + "\n--- conference_guidelines.md ---\n"
@@ -151,7 +221,7 @@ def run_paperorchestra_full(
     # Captions via official Plotting Agent prompt (per planned figure)
     plot_prompt_tex = load_prompt_tex("plotting_agent")
     captions: list[dict[str, str]] = []
-    pplan = o.get("plotting_plan") if isinstance(o, dict) else None
+    pplan = plot_out.get("plotting_plan_used") or (o.get("plotting_plan") if isinstance(o, dict) else None)
     plotting_assets = plot_out.get("assets") or []
     if isinstance(pplan, list) and pplan:
         for fig in pplan[:12]:
@@ -182,7 +252,7 @@ def run_paperorchestra_full(
     # ── Step 4: Literature Review Agent (Intro + Related in LaTeX) ─────────
     n_papers = len(collected)
     min_cite = min(max(1, n_papers), max(3, min(8, n_papers)))
-    lit_sys = apply_literature_placeholders(
+    lit_sys = DEEPGRAPH_WRITING_GUARD + "\n\n" + apply_literature_placeholders(
         load_prompt_tex("literature_review_agent"),
         paper_count=max(1, n_papers),
         min_cite=min_cite,
@@ -198,6 +268,16 @@ def run_paperorchestra_full(
         + idea_md[:12000]
         + "\n--- project_experimental_log ---\n"
         + exp_log_md[:12000]
+        + "\n--- paper_intent.json ---\n"
+        + paper_intent_json
+        + "\n--- problem_awareness.json ---\n"
+        + problem_awareness_json
+        + "\n--- publication_evidence_contract.json ---\n"
+        + evidence_contract_json
+        + "\n--- evidence_manifest.json ---\n"
+        + evidence_manifest_json
+        + "\n--- claim_evidence_matrix.json ---\n"
+        + claim_matrix_json
         + "\n--- citation_registry.json ---\n"
         + json.dumps(citation_registry_prompt, ensure_ascii=False)[:200000]
         + "\n--- claim_citation_map.json ---\n"
@@ -227,8 +307,25 @@ def run_paperorchestra_full(
                 "source_claim_ids": row.get("source_claim_ids") or [],
                 "source_node_ids": row.get("source_node_ids") or [],
             }
-    sec_sys = load_prompt_tex("section_writing_agent")
-    fig_list = [a.get("figure_id") for a in plot_out.get("assets") or []] or [c.get("figure_id") for c in captions]
+    sec_sys = DEEPGRAPH_WRITING_GUARD + "\n\n" + load_prompt_tex("section_writing_agent")
+    caption_by_id = {str(c.get("figure_id") or ""): str(c.get("caption") or "") for c in captions if isinstance(c, dict)}
+    fig_list = []
+    for asset in plot_out.get("assets") or []:
+        if not isinstance(asset, dict):
+            continue
+        raw_path = asset.get("pdf_path") or asset.get("path") or asset.get("svg_path") or ""
+        if not raw_path:
+            continue
+        fid = str(asset.get("figure_id") or Path(raw_path).stem)
+        fig_list.append(
+            {
+                "figure_id": fid,
+                "file": f"figures/{Path(raw_path).name}",
+                "caption": caption_by_id.get(fid) or asset.get("objective") or asset.get("title") or fid,
+            }
+        )
+    if not fig_list:
+        fig_list = [{"figure_id": str(c.get("figure_id") or ""), "file": "", "caption": str(c.get("caption") or "")} for c in captions]
     sec_user = (
         "--- outline.json ---\n"
         + json.dumps(o, ensure_ascii=False, default=str)[:24000]
@@ -236,6 +333,20 @@ def run_paperorchestra_full(
         + idea_md[:12000]
         + "\n--- experimental_log.md ---\n"
         + exp_log_md[:12000]
+        + "\n--- paper_intent.json ---\n"
+        + paper_intent_json
+        + "\n--- problem_awareness.json ---\n"
+        + problem_awareness_json
+        + "\n--- publication_evidence_contract.json ---\n"
+        + evidence_contract_json
+        + "\n--- evidence_manifest.json ---\n"
+        + evidence_manifest_json
+        + "\n--- claim_evidence_matrix.json ---\n"
+        + claim_matrix_json
+        + "\n--- method_reproducibility_requirements.json ---\n"
+        + method_requirements_json
+        + "\n--- quality_gates.json ---\n"
+        + quality_gates_json
         + "\n--- citation_map.json ---\n"
         + json.dumps({k: citation_map.get(k, {}) for k in bib_keys[:80]}, ensure_ascii=False)[:120000]
         + "\n--- claim_citation_map.json ---\n"
@@ -252,8 +363,36 @@ def run_paperorchestra_full(
     sec_out, _ = call_llm(sec_sys, sec_user)
     sec_out = _sanitize_latex_citations(sec_out or "", allowed_keys, fallback_cites)
 
+    postwrite_figures = run_postwriting_api_figure_stage(
+        o,
+        state,
+        sec_out,
+        figures_dir,
+        paperbanana_cmd=pb_cmd,
+    )
+    if isinstance(postwrite_figures, dict) and postwrite_figures.get("assets"):
+        plot_out.setdefault("assets", []).extend(postwrite_figures.get("assets") or [])
+        p_meta["postwriting_api_figure_stage"] = postwrite_figures
+        for asset in postwrite_figures.get("assets") or []:
+            if not isinstance(asset, dict):
+                continue
+            raw_path = asset.get("path") or asset.get("svg_path") or asset.get("pdf_path") or ""
+            fid = str(asset.get("figure_id") or (Path(raw_path).stem if raw_path else "postwriting_figure"))
+            caption = str(asset.get("objective") or asset.get("title") or fid)
+            captions.append({"figure_id": fid, "caption": caption})
+            if raw_path:
+                fig_list.append(
+                    {
+                        "figure_id": fid,
+                        "file": f"figures/{Path(raw_path).name}",
+                        "caption": caption,
+                    }
+                )
+    else:
+        p_meta["postwriting_api_figure_stage"] = postwrite_figures
+
     # ── Step 5: Content Refinement + AgentReview accept/revert ─────────────
-    ref_sys = load_prompt_tex("content_refinement_agent")
+    ref_sys = DEEPGRAPH_WRITING_GUARD + "\n\n" + load_prompt_tex("content_refinement_agent")
 
     def _ref_user(prev_tex: str, review_scores: dict[str, Any]) -> str:
         return (
@@ -261,17 +400,35 @@ def run_paperorchestra_full(
             + prev_tex[:120000]
             + "\n--- experimental_log.md ---\n"
             + exp_log_md[:20000]
+            + "\n--- paper_intent.json ---\n"
+            + paper_intent_json
+            + "\n--- problem_awareness.json ---\n"
+            + problem_awareness_json
+            + "\n--- publication_evidence_contract.json ---\n"
+            + evidence_contract_json
+            + "\n--- evidence_manifest.json ---\n"
+            + evidence_manifest_json
+            + "\n--- claim_evidence_matrix.json ---\n"
+            + claim_matrix_json
+            + "\n--- reviewer_report.json ---\n"
+            + reviewer_report_json
+            + "\n--- method_reproducibility_requirements.json ---\n"
+            + method_requirements_json
+            + "\n--- quality_gates.json ---\n"
+            + quality_gates_json
             + "\n--- citation_map.json ---\n"
             + json.dumps({k: citation_map.get(k, {}) for k in bib_keys[:80]}, ensure_ascii=False)
             + "\n--- claim_citation_map.json ---\n"
             + json.dumps(claim_citation_map, ensure_ascii=False)
             + "\n--- citation_registry.json ---\n"
             + json.dumps(citation_registry_prompt, ensure_ascii=False)[:200000]
+            + "\n--- figures_list ---\n"
+            + json.dumps(fig_list, ensure_ascii=False, default=str)[:60000]
             + "\n--- reviewer_feedback ---\n"
             + json.dumps(
                 {
                     "simulated_scores": review_scores,
-                    "instruction": "Revise LaTeX to address weaknesses while preserving verified citations. Only use cite keys listed in citation_registry.json.",
+                    "instruction": "Revise LaTeX to address weaknesses while preserving verified citations. Only use cite keys listed in citation_registry.json. If postwriting API figures are listed, use them only when they clarify the problem-method-result spine.",
                 },
                 ensure_ascii=False,
             )

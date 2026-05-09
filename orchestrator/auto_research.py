@@ -2,15 +2,16 @@
 
 Flow:
 1. Pick promising Tier-2 deep insights
-2. Optionally run EvoScientist verification / deep research if available
-3. Filter for CPU/no-GPU experimentability
+2. Run EvoScientist verification / deep research (optional unless
+   DEEPGRAPH_REQUIRE_EVOSCIENTIST_FOR_EXPERIMENTS=true)
+3. Route experiments into CPU / GPU lanes
 4. Forge and execute SciForge experiments
 5. Feed results back into the graph and expose status to the dashboard
 """
 from __future__ import annotations
 
-import fcntl
 import json
+import os
 import threading
 import time
 from datetime import datetime
@@ -29,9 +30,19 @@ from agents.novelty_verifier import (
     launch_full_research,
     launch_verification,
 )
-from agents.research_bridge import get_research_status
+from agents.research_bridge import active_research_session, get_research_status
 from agents.validation_loop import run_validation_loop
-from config import AUTO_RESEARCH_INTERVAL_SECONDS, AUTO_RESEARCH_MAX_ACTIVE
+from compat.filelock import FileLock
+from agents.evosci_requirements import (
+    evosci_binary_path,
+    evosci_installed,
+    final_report_ready,
+)
+from config import (
+    AUTO_RESEARCH_INTERVAL_SECONDS,
+    AUTO_RESEARCH_MAX_ACTIVE,
+    REQUIRE_EVOSCIENTIST_FOR_EXPERIMENTS,
+)
 from db import database as db
 from db.insight_outcomes import (
     OUTCOME_EXPERIMENT_FAILED_RUN,
@@ -39,18 +50,37 @@ from db.insight_outcomes import (
     apply_experiment_finished_deep,
     set_outcome,
 )
+from orchestrator.benchmark_completion import (
+    BENCHMARK_COMPLETION_STAGE,
+    schedule_benchmark_completion,
+)
 from orchestrator import gpu_scheduler
+from orchestrator import manuscript_watchdog
 from orchestrator.pipeline import log_event
 
 _worker_thread: threading.Thread | None = None
 _worker_lock = threading.Lock()
 _stop_event = threading.Event()
-_process_lock_handle = None
+_process_lock: FileLock | None = None
 AUTO_RESEARCH_CONSUMER = "auto_research"
 VERIFY_STALE_SECONDS = 60 * 60
 RESEARCH_STALE_SECONDS = 6 * 60 * 60
 REVIEW_PENDING_STALE_SECONDS = 15 * 60
 MAX_PARALLEL_VERIFICATIONS = 2
+MANUAL_REFORGE_STAGES = {
+    "manual_reforge_unfinished",
+    "manual_requeue_unfinished",
+    "retry_failed_run",
+    "review_retry",
+}
+MANUAL_RERUN_COMPLETED_STAGES = {
+    BENCHMARK_COMPLETION_STAGE,
+    "manual_rerun_completed",
+    "paper_blocked_benchmark_completion",
+    "manuscript_blocked",
+    "reset_completed_experiments",
+}
+IGNORED_EXISTING_RUN_STATUSES = {"superseded", "reset", "archived"}
 
 HEAVY_KEYWORDS = {
     "llm", "gpt", "llama", "mistral", "diffusion", "stable diffusion",
@@ -59,12 +89,8 @@ HEAVY_KEYWORDS = {
 }
 
 
-def _evosci_bin() -> Path:
-    return Path.home() / "EvoScientist" / ".venv" / "bin" / "EvoSci"
-
-
 def evosci_available() -> bool:
-    return _evosci_bin().exists()
+    return evosci_installed()
 
 
 def _load_json(value: str | None, default):
@@ -102,6 +128,88 @@ def _run_scaffold_ready(run: dict | None) -> bool:
     )
 
 
+def _manual_reforge_requested(insight: dict, run: dict | None) -> bool:
+    if not run:
+        return False
+    stage = str(insight.get("auto_stage") or "").strip()
+    if stage == BENCHMARK_COMPLETION_STAGE:
+        return False
+    status = str(run.get("status") or "").strip()
+    if stage in MANUAL_RERUN_COMPLETED_STAGES:
+        return status in {"completed", "failed", "bundle_ready", "superseded"}
+    if stage not in MANUAL_REFORGE_STAGES:
+        return False
+    if status == "failed":
+        return True
+    if status == "scaffolding" and not _run_scaffold_ready(run):
+        return True
+    return False
+
+
+def _auto_job_stage(insight_id: int) -> str:
+    row = db.fetchone("SELECT stage FROM auto_research_jobs WHERE deep_insight_id=?", (insight_id,))
+    return str((row or {}).get("stage") or "").strip()
+
+
+def _queue_benchmark_completion_run(insight_id: int, run: dict, resource_class: str) -> bool:
+    queued_job = db.fetchone(
+        """
+        SELECT * FROM gpu_jobs
+        WHERE experiment_run_id=? AND status IN ('queued', 'running')
+        ORDER BY id DESC LIMIT 1
+        """,
+        (run["id"],),
+    )
+    if queued_job:
+        note = f"Full benchmark completion GPU job {queued_job['id']} already {queued_job['status']}."
+    else:
+        gpu_scheduler.start()
+        gpu_job_id = gpu_scheduler.queue_run(
+            insight_id=insight_id,
+            run_id=run["id"],
+            resource_class=resource_class,
+            priority=3,
+            vram_required_gb=40 if resource_class == "gpu_large" else 16,
+            timeout_s=None,
+        )
+        note = f"Queued full benchmark completion on GPU scheduler as job {gpu_job_id}."
+    _upsert_job(
+        insight_id,
+        status="queued_gpu",
+        stage=BENCHMARK_COMPLETION_STAGE,
+        experiment_run_id=run["id"],
+        resource_class=resource_class,
+        assigned_worker=None,
+        last_note=note,
+        last_error=None,
+    )
+    return True
+
+
+def _run_reusable_for_auto_research(run: dict | None) -> bool:
+    if not run:
+        return False
+    return str(run.get("status") or "").strip() not in IGNORED_EXISTING_RUN_STATUSES
+
+
+def _existing_run_for_candidate(insight: dict) -> dict | None:
+    insight_id = int(insight["id"])
+    canonical_run_id = insight.get("canonical_run_id")
+    if canonical_run_id:
+        run = db.fetchone("SELECT * FROM experiment_runs WHERE id=?", (canonical_run_id,))
+        if _run_reusable_for_auto_research(run):
+            return run
+    return db.fetchone(
+        """
+        SELECT * FROM experiment_runs
+        WHERE deep_insight_id=?
+          AND COALESCE(status, '') NOT IN ('superseded', 'reset', 'archived')
+        ORDER BY id DESC LIMIT 1
+        """,
+        (insight_id,),
+    )
+
+
 def _coerce_datetime(value):
     if isinstance(value, datetime):
         return value
@@ -119,8 +227,23 @@ def _job_age_seconds(job: dict) -> float:
     )
     if ts is None:
         return 0.0
-    now = datetime.now(ts.tzinfo) if ts.tzinfo else datetime.utcnow()
+    now = datetime.now(ts.tzinfo) if ts.tzinfo else datetime.now()
     return max(0.0, (now - ts).total_seconds())
+
+
+def _supersede_stale_scaffold_run(run_id: int, reason: str) -> None:
+    db.execute(
+        """
+        UPDATE experiment_runs
+        SET status='superseded',
+            phase='superseded',
+            error_message=?,
+            completed_at=CURRENT_TIMESTAMP
+        WHERE id=?
+        """,
+        (reason, run_id),
+    )
+    db.commit()
 
 
 def _upsert_job(insight_id: int, **fields) -> None:
@@ -203,37 +326,38 @@ def _research_report_ready(workdir: str | None) -> bool:
 
 
 def _try_acquire_process_lock() -> bool:
-    global _process_lock_handle
-    if _process_lock_handle is not None:
+    global _process_lock
+    if _process_lock is not None:
         return True
-    lock_path = Path("/tmp/deepgraph-auto-research.lock")
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    handle = open(lock_path, "a+", encoding="utf-8")
-    try:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        handle.close()
+    lock_path = (
+        Path(os.environ.get("TEMP", str(Path.home() / ".cache"))) / "deepgraph-auto-research.lock"
+        if os.name == "nt"
+        else Path("/tmp/deepgraph-auto-research.lock")
+    )
+    lock = FileLock(str(lock_path))
+    if not lock.try_acquire():
         return False
-    handle.seek(0)
-    handle.truncate()
-    handle.write(f"{Path('/proc/self').resolve().name}\n")
-    handle.flush()
-    _process_lock_handle = handle
+    try:
+        handle = getattr(lock, "_handle")
+        handle.seek(0)
+        handle.truncate()
+        handle.write(f"{os.getpid()}\n")
+        handle.flush()
+    except OSError:
+        lock.release()
+        return False
+    _process_lock = lock
     return True
 
 
 def _release_process_lock() -> None:
-    global _process_lock_handle
-    if _process_lock_handle is None:
+    global _process_lock
+    if _process_lock is None:
         return
     try:
-        fcntl.flock(_process_lock_handle.fileno(), fcntl.LOCK_UN)
-    except OSError:
-        pass
-    try:
-        _process_lock_handle.close()
+        _process_lock.release()
     finally:
-        _process_lock_handle = None
+        _process_lock = None
 
 
 def list_jobs(limit: int = 50) -> list[dict]:
@@ -322,7 +446,17 @@ def _candidate_pool() -> list[dict]:
            WHERE COALESCE(di.status, 'candidate') NOT IN ('exists')
              AND (
                arj.status IS NULL
-               OR arj.status IN ('queued', 'eligible', 'failed', 'queued_cpu', 'queued_gpu')
+               OR arj.status IN ('queued', 'eligible', 'queued_cpu', 'queued_gpu')
+               OR (
+                    arj.status='failed'
+                    AND arj.stage IN (
+                        'manual_reforge_unfinished',
+                        'manual_requeue_unfinished',
+                        'retry_failed_run',
+                        'manual_rerun_completed',
+                        'reset_completed_experiments'
+                    )
+                  )
                OR (
                     arj.status='completed'
                     AND arj.stage='tier1_research_complete'
@@ -334,7 +468,7 @@ def _candidate_pool() -> list[dict]:
                OR (
                     arj.status='blocked'
                     AND (
-                      arj.cpu_eligible=1
+                      arj.stage='cpu_ineligible'
                       OR arj.stage IN ('verification_input_missing', 'research_input_missing')
                     )
                   )
@@ -343,6 +477,68 @@ def _candidate_pool() -> list[dict]:
            LIMIT 20"""
     )
     return rows
+
+
+def _resource_experimentability(resource_class: str) -> str:
+    if resource_class == "cpu":
+        return "easy"
+    if resource_class == "gpu_small":
+        return "medium"
+    return "hard"
+
+
+def _route_recovered_legacy_job(insight: dict) -> tuple[str, str]:
+    resource_class, reason = assess_experiment_route(insight)
+    note = str(insight.get("auto_last_note") or "").lower()
+    if resource_class == "cpu" and ("gpu-heavy" in note or "looks gpu" in note):
+        resource_class = "gpu_small"
+        reason = f"{reason} Legacy cpu_ineligible note indicates GPU-heavy; routed to gpu_small."
+    return resource_class, reason
+
+
+def recover_legacy_cpu_ineligible_jobs(limit: int = 50) -> int:
+    """Requeue jobs blocked by the pre-GPU-era CPU-only filter."""
+    rows = db.fetchall(
+        """SELECT di.*, arj.last_note AS auto_last_note
+           FROM auto_research_jobs arj
+           JOIN deep_insights di ON di.id = arj.deep_insight_id
+           WHERE arj.status='blocked'
+             AND arj.stage='cpu_ineligible'
+             AND COALESCE(di.status, 'candidate') NOT IN ('exists')
+           ORDER BY arj.updated_at ASC
+           LIMIT ?""",
+        (limit,),
+    )
+    recovered = 0
+    for insight in rows:
+        insight_id = int(insight["id"])
+        resource_class, reason = _route_recovered_legacy_job(dict(insight))
+        experimentability = _resource_experimentability(resource_class)
+        db.execute(
+            """UPDATE deep_insights
+               SET resource_class=?, experimentability=?, updated_at=CURRENT_TIMESTAMP
+               WHERE id=?""",
+            (resource_class, experimentability, insight_id),
+        )
+        _upsert_job(
+            insight_id,
+            status="queued",
+            stage="legacy_gpu_requeue",
+            cpu_eligible=1,
+            cpu_reason=reason,
+            resource_class=resource_class,
+            scheduler_priority=2 if resource_class == "gpu_large" else 1,
+            last_error=None,
+            last_note="Recovered from legacy cpu_ineligible block; waiting for Auto Research scheduling.",
+        )
+        log_event(
+            "auto_research",
+            {"step": "legacy_cpu_ineligible_recovered", "insight_id": insight_id, "resource_class": resource_class},
+        )
+        recovered += 1
+    if recovered:
+        db.commit()
+    return recovered
 
 
 def _candidate_needs_verification(candidate: dict) -> bool:
@@ -391,6 +587,26 @@ def _refresh_running_jobs() -> None:
                 note = f"Novelty verdict: {result.get('verdict', 'unknown')}"
                 new_status = "blocked" if result.get("verdict") == "exists" else "queued"
                 _upsert_job(insight_id, status=new_status, stage="verification_complete", last_note=note)
+            elif result.get("status") == "running" and not REQUIRE_EVOSCIENTIST_FOR_EXPERIMENTS:
+                _upsert_job(
+                    insight_id,
+                    status="queued",
+                    stage="novelty_verification_background",
+                    last_note="Novelty verification is running in background; optional mode proceeds to experiment pipeline.",
+                    last_error=None,
+                )
+            elif result.get("status") == "failed":
+                _upsert_job(
+                    insight_id,
+                    status="failed",
+                    stage="verification_failed",
+                    last_error=result.get("error") or "Novelty verification exited without a report.",
+                    last_note="Novelty verification failed; released slot for retry.",
+                )
+                log_event(
+                    "warning",
+                    {"step": "auto_research_verification_failed", "insight_id": insight_id, "error": result.get("error")},
+                )
             elif _job_age_seconds(job) >= VERIFY_STALE_SECONDS:
                 db.execute(
                     "UPDATE deep_insights SET novelty_status='unchecked', updated_at=CURRENT_TIMESTAMP WHERE id=?",
@@ -431,7 +647,55 @@ def _refresh_running_jobs() -> None:
                     )
                     log_event("warning", {"step": "auto_research_research_stale", "insight_id": insight_id})
         elif job["status"] == "review_pending":
-            if job.get("last_error") and not job.get("experiment_run_id"):
+            run = None
+            if job.get("experiment_run_id"):
+                run = db.fetchone("SELECT * FROM experiment_runs WHERE id=?", (job["experiment_run_id"],))
+            if run and _run_scaffold_ready(run):
+                _upsert_job(
+                    insight_id,
+                    status="eligible" if _run_is_formal(run) else "smoke_only",
+                    stage="formal_ready" if _run_is_formal(run) else "experiment_review_smoke_only",
+                    experiment_run_id=run["id"],
+                    resource_class=run.get("resource_class") or job.get("resource_class"),
+                    last_error=None,
+                    last_note="Recovered scaffold-ready review job and resumed scheduling.",
+                )
+                log_event(
+                    "auto_research",
+                    {"step": "auto_research_review_ready_recovered", "insight_id": insight_id, "run_id": run["id"]},
+                )
+            elif run and str(run.get("status") or "") == "failed":
+                _upsert_job(
+                    insight_id,
+                    status="failed",
+                    stage="experiment_review_failed",
+                    experiment_run_id=run["id"],
+                    last_error=run.get("error_message") or "Experiment forge run failed during review/scaffold.",
+                    last_note="Recovered failed review/scaffold run and released scheduler slot.",
+                )
+                log_event(
+                    "warning",
+                    {"step": "auto_research_review_failed_recovered", "insight_id": insight_id, "run_id": run["id"]},
+                )
+            elif run and _job_age_seconds(job) >= REVIEW_PENDING_STALE_SECONDS:
+                reason = (
+                    "Recovered stale review/scaffold run: no complete review decision, "
+                    "program, or success criteria appeared before the stale timeout."
+                )
+                _supersede_stale_scaffold_run(int(run["id"]), reason)
+                _upsert_job(
+                    insight_id,
+                    status="queued",
+                    stage="review_retry",
+                    experiment_run_id=None,
+                    last_error=None,
+                    last_note=reason,
+                )
+                log_event(
+                    "warning",
+                    {"step": "auto_research_review_scaffold_stale", "insight_id": insight_id, "run_id": run["id"]},
+                )
+            elif job.get("last_error") and not job.get("experiment_run_id"):
                 note = job.get("last_note") or job["last_error"]
                 _upsert_job(
                     insight_id,
@@ -476,6 +740,17 @@ def _refresh_running_jobs() -> None:
                 _upsert_job(insight_id, status="running_gpu", stage="gpu_scheduler", last_note="GPU job running.")
             elif run["status"] == "running_cpu":
                 _upsert_job(insight_id, status="running_cpu", stage="validation_loop", last_note="CPU validation loop running.")
+            elif run["status"] in {"reproducing", "testing"}:
+                lane_status = "running_gpu" if job["status"] in {"running_gpu", "queued_gpu"} else "running_cpu"
+                phase = run.get("phase") or "validation_loop"
+                note = f"SciForge {phase}: best={run.get('best_metric_value')}, baseline={run.get('baseline_metric_value')}."
+                _upsert_job(
+                    insight_id,
+                    status=lane_status,
+                    stage=phase,
+                    last_note=note,
+                    last_error=None,
+                )
 
 
 def _launch_candidates_to_capacity() -> dict:
@@ -520,87 +795,195 @@ def _process_candidate(insight: dict) -> None:
         scheduler_priority=2 if resource_class == "gpu_large" else 1,
     )
 
+    if REQUIRE_EVOSCIENTIST_FOR_EXPERIMENTS:
+        fresh = db.fetchone("SELECT * FROM deep_insights WHERE id=?", (insight_id,))
+        if fresh:
+            insight = dict(fresh)
+
+    if REQUIRE_EVOSCIENTIST_FOR_EXPERIMENTS and not evosci_available():
+        _upsert_job(
+            insight_id,
+            status="blocked",
+            stage="evosci_binary_missing",
+            cpu_eligible=0,
+            last_error="EvoScientist is required but EvoSci executable was not found.",
+            last_note=(
+                f"Install EvoScientist and ensure EvoSci exists at {evosci_binary_path()}, "
+                "or set DEEPGRAPH_REQUIRE_EVOSCIENTIST_FOR_EXPERIMENTS=false."
+            ),
+        )
+        return
+
     novelty = (insight.get("novelty_status") or "unchecked").strip()
-    if novelty in {"", "unchecked"} and evosci_available():
-        verification = launch_verification(insight_id)
-        if "error" in verification:
-            if verification.get("error_code") == INSIGHT_INPUT_MISSING_ERROR_CODE:
-                missing = ", ".join(verification.get("missing_fields") or [])
-                note = "Waiting for required insight fields before novelty verification can run."
-                if missing:
-                    note = f"{note} Missing: {missing}."
+    if novelty in {"", "unchecked"}:
+        if evosci_available():
+            verification = launch_verification(insight_id)
+            if "error" in verification:
+                if verification.get("error_code") == INSIGHT_INPUT_MISSING_ERROR_CODE:
+                    missing = ", ".join(verification.get("missing_fields") or [])
+                    note = "Waiting for required insight fields before novelty verification can run."
+                    if missing:
+                        note = f"{note} Missing: {missing}."
+                    if not REQUIRE_EVOSCIENTIST_FOR_EXPERIMENTS:
+                        _upsert_job(
+                            insight_id,
+                            stage="verification_skipped_input_missing",
+                            last_error=verification["error"],
+                            last_note=f"{note} Optional mode proceeds to experiment pipeline.",
+                        )
+                        log_event(
+                            "warning",
+                            {
+                                "step": "verification_input_missing_optional",
+                                "insight_id": insight_id,
+                                "error": verification["error"],
+                                "missing_fields": verification.get("missing_fields", []),
+                            },
+                        )
+                    else:
+                        _upsert_job(
+                            insight_id,
+                            status="blocked",
+                            stage="verification_input_missing",
+                            cpu_eligible=0,
+                            last_error=verification["error"],
+                            last_note=note,
+                        )
+                        log_event(
+                            "warning",
+                            {
+                                "step": "verification_input_missing",
+                                "insight_id": insight_id,
+                                "error": verification["error"],
+                                "missing_fields": verification.get("missing_fields", []),
+                            },
+                        )
+                        return
+                elif REQUIRE_EVOSCIENTIST_FOR_EXPERIMENTS:
+                    _upsert_job(
+                        insight_id,
+                        status="failed",
+                        stage="verification_launch_failed",
+                        last_error=verification["error"],
+                    )
+                    log_event(
+                        "error",
+                        {
+                            "step": "verification_launch_failed",
+                            "insight_id": insight_id,
+                            "error": verification["error"],
+                        },
+                    )
+                    return
+                else:
+                    _upsert_job(
+                        insight_id,
+                        stage="verification_launch_failed_optional",
+                        last_error=verification["error"],
+                        last_note="Novelty verification failed to launch; optional mode proceeds to experiment pipeline.",
+                    )
+                    log_event(
+                        "warning",
+                        {
+                            "step": "verification_launch_failed_optional",
+                            "insight_id": insight_id,
+                            "error": verification["error"],
+                        },
+                    )
+            else:
                 _upsert_job(
                     insight_id,
-                    status="blocked",
-                    stage="verification_input_missing",
-                    cpu_eligible=0,
-                    last_error=verification["error"],
-                    last_note=note,
+                    status="verifying" if REQUIRE_EVOSCIENTIST_FOR_EXPERIMENTS else "queued",
+                    stage="novelty_verification" if REQUIRE_EVOSCIENTIST_FOR_EXPERIMENTS else "novelty_verification_background",
+                    last_note=(
+                        "Launched EvoScientist novelty check."
+                        if REQUIRE_EVOSCIENTIST_FOR_EXPERIMENTS
+                        else "Launched EvoScientist novelty check in background; proceeding to experiment pipeline."
+                    ),
+                    last_error=None,
                 )
-                log_event(
-                    "warning",
-                    {
-                        "step": "verification_input_missing",
-                        "insight_id": insight_id,
-                        "error": verification["error"],
-                        "missing_fields": verification.get("missing_fields", []),
-                    },
-                )
-                return
+                log_event("auto_research", {"step": "verification_started", "insight_id": insight_id})
+                if REQUIRE_EVOSCIENTIST_FOR_EXPERIMENTS:
+                    return
+        if REQUIRE_EVOSCIENTIST_FOR_EXPERIMENTS:
             _upsert_job(
                 insight_id,
-                status="failed",
-                stage="verification_launch_failed",
-                last_error=verification["error"],
+                status="blocked",
+                stage="novelty_verification_required",
+                cpu_eligible=0,
+                last_error="Novelty verification requires EvoScientist but EvoSci was not found.",
+                last_note="Install EvoScientist or disable DEEPGRAPH_REQUIRE_EVOSCIENTIST_FOR_EXPERIMENTS.",
             )
-            log_event(
-                "error",
-                {
-                    "step": "verification_launch_failed",
-                    "insight_id": insight_id,
-                    "error": verification["error"],
-                },
+            return
+
+    if novelty == "verifying":
+        if REQUIRE_EVOSCIENTIST_FOR_EXPERIMENTS:
+            _upsert_job(
+                insight_id,
+                status="verifying",
+                stage="novelty_verification",
+                last_note="Novelty verification still running.",
+                last_error=None,
             )
             return
         _upsert_job(
             insight_id,
-            status="verifying",
-            stage="novelty_verification",
-            last_note="Launched EvoScientist novelty check.",
+            stage="novelty_verification_background",
+            last_note="Novelty verification still running in background; proceeding to experiment pipeline.",
             last_error=None,
         )
-        log_event("auto_research", {"step": "verification_started", "insight_id": insight_id})
-        return
-    if novelty == "verifying":
-        _upsert_job(
-            insight_id,
-            status="verifying",
-            stage="novelty_verification",
-            last_note="Novelty verification still running.",
-            last_error=None,
-        )
-        return
     if novelty == "exists":
         _upsert_job(insight_id, status="blocked", stage="prior_work_exists", last_note="Insight already exists in prior work.")
         return
 
+    if REQUIRE_EVOSCIENTIST_FOR_EXPERIMENTS:
+        if novelty == "partially_exists":
+            _upsert_job(
+                insight_id,
+                status="blocked",
+                stage="novelty_partially_exists",
+                cpu_eligible=0,
+                last_note="novelty_status=partially_exists is not sufficient for SciForge in strict EvoScientist mode.",
+            )
+            return
+        if novelty != "novel":
+            _upsert_job(
+                insight_id,
+                status="blocked",
+                stage="novelty_not_novel",
+                cpu_eligible=0,
+                last_note=f"Novelty status {novelty!r}; strict mode requires 'novel' after EvoScientist verification.",
+            )
+            return
+
     background_research_note = None
-    if evosci_available():
-        workdir = insight.get("evoscientist_workdir")
+    if REQUIRE_EVOSCIENTIST_FOR_EXPERIMENTS:
+        workdir = str(insight.get("evoscientist_workdir") or "").strip()
         if not _research_report_ready(workdir):
+            sess = active_research_session(workdir) if workdir else None
+            if sess:
+                _upsert_job(
+                    insight_id,
+                    status="researching",
+                    stage="evosci_deep_research_running",
+                    last_note="Waiting for EvoScientist final_report.md before SciForge.",
+                    last_error=None,
+                )
+                return
             result = launch_full_research(insight_id)
             if "error" in result:
                 if result.get("error_code") == INSIGHT_INPUT_MISSING_ERROR_CODE:
                     missing = ", ".join(result.get("missing_fields") or [])
-                    note = "Waiting for required insight fields before deep research can run."
+                    note = "Waiting for required insight fields before EvoScientist deep research can run."
                     if missing:
                         note = f"{note} Missing: {missing}."
-                    background_research_note = f"{note} Continuing to experiment pipeline without deep research report."
                     _upsert_job(
                         insight_id,
-                        stage="research_skipped_input_missing",
+                        status="blocked",
+                        stage="deep_research_input_missing",
+                        cpu_eligible=0,
                         last_error=result["error"],
-                        last_note=background_research_note,
+                        last_note=note,
                     )
                     log_event(
                         "warning",
@@ -611,12 +994,14 @@ def _process_candidate(insight: dict) -> None:
                             "missing_fields": result.get("missing_fields", []),
                         },
                     )
-                upsert_fields = {
-                    "stage": "research_launch_failed",
-                    "last_error": result["error"],
-                    "last_note": "Deep research launch failed; continuing to experiment pipeline.",
-                }
-                _upsert_job(insight_id, **upsert_fields)
+                    return
+                _upsert_job(
+                    insight_id,
+                    status="failed",
+                    stage="deep_research_launch_failed",
+                    last_error=result["error"],
+                    last_note="EvoScientist deep research failed to launch (strict mode stops here).",
+                )
                 log_event(
                     "error",
                     {
@@ -625,37 +1010,98 @@ def _process_candidate(insight: dict) -> None:
                         "error": result["error"],
                     },
                 )
-                background_research_note = "Deep research launch failed; continuing to experiment pipeline."
-            reused_research = bool(result.get("reused"))
-            background_research_note = (
-                "Reusing active EvoScientist deep research while continuing experiment pipeline."
-                if reused_research
-                else "Launched EvoScientist deep research in background while continuing experiment pipeline."
-            )
+                return
+            reused = bool(result.get("reused"))
             _upsert_job(
                 insight_id,
-                stage="deep_research_background",
+                status="researching",
+                stage="evosci_deep_research_running" if reused else "evosci_deep_research_started",
                 research_workdir=result.get("workdir"),
-                last_note=background_research_note,
+                last_note=(
+                    "Reusing active EvoScientist session; waiting for final_report.md before SciForge."
+                    if reused
+                    else "Launched EvoScientist deep research; waiting for final_report.md before SciForge."
+                ),
                 last_error=None,
             )
             log_event("auto_research", {"step": "deep_research_started", "insight_id": insight_id})
+            return
+        background_research_note = "EvoScientist final_report.md ready; proceeding to experiment forge."
     else:
+        if evosci_available():
+            workdir = insight.get("evoscientist_workdir")
+            if not _research_report_ready(workdir):
+                result = launch_full_research(insight_id)
+                if "error" in result:
+                    if result.get("error_code") == INSIGHT_INPUT_MISSING_ERROR_CODE:
+                        missing = ", ".join(result.get("missing_fields") or [])
+                        note = "Waiting for required insight fields before deep research can run."
+                        if missing:
+                            note = f"{note} Missing: {missing}."
+                        background_research_note = f"{note} Continuing to experiment pipeline without deep research report."
+                        _upsert_job(
+                            insight_id,
+                            stage="research_skipped_input_missing",
+                            last_error=result["error"],
+                            last_note=background_research_note,
+                        )
+                        log_event(
+                            "warning",
+                            {
+                                "step": "deep_research_input_missing",
+                                "insight_id": insight_id,
+                                "error": result["error"],
+                                "missing_fields": result.get("missing_fields", []),
+                            },
+                        )
+                    else:
+                        _upsert_job(
+                            insight_id,
+                            stage="research_launch_failed",
+                            last_error=result["error"],
+                            last_note="Deep research launch failed; continuing to experiment pipeline.",
+                        )
+                        log_event(
+                            "error",
+                            {
+                                "step": "deep_research_launch_failed",
+                                "insight_id": insight_id,
+                                "error": result["error"],
+                            },
+                        )
+                        background_research_note = "Deep research launch failed; continuing to experiment pipeline."
+                else:
+                    reused_research = bool(result.get("reused"))
+                    background_research_note = (
+                        "Reusing active EvoScientist deep research while continuing experiment pipeline."
+                        if reused_research
+                        else "Launched EvoScientist deep research in background while continuing experiment pipeline."
+                    )
+                    _upsert_job(
+                        insight_id,
+                        stage="deep_research_background",
+                        research_workdir=result.get("workdir"),
+                        last_note=background_research_note,
+                        last_error=None,
+                    )
+                    log_event("auto_research", {"step": "deep_research_started", "insight_id": insight_id})
+        else:
+            _upsert_job(
+                insight_id,
+                stage="research_unavailable",
+                last_note="EvoScientist binary not found; continuing with experiment-only path.",
+            )
+
+    existing_run = _existing_run_for_candidate(insight)
+    if _manual_reforge_requested(insight, existing_run):
         _upsert_job(
             insight_id,
-            stage="research_unavailable",
-            last_note="EvoScientist binary not found; continuing with experiment-only path.",
+            stage="reforge_from_unfinished_run",
+            experiment_run_id=None,
+            last_note=f"Ignoring unfinished run {existing_run['id']} and forging a fresh experiment run.",
+            last_error=None,
         )
-
-    existing_run = None
-    canonical_run_id = insight.get("canonical_run_id")
-    if canonical_run_id:
-        existing_run = db.fetchone("SELECT * FROM experiment_runs WHERE id=?", (canonical_run_id,))
-    if not existing_run:
-        existing_run = db.fetchone(
-            "SELECT * FROM experiment_runs WHERE deep_insight_id=? ORDER BY id DESC LIMIT 1",
-            (insight_id,),
-        )
+        existing_run = None
     if not existing_run:
         _upsert_job(
             insight_id,
@@ -737,12 +1183,41 @@ def _process_candidate(insight: dict) -> None:
         )
         db.commit()
 
+    if existing_run["status"] in {"completed"} and _auto_job_stage(insight_id) == BENCHMARK_COMPLETION_STAGE:
+        _queue_benchmark_completion_run(insight_id, existing_run, resource_class)
+        log_event(
+            "auto_research",
+            {
+                "step": "benchmark_completion_gpu_queued",
+                "insight_id": insight_id,
+                "run_id": existing_run["id"],
+            },
+        )
+        return
+
     if existing_run["status"] in {"completed"}:
         note = f"Verdict={existing_run.get('hypothesis_verdict')}, effect_pct={existing_run.get('effect_pct')}"
         _upsert_job(insight_id, status="completed", stage="closed_loop_complete", experiment_run_id=existing_run["id"], last_note=note)
         return
     if existing_run["status"] in {"failed"}:
         _upsert_job(insight_id, status="failed", stage="experiment_failed", experiment_run_id=existing_run["id"], last_error=existing_run.get("error_message"))
+        return
+
+    if REQUIRE_EVOSCIENTIST_FOR_EXPERIMENTS:
+        fresh_exec = db.fetchone("SELECT * FROM deep_insights WHERE id=?", (insight_id,))
+        if fresh_exec:
+            insight = dict(fresh_exec)
+
+    if REQUIRE_EVOSCIENTIST_FOR_EXPERIMENTS and not final_report_ready(insight):
+        _upsert_job(
+            insight_id,
+            status="blocked",
+            stage="evosci_report_required_before_compute",
+            experiment_run_id=existing_run["id"],
+            resource_class=resource_class,
+            last_note="final_report.md required before GPU/CPU SciForge execution (strict EvoScientist mode).",
+            last_error="EvoScientist deep research report not ready.",
+        )
         return
 
     if resource_class != "cpu":
@@ -791,6 +1266,22 @@ def _process_candidate(insight: dict) -> None:
     result = run_validation_loop(existing_run["id"])
     process_completed_run(existing_run["id"])
     bundle = generate_submission_bundle(existing_run["id"])
+    if schedule_benchmark_completion(
+        insight_id,
+        existing_run["id"],
+        bundle,
+        source="auto_research_cpu",
+        resource_class=resource_class,
+    ):
+        log_event(
+            "auto_research",
+            {
+                "step": "benchmark_completion_queued",
+                "insight_id": insight_id,
+                "run_id": existing_run["id"],
+            },
+        )
+        return
     _upsert_job(
         insight_id,
         status="bundle_ready" if "error" not in bundle else "completed",
@@ -807,7 +1298,14 @@ def consume_pipeline_events_once(limit: int = 50) -> dict:
     events = db.fetch_pipeline_events(
         AUTO_RESEARCH_CONSUMER,
         limit=limit,
-        event_types=["deep_insight_created", "experiment_run_completed", "submission_bundle_ready", "gpu_job_completed", "gpu_job_failed"],
+        event_types=[
+            "deep_insight_created",
+            "experiment_run_completed",
+            "submission_bundle_ready",
+            "gpu_job_completed",
+            "gpu_job_failed",
+            "benchmark_completion_required",
+        ],
     )
     if not events:
         return {"events": 0}
@@ -833,14 +1331,25 @@ def consume_pipeline_events_once(limit: int = 50) -> dict:
 
 def run_cycle() -> dict:
     db.init_db()
+    recovered = recover_legacy_cpu_ineligible_jobs()
+    try:
+        manuscript_audit = manuscript_watchdog.audit_ready_submission_bundles(limit=50, mark_stale=True)
+    except Exception as exc:  # pragma: no cover - defensive background guard
+        manuscript_audit = {"error": str(exc)}
+        log_event("warning", {"step": "manuscript_watchdog_failed", "error": str(exc)})
     launch_stats = _launch_candidates_to_capacity()
     if launch_stats["scheduled"]:
-        return {"status": "processed", "insight_ids": launch_stats["scheduled"]}
+        return {
+            "status": "processed",
+            "insight_ids": launch_stats["scheduled"],
+            "recovered_legacy": recovered,
+            "manuscript_audit": manuscript_audit,
+        }
     if launch_stats["execution_active"] >= max(1, AUTO_RESEARCH_MAX_ACTIVE) or launch_stats["verifying_active"] >= MAX_PARALLEL_VERIFICATIONS:
-        return {"status": "busy"}
+        return {"status": "busy", "recovered_legacy": recovered, "manuscript_audit": manuscript_audit}
     if not _next_candidate():
-        return {"status": "idle"}
-    return {"status": "pending"}
+        return {"status": "idle", "recovered_legacy": recovered, "manuscript_audit": manuscript_audit}
+    return {"status": "pending", "recovered_legacy": recovered, "manuscript_audit": manuscript_audit}
 
 
 def _run_once() -> dict:
@@ -851,6 +1360,7 @@ def _run_once() -> dict:
     return {
         "events": event_stats.get("events", 0),
         "cycle_status": cycle_stats.get("status"),
+        "manuscript_audit": cycle_stats.get("manuscript_audit"),
         "active_jobs": active,
     }
 
@@ -867,6 +1377,10 @@ def _run_loop() -> None:
                 else max(5, AUTO_RESEARCH_INTERVAL_SECONDS)
             )
         except Exception as exc:  # pragma: no cover - defensive background guard
+            try:
+                db.rollback()
+            except Exception:
+                pass
             log_event("error", {"step": "auto_research_loop", "error": str(exc)})
             sleep_s = max(5, AUTO_RESEARCH_INTERVAL_SECONDS)
         _stop_event.wait(sleep_s)

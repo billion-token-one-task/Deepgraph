@@ -478,6 +478,8 @@ CREATE TABLE IF NOT EXISTS performance_plateaus (
 CREATE TABLE IF NOT EXISTS experiment_runs (
     id BIGSERIAL PRIMARY KEY,
     deep_insight_id INTEGER NOT NULL REFERENCES deep_insights(id),
+    -- Logical experiment bucket under idea/experiments/<suite>/runs/ (main|ablation|visualization|...)
+    experiment_suite TEXT DEFAULT 'main',
     status TEXT DEFAULT 'pending',             -- pending|scaffolding|reproducing|testing|completed|failed
     phase TEXT DEFAULT 'setup',                -- setup|reproduction|hypothesis_testing
     workdir TEXT,

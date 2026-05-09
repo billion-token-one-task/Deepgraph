@@ -69,7 +69,7 @@ def get_expandable_leaves(min_papers: int = EXPANSION_THRESHOLD) -> list[dict]:
            LEFT JOIN paper_taxonomy pt ON pt.node_id = t.id
            WHERE c.id IS NULL
            GROUP BY t.id
-           HAVING paper_count >= ?
+           HAVING COUNT(DISTINCT pt.paper_id) >= ?
            ORDER BY paper_count DESC""",
         (min_papers,),
     )

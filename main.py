@@ -1,6 +1,5 @@
 #!/usr/bin/env python3.12
 """DeepGraph - Hierarchical ML Research Knowledge Engine."""
-import fcntl
 import os
 import sys
 from pathlib import Path
@@ -8,8 +7,11 @@ from pathlib import Path
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
 
+from compat.filelock import FileLock
+
 from config import (
     APP_NAME,
+    AUTO_PIPELINE_ENABLED,
     AUTO_RESEARCH_ENABLED,
     BACKFILL_GRAPH_ON_START,
     IDEA_WORKSPACE_DIR,
@@ -29,8 +31,12 @@ from db.evidence_graph import (
 from db.taxonomy import seed_taxonomy, backfill_result_taxonomy
 from web.app import app
 
-_PROCESS_LOCK_HANDLE = None
-_PROCESS_LOCK_PATH = Path("/tmp/deepgraph-main.lock")
+_PROCESS_LOCK = None
+_PROCESS_LOCK_PATH = (
+    Path(os.environ.get("TEMP", str(Path.home() / ".cache"))) / "deepgraph-main.lock"
+    if os.name == "nt"
+    else Path("/tmp/deepgraph-main.lock")
+)
 
 
 def _current_lock_owner() -> str | None:
@@ -42,36 +48,33 @@ def _current_lock_owner() -> str | None:
 
 
 def _try_acquire_process_lock() -> bool:
-    global _PROCESS_LOCK_HANDLE
-    if _PROCESS_LOCK_HANDLE is not None:
+    global _PROCESS_LOCK
+    if _PROCESS_LOCK is not None:
         return True
-    _PROCESS_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
-    handle = open(_PROCESS_LOCK_PATH, "a+", encoding="utf-8")
-    try:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        handle.close()
+    lock = FileLock(str(_PROCESS_LOCK_PATH))
+    if not lock.try_acquire():
         return False
-    handle.seek(0)
-    handle.truncate()
-    handle.write(f"{os.getpid()}\n")
-    handle.flush()
-    _PROCESS_LOCK_HANDLE = handle
+    try:
+        handle = getattr(lock, "_handle")
+        handle.seek(0)
+        handle.truncate()
+        handle.write(f"{os.getpid()}\n")
+        handle.flush()
+    except OSError:
+        lock.release()
+        return False
+    _PROCESS_LOCK = lock
     return True
 
 
 def _release_process_lock() -> None:
-    global _PROCESS_LOCK_HANDLE
-    if _PROCESS_LOCK_HANDLE is None:
+    global _PROCESS_LOCK
+    if _PROCESS_LOCK is None:
         return
     try:
-        fcntl.flock(_PROCESS_LOCK_HANDLE.fileno(), fcntl.LOCK_UN)
-    except OSError:
-        pass
-    try:
-        _PROCESS_LOCK_HANDLE.close()
+        _PROCESS_LOCK.release()
     finally:
-        _PROCESS_LOCK_HANDLE = None
+        _PROCESS_LOCK = None
 
 
 def _serve_http() -> None:
@@ -127,6 +130,12 @@ def main():
         # Skip heavy backfills on startup for faster boot
         # These can run in the background via pipeline
         print("Skipping graph/merge backfill (run in pipeline instead).", flush=True)
+
+        if AUTO_PIPELINE_ENABLED:
+            from orchestrator.paper_worker import start as start_paper_worker
+            print("Starting paper ingestion worker...", flush=True)
+            start_paper_worker()
+            print("Paper ingestion worker ready.", flush=True)
 
         if AUTO_RESEARCH_ENABLED:
             from orchestrator.auto_research import start as start_auto_research

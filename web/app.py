@@ -1,5 +1,7 @@
 """Flask web application for DeepGraph dashboard."""
 import json
+import importlib.util
+import shutil
 import threading
 import time
 import traceback
@@ -45,9 +47,34 @@ def _manual_api_removed_response():
     ), 410
 
 
+def _api_failure(scope: str, exc: Exception, status: int = 500):
+    try:
+        db.rollback()
+    except Exception:
+        pass
+    message = str(exc)
+    log_event("error", {"step": scope, "error": message})
+    print(f"[API] {scope} failed: {message}\n{traceback.format_exc()}", flush=True)
+    return jsonify({"status": "error", "scope": scope, "error": message}), status
+
+
+_MANUAL_EXPERIMENT_POST_PATHS = {
+    "/api/research/launch",
+    "/api/deep_insights/generate",
+    "/api/experiments/forge",
+    "/api/experiments/run_full",
+}
+
+
 @app.before_request
-def block_manual_post_apis():
-    if request.method == "POST" and request.path.startswith("/api/"):
+def block_manual_experiment_post_apis():
+    if request.method == "POST" and request.path in _MANUAL_EXPERIMENT_POST_PATHS:
+        return _manual_api_removed_response()
+    if request.method == "POST" and request.path.endswith("/verify"):
+        return _manual_api_removed_response()
+    if request.method == "POST" and request.path.endswith("/research"):
+        return _manual_api_removed_response()
+    if request.method == "POST" and request.path.endswith("/run"):
         return _manual_api_removed_response()
 
 
@@ -73,6 +100,30 @@ def _read_json_file(path: Path) -> Any:
         return None
 
 
+def _deep_insight_is_displayable(row: dict) -> bool:
+    """Hide incomplete mechanism-first placeholders from the dashboard."""
+    title = " ".join(str(row.get("title") or "").strip().lower().split())
+    generic_title = title in {"mechanism-first insight", "mechanism first insight", "deep insight", "paper idea"}
+    core_fields = (
+        "formal_structure",
+        "transformation",
+        "problem_statement",
+        "existing_weakness",
+        "proposed_method",
+        "experimental_plan",
+        "evidence_summary",
+    )
+    has_core = any(str(row.get(field) or "").strip() for field in core_fields)
+    if generic_title and not has_core:
+        return False
+    if generic_title and int(row.get("tier") or 0) == 1:
+        field_a = _json_load(row.get("field_a"), {})
+        field_b = _json_load(row.get("field_b"), {})
+        if not row.get("formal_structure") and not row.get("transformation") and not field_a and not field_b:
+            return False
+    return True
+
+
 def _plan_snapshot(insight: dict) -> dict[str, Any]:
     insight_id = int(insight["id"])
     return {
@@ -80,6 +131,7 @@ def _plan_snapshot(insight: dict) -> dict[str, Any]:
         "proxy_config": _read_json_file(plan_file_path(insight_id, "proxy_config.json", insight=insight)),
         "evidence_plan": _read_json_file(plan_file_path(insight_id, "evidence_plan.json", insight=insight)),
         "manuscript_input_state": _read_json_file(plan_file_path(insight_id, "manuscript_input_state.json", insight=insight)),
+        "manuscript_blockers": _read_json_file(plan_file_path(insight_id, "manuscript_blockers.json", insight=insight)),
         "latest_status": _read_json_file(plan_file_path(insight_id, "latest_status.json", insight=insight)),
     }
 
@@ -192,6 +244,41 @@ def _planned_tracks(insight: dict, runs: list[dict]) -> list[dict]:
     ]
 
 
+def _planned_tracks(insight: dict, runs: list[dict]) -> list[dict]:
+    evidence_plan = _json_load(insight.get("evidence_plan"), {})
+    experimental_plan = _json_load(insight.get("experimental_plan"), {})
+    ablations = experimental_plan.get("ablations") or []
+    has_plot = any((run.get("artifact_counts") or {}).get("plot", 0) > 0 for run in runs)
+    has_bundle = any(run.get("has_bundle") for run in runs) or (insight.get("submission_status") == "bundle_ready")
+    canonical = _pick_canonical_run(runs, insight.get("canonical_run_id"))
+    return [
+        {
+            "key": "main",
+            "label": "Main experiment",
+            "enabled": True,
+            "state": (canonical or {}).get("status") or "not_started",
+        },
+        {
+            "key": "ablation",
+            "label": "Ablation",
+            "enabled": bool((evidence_plan.get("ablation") or {}).get("enabled") or ablations),
+            "state": f"{len(ablations)} planned" if ablations else ("enabled" if (evidence_plan.get("ablation") or {}).get("enabled") else "not_planned"),
+        },
+        {
+            "key": "visualization",
+            "label": "Visualization",
+            "enabled": bool((evidence_plan.get("visualization") or {}).get("enabled") or has_plot),
+            "state": "artifacts_ready" if has_plot else ("planned" if (evidence_plan.get("visualization") or {}).get("enabled") else "not_planned"),
+        },
+        {
+            "key": "bundle",
+            "label": "Paper bundle",
+            "enabled": True,
+            "state": "bundle_ready" if has_bundle else (insight.get("submission_status") or "not_started"),
+        },
+    ]
+
+
 def _build_experiment_group_payload(*, insight: dict, auto_job: dict | None, runs: list[dict]) -> dict:
     runs = sorted(
         runs,
@@ -223,6 +310,255 @@ def _build_experiment_group_payload(*, insight: dict, auto_job: dict | None, run
         "updated_at": updated_at,
         "runs": runs,
         **workspace,
+    }
+
+
+def _service_counts(table: str, status_column: str = "status") -> dict[str, int]:
+    rows = db.fetchall(
+        f"""
+        SELECT {status_column} AS status, COUNT(*) AS c
+        FROM {table}
+        GROUP BY {status_column}
+        """
+    )
+    return {str(row["status"] or "unknown"): int(row["c"] or 0) for row in rows}
+
+
+def _safe_service_payload(name: str, fn):
+    try:
+        return fn()
+    except Exception as exc:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        log_event("error", {"step": f"{name}_status", "error": str(exc)})
+        return {"status": "error", "error": str(exc)}
+
+
+def _recent_evoscientist_sessions(limit: int = 5) -> list[dict]:
+    rows = db.fetchall(
+        """
+        SELECT arj.deep_insight_id, arj.status, arj.stage, arj.research_workdir,
+               arj.last_note, arj.last_error, arj.updated_at, di.title
+        FROM auto_research_jobs arj
+        JOIN deep_insights di ON di.id = arj.deep_insight_id
+        WHERE arj.research_workdir IS NOT NULL
+           OR arj.status IN ('verifying', 'researching')
+           OR arj.stage LIKE '%evosci%'
+           OR arj.stage LIKE '%research%'
+        ORDER BY arj.updated_at DESC
+        LIMIT ?
+        """,
+        (limit,),
+    )
+    sessions = []
+    for row in rows:
+        item = dict(row)
+        workdir = item.get("research_workdir")
+        if workdir:
+            wd = Path(str(workdir))
+            session: dict[str, Any] = {"workdir": str(wd), "exists": wd.exists()}
+            if wd.exists():
+                final_report = wd / "final_report.md"
+                proposal = wd / "research_proposal.md"
+                log_path = wd / "evoscientist.log"
+                session["final_report_ready"] = final_report.is_file() and final_report.stat().st_size > 100
+                session["proposal_ready"] = proposal.is_file()
+                if log_path.is_file():
+                    try:
+                        mtime = log_path.stat().st_mtime
+                        session["log_age_seconds"] = round(time.time() - mtime, 2)
+                        with log_path.open("rb") as fh:
+                            fh.seek(0, 2)
+                            size = fh.tell()
+                            fh.seek(max(0, size - 2000))
+                            session["log_tail"] = fh.read().decode("utf-8", errors="replace")
+                    except OSError as exc:
+                        session["log_error"] = str(exc)
+            item["session"] = session
+        sessions.append(item)
+    return sessions
+
+
+def _current_work_snapshot() -> dict[str, list[dict]]:
+    recent_run_window = (
+        "er.created_at > NOW() - INTERVAL '12 hours'"
+        if db.use_postgres()
+        else "er.created_at > datetime('now', '-12 hours')"
+    )
+    recent_pipeline = []
+    for event in reversed(get_events(0)[-80:]):
+        data = event.get("data") or {}
+        event_type = event.get("type") or ""
+        step = data.get("step") or event_type
+        if event_type not in {
+            "paper_worker",
+            "step",
+            "pipeline_start",
+            "pipeline_done",
+            "recovery",
+            "abstraction_done",
+            "bridge_done",
+            "error",
+        } and not step:
+            continue
+        title = step.replace("_", " ").strip().title() if step else event_type
+        detail_parts = []
+        for key in ("paper_id", "node_id", "max_papers", "batch_size", "papers_processed", "error"):
+            value = data.get(key)
+            if value not in (None, ""):
+                detail_parts.append(f"{key}={value}")
+        recent_pipeline.append(
+            {
+                "title": title,
+                "status": event_type,
+                "stage": step,
+                "last_note": ", ".join(detail_parts),
+                "updated_at": event.get("timestamp"),
+            }
+        )
+        if len(recent_pipeline) >= 6:
+            break
+
+    papers = db.fetchall(
+        """
+        SELECT id, title, status, processing_stage, stage_last_error, updated_at
+        FROM papers
+        WHERE status IN ('processing', 'extracted')
+        ORDER BY updated_at DESC
+        LIMIT 8
+        """
+    )
+    plans = db.fetchall(
+        """
+        SELECT arj.deep_insight_id, arj.status, arj.stage, arj.last_note, arj.last_error,
+               arj.updated_at, di.title
+        FROM auto_research_jobs arj
+        JOIN deep_insights di ON di.id = arj.deep_insight_id
+        WHERE arj.status IN ('queued', 'eligible', 'review_pending', 'smoke_only')
+           OR arj.stage LIKE '%review%'
+           OR arj.stage LIKE '%forge%'
+           OR arj.stage LIKE '%formal%'
+        ORDER BY arj.updated_at DESC
+        LIMIT 8
+        """
+    )
+    experiments = db.fetchall(
+        f"""
+        SELECT er.id, er.deep_insight_id, er.status, er.phase, er.iterations_total,
+               er.iterations_kept, er.hypothesis_verdict, er.effect_pct,
+               er.created_at, di.title
+        FROM experiment_runs er
+        JOIN deep_insights di ON di.id = er.deep_insight_id
+        WHERE er.status IN ('pending', 'scaffolding', 'reproducing', 'testing', 'running_gpu', 'running_cpu')
+          AND (er.status IN ('running_gpu', 'running_cpu', 'testing') OR {recent_run_window})
+          AND (
+                EXISTS (
+                    SELECT 1 FROM gpu_jobs gj
+                    WHERE gj.experiment_run_id=er.id
+                      AND gj.status IN ('queued', 'running')
+                )
+                OR NOT EXISTS (
+                    SELECT 1 FROM gpu_jobs gj
+                    WHERE gj.experiment_run_id=er.id
+                )
+              )
+          AND NOT EXISTS (
+                SELECT 1 FROM experiment_runs newer
+                WHERE newer.deep_insight_id=er.deep_insight_id
+                  AND newer.created_at > er.created_at
+                  AND newer.status IN ('completed', 'failed', 'bundle_ready')
+              )
+        ORDER BY er.created_at DESC
+        LIMIT 8
+        """
+    )
+    manuscripts = db.fetchall(
+        """
+        SELECT mr.id, mr.experiment_run_id, mr.deep_insight_id, mr.status, mr.workdir,
+               mr.updated_at, di.title
+        FROM manuscript_runs mr
+        LEFT JOIN deep_insights di ON di.id = mr.deep_insight_id
+        ORDER BY mr.updated_at DESC
+        LIMIT 8
+        """
+    )
+    return {
+        "pipeline": recent_pipeline,
+        "papers": papers,
+        "experiment_plans": plans,
+        "experiments": experiments,
+        "manuscripts": manuscripts,
+    }
+
+
+def _automation_snapshot() -> dict:
+    from orchestrator import auto_research, paper_worker
+
+    paper_worker_status = _safe_service_payload("paper_worker", paper_worker.get_status)
+    auto_research_status = _safe_service_payload("auto_research", auto_research.get_status)
+
+    def gpu_status():
+        workers = db.fetchall(
+            """
+            SELECT id, hostname, gpu_index, gpu_model, total_mem_gb, status, heartbeat_at
+            FROM gpu_workers
+            ORDER BY gpu_index, id
+            """
+        )
+        counts = _service_counts("gpu_jobs")
+        return {
+            "workers": workers,
+            "total_jobs": sum(counts.values()),
+            "queued_jobs": counts.get("queued", 0),
+            "running_jobs": counts.get("running", 0),
+            "completed_jobs": counts.get("completed", 0),
+            "failed_jobs": counts.get("failed", 0),
+        }
+
+    def evoscientist_status():
+        from agents.evosci_requirements import evosci_binary_path, evosci_installed
+
+        sessions = _recent_evoscientist_sessions(limit=5)
+        active = [
+            item for item in sessions
+            if (item.get("session") or {}).get("active") or item.get("status") in {"verifying", "researching"}
+        ]
+        return {
+            "available": evosci_installed(),
+            "binary_path": str(evosci_binary_path()),
+            "active_count": len(active),
+            "recent_sessions": sessions,
+        }
+
+    def paperorchestra_status():
+        manuscripts = db.fetchall(
+            """
+            SELECT mr.*, di.title AS insight_title
+            FROM manuscript_runs mr
+            LEFT JOIN deep_insights di ON di.id = mr.deep_insight_id
+            ORDER BY mr.updated_at DESC
+            LIMIT 5
+            """
+        )
+        counts = _service_counts("manuscript_runs")
+        return {
+            "available": importlib.util.find_spec("agents.paperorchestra") is not None,
+            "backend": "paper_orchestra",
+            "latex_available": bool(shutil.which("latexmk") or shutil.which("pdflatex")),
+            "counts": counts,
+            "active_count": int(counts.get("drafting", 0)),
+            "recent_runs": manuscripts,
+        }
+
+    return {
+        "paper_worker": paper_worker_status,
+        "auto_research": auto_research_status,
+        "gpu_scheduler": _safe_service_payload("gpu_scheduler", gpu_status),
+        "evoscientist": _safe_service_payload("evoscientist", evoscientist_status),
+        "paperorchestra": _safe_service_payload("paperorchestra", paperorchestra_status),
+        "current_work": _safe_service_payload("current_work", _current_work_snapshot),
     }
 
 
@@ -351,9 +687,24 @@ def api_processing():
            LIMIT 30"""
     )
     processing_count = db.fetchone("SELECT COUNT(*) as c FROM papers WHERE status='processing'")["c"]
+    paper_worker_status = {}
+    try:
+        from orchestrator import paper_worker
+        paper_worker_status = paper_worker.get_status()
+    except Exception as exc:
+        paper_worker_status = {"running": False, "error": str(exc)}
     with _pipeline_lock:
-        is_running = _pipeline_running or processing_count > 0
-    return jsonify({"papers": rows, "pipeline_running": is_running})
+        is_running = _pipeline_running or bool(paper_worker_status.get("running")) or processing_count > 0
+    return jsonify({"papers": rows, "pipeline_running": is_running, "paper_worker": paper_worker_status})
+
+
+@app.route("/api/automation")
+def api_automation():
+    """Read-only status for background automation workers."""
+    try:
+        return jsonify(_automation_snapshot())
+    except Exception as exc:
+        return _api_failure("automation", exc)
 
 
 # ── Taxonomy Navigation ───────────────────────────────────────────
@@ -969,14 +1320,17 @@ def api_deep_insights():
     if status:
         sql += " AND status=?"
         params.append(status)
+    fetch_limit = min(max(limit * 4, limit), 200)
     sql += " ORDER BY CASE WHEN adversarial_score IS NOT NULL THEN adversarial_score ELSE 0 END DESC, created_at DESC LIMIT ?"
-    params.append(limit)
+    params.append(fetch_limit)
 
     try:
         rows = db.fetchall(sql, tuple(params))
-        return jsonify(rows)
-    except Exception:
-        return jsonify([])
+        if request.args.get("include_placeholders") not in {"1", "true", "yes"}:
+            rows = [row for row in rows if _deep_insight_is_displayable(row)]
+        return jsonify(rows[:limit])
+    except Exception as exc:
+        return _api_failure("deep_insights", exc)
 
 
 @app.route("/api/deep_insights/<int:insight_id>")
@@ -1076,11 +1430,8 @@ def api_deep_insight_signals():
             "hidden_variable_bridges": bridges,
             "claim_method_gaps": claim_gaps,
         })
-    except Exception:
-        return jsonify({"entity_overlaps": [], "pattern_matches": [],
-                        "contradiction_clusters": [], "performance_plateaus": [],
-                        "protocol_artifacts": [], "negative_space_gaps": [],
-                        "hidden_variable_bridges": [], "claim_method_gaps": []})
+    except Exception as exc:
+        return _api_failure("deep_insight_signals", exc)
 
 
 @app.route("/api/discovery/candidates")
@@ -1128,8 +1479,8 @@ def api_experiments():
     try:
         rows = db.fetchall(sql, tuple(params))
         return jsonify(rows)
-    except Exception:
-        return jsonify([])
+    except Exception as exc:
+        return _api_failure("experiments", exc)
 
 
 @app.route("/api/experiment_groups")
@@ -1336,8 +1687,8 @@ def api_meta_report():
     from agents.meta_learner import get_full_meta_report
     try:
         return jsonify(get_full_meta_report())
-    except Exception:
-        return jsonify({"status": "error", "total_experiments": 0})
+    except Exception as exc:
+        return _api_failure("meta_report", exc)
 
 
 # ── Auto Research ────────────────────────────────────────────────────
