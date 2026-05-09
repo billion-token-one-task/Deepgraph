@@ -99,6 +99,8 @@ Key environment variables:
 | Variable | Description |
 |----------|-------------|
 | `DEEPGRAPH_LLM_API_KEY` | Required. LLM API key for extraction and generation |
+| `DEEPGRAPH_LLM_SECONDARY_*` | Optional second OpenAI-compatible route for parallel LLM calls |
+| `DEEPGRAPH_LLM_EXTRA_PROVIDERS_JSON` | Optional JSON list of additional OpenAI-compatible routes |
 | `DEEPGRAPH_PROFILE` | `machine_learning` or `open_science` |
 | `DEEPGRAPH_ROOT_NODE_ID` | Defaults to `ml` or `science` based on profile |
 | `DEEPGRAPH_ARXIV_CATEGORIES` | Optional comma-separated arXiv category override |

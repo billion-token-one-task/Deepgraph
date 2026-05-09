@@ -4,11 +4,15 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
+import time
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -292,6 +296,9 @@ def _build_caption(spec: dict[str, Any]) -> str:
 
 
 def _check_credentials() -> tuple[bool, str]:
+    image_protocol = (_env_first("DEEPGRAPH_PAPERBANANA_IMAGE_PROTOCOL") or "").strip().lower()
+    if image_protocol == "openai_compatible" and _env_first("DEEPGRAPH_PAPERBANANA_IMAGE_API_KEY") and _openai_image_base_url():
+        return True, "openai_compatible_image"
     if os.environ.get("GEMINI_NATIVE_API_KEY") and os.environ.get("GEMINI_NATIVE_BASE_URL"):
         return True, "gemini_native"
     if os.environ.get("OPENROUTER_API_KEY"):
@@ -303,16 +310,231 @@ def _check_credentials() -> tuple[bool, str]:
     return False, "missing"
 
 
+def _image_prompt(spec: dict[str, Any], *, caption: str, content: str) -> str:
+    fig = spec.get("figure") or {}
+    labels = [
+        str(part)
+        for part in [
+            spec.get("state_title"),
+            spec.get("method_name"),
+            fig.get("title"),
+            fig.get("objective"),
+        ]
+        if part
+    ]
+    return "\n".join(
+        [
+            "Create one clean publication-quality scientific diagram for a machine learning paper.",
+            "Use a restrained academic vector style: white background, crisp boxes, thin arrows, high contrast.",
+            "Do not create fake numeric charts or unsupported values.",
+            "Prefer 3 to 5 labeled blocks connected by arrows; keep labels large and readable.",
+            f"Caption: {_clip(caption, 220)}",
+            f"Objective: {_clip(fig.get('objective'), 260)}",
+            f"Suggested labels: {_clip('; '.join(labels), 360)}",
+        ]
+    ).strip()
+
+
+def _openai_image_base_url() -> str:
+    return _normalize_openai_compatible_base_url(
+        _env_first(
+            "DEEPGRAPH_PAPERBANANA_IMAGE_BASE_URL",
+            "DEEPGRAPH_PAPERBANANA_OPENAI_IMAGE_BASE_URL",
+            "DEEPGRAPH_LLM_BASE_URL",
+        )
+    )
+
+
+def _run_openai_compatible_image_generation(
+    *,
+    output_path: Path,
+    prompt: str,
+) -> int:
+    api_key = _env_first(
+        "DEEPGRAPH_PAPERBANANA_IMAGE_API_KEY",
+        "DEEPGRAPH_PAPERBANANA_OPENAI_IMAGE_API_KEY",
+        "OPENAI_API_KEY",
+    )
+    base_url = _openai_image_base_url()
+    model = _env_first("DEEPGRAPH_PAPERBANANA_IMAGE_MODEL", "IMAGE_GEN_MODEL_NAME") or "gpt-image-2"
+    size = _env_first("DEEPGRAPH_PAPERBANANA_IMAGE_SIZE") or "1024x1024"
+    if not api_key or not base_url:
+        print("OpenAI-compatible image generation is missing API key or base URL.", file=sys.stderr)
+        return 3
+
+    payload = {
+        "model": model,
+        "prompt": prompt,
+        "size": size,
+        "n": 1,
+    }
+    url = f"{base_url}/images/generations"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    body: dict[str, Any] | None = None
+    errors: list[str] = []
+    client = (_env_first("DEEPGRAPH_PAPERBANANA_IMAGE_HTTP_CLIENT") or "").strip().lower()
+    prefer_curl = client == "curl" or (client != "urllib" and os.name == "nt" and _curl_binary())
+    attempts = _image_attempt_count()
+
+    if prefer_curl:
+        for attempt in range(1, attempts + 1):
+            body, error = _post_openai_image_payload_with_curl(url=url, api_key=api_key, payload=payload)
+            if body is not None:
+                break
+            errors.append(f"curl_attempt_{attempt}:{error}")
+            if attempt < attempts:
+                time.sleep(min(10, 2 * attempt))
+    else:
+        body, error = _post_openai_image_payload_with_urllib(url=url, api_key=api_key, payload=payload)
+        if error:
+            errors.append(f"urllib:{error}")
+        if body is None:
+            for attempt in range(1, attempts + 1):
+                body, error = _post_openai_image_payload_with_curl(url=url, api_key=api_key, payload=payload)
+                if body is not None:
+                    break
+                errors.append(f"curl_attempt_{attempt}:{error}")
+                if attempt < attempts:
+                    time.sleep(min(10, 2 * attempt))
+
+    if body is None:
+        print(f"OpenAI-compatible image generation failed: {'; '.join(errors)}", file=sys.stderr)
+        return 4
+
+    return _write_openai_image_response(output_path=output_path, body=body)
+
+
+def _image_attempt_count() -> int:
+    raw = _env_first("DEEPGRAPH_PAPERBANANA_IMAGE_ATTEMPTS", "DEEPGRAPH_PAPERBANANA_IMAGE_RETRIES")
+    try:
+        return max(1, min(5, int(raw or "3")))
+    except ValueError:
+        return 3
+
+
+def _post_openai_image_payload_with_urllib(
+    *,
+    url: str,
+    api_key: str,
+    payload: dict[str, Any],
+) -> tuple[dict[str, Any] | None, str]:
+    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=data,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+            "User-Agent": "curl/8.0.0",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=600) as response:
+            body = json.loads(response.read().decode("utf-8", errors="replace"))
+            return body, ""
+    except Exception as exc:
+        return None, str(exc)
+
+
+def _curl_binary() -> str | None:
+    names = ("curl.exe", "curl") if os.name == "nt" else ("curl", "curl.exe")
+    for name in names:
+        found = shutil.which(name)
+        if found:
+            return found
+    return None
+
+
+def _curl_config_quote(value: str) -> str:
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _post_openai_image_payload_with_curl(
+    *,
+    url: str,
+    api_key: str,
+    payload: dict[str, Any],
+) -> tuple[dict[str, Any] | None, str]:
+    curl = _curl_binary()
+    if not curl:
+        return None, "curl executable not found"
+
+    payload_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False)
+            payload_path = Path(handle.name)
+
+        config = "\n".join(
+            [
+                f'url = "{_curl_config_quote(url)}"',
+                'request = "POST"',
+                f'header = "Authorization: Bearer {_curl_config_quote(api_key)}"',
+                'header = "Content-Type: application/json"',
+                f'data-binary = "@{_curl_config_quote(payload_path.resolve().as_posix())}"',
+                "silent",
+                "show-error",
+                "max-time = 600",
+                "",
+            ]
+        )
+        proc = subprocess.run(
+            [curl, "-K", "-"],
+            input=config,
+            text=True,
+            capture_output=True,
+            timeout=660,
+            check=False,
+        )
+        if proc.returncode != 0:
+            return None, _clip(proc.stderr.strip() or f"exit {proc.returncode}", 400)
+        try:
+            return json.loads(proc.stdout), ""
+        except json.JSONDecodeError as exc:
+            preview = _clip(proc.stdout.strip(), 400)
+            return None, f"invalid JSON response: {exc}; preview={preview}"
+    except Exception as exc:
+        return None, str(exc)
+    finally:
+        if payload_path:
+            payload_path.unlink(missing_ok=True)
+
+
+def _write_openai_image_response(*, output_path: Path, body: dict[str, Any]) -> int:
+    rows = body.get("data") if isinstance(body, dict) else None
+    item = rows[0] if isinstance(rows, list) and rows else {}
+    if not isinstance(item, dict):
+        print("Image generation returned no data rows.", file=sys.stderr)
+        return 4
+    b64_json = item.get("b64_json") or item.get("image_base64")
+    if b64_json:
+        try:
+            output_path.write_bytes(base64.b64decode(str(b64_json)))
+            return 0
+        except Exception as exc:
+            print(f"Image base64 decode failed: {exc}", file=sys.stderr)
+            return 4
+    url = item.get("url")
+    if url:
+        try:
+            with urllib.request.urlopen(str(url), timeout=600) as response:
+                output_path.write_bytes(response.read())
+            return 0
+        except Exception as exc:
+            print(f"Image download failed: {exc}", file=sys.stderr)
+            return 4
+    print("Image generation response had neither b64_json nor url.", file=sys.stderr)
+    return 4
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="DeepGraph -> PaperBanana wrapper")
     parser.add_argument("--out", required=True, help="Output image path")
     parser.add_argument("--spec", required=True, help="JSON spec from DeepGraph")
     parser.add_argument("--dry-run", action="store_true", help="Validate inputs without calling PaperBanana")
     args = parser.parse_args()
-
-    if not PAPERBANANA_PYTHON.exists() or not PAPERBANANA_ENTRY.exists():
-        print("PaperBanana is not installed at ~/PaperBanana.", file=sys.stderr)
-        return 2
 
     _ensure_paperbanana_env()
     _ensure_model_config()
@@ -362,6 +584,15 @@ def main() -> int:
 
     output_path = Path(args.out).resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if not PAPERBANANA_PYTHON.exists() or not PAPERBANANA_ENTRY.exists():
+        if provider in {"openai", "openrouter", "openai_compatible_image"}:
+            return _run_openai_compatible_image_generation(
+                output_path=output_path,
+                prompt=_image_prompt(spec, caption=caption, content=content),
+            )
+        print("PaperBanana is not installed at ~/PaperBanana.", file=sys.stderr)
+        return 2
 
     with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False, encoding="utf-8") as handle:
         handle.write(content)

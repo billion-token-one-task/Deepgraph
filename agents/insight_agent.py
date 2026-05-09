@@ -398,7 +398,7 @@ def discover_all_insights(min_papers: int = 10) -> tuple[list[dict], int]:
         FROM taxonomy_nodes t
         JOIN paper_taxonomy pt ON pt.node_id = t.id
         GROUP BY t.id
-        HAVING paper_count >= ?
+        HAVING COUNT(DISTINCT pt.paper_id) >= ?
         ORDER BY paper_count DESC
     """, (min_papers,))
 

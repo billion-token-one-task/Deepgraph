@@ -268,7 +268,8 @@ def discover_all_gaps() -> tuple[list[dict], int]:
            FROM results r
            JOIN result_taxonomy rt ON rt.result_id = r.id
            GROUP BY rt.node_id
-           HAVING mc >= 2 AND dc >= 2"""
+           HAVING COUNT(DISTINCT r.method_name) >= 2
+              AND COUNT(DISTINCT r.dataset_name) >= 2"""
     )
 
     for node in nodes:

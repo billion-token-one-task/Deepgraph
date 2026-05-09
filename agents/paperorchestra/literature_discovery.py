@@ -80,6 +80,79 @@ def _dedupe(items: list[Any]) -> list[Any]:
     return out
 
 
+CORE_LITERATURE_TERMS = {
+    "reasoning",
+    "chain-of-thought",
+    "chain of thought",
+    "self-consistency",
+    "tree of thoughts",
+    "test-time",
+    "adaptive",
+    "compute",
+    "compute allocation",
+    "deliberation",
+    "selective reasoning",
+    "early exit",
+    "halting",
+    "calibration",
+    "confidence",
+    "question answering",
+    "qa",
+    "uncertainty",
+    "selective",
+    "classification",
+    "abstention",
+    "llm",
+    "agent",
+    "faithful",
+    "verification",
+    "overthink",
+    "budget",
+}
+
+
+OFF_TOPIC_LITERATURE_TERMS = {
+    "copd",
+    "computed tomography",
+    "memrist",
+    "spiking neural",
+    "portfolio",
+    "finance",
+    "stocks",
+    "medical imaging",
+    "convolutional neural networks for chronic",
+    "graph-organized intelligence",
+    "pattern recognition : joint",
+}
+
+
+def _literature_relevance_score(paper: dict[str, Any], queries: list[str]) -> float:
+    text = " ".join(
+        str(x or "")
+        for x in [
+            paper.get("title"),
+            paper.get("abstract"),
+            " ".join(paper.get("_matched_queries") or []),
+            " ".join(queries[:8]),
+        ]
+    ).lower()
+    score = 0.0
+    for term in CORE_LITERATURE_TERMS:
+        if term in text:
+            score += 1.0
+    for term in OFF_TOPIC_LITERATURE_TERMS:
+        if term in text:
+            score -= 4.0
+    if paper.get("_source") == "evidence_graph":
+        score += 1.5
+    if paper.get("_source_claim_ids"):
+        score += 1.0
+    year = paper_year(paper)
+    if year and year >= 2023:
+        score += 0.4
+    return score
+
+
 def _db_paper_to_registry_row(
     pid: str,
     *,
@@ -221,7 +294,12 @@ def run_literature_discovery(
             candidate["_matched_queries"] = [q]
             by_key[k] = _merge_registry_row(by_key.get(k), candidate)
 
-    registry = list(by_key.values())
+    registry = [
+        row
+        for row in by_key.values()
+        if _literature_relevance_score(row, queries) >= 1.0
+    ]
+    registry.sort(key=lambda row: _literature_relevance_score(row, queries), reverse=True)
     bib_chunks: list[str] = []
     bib_keys: list[str] = []
     collected: list[dict[str, Any]] = []

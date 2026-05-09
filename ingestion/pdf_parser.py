@@ -20,6 +20,11 @@ APPENDIX_HEADING_RE = re.compile(
 )
 
 
+def clean_extracted_text(text: str) -> str:
+    """Normalize PDF text before storing it in SQL text columns."""
+    return (text or "").replace("\x00", "")
+
+
 def download_pdf(arxiv_id: str, pdf_url: str) -> Path:
     """Download PDF to cache. Returns path."""
     PDF_CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -102,28 +107,28 @@ def extract_text(pdf_path: Path) -> str:
         backend = "auto"
 
     if backend == "pymupdf":
-        return extract_text_pymupdf(pdf_path)
+        return clean_extracted_text(extract_text_pymupdf(pdf_path))
 
     text = ""
     if backend in ("auto", "grobid"):
         text = extract_text_grobid(pdf_path)
         if backend == "grobid":
-            return text
+            return clean_extracted_text(text)
         # auto: fall back if GROBID missing or nearly empty
         if len(text.strip()) >= 500:
-            return text
+            return clean_extracted_text(text)
         logger.info(
             "GROBID text short (%d chars) for %s, falling back to PyMuPDF",
             len(text.strip()),
             pdf_path.name,
         )
 
-    return extract_text_pymupdf(pdf_path)
+    return clean_extracted_text(extract_text_pymupdf(pdf_path))
 
 
 def split_main_and_appendix_text(text: str) -> tuple[str, str]:
     """Split extracted paper text into main body and appendix/supplement."""
-    clean = (text or "").strip()
+    clean = clean_extracted_text(text).strip()
     if not clean:
         return "", ""
 

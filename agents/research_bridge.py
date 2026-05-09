@@ -12,9 +12,17 @@ import time
 from pathlib import Path
 
 from db import database as db
+from agents.evosci_requirements import evosci_binary_path
 
 
 ACTIVE_SESSION_LOG_WINDOW_SECONDS = 15 * 60
+TERMINAL_LOG_MARKERS = (
+    "BadRequestError:",
+    "Traceback (most recent call last)",
+    "UnicodeEncodeError:",
+    "invalid_request_error",
+    "Error code:",
+)
 
 
 def _pid_file_path(workdir: Path) -> Path:
@@ -34,6 +42,17 @@ def _read_session_pid(workdir: Path) -> int | None:
 def _pid_is_running(pid: int | None) -> bool:
     if not pid or pid <= 0:
         return False
+    if os.name == "nt":
+        try:
+            proc = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return f'"{pid}"' in proc.stdout
     try:
         os.kill(pid, 0)
     except OSError:
@@ -43,6 +62,16 @@ def _pid_is_running(pid: int | None) -> bool:
 
 def write_session_pid(workdir: Path, pid: int) -> None:
     _pid_file_path(workdir).write_text(f"{pid}\n", encoding="utf-8")
+
+
+def _log_has_terminal_error(log_path: Path) -> bool:
+    if not log_path.exists():
+        return False
+    try:
+        tail = log_path.read_text(encoding="utf-8", errors="replace")[-2000:]
+    except OSError:
+        return False
+    return any(marker in tail for marker in TERMINAL_LOG_MARKERS)
 
 
 def active_research_session(workdir: str | Path, *, log_window_seconds: int = ACTIVE_SESSION_LOG_WINDOW_SECONDS) -> dict | None:
@@ -58,12 +87,14 @@ def active_research_session(workdir: str | Path, *, log_window_seconds: int = AC
     log_path = workdir / "evoscientist.log"
     if log_path.exists():
         age_seconds = max(0.0, time.time() - log_path.stat().st_mtime)
+        if pid and _log_has_terminal_error(log_path):
+            return None
         if age_seconds <= max(1, log_window_seconds):
             return {
                 "workdir": str(workdir),
                 "pid": pid,
                 "active": True,
-                "reason": "recent_log_activity",
+                "reason": "recent_log_activity_after_launcher_exit" if pid else "recent_log_activity",
                 "log_age_seconds": age_seconds,
             }
     return None
@@ -436,7 +467,7 @@ def launch_evoscientist(insight_id: int, workdir: str = None) -> dict:
 
     # Launch EvoScientist in background
     # Write a short prompt that points to the full proposal file
-    evosci_bin = str(Path.home() / "EvoScientist" / ".venv" / "bin" / "EvoSci")
+    evosci_bin = str(evosci_binary_path())
     short_prompt = (
         f"Read the file research_proposal.md in this workspace. "
         f"It contains a detailed research proposal titled: {ctx['insight']['title']}. "

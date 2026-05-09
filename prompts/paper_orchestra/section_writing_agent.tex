@@ -39,6 +39,8 @@ Your job is to generate the LaTeX code for the missing sections only, based on t
         \item The \texttt{outline.json} provides a list of \texttt{citation\_candidates} for specific subsections.
         \item You MUST use the exact keys found in \texttt{citation\_map.json} (e.g., \textbackslash{}cite\{Hu2021LoraLowrank\}).
         \item Content Enrichment: Read the abstract provided in \texttt{citation\_map.json} for the papers you are citing. Use this context to write accurate, specific sentences about those works.
+        \item Reference density: a conference-style draft should cite prior work throughout the Introduction and Related Work, not only at the end of paragraphs. If there are enough relevant keys, use at least 10 distinct citations across the paper.
+        \item Relevance rule: do not cite papers merely because they share a generic phrase such as "adaptive", "graph", "structure", or "compute". Every citation must be directly about the paper's task, method family, benchmark, or decision setting.
     \end{itemize}
     \item \textbf{Writing Content:}
     \begin{itemize}
@@ -51,13 +53,25 @@ Your job is to generate the LaTeX code for the missing sections only, based on t
     \item \textbf{Figures And Visual Fidelity:}
     \begin{itemize}
         \item You are being provided with the actual image files of the figures. You MUST describe them faithfully and accurately. DO NOT hallucinate interpretations that contradict the visual evidence in the plots.
-        \item Make sure to use ALL of the figures provided in \texttt{figures\_list}. Note: figures are stored in the \texttt{figures/} subdirectory. IMPORTANT: use the exact filenames including their extensions (e.g., \texttt{.png}) in your \textbackslash{}includegraphics commands.
+        \item Treat benchmark figures as primary evidence. Explain what each panel measures, what baseline it compares against, whether error bars or seeds are present, and what conclusion is directly supported.
+        \item Use conceptual diagrams sparingly. A method diagram may clarify the algorithm, but it cannot substitute for benchmark comparisons, ablations, seed variability, or budget/cost plots.
+        \item Make sure to use ALL of the figures provided in \texttt{figures\_list}. Note: figures are stored in the \texttt{figures/} subdirectory. IMPORTANT: use the exact filenames including their extensions (prefer \texttt{.pdf} vector figures when supplied) in your \textbackslash{}includegraphics commands.
+        \item Do not invent extra figure names. Every \textbackslash{}includegraphics path must correspond exactly to a file listed in \texttt{figures\_list}.
         \item DO NOT merge or group multiple figures into one for display.
         \item If the paper is in a 2-column format, try displaying figures in single-column mode (\textbackslash{}begin\{figure\}) unless they are very wide.
         \item Ensure that all figures are correctly referenced in the text. 
         \item Make sure all figures appear before the Conclusion section, unless they are placed in an Appendix.
         \item You can refine the captions if necessary.
         \item Do not include "Figure x" in the caption text; the LaTeX template will handle the figure numbering.
+    \end{itemize}
+    \item \textbf{Conference Writing Norms:}
+    \begin{itemize}
+        \item Use \textbackslash{}begin\{abstract\}...\textbackslash{}end\{abstract\}, not \textbackslash{}section\{Abstract\}.
+        \item Do not repeatedly mention "available logs", "supplied artifacts", or "provided materials" in the main narrative. Write like a paper, not an internal audit report.
+        \item Do not use broad apology sentences such as "this is not a full systems report" in the main narrative. Put concrete missing details in a short Reproducibility and Scope subsection.
+        \item Put evidence limitations, missing benchmark details, missing seed variance, and missing ablations in a compact \texttt{Limitations} or \texttt{Reproducibility and Scope} subsection.
+        \item Keep claims calibrated: state what is verified, but avoid apology-like prose and avoid benchmark-wide claims when benchmark metadata is missing.
+        \item Prefer dense technical paragraphs, explicit equations, compact tables, and short captions. Avoid tutorial-style explanations.
     \end{itemize}
     \item \textbf{Style:}
     \begin{itemize}

@@ -14,6 +14,7 @@ class LlmClientCooldownTests(unittest.TestCase):
         self.old_rate_limiters = dict(llm_client._rate_limiters)
         self.old_provider_cooldown = dict(llm_client._provider_cooldown)
         self.old_llm_use_tabcode = llm_client.LLM_USE_TABCODE
+        self.old_llm_extra_providers_json = llm_client.LLM_EXTRA_PROVIDERS_JSON
         self.old_llm_api_key = llm_client.LLM_API_KEY
         self.old_llm_base_url = llm_client.LLM_BASE_URL
         self.old_llm_model = llm_client.LLM_MODEL
@@ -36,6 +37,7 @@ class LlmClientCooldownTests(unittest.TestCase):
         llm_client._rate_limiters = self.old_rate_limiters
         llm_client._provider_cooldown = self.old_provider_cooldown
         llm_client.LLM_USE_TABCODE = self.old_llm_use_tabcode
+        llm_client.LLM_EXTRA_PROVIDERS_JSON = self.old_llm_extra_providers_json
         llm_client.LLM_API_KEY = self.old_llm_api_key
         llm_client.LLM_BASE_URL = self.old_llm_base_url
         llm_client.LLM_MODEL = self.old_llm_model
@@ -121,6 +123,43 @@ class LlmClientCooldownTests(unittest.TestCase):
         self.assertEqual(llm_client._providers[1]["rpm"], 8)
         self.assertFalse(llm_client._providers[0]["stream_chat_completions"])
         self.assertFalse(llm_client._providers[1]["stream_chat_completions"])
+
+    def test_init_providers_includes_extra_openai_compatible_providers(self):
+        llm_client._providers = []
+        llm_client._provider_stats = {}
+        llm_client._rate_limiters = {}
+        llm_client._provider_cooldown = {}
+        llm_client.LLM_USE_TABCODE = False
+        llm_client.LLM_SECONDARY_ENABLED = False
+        llm_client.LLM_EXTRA_PROVIDERS_JSON = """
+        [
+          {
+            "name": "sora-gpt",
+            "base_url": "https://sora.invalid/v1",
+            "api_key": "extra-key-1",
+            "model": "gpt-5.4",
+            "protocol": "chat_completions",
+            "rpm": 20
+          },
+          {
+            "name": "sora-gpt",
+            "base_url": "https://sora.invalid/v1",
+            "api_key": "extra-key-2",
+            "model": "glm-5.1",
+            "protocol": "chat_completions",
+            "stream_chat_completions": true
+          }
+        ]
+        """
+
+        llm_client._init_providers()
+
+        names = [provider["name"] for provider in llm_client._providers]
+        self.assertEqual(names, ["sora-gpt", "sora-gpt_2"])
+        self.assertEqual(llm_client._providers[0]["model"], "gpt-5.4")
+        self.assertEqual(llm_client._providers[0]["rpm"], 20)
+        self.assertEqual(llm_client._providers[1]["model"], "glm-5.1")
+        self.assertTrue(llm_client._providers[1]["stream_chat_completions"])
 
     def test_call_llm_retries_transient_error_before_cooling_provider(self):
         llm_client._providers = [

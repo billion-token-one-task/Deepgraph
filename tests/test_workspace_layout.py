@@ -63,8 +63,21 @@ class WorkspaceLayoutTests(unittest.TestCase):
 
         insight = database.fetchone("SELECT * FROM deep_insights WHERE id=1")
         self.assertEqual(insight["canonical_run_id"], 5)
-        self.assertTrue((Path(layout["experiment_root"]) / "current").exists())
+        self.assertTrue(Path(layout["experiment_current_root"]).exists())
         self.assertTrue((Path(layout["plan_root"]) / "latest_status.json").exists())
+
+    def test_promote_canonical_run_falls_back_to_marker_when_current_dir_locked(self):
+        database.execute("INSERT INTO deep_insights (id, tier, title) VALUES (1, 2, 'Idea Workspace')")
+        database.execute("INSERT INTO experiment_runs (id, deep_insight_id, status) VALUES (5, 1, 'testing')")
+        database.commit()
+        layout = workspace_layout.ensure_run_workspace(1, 5)
+
+        with mock.patch.object(workspace_layout.shutil, "rmtree", side_effect=OSError("locked")):
+            workspace_layout.promote_canonical_run(1, 5)
+
+        marker = Path(layout["suite_current_root"]) / "CURRENT_RUN.txt"
+        self.assertTrue(marker.exists())
+        self.assertEqual(marker.read_text(encoding="utf-8"), str(layout["run_root"]))
 
     def test_backfill_script_maps_legacy_run_and_manuscript_dirs(self):
         legacy_run = Path(self.tmpdir.name) / "legacy_run"
@@ -89,8 +102,8 @@ class WorkspaceLayoutTests(unittest.TestCase):
         result = module.backfill_all(dry_run=False)
 
         self.assertEqual(len(result), 1)
-        migrated_run = self.workspace_root / "idea_1" / "experiment" / "runs" / "run_7"
-        migrated_paper = self.workspace_root / "idea_1" / "paper" / "current" / "main.tex"
+        migrated_run = self.workspace_root / "idea_1" / "experiments" / "main" / "runs" / "run_7"
+        migrated_paper = self.workspace_root / "idea_1" / "papers" / "current" / "main.tex"
         self.assertTrue((migrated_run / "code" / "train.py").exists())
         self.assertTrue(migrated_paper.exists())
         refreshed_run = database.fetchone("SELECT * FROM experiment_runs WHERE id=7")

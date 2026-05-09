@@ -16,6 +16,7 @@ import time
 from pathlib import Path
 
 from agents.insight_validation import get_evosci_input_issue
+from agents.evosci_requirements import evosci_binary_path
 from agents.research_bridge import active_research_session, get_research_status, write_session_pid
 from config import (
     LLM_API_KEY,
@@ -30,6 +31,14 @@ from config import (
 )
 from db import database as db
 from db.insight_outcomes import apply_novelty_verdict_to_deep_insight
+
+TERMINAL_LOG_MARKERS = (
+    "BadRequestError:",
+    "Traceback (most recent call last)",
+    "UnicodeEncodeError:",
+    "invalid_request_error",
+    "Error code:",
+)
 
 
 def _openai_compatible_route(
@@ -70,13 +79,25 @@ def _write_evosci_config(
         f"openai_api_key: {json.dumps(openai_route['api_key'])}",
         f"use_responses_api: {json.dumps(use_responses_api)}",
     ]
-    reasoning_effort = (LLM_REASONING_EFFORT or "").strip()
+    reasoning_effort = _evosci_reasoning_effort(custom_openai_route)
     if reasoning_effort:
         config_lines.append(f"reasoning_effort: {json.dumps(reasoning_effort)}")
 
     config_path = config_dir / "config.yaml"
     config_path.write_text("\n".join(config_lines) + "\n", encoding="utf-8")
     return xdg_root
+
+
+def _evosci_reasoning_effort(route: dict[str, str]) -> str:
+    """Only pass reasoning controls to EvoScientist providers that use Responses API.
+
+    Chat-completions gateways such as Moonshot/Kimi can reject tool-call turns when
+    "thinking" is enabled but assistant tool messages lack provider-specific
+    reasoning_content fields.
+    """
+    if (route.get("protocol") or "").strip().lower() != "responses":
+        return ""
+    return (LLM_REASONING_EFFORT or "").strip()
 
 
 def _build_evosci_env(workdir: Path) -> dict[str, str]:
@@ -115,10 +136,60 @@ def _build_evosci_env(workdir: Path) -> dict[str, str]:
         "true" if custom_openai_route["protocol"] == "responses" else "false"
     )
     env["CUSTOM_OPENAI_USE_RESPONSES_API"] = env["EVOSCIENTIST_USE_RESPONSES_API"]
-    reasoning_effort = (LLM_REASONING_EFFORT or "").strip()
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["NO_COLOR"] = "1"
+    env["RICH_NO_COLOR"] = "1"
+    env["TERM"] = "dumb"
+    for key in ("EVOSCIENTIST_REASONING_EFFORT", "OPENAI_REASONING_EFFORT", "REASONING_EFFORT"):
+        env.pop(key, None)
+    reasoning_effort = _evosci_reasoning_effort(custom_openai_route)
     if reasoning_effort:
         env["EVOSCIENTIST_REASONING_EFFORT"] = reasoning_effort
     return env
+
+
+def _read_session_pid(workdir: Path) -> int | None:
+    pid_path = workdir / "evoscientist.pid"
+    if not pid_path.exists():
+        return None
+    try:
+        return int(pid_path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        return None
+
+
+def _pid_is_running(pid: int | None) -> bool:
+    if not pid or pid <= 0:
+        return False
+    if os.name == "nt":
+        try:
+            proc = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return f'"{pid}"' in proc.stdout
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _log_has_terminal_error(text: str) -> bool:
+    return any(marker in text for marker in TERMINAL_LOG_MARKERS)
+
+
+def _recent_log_activity(log_path: Path, window_seconds: int = 180) -> bool:
+    try:
+        age_seconds = max(0.0, time.time() - log_path.stat().st_mtime)
+    except OSError:
+        return False
+    return age_seconds <= max(1, window_seconds)
 
 
 def _build_verification_prompt(insight: dict) -> str:
@@ -242,7 +313,7 @@ def launch_verification(insight_id: int, timeout_minutes: int = None) -> dict:
     prompt_path = Path(workdir) / "verification_prompt.md"
     prompt_path.write_text(prompt, encoding="utf-8")
 
-    evosci_bin = str(Path.home() / "EvoScientist" / ".venv" / "bin" / "EvoSci")
+    evosci_bin = str(evosci_binary_path())
     if not Path(evosci_bin).exists():
         return {"error": f"EvoScientist not found at {evosci_bin}"}
 
@@ -251,7 +322,7 @@ def launch_verification(insight_id: int, timeout_minutes: int = None) -> dict:
     except RuntimeError as exc:
         return {"error": str(exc)}
 
-    log_file = open(Path(workdir) / "evoscientist.log", "w")
+    log_file = open(Path(workdir) / "evoscientist.log", "w", encoding="utf-8", errors="replace")
     proc = subprocess.Popen(
         [
             evosci_bin,
@@ -324,6 +395,33 @@ def check_verification_result(insight_id: int) -> dict:
             break
 
     if not report_text:
+        pid = _read_session_pid(workdir)
+        if pid and not _pid_is_running(pid):
+            log_tail = str(result.get("log_tail") or "")
+            if log_path.exists() and _recent_log_activity(log_path) and not _log_has_terminal_error(log_tail):
+                result["reason"] = "recent_log_activity_after_launcher_exit"
+                db.execute(
+                    "UPDATE deep_insights SET novelty_status='verifying', updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                    (insight_id,),
+                )
+                db.commit()
+                return result
+            error = "EvoScientist verification exited before writing novelty_report.md."
+            if "UnicodeEncodeError" in log_tail:
+                error = f"{error} Last run hit a Windows console encoding error."
+            result["status"] = "failed"
+            result["error"] = error
+            db.execute(
+                "UPDATE deep_insights SET novelty_status='unchecked', updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (insight_id,),
+            )
+            db.commit()
+            return result
+        db.execute(
+            "UPDATE deep_insights SET novelty_status='verifying', updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            (insight_id,),
+        )
+        db.commit()
         return result
 
     # Parse verdict
@@ -440,7 +538,7 @@ Write your findings to final_report.md."""
     workdir = str(Path.home() / "research" / f"deep_research_di_{insight_id}_{safe_title}_{run_stamp}")
     os.makedirs(workdir, exist_ok=True)
 
-    evosci_bin = str(Path.home() / "EvoScientist" / ".venv" / "bin" / "EvoSci")
+    evosci_bin = str(evosci_binary_path())
     if not Path(evosci_bin).exists():
         return {"error": f"EvoScientist not found at {evosci_bin}"}
     try:

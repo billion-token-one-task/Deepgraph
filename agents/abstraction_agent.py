@@ -261,17 +261,29 @@ def run_abstraction_for_nodes(min_claims: int = 15) -> tuple[int, int]:
         LEFT JOIN patterns p ON p.node_id = t.id
         WHERE p.id IS NULL
         GROUP BY t.id
-        HAVING claim_count >= ?
+        HAVING COUNT(DISTINCT c.id) >= ?
         ORDER BY claim_count DESC
         LIMIT 20
     """, (min_claims,))
 
     total_patterns = 0
     total_tokens = 0
+    consecutive_empty = 0
     for node in nodes:
         print(f"  Abstracting {node['id']} ({node['claim_count']} claims)...", flush=True)
         patterns, tokens = abstract_node_claims(node["id"])
         total_tokens += tokens
+        if not patterns and not tokens:
+            consecutive_empty += 1
+            if consecutive_empty >= 4:
+                print(
+                    "  Abstraction paused after 4 empty LLM results; "
+                    "provider is likely unavailable and will be retried next cycle.",
+                    flush=True,
+                )
+                break
+            continue
+        consecutive_empty = 0
         for pat in patterns:
             store_pattern(pat)
             total_patterns += 1

@@ -24,7 +24,7 @@ class ExperimentReviewTests(unittest.TestCase):
         self.assertEqual(judgement.recommended_route, "blocked")
         self.assertIn("baselines", " ".join(judgement.blockers).lower())
 
-    def test_review_marks_scratch_repo_as_smoke_only(self):
+    def test_review_blocks_scratch_without_real_model_target(self):
         judgement = review_experiment_candidate(
             {
                 "id": 2,
@@ -42,9 +42,34 @@ class ExperimentReviewTests(unittest.TestCase):
             entrypoint_available=False,
         )
 
-        self.assertEqual(judgement.recommended_route, "smoke_test")
+        self.assertEqual(judgement.recommended_route, "blocked")
         self.assertFalse(judgement.formal_experiment)
-        self.assertTrue(judgement.smoke_test_only)
+        self.assertFalse(judgement.smoke_test_only)
+        self.assertIn("real model", " ".join(judgement.blockers).lower())
+
+    def test_review_allows_generated_real_benchmark_runner(self):
+        judgement = review_experiment_candidate(
+            {
+                "id": 3,
+                "tier": 2,
+                "title": "Real benchmark plan",
+                "resource_class": "gpu_large",
+                "proposed_method": {"name": "Method", "definition": "f(x)"},
+                "experimental_plan": {
+                    "baselines": [{"name": "BaselineA"}, {"name": "BaselineB"}],
+                    "datasets": [{"name": "GSM8K"}],
+                    "model_targets": [{"name": "Qwen/Qwen2.5-7B-Instruct"}],
+                    "metrics": {"primary": "accuracy"},
+                    "compute_budget": {"total_gpu_hours": 12},
+                },
+            },
+            codebase={"url": "scratch", "name": "generated-real-benchmark"},
+            entrypoint_available=False,
+        )
+
+        self.assertEqual(judgement.recommended_route, "formal")
+        self.assertTrue(judgement.formal_experiment)
+        self.assertFalse(judgement.smoke_test_only)
 
 
 if __name__ == "__main__":

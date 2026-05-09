@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from contracts import DeepInsightSpec, ExperimentJudgement
+from config import EXPERIMENT_ALLOW_SYNTHETIC_FALLBACK, EXPERIMENT_REQUIRE_REAL_BENCHMARK
 
 
 def _non_empty_text(value: Any) -> str:
@@ -37,6 +38,28 @@ def _dataset_names(plan: dict[str, Any]) -> list[str]:
     return names
 
 
+def _looks_synthetic(name: str) -> bool:
+    lowered = _non_empty_text(name).lower()
+    return not lowered or any(token in lowered for token in ("synthetic", "simulated", "toy", "smoke", "probe", "dummy"))
+
+
+def _model_names(plan: dict[str, Any]) -> list[str]:
+    rows = []
+    for key in ("model_targets", "models"):
+        value = plan.get(key)
+        if isinstance(value, list):
+            rows.extend(value)
+    names: list[str] = []
+    for row in rows:
+        if isinstance(row, dict):
+            name = _non_empty_text(row.get("name") or row.get("hf_model") or row.get("model"))
+        else:
+            name = _non_empty_text(row)
+        if name:
+            names.append(name)
+    return names
+
+
 def _primary_metric(plan: dict[str, Any]) -> str:
     metrics = plan.get("metrics") or {}
     if isinstance(metrics, dict):
@@ -62,6 +85,8 @@ def review_experiment_candidate(
 
     baselines = _baseline_names(plan)
     datasets = _dataset_names(plan)
+    real_datasets = [name for name in datasets if not _looks_synthetic(name)]
+    model_targets = _model_names(plan)
     primary_metric = _primary_metric(plan)
 
     baseline_review = {
@@ -89,11 +114,37 @@ def review_experiment_candidate(
         "method_name": _non_empty_text(method.get("name")),
         "method_definition_present": bool(_non_empty_text(method.get("definition"))),
         "dataset_count": len(datasets),
+        "real_dataset_count": len(real_datasets),
+        "model_targets": model_targets,
         "primary_metric": primary_metric,
         "aligned": bool(datasets and primary_metric and _non_empty_text(method.get("definition"))),
     }
     if not datasets:
         blockers.append("Experimental plan is missing explicit datasets.")
+    if EXPERIMENT_REQUIRE_REAL_BENCHMARK and not real_datasets:
+        blockers.append("Experimental plan must name at least one real public benchmark dataset; synthetic/proxy datasets are not allowed.")
+    if EXPERIMENT_REQUIRE_REAL_BENCHMARK and not model_targets:
+        blockers.append("Experimental plan must name at least one real model target.")
+    if EXPERIMENT_REQUIRE_REAL_BENCHMARK and plan.get("proxy_allowed") and not EXPERIMENT_ALLOW_SYNTHETIC_FALLBACK:
+        blockers.append("Synthetic/proxy fallback is disabled for formal experiments.")
+    recipe_blockers = plan.get("benchmark_recipe_blockers")
+    if EXPERIMENT_REQUIRE_REAL_BENCHMARK and plan.get("generated_runner_supported") is False:
+        if isinstance(recipe_blockers, list) and recipe_blockers:
+            names = [
+                _non_empty_text(item.get("name") if isinstance(item, dict) else item)
+                for item in recipe_blockers
+            ]
+            names = [name for name in names if name]
+            detail = ", ".join(names[:3]) if names else "the requested benchmark targets"
+            blockers.append(
+                "Generated real-benchmark runner does not support "
+                f"{detail}; a dedicated benchmark harness/recipe is required before GPU execution."
+            )
+        else:
+            blockers.append(
+                "Generated real-benchmark runner is not supported for this benchmark contract; "
+                "a dedicated benchmark harness/recipe is required before GPU execution."
+            )
     if not primary_metric:
         blockers.append("Experimental plan is missing a primary metric.")
     if not _non_empty_text(method.get("definition")):
@@ -109,7 +160,13 @@ def review_experiment_candidate(
         "main_train_file": main_train_file,
         "baseline_command": baseline_command,
     }
-    if repo_url == "scratch" or not repo_url:
+    generated_real_runner = bool(
+        EXPERIMENT_REQUIRE_REAL_BENCHMARK
+        and real_datasets
+        and model_targets
+        and plan.get("generated_runner_supported") is not False
+    )
+    if (repo_url == "scratch" or not repo_url) and not generated_real_runner:
         warnings.append("Repository scout fell back to scratch; formal experiment path is not allowed.")
     if repo_url != "scratch" and entrypoint_available is False:
         warnings.append("Selected repository is missing the expected train entrypoint.")
@@ -118,6 +175,7 @@ def review_experiment_candidate(
 
     environment_review = {
         "formal_repo_available": bool(repo_url and repo_url != "scratch"),
+        "generated_real_benchmark_runner_allowed": generated_real_runner,
         "entrypoint_available": entrypoint_available if entrypoint_available is not None else bool(main_train_file),
         "cpu_compatible": spec.resource_class in {"", "cpu"},
     }
@@ -126,8 +184,10 @@ def review_experiment_candidate(
     formal_experiment = False
     route = "blocked"
 
-    codebase_is_formal = environment_review["formal_repo_available"] and (
-        entrypoint_available is not False
+    codebase_is_formal = (
+        environment_review["formal_repo_available"] or environment_review["generated_real_benchmark_runner_allowed"]
+    ) and (
+        entrypoint_available is not False or environment_review["generated_real_benchmark_runner_allowed"]
     )
     if blockers:
         route = "blocked"

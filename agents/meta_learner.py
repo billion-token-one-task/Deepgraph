@@ -63,7 +63,7 @@ def get_node_hit_rates() -> list[dict]:
             CROSS JOIN json_each(di.source_node_ids)
             WHERE er.hypothesis_verdict IS NOT NULL
             GROUP BY json_each.value
-            HAVING total >= 2
+            HAVING COUNT(*) >= 2
             ORDER BY confirmed DESC, avg_effect DESC
         """
     rows = db.fetchall(sql)
