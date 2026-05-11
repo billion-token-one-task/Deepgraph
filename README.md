@@ -55,6 +55,25 @@ Knowledge Loop ◄── Meta-Learner
 | `orchestrator/` | End-to-end pipeline and background discovery scheduler |
 | `web/` | Flask API and interactive dashboard |
 
+### Big Agent Boundaries
+
+The project is organized around compatibility-first big-agent folders. Existing
+module imports stay valid; new code should use these folders as ownership
+boundaries.
+
+| Big agent folder | Purpose |
+|------------------|---------|
+| `agents/paper_extraction/` | Paper discovery, PDF parsing, extraction, grounding, and source completeness |
+| `agents/graph_construction/` | Evidence graph, taxonomy growth, graph signals, and feedback loop |
+| `agents/idea_generation/` | Insight generation, ranking, reasoning, novelty checks, and idea routing |
+| `agents/experiment_planning/` | Benchmark contracts, experiment scaffolding, reviews, and artifact audits |
+| `agents/experiment_execution/` | Validation loops, GPU jobs, remote shards, health checks, and merge watchers |
+| `agents/manuscript_generation/` | Manuscripts, figures, literature discovery, refinement, and bundles |
+| `agents/orchestration/` | End-to-end scheduling, workspace layout, web service, and deployment hooks |
+
+See `agents/agent_registry.py` and `docs/agent_architecture.md` for the exact
+legacy module map.
+
 ### Agent Modules
 
 **Extraction & Analysis**
@@ -94,7 +113,11 @@ Then open `http://localhost:8080`.
 
 ## Configuration
 
-Key environment variables:
+Default configuration lives in `deepgraph.toml`. Runtime environment variables
+and `.env` still override TOML values, which keeps existing deployments and
+long-running jobs compatible.
+
+Key override variables:
 
 | Variable | Description |
 |----------|-------------|

@@ -42,5 +42,7 @@
 - `benchmark_matrix`: datasets x models x methods x seeds
 - `dependency_order`: worker 执行顺序和 blocking artifacts
 - `claim_gate`: 哪些 artifact 缺失时禁止写论文 claim
-- `materialization_gate`: final audit 通过后必须产出的 tables、significance report、reproducibility statement、claim evidence map、results snippet、limitations snippet
+- `materialization_gate`: final audit 通过后必须产出的 tables、significance report、failure analysis、reproducibility statement、claim evidence map、results snippet、limitations snippet、claim values、completion audit、watchdog contract/audit JSON files
+- `top_venue_gate`: whether CAR-style certainty routing, Self-Route-style mode routing, rational-metareasoning/value-of-computation baselines, Route-to-Reason/RouteLLM prior-art acknowledgement, strict audit, and guarded manuscript wording are required before any SOTA or broad adaptive-reasoning superiority claim
+- `failure_analysis_gate`: whether `failure_cases.jsonl` has been audited and materialized into `failure_analysis.md` before the manuscript discusses failure modes
 - `smoke_boundary`: 明确 smoke/sanity 只验证基础设施，不能支持 claim

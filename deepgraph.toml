@@ -1,0 +1,189 @@
+# DeepGraph unified configuration.
+#
+# Precedence: process environment / .env overrides this file.
+# Keep real API keys and SSH passwords in .env or secret storage; leave the
+# secret fields here empty unless you are using a private local checkout.
+
+[profile]
+active = "machine_learning"
+
+[app]
+name = "DeepGraph"
+subtitle = ""
+root_node_id = "ml"
+
+[paths]
+db_path = "{project_root}/deepgraph.db"
+workspace_dir = "{project_root}/workspace"
+pdf_cache_dir = "{project_root}/workspace/pdfs"
+experiment_workdir = "{home}/sciforge_runs"
+idea_workspace_dir = "{home}/deepgraph_ideas"
+manuscript_workdir = "{home}/deepgraph_manuscripts"
+reference_pdf_corpus_dir = "{project_root}/../../workspace/pdfs"
+iclr2026_template_dir = "{project_root}/third_party/iclr2026/iclr2026"
+
+[database]
+url = ""
+pgvector_embedding_dim = 1536
+
+[runtime]
+python = ""
+
+[tracking]
+mlflow_uri = ""
+
+[llm]
+use_tabcode = false
+protocol = "responses"
+base_url = "https://api2.tabcode.cc/openai"
+api_key = ""
+model = "gpt-5.4"
+rpm = 0
+extra_providers_json = ""
+reasoning_effort = "medium"
+connect_timeout_seconds = 30
+request_timeout_seconds = 300
+transient_retries = 2
+transient_backoff_seconds = 5
+transient_cooldown_seconds = 180
+max_input_tokens = 900000
+max_output_tokens = 32000
+
+[llm.secondary]
+enabled = false
+protocol = "responses"
+base_url = ""
+api_key = ""
+model = "gpt-5.4"
+rpm = 0
+
+[minimax]
+api_key = ""
+base_url = "https://api.minimaxi.com/v1"
+model = "MiniMax-M2.7-highspeed"
+rpm = 18
+
+[prompts]
+version = "insight_v1"
+
+[arxiv]
+categories = ["cs.AI", "cs.LG", "cs.CL", "cs.CV", "cs.MA", "stat.ML"]
+max_results_per_query = 100
+
+[grobid]
+base_url = "http://127.0.0.1:8070"
+request_timeout_seconds = 300
+
+[pdf]
+text_backend = "auto"
+
+[pipeline]
+concurrency = 30
+sleep_between_papers = 1
+incremental_insight_every = 20
+max_retryable_failures = 12
+event_poll_seconds = 5
+
+[graph]
+grounding_min_store_score = 0.0
+contradiction_requires_grounded = false
+backfill_on_start = true
+refresh_merge_candidates_on_start = true
+paper_cluster_min_papers = 10
+
+[discovery]
+tier1_candidates = 5
+tier2_problems = 8
+tier2_papers = 5
+min_tier2_backlog = 3
+auto_trigger_papers = 200
+bulk_tier1_candidates = 12
+bulk_tier1_overlaps = 80
+bulk_tier1_patterns = 60
+bulk_tier2_problems = 15
+bulk_tier2_plateaus = 35
+bulk_tier2_limit_nodes = 30
+
+[idea]
+evidence_min_non_numeric = 2
+
+[experiment]
+time_budget_seconds = 300
+max_iterations = 100
+reproduction_iters = 3
+proxy_data_fraction = 0.15
+proxy_max_epochs = 10
+early_stop_threshold = 0.20
+refute_min_iters = 30
+plateau_patience = 12
+require_real_benchmark = true
+allow_synthetic_fallback = false
+real_llm_model = "Qwen/Qwen2.5-7B-Instruct"
+real_benchmark_dataset = "openai/gsm8k"
+real_benchmark_dataset_config = "main"
+real_benchmark_max_examples = 64
+real_benchmark_seeds = 3
+real_benchmark_time_budget_seconds = 3600
+validation_benchmark_max_examples = 64
+validation_benchmark_seeds = 3
+validation_benchmark_methods = "Vanilla Direct Answering,Always-Reason Chain-of-Thought,CGGR,CGGR/no_counterfactual_delta"
+reproduction_repair_max_rounds = 8
+allow_smoke_validation = false
+evosci_verify_timeout = 900
+require_evoscientist = false
+
+[codex]
+exec_enabled = true
+cli_path = ""
+model = ""
+timeout_seconds = 900
+
+[gpu]
+mode = "single_host"
+worker_slots = 4
+visible_devices = []
+default_model = "H20"
+default_vram_gb = 96
+poll_seconds = 10
+stale_recovery_poll_seconds = 120
+job_timeout_seconds = 14400
+
+[gpu.remote]
+ssh_host = ""
+ssh_port = 22
+ssh_user = ""
+ssh_password = ""
+base_dir = "/root/deepgraph-remote-worker"
+python = "python"
+auto_pip_install = true
+setup_timeout_seconds = 3600
+
+[manuscript]
+latex_template = "iclr2026"
+submission_bundle_formats = ["conference"]
+backend = "paper_orchestra"
+iclr2026_template_files = [
+  "iclr2026_conference.sty",
+  "iclr2026_conference.bst",
+  "math_commands.tex",
+  "natbib.sty",
+  "fancyhdr.sty",
+]
+
+[paper_orchestra]
+semantic_scholar_api_key = ""
+paperbanana_cmd = ""
+refinement_iters = 4
+
+[auto_research]
+pipeline_enabled = false
+pipeline_batch_size = 100
+pipeline_interval_seconds = 120
+pipeline_start_delay_seconds = 10
+enabled = true
+interval_seconds = 300
+max_active = 1
+
+[web]
+host = "0.0.0.0"
+port = 8080

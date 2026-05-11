@@ -653,6 +653,15 @@ def _bounded_int_text(value: str | None, cap: int) -> str:
     return str(min(current, cap))
 
 
+def _workdir_uses_cggr_runner(workdir: Path) -> bool:
+    train_py = workdir / "code" / "train.py"
+    try:
+        text = train_py.read_text(encoding="utf-8", errors="ignore")[:20000].lower()
+    except OSError:
+        return False
+    return '"cggr_mode": true' in text or "'cggr_mode': true" in text
+
+
 def _benchmark_env_for_execution(workdir: Path, *, full_benchmark: bool = False) -> dict[str, str]:
     env = ssh_gpu_backend.benchmark_env_from_workdir(workdir)
     if full_benchmark or _env_truthy("DEEPGRAPH_BENCHMARK_FULL_RUN"):
@@ -670,7 +679,7 @@ def _benchmark_env_for_execution(workdir: Path, *, full_benchmark: bool = False)
     )
     env["DEEPGRAPH_BENCHMARK_MAX_EXAMPLES_CAP"] = str(EXPERIMENT_VALIDATION_BENCHMARK_MAX_EXAMPLES)
     env["DEEPGRAPH_BENCHMARK_SEEDS_CAP"] = str(EXPERIMENT_VALIDATION_BENCHMARK_SEEDS)
-    if EXPERIMENT_VALIDATION_BENCHMARK_METHODS:
+    if EXPERIMENT_VALIDATION_BENCHMARK_METHODS and _workdir_uses_cggr_runner(workdir):
         env["DEEPGRAPH_BENCHMARK_METHODS"] = EXPERIMENT_VALIDATION_BENCHMARK_METHODS
     return env
 

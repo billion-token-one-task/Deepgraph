@@ -13,6 +13,7 @@
 - `limitations_snippet.tex`
 - `completion_audit.md`
 - `claim_values.json`
+- `docs/cggr_top_venue_novelty_gap.md`
 - Dataset/model/method cards
 - Ablation and failure analysis artifacts
 
@@ -27,6 +28,10 @@
 - Include claim support status (`supported`, `downgraded`, or `rejected`) near each headline empirical claim.
 - Tie every table/figure caption to run ids or artifact ids.
 - Treat green tests, completed manifests, or successful verifier output as implementation evidence only; do not write empirical prose unless the Stats / Audit requirement-to-artifact checklist explicitly supports the claim.
+- The Related Work and experiment-scope prose must acknowledge rational metareasoning/value-of-computation, CAR-style certainty routing, Self-Route-style mode routing, Route-to-Reason-style joint model/strategy routing, and RouteLLM-style cost-quality routing when the paper discusses adaptive reasoning or routing.
+- When describing the active run, state that CGGR is a fixed proxy-gated executable instantiation unless the audited artifact contains a trained estimator. Avoid "learns a policy" wording for the current run.
+- If `claim_values.json` reports `top_venue_general_superiority_decision` as blocked, every SOTA, first-method, and broad adaptive-reasoning superiority statement must be removed or rewritten as a scoped locked-baseline claim.
+- Include `failure_analysis.md` only after materialization; summarize failure rows by method/dataset/stage and keep generation/scoring failures visible if audit admits them as non-blocking warnings.
 
 ## Forbidden
 
@@ -45,5 +50,6 @@ Return Markdown containing:
 - `limitations.md`
 - `reproducibility_statement.md`
 - `claim_sanitization_report.md`
+- `related_work_gap.md`
 - `manuscript_patch_plan.md` listing which audited snippets/tables should be inserted
 - A final checklist showing every claim and its evidence id

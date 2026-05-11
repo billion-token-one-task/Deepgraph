@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
-from audit_paper_benchmark_artifacts import audit
+from audit_paper_benchmark_artifacts import TOP_VENUE_BASELINE_METHODS, audit
 
 
 REQUIRED_DATASETS = [
@@ -36,24 +36,25 @@ REQUIRED_ABLATIONS = [
 
 
 class PaperBenchmarkAuditTests(unittest.TestCase):
-    def _write_package(self, workdir: Path, *, sharded: bool) -> None:
+    def _write_package(self, workdir: Path, *, sharded: bool, top_venue: bool = False) -> None:
         results = workdir / "results"
         results.mkdir(parents=True)
-        per_method = {method: {"metric_value": 0.5, "score": 0.6} for method in REQUIRED_METHODS}
+        methods = REQUIRED_METHODS + (sorted(TOP_VENUE_BASELINE_METHODS) if top_venue else [])
+        per_method = {method: {"metric_value": 0.5, "score": 0.6} for method in methods}
         datasets = [{"name": name, "id": name, "split": "test"} for name in REQUIRED_DATASETS]
         summary = {
             "full_benchmark_completed": True,
             "num_seeds": 5,
             "datasets": datasets,
             "per_method": per_method,
-            "per_method_std": {method: 0.01 for method in REQUIRED_METHODS},
+            "per_method_std": {method: 0.01 for method in methods},
             "ablation_table": [{"ablation": name, "metric_value": 0.4} for name in REQUIRED_ABLATIONS],
             "budget": {"seeds": 5, "max_examples_per_dataset_seed": 128},
             "load_failures": [],
         }
         run_config = {
             "targets": [{"name": name} for name in REQUIRED_DATASETS],
-            "methods": REQUIRED_METHODS,
+            "methods": methods,
             "ablations": REQUIRED_ABLATIONS,
             "seeds": 5,
             "seed_values": [0, 1, 2, 3, 4],
@@ -64,7 +65,7 @@ class PaperBenchmarkAuditTests(unittest.TestCase):
         manifest = {
             "full_benchmark_completed": True,
             "datasets": datasets,
-            "methods": REQUIRED_METHODS,
+            "methods": methods,
         }
         json_files = {
             "benchmark_summary.json": summary,
@@ -103,7 +104,7 @@ class PaperBenchmarkAuditTests(unittest.TestCase):
         routing_lines = []
         for seed in range(5):
             for dataset in REQUIRED_DATASETS:
-                for method in REQUIRED_METHODS:
+                for method in methods:
                     for idx in range(128):
                         example_id = f"{dataset}-{seed}-{idx}"
                         raw_lines.append(
@@ -118,7 +119,7 @@ class PaperBenchmarkAuditTests(unittest.TestCase):
                                 }
                             )
                         )
-                        if method == "CGGR":
+                        if method == "CGGR" or method in TOP_VENUE_BASELINE_METHODS:
                             routing_lines.append(
                                 json.dumps(
                                     {
@@ -155,41 +156,86 @@ class PaperBenchmarkAuditTests(unittest.TestCase):
         self.assertTrue(result["ok"], result)
         self.assertEqual(result["blockers"], [])
 
-    def test_cggr_zero_routing_is_a_blocker(self):
+    def test_top_venue_baseline_mode_requires_recent_adaptive_baselines(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workdir = Path(tmpdir)
+            self._write_package(workdir, sharded=False)
+
+            result = audit(workdir, require_full=True, require_top_venue_baselines=True)
+
+        self.assertFalse(result["ok"])
+        self.assertTrue(
+            any("required method missing: CAR-Style Certainty Adaptive Routing" == blocker for blocker in result["blockers"]),
+            result,
+        )
+
+    def test_top_venue_baseline_mode_passes_when_extra_methods_have_full_coverage(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workdir = Path(tmpdir)
+            self._write_package(workdir, sharded=False, top_venue=True)
+
+            result = audit(workdir, require_full=True, require_top_venue_baselines=True)
+
+        self.assertTrue(result["ok"], result)
+        self.assertTrue(result["require_top_venue_baselines"])
+
+    def test_cggr_global_zero_routing_is_a_blocker(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             workdir = Path(tmpdir)
             self._write_package(workdir, sharded=False)
             results = workdir / "results"
-            raw_lines = []
             routing_lines = []
-            for idx in range(20):
-                row = {
-                    "seed": 0,
-                    "dataset": "MuSiQue-Ans",
-                    "method": "CGGR",
-                    "example_id": f"ex-{idx}",
-                    "new_tokens": 64,
-                }
-                raw_lines.append(json.dumps(row))
-                routing_lines.append(
-                    json.dumps(
-                        {
-                            "seed": 0,
-                            "dataset": "MuSiQue-Ans",
-                            "method": "CGGR",
-                            "example_id": f"ex-{idx}",
-                            "max_new_tokens": 64,
-                            "routed_to_deliberation": False,
-                        }
-                    )
-                )
-            (results / "raw_predictions.jsonl").write_text("\n".join(raw_lines) + "\n", encoding="utf-8")
+            for seed in range(5):
+                for dataset in REQUIRED_DATASETS:
+                    for idx in range(128):
+                        routing_lines.append(
+                            json.dumps(
+                                {
+                                    "seed": seed,
+                                    "dataset": dataset,
+                                    "method": "CGGR",
+                                    "example_id": f"{dataset}-{seed}-{idx}",
+                                    "max_new_tokens": 64,
+                                    "routed_to_deliberation": False,
+                                }
+                            )
+                        )
             (results / "routing_decisions.jsonl").write_text("\n".join(routing_lines) + "\n", encoding="utf-8")
 
             result = audit(workdir, require_full=True)
 
         self.assertFalse(result["ok"])
-        self.assertIn("CGGR routing collapsed to zero deliberation for MuSiQue-Ans seed=0", result["blockers"])
+        self.assertIn("CGGR routing collapsed to zero deliberation across all audited cells", result["blockers"])
+
+    def test_cggr_single_cell_zero_routing_is_a_warning(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workdir = Path(tmpdir)
+            self._write_package(workdir, sharded=False)
+            results = workdir / "results"
+            routing_lines = []
+            for seed in range(5):
+                for dataset in REQUIRED_DATASETS:
+                    for idx in range(128):
+                        routing_lines.append(
+                            json.dumps(
+                                {
+                                    "seed": seed,
+                                    "dataset": dataset,
+                                    "method": "CGGR",
+                                    "example_id": f"{dataset}-{seed}-{idx}",
+                                    "max_new_tokens": 64,
+                                    "routed_to_deliberation": False
+                                    if seed == 0 and dataset == "MuSiQue-Ans"
+                                    else idx % 2 == 0,
+                                }
+                            )
+                        )
+            (results / "routing_decisions.jsonl").write_text("\n".join(routing_lines) + "\n", encoding="utf-8")
+
+            result = audit(workdir, require_full=True)
+
+        self.assertTrue(result["ok"], result)
+        self.assertIn("routing rate is 0.000 for CGGR|MuSiQue-Ans|seed=0", result["warnings"])
 
     def test_generation_failure_cases_are_blockers(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -218,6 +264,35 @@ class PaperBenchmarkAuditTests(unittest.TestCase):
         self.assertTrue(
             any(blocker.startswith("generation_or_scoring failures present") for blocker in result["blockers"])
         )
+
+    def test_low_score_failure_analysis_rows_are_not_generation_blockers(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workdir = Path(tmpdir)
+            self._write_package(workdir, sharded=False)
+            results = workdir / "results"
+            (results / "failure_cases.jsonl").write_text(
+                json.dumps(
+                    {
+                        "seed": 0,
+                        "dataset": "MuSiQue-Ans",
+                        "method": "CGGR",
+                        "example_id": "ex-0",
+                        "prediction_answer": "wrong",
+                        "gold_answer": "right",
+                        "primary_score": 0.0,
+                        "exact": 0.0,
+                        "f1": 0.0,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            result = audit(workdir, require_full=True)
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["failure_diagnostics"]["failure_cases_rows"], 1)
+        self.assertEqual(result["failure_diagnostics"]["generation_or_scoring_failures"], 0)
 
     def test_empty_predictions_and_zero_tokens_are_blockers(self):
         with tempfile.TemporaryDirectory() as tmpdir:

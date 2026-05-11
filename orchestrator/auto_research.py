@@ -80,7 +80,7 @@ MANUAL_RERUN_COMPLETED_STAGES = {
     "manuscript_blocked",
     "reset_completed_experiments",
 }
-IGNORED_EXISTING_RUN_STATUSES = {"superseded", "reset", "archived"}
+IGNORED_EXISTING_RUN_STATUSES = {"superseded", "reset", "archived", "cancelled"}
 
 HEAVY_KEYWORDS = {
     "llm", "gpt", "llama", "mistral", "diffusion", "stable diffusion",
@@ -203,7 +203,7 @@ def _existing_run_for_candidate(insight: dict) -> dict | None:
         """
         SELECT * FROM experiment_runs
         WHERE deep_insight_id=?
-          AND COALESCE(status, '') NOT IN ('superseded', 'reset', 'archived')
+          AND COALESCE(status, '') NOT IN ('superseded', 'reset', 'archived', 'cancelled')
         ORDER BY id DESC LIMIT 1
         """,
         (insight_id,),

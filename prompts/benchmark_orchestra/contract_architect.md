@@ -14,10 +14,10 @@
 
 ## Required Design
 
-- Datasets must include GSM8K, StrategyQA, HotpotQA, and MuSiQue or 2WikiMultiHopQA unless资源不足时主动缩小 claim。
-- Models must include at least one pinned Qwen instruct checkpoint and one pinned Llama instruct checkpoint.
-- Methods must include Direct, CoT, SelfConsistency, CGGR-confidence, CGGR-disagreement, CGGR-random, CGGR-oracle, and CGGR-full.
-- Seeds must be pre-registered. Default paper-grade seed list: 11, 23, 37, 53, 71.
+- For the active repaired CGGR run, the locked dataset contract is `MuSiQue-Ans`, `StrategyQA`, `2WikiMultihopQA`, and `Stress Test Split: Simple-vs-Hard Counterfactual Partition`; do not require GSM8K or HotpotQA for the current run47 claim unless a new pre-registered contract is created.
+- The active repaired run is scoped to a pinned Qwen instruct checkpoint. Cross-model claims require a future pre-registered Llama or other-model validation contract and cannot be inferred from run45/run46/run47.
+- For the active repaired run, method coverage is locked to the registered deployable baseline/ablation shards: Direct, Always-Reason CoT, Self-Consistency, Least-to-Most, Confidence Gate, Disagreement Routing, Random Budget-Matched Routing, CGGR, and the four CGGR ablations. Oracle routing is not part of the active run47 evidence contract.
+- For the active repaired run, seeds are locked to `[0, 1, 2, 3, 4]`. Any future seed list must be pre-registered before execution and cannot be swapped in after seeing results.
 - Metrics must include quality, parse failure rate, token cost, latency, and deliberation rate.
 
 ## Forbidden

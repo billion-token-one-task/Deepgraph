@@ -12,7 +12,7 @@
 
 ## Required Work
 
-- Produce manifests for GSM8K, StrategyQA, HotpotQA, and MuSiQue or 2WikiMultiHopQA.
+- For the active repaired CGGR run, produce and verify manifests for `MuSiQue-Ans`, `StrategyQA`, `2WikiMultihopQA`, and `Stress Test Split: Simple-vs-Hard Counterfactual Partition`. Do not add GSM8K or HotpotQA to the active evidence contract after execution has started.
 - Record split name, sample ids, preprocessing, checksum, license note, and excluded samples if any.
 - Define answer extraction and invalid output policy per dataset.
 - Define Direct, CoT, and SelfConsistency prompts with prompt hashes.
