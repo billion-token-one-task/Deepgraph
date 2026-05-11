@@ -16,10 +16,13 @@ from db import opportunity_engine as opp
 from db import taxonomy as tax
 from orchestrator.pipeline import get_events, run_continuous, log_event, get_stats_dict
 from agents.taxonomy_expander import run_expansion
+from web.agenda_routes import register as register_agenda_routes
 
 app = Flask(__name__,
             template_folder="templates",
             static_folder="static")
+
+register_agenda_routes(app)
 
 _pipeline_running = False
 _pipeline_lock = threading.Lock()

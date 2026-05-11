@@ -579,6 +579,33 @@ def init_db():
             conn.execute("SET statement_timeout = '60s'")
             try:
                 _apply_postgres_schema_file()
+                # Prefer PG-specific agenda schema (BIGSERIAL/TIMESTAMP);
+                # fall back to SQLite schema if PG variant is absent (best-effort).
+                schema_agenda_pg_path = Path(__file__).parent / "schema_agenda_postgres.sql"
+                schema_agenda_path = (
+                    schema_agenda_pg_path
+                    if schema_agenda_pg_path.exists()
+                    else Path(__file__).parent / "schema_agenda.sql"
+                )
+                if schema_agenda_path.exists():
+                    try:
+                        for stmt in schema_agenda_path.read_text(encoding="utf-8").split(";"):
+                            # Strip leading '--' comment lines so that a statement
+                            # whose chunk starts with a comment block (e.g. file
+                            # header preceding the first CREATE TABLE) is not
+                            # discarded by the startswith('--') guard below.
+                            lines = stmt.split("\n")
+                            while lines and lines[0].strip().startswith("--"):
+                                lines.pop(0)
+                            s = "\n".join(lines).strip()
+                            if s and not s.startswith("--"):
+                                try:
+                                    get_conn().execute(s)
+                                except Exception:
+                                    pass
+                        get_conn().commit()
+                    except Exception:
+                        pass
                 _ensure_vnext_migrations()
                 _ensure_grounding_schema()
                 schema_feedback = Path(__file__).parent / "schema_insight_feedback.sql"
@@ -619,6 +646,9 @@ def init_db():
     schema_v2_path = Path(__file__).parent / "schema_v2.sql"
     if schema_v2_path.exists():
         conn.executescript(schema_v2_path.read_text(encoding="utf-8"))
+    schema_agenda_path = Path(__file__).parent / "schema_agenda.sql"
+    if schema_agenda_path.exists():
+        conn.executescript(schema_agenda_path.read_text(encoding="utf-8"))
     _ensure_vnext_migrations()
     _ensure_grounding_schema()
     schema_feedback = Path(__file__).parent / "schema_insight_feedback.sql"

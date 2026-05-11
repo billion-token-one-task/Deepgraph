@@ -91,6 +91,10 @@
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><rect x="2" y="3" width="16" height="5" rx="1.5" stroke="currentColor" stroke-width="1.5"/><rect x="2" y="12" width="16" height="5" rx="1.5" stroke="currentColor" stroke-width="1.5"/><circle cx="5" cy="5.5" r="1" fill="currentColor"/><circle cx="5" cy="14.5" r="1" fill="currentColor"/></svg>
                     <span>Providers</span>
                 </button>
+                <button class="nav-item" data-tab="agenda">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M4 3h12v14H4z" stroke="currentColor" stroke-width="1.5"/><path d="M7 6h6M7 9h6M7 12h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                    <span>Agenda</span>
+                </button>
             </div>
 
             <div class="sidebar-footer">
@@ -410,6 +414,51 @@
                 </div>
             </section>
 
+            <!-- ── Agenda Tab (issue #9) ────────────────────────────── -->
+            <section class="tab-panel" id="tab-agenda">
+                <div class="tab-scroll">
+                    <div class="card">
+                        <div class="card-header">
+                            <h3>Research Agenda</h3>
+                            <span class="badge badge-dim" id="agendaActiveBadge">no agenda</span>
+                        </div>
+                        <div style="padding:12px 16px;display:flex;flex-direction:column;gap:12px;">
+                            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+                                <button id="agendaLoadBtn" class="btn-secondary">Refresh</button>
+                                <button id="agendaSelectBtn" class="btn-primary">Run Selector + Dispatch</button>
+                                <select id="agendaDispatchMode" style="background:transparent;color:inherit;border:1px solid var(--border);padding:4px 8px;border-radius:6px;">
+                                    <option value="auto">auto</option>
+                                    <option value="link">link existing</option>
+                                    <option value="enqueue">enqueue fresh</option>
+                                    <option value="none">no dispatch</option>
+                                </select>
+                            </div>
+                            <details>
+                                <summary style="cursor:pointer;color:var(--text-dim);font-size:0.85rem;">Upload agenda (YAML)</summary>
+                                <textarea id="agendaYamlInput" placeholder="version: v1&#10;name: ..." style="width:100%;min-height:140px;margin-top:8px;background:var(--bg-elev);color:inherit;border:1px solid var(--border);border-radius:6px;padding:8px;font-family:monospace;font-size:0.78rem;"></textarea>
+                                <button id="agendaUploadBtn" class="btn-secondary" style="margin-top:6px;">Upload</button>
+                            </details>
+                            <div id="agendaCurrentInfo" style="font-size:0.82rem;color:var(--text-dim);"></div>
+                        </div>
+                    </div>
+
+                    <div class="card" style="margin-top:14px;">
+                        <div class="card-header"><h3>Latest Selection</h3></div>
+                        <div id="agendaSelectionView" style="padding:12px 16px;font-size:0.85rem;"></div>
+                        <div style="padding:0 16px 12px;display:flex;gap:8px;flex-wrap:wrap;">
+                            <button id="agendaReviewBtn" class="btn-secondary">Run Review</button>
+                            <button id="agendaPlanBtn" class="btn-secondary">Build Revision Plan</button>
+                            <button id="agendaLoopBtn" class="btn-secondary">Inspect Full Loop</button>
+                        </div>
+                    </div>
+
+                    <div class="card" style="margin-top:14px;">
+                        <div class="card-header"><h3>Loop Inspection</h3></div>
+                        <pre id="agendaLoopView" style="padding:12px 16px;font-size:0.74rem;color:var(--text-dim);max-height:480px;overflow:auto;white-space:pre-wrap;"></pre>
+                    </div>
+                </div>
+            </section>
+
         </main>
     </div>
 
@@ -417,5 +466,6 @@
     <div class="tooltip" id="tooltip"></div>
 
     <script src="/static/js/app.js"></script>
+    <script src="/static/js/agenda.js"></script>
 </body>
 </html>
