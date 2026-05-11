@@ -5,6 +5,8 @@ __pycache__/
 .env
 .venv/
 venv/
+.tools/
+.uv-cache/
 
 .pytest_cache/
 .mypy_cache/

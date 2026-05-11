@@ -295,6 +295,21 @@ def _build_caption(spec: dict[str, Any]) -> str:
     return title or objective or "Framework overview"
 
 
+def _is_motivation_overview_spec(spec: dict[str, Any]) -> bool:
+    fig = spec.get("figure") or {}
+    text = " ".join(
+        str(part or "")
+        for part in (
+            fig.get("figure_id"),
+            fig.get("title"),
+            fig.get("objective"),
+            spec.get("state_title"),
+            spec.get("problem_statement"),
+        )
+    ).lower()
+    return any(token in text for token in ("motivation", "overview", "teaser", "problem-method-result", "problem method result"))
+
+
 def _check_credentials() -> tuple[bool, str]:
     image_protocol = (_env_first("DEEPGRAPH_PAPERBANANA_IMAGE_PROTOCOL") or "").strip().lower()
     if image_protocol == "openai_compatible" and _env_first("DEEPGRAPH_PAPERBANANA_IMAGE_API_KEY") and _openai_image_base_url():
@@ -312,6 +327,20 @@ def _check_credentials() -> tuple[bool, str]:
 
 def _image_prompt(spec: dict[str, Any], *, caption: str, content: str) -> str:
     fig = spec.get("figure") or {}
+    if _is_motivation_overview_spec(spec):
+        return "\n".join(
+            [
+                "Create one camera-ready conceptual figure for a top-tier scientific paper.",
+                "Hard constraints: no title, no section heading, no Fig. caption, no readable words, no labels, no numbers, no equations, no UI elements.",
+                "Do not draw a flowchart: avoid rectangular process boxes connected by linear arrows.",
+                "Use abstract scientific visual language instead: many small logo-like glyphs, uncertainty particles, calibration lenses, budget tokens, confidence bands, utility balance marks, reasoning sparks, and compact neural/circuit motifs.",
+                "Communicate motivation and overview through composition: diverse problem instances on one side, a selective attention/gating region in the center, a reasoning core, and resolved answer symbols on the other side.",
+                "Avoid brand logos and avoid decorative clutter. Use a restrained academic palette: white background, deep blue, graphite, muted teal, and small amber accents.",
+                "Make the result crisp, vector-like, high contrast, generous in whitespace, and suitable for NeurIPS/ICLR/Nature Machine Intelligence aesthetics.",
+                f"Figure intent for the visual metaphor: {_clip(fig.get('objective') or caption, 420)}",
+                f"Paper context: {_clip(content, 900)}",
+            ]
+        ).strip()
     labels = [
         str(part)
         for part in [
@@ -403,6 +432,76 @@ def _run_openai_compatible_image_generation(
         return 4
 
     return _write_openai_image_response(output_path=output_path, body=body)
+
+
+def _run_gemini_native_image_generation(
+    *,
+    output_path: Path,
+    prompt: str,
+    aspect_ratio: str,
+) -> int:
+    api_key = _env_first("DEEPGRAPH_PAPERBANANA_IMAGE_API_KEY", "GEMINI_NATIVE_API_KEY")
+    base_url = _normalize_gemini_native_base_url(
+        _env_first("DEEPGRAPH_PAPERBANANA_IMAGE_BASE_URL", "GEMINI_NATIVE_BASE_URL")
+    )
+    model = _env_first("DEEPGRAPH_PAPERBANANA_IMAGE_MODEL", "IMAGE_GEN_MODEL_NAME") or "gemini-2.5-flash-image"
+    if not api_key or not base_url:
+        print("Gemini-native image generation is missing API key or base URL.", file=sys.stderr)
+        return 3
+
+    payload = {
+        "contents": [
+            {
+                "role": "user",
+                "parts": [{"text": prompt}],
+            }
+        ],
+        "generationConfig": {
+            "responseModalities": ["TEXT", "IMAGE"],
+            "imageConfig": {"aspectRatio": aspect_ratio},
+        },
+    }
+    url = f"{base_url}/v1beta/models/{model}:generateContent"
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "x-goog-api-key": api_key,
+            "Content-Type": "application/json",
+            "User-Agent": "DeepGraph-PaperBanana-Wrapper/1.0",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=600) as response:
+            body = json.loads(response.read().decode("utf-8", errors="replace"))
+    except Exception as exc:
+        print(f"Gemini-native image generation failed: {exc}", file=sys.stderr)
+        return 4
+
+    candidates = body.get("candidates") if isinstance(body, dict) else None
+    for candidate in candidates or []:
+        content = candidate.get("content") if isinstance(candidate, dict) else None
+        parts = content.get("parts") if isinstance(content, dict) else None
+        for part in parts or []:
+            if not isinstance(part, dict):
+                continue
+            inline_data = part.get("inlineData") or part.get("inline_data")
+            if not isinstance(inline_data, dict):
+                continue
+            data = inline_data.get("data")
+            if not data:
+                continue
+            try:
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_bytes(base64.b64decode(str(data)))
+                return 0
+            except Exception as exc:
+                print(f"Gemini-native image base64 decode failed: {exc}", file=sys.stderr)
+                return 4
+    print("Gemini-native image generation response had no inline image data.", file=sys.stderr)
+    return 4
 
 
 def _image_attempt_count() -> int:
@@ -586,6 +685,12 @@ def main() -> int:
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     if not PAPERBANANA_PYTHON.exists() or not PAPERBANANA_ENTRY.exists():
+        if provider == "gemini_native":
+            return _run_gemini_native_image_generation(
+                output_path=output_path,
+                prompt=_image_prompt(spec, caption=caption, content=content),
+                aspect_ratio=aspect_ratio,
+            )
         if provider in {"openai", "openrouter", "openai_compatible_image"}:
             return _run_openai_compatible_image_generation(
                 output_path=output_path,

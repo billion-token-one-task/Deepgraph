@@ -18,6 +18,19 @@ def _safe_filename(text: str) -> str:
     return cleaned[:80] or "figure"
 
 
+def _is_motivation_or_overview_figure(fig: dict[str, Any]) -> bool:
+    text = " ".join(
+        str(fig.get(key) or "")
+        for key in ("figure_id", "title", "objective", "caption", "data_source")
+    ).lower()
+    return any(token in text for token in ("motivation", "overview", "teaser", "problem-method-result", "problem method result"))
+
+
+def _banana_motivation_overview_enabled() -> bool:
+    raw = os.getenv("DEEPGRAPH_PAPERBANANA_MOTIVATION_OVERVIEW", "true").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
+
+
 def _default_plot_plan(metric_name: str) -> list[dict[str, Any]]:
     return [
         {
@@ -735,7 +748,7 @@ def _run_external_diagram(
         ensure_ascii=False,
     )
     command = paperbanana_cmd.format(
-        output=_shell_quote(str(out_path)),
+        output=_shell_quote(str(out_path.resolve())),
         spec=_shell_quote(spec),
     )
     try:
@@ -822,8 +835,13 @@ def run_figure_orchestra(
         objective = str(fig.get("objective") or title)
         plot_type = str(fig.get("plot_type") or "plot").lower()
         if plot_type == "diagram":
+            force_banana = (
+                _banana_motivation_overview_enabled()
+                and paperbanana_cmd
+                and _is_motivation_or_overview_figure(fig)
+            )
             prefer_ai = os.getenv("DEEPGRAPH_PAPERBANANA_PREFER_AI", "").strip().lower() in {"1", "true", "yes"}
-            if allow_external_diagrams and prefer_ai and paperbanana_cmd:
+            if force_banana or (allow_external_diagrams and prefer_ai and paperbanana_cmd):
                 asset = _run_external_diagram(
                     fig,
                     figures_dir=figures_dir,
