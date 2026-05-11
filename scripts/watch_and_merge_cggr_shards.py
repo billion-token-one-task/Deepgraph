@@ -17,6 +17,7 @@ from db import database as db
 from audit_paper_benchmark_artifacts import audit
 from materialize_audited_cggr_results import materialize
 from merge_cggr_method_shards import merge
+from triage_cggr_audit_failure import write_triage_report
 
 
 def _run(row_id: int) -> dict:
@@ -49,6 +50,24 @@ def _mark_merged_failed(merged_run_id: int, reason: dict) -> None:
     db.commit()
 
 
+def _claim_values_summary(materialize_out_dir: Path) -> dict:
+    claim_values = materialize_out_dir / "claim_values.json"
+    if not claim_values.exists():
+        return {}
+    try:
+        payload = json.loads(claim_values.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    return {
+        "cggr_utility": payload.get("cggr_utility"),
+        "claim_support_decision": payload.get("claim_support_decision"),
+        "top_venue_general_superiority_decision": payload.get("top_venue_general_superiority_decision"),
+        "paired_permutation_p": payload.get("paired_permutation_p"),
+    }
+
+
 def _mark_merged_completed(
     merged_run_id: int,
     materialize_result: dict,
@@ -56,18 +75,13 @@ def _mark_merged_completed(
     materialize_out_dir: Path,
     shard_run_ids: list[int],
 ) -> None:
-    claim_values = materialize_out_dir / "claim_values.json"
-    best_value = None
-    if claim_values.exists():
-        try:
-            payload = json.loads(claim_values.read_text(encoding="utf-8"))
-            best_value = payload.get("cggr_utility")
-        except Exception:
-            best_value = None
+    claim_summary = _claim_values_summary(materialize_out_dir)
+    best_value = claim_summary.get("cggr_utility")
     note = {
         "merged_from_method_shards": shard_run_ids,
         "audit_ok": True,
         "materialized": materialize_result.get("written", []),
+        "claim_values": claim_summary,
     }
     db.execute(
         """UPDATE experiment_runs
@@ -114,6 +128,7 @@ def watch(
     materialize_out_dir: Path,
     poll_seconds: int,
     compile_tex: Path | None = None,
+    require_top_venue_baselines: bool = False,
 ) -> dict:
     db.init_db()
     while True:
@@ -150,17 +165,43 @@ def watch(
         _mark_merged_failed(merged_run_id, {"error": "merge failed", "merge_result": merge_result})
         return {"ok": False, "merge_result": merge_result}
 
-    audit_result = audit(merged_workdir, require_full=True)
+    audit_result = audit(
+        merged_workdir,
+        require_full=True,
+        require_top_venue_baselines=require_top_venue_baselines,
+    )
     print("[watch-merge] audit " + json.dumps(audit_result, ensure_ascii=False), flush=True)
     if not audit_result.get("ok"):
-        _mark_merged_failed(merged_run_id, {"error": "audit failed", "audit": audit_result})
-        return {"ok": False, "audit": audit_result}
+        triage_result = write_triage_report(
+            merged_workdir,
+            audit_result=audit_result,
+            require_full=True,
+            require_top_venue_baselines=require_top_venue_baselines,
+        )
+        _mark_merged_failed(
+            merged_run_id,
+            {"error": "audit failed", "audit": audit_result, "triage": triage_result},
+        )
+        return {"ok": False, "audit": audit_result, "triage": triage_result}
 
-    materialize_result = materialize(merged_workdir, materialize_out_dir)
+    materialize_result = materialize(
+        merged_workdir,
+        materialize_out_dir,
+        require_top_venue_baselines=require_top_venue_baselines,
+    )
     print("[watch-merge] materialize " + json.dumps(materialize_result, ensure_ascii=False), flush=True)
     if not materialize_result.get("ok"):
-        _mark_merged_failed(merged_run_id, {"error": "materialize failed", "materialize": materialize_result})
-        return {"ok": False, "materialize": materialize_result}
+        triage_result = write_triage_report(
+            merged_workdir,
+            audit_result=materialize_result.get("audit"),
+            require_full=True,
+            require_top_venue_baselines=require_top_venue_baselines,
+        )
+        _mark_merged_failed(
+            merged_run_id,
+            {"error": "materialize failed", "materialize": materialize_result, "triage": triage_result},
+        )
+        return {"ok": False, "materialize": materialize_result, "triage": triage_result}
 
     compile_result = _compile_latex(compile_tex)
     print("[watch-merge] compile_tex " + json.dumps(compile_result, ensure_ascii=False), flush=True)
@@ -190,6 +231,7 @@ def main() -> None:
     parser.add_argument("--materialize-out-dir", type=Path, required=True)
     parser.add_argument("--poll-seconds", type=int, default=300)
     parser.add_argument("--compile-tex", type=Path)
+    parser.add_argument("--require-top-venue-baselines", action="store_true")
     args = parser.parse_args()
     result = watch(
         shard_run_ids=args.shard_run_id,
@@ -197,6 +239,7 @@ def main() -> None:
         materialize_out_dir=args.materialize_out_dir,
         poll_seconds=args.poll_seconds,
         compile_tex=args.compile_tex,
+        require_top_venue_baselines=args.require_top_venue_baselines,
     )
     print(json.dumps(result, indent=2, ensure_ascii=False), flush=True)
     raise SystemExit(0 if result.get("ok") else 1)

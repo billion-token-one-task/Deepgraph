@@ -177,10 +177,11 @@ def _apply_postgres_schema_file() -> None:
                     or "extension" in msg
                     or ("lock timeout" in msg and best_effort_stmt)
                     or ("canceling statement due to lock timeout" in msg and best_effort_stmt)
+                    or ("deadlock detected" in msg and best_effort_stmt)
                 ):
                     cur.execute("ROLLBACK TO SAVEPOINT schema_stmt")
                     cur.execute("RELEASE SAVEPOINT schema_stmt")
-                    if "lock timeout" in msg and best_effort_stmt:
+                    if ("lock timeout" in msg or "deadlock detected" in msg) and best_effort_stmt:
                         print(f"[DB] Skipping locked startup schema statement: {stmt[:120]}", flush=True)
                     continue
                 cur.execute("ROLLBACK TO SAVEPOINT schema_stmt")

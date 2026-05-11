@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import json
 from pathlib import Path
 
 from db import database
@@ -134,6 +135,212 @@ class ManuscriptWatchdogTests(unittest.TestCase):
 
         self.assertEqual(report["status"], "block")
         self.assertTrue(any("manuscript_blocked" in item["issue"] for item in report["issues"]))
+
+    def test_top_venue_overclaim_is_blocked_when_claim_values_blocks_it(self):
+        bundle = self.tmpdir_path / "overclaim_bundle"
+        bundle.mkdir()
+        for name in manuscript_watchdog.ICLR_REQUIRED_FILES | manuscript_watchdog.CONTRACT_FILES:
+            (bundle / name).write_text("{}", encoding="utf-8")
+        (bundle / "main.pdf").write_bytes(b"%PDF-1.4\n")
+        (bundle / "claim_values.json").write_text(
+            json.dumps({"top_venue_general_superiority_decision": "blocked_missing_strict_top_venue_baseline_audit"}),
+            encoding="utf-8",
+        )
+        body = " ".join(["evidence-backed claim with citation \\cite{a}."] * 400)
+        (bundle / "main.tex").write_text(
+            "\\documentclass{article}\n\\usepackage{iclr2026_conference}\n\\begin{document}\n"
+            "CGGR is superior to current adaptive reasoning methods and achieves state-of-the-art performance. "
+            + body
+            + "\\includegraphics{figures/a.png}\\includegraphics{figures/b.png}\\end{document}\n",
+            encoding="utf-8",
+        )
+
+        report = manuscript_watchdog.audit_bundle_path(bundle, bundle_format="conference")
+
+        self.assertEqual(report["status"], "block")
+        self.assertTrue(any("top-venue/SOTA" in item["issue"] for item in report["issues"]))
+
+    def test_guarded_top_venue_scope_sentence_is_allowed(self):
+        bundle = self.tmpdir_path / "guarded_bundle"
+        bundle.mkdir()
+        for name in manuscript_watchdog.ICLR_REQUIRED_FILES | manuscript_watchdog.CONTRACT_FILES:
+            (bundle / name).write_text("{}", encoding="utf-8")
+        (bundle / "main.pdf").write_bytes(b"%PDF-1.4\n")
+        (bundle / "claim_values.json").write_text(
+            json.dumps({"top_venue_general_superiority_decision": "blocked_missing_strict_top_venue_baseline_audit"}),
+            encoding="utf-8",
+        )
+        body = " ".join(["evidence-backed claim with citation \\cite{a}."] * 400)
+        (bundle / "main.tex").write_text(
+            "\\documentclass{article}\n\\usepackage{iclr2026_conference}\n\\begin{document}\n"
+            "The locked package is not by itself a state-of-the-art comparison; broad superiority requires a stricter audit. "
+            + body
+            + "\\includegraphics{figures/a.png}\\includegraphics{figures/b.png}\\end{document}\n",
+            encoding="utf-8",
+        )
+
+        report = manuscript_watchdog.audit_bundle_path(bundle, bundle_format="conference")
+
+        self.assertEqual(report["status"], "pass")
+
+    def test_ordinal_first_sentence_is_not_first_method_overclaim(self):
+        bundle = self.tmpdir_path / "ordinal_first_bundle"
+        bundle.mkdir()
+        for name in manuscript_watchdog.ICLR_REQUIRED_FILES | manuscript_watchdog.CONTRACT_FILES:
+            (bundle / name).write_text("{}", encoding="utf-8")
+        (bundle / "main.pdf").write_bytes(b"%PDF-1.4\n")
+        (bundle / "claim_values.json").write_text(
+            json.dumps({"top_venue_general_superiority_decision": "blocked_missing_strict_top_venue_baseline_audit"}),
+            encoding="utf-8",
+        )
+        body = " ".join(["evidence-backed claim with citation \\cite{a}."] * 400)
+        prior_art = (
+            "We study adaptive routing for selective reasoning. "
+            "The manuscript acknowledges CAR-style certainty adaptive routing \\cite{lu2025car}, "
+            "Self-Route \\cite{he2025selfroute}, Rational Metareasoning \\cite{desabbata2025rational}, "
+            "Route-to-Reason \\cite{pan2025rtr}, and RouteLLM \\cite{ong2024routellm}. "
+        )
+        (bundle / "main.tex").write_text(
+            "\\documentclass{article}\n\\usepackage{iclr2026_conference}\n\\begin{document}\n"
+            "First, it formalizes selective deliberation as an answer-now versus deliberate-more decision. "
+            + prior_art
+            + body
+            + "\\includegraphics{figures/a.png}\\includegraphics{figures/b.png}\\end{document}\n",
+            encoding="utf-8",
+        )
+
+        report = manuscript_watchdog.audit_bundle_path(bundle, bundle_format="conference")
+
+        self.assertEqual(report["status"], "pass")
+
+    def test_adaptive_reasoning_manuscript_requires_nearby_prior_art(self):
+        bundle = self.tmpdir_path / "prior_art_gap_bundle"
+        bundle.mkdir()
+        for name in manuscript_watchdog.ICLR_REQUIRED_FILES | manuscript_watchdog.CONTRACT_FILES:
+            (bundle / name).write_text("{}", encoding="utf-8")
+        (bundle / "main.pdf").write_bytes(b"%PDF-1.4\n")
+        body = " ".join(["evidence-backed claim with citation \\cite{a}."] * 400)
+        (bundle / "main.tex").write_text(
+            "\\documentclass{article}\n\\usepackage{iclr2026_conference}\n\\begin{document}\n"
+            "We study adaptive reasoning and selective deliberation for question answering. "
+            + body
+            + "\\includegraphics{figures/a.png}\\includegraphics{figures/b.png}\\end{document}\n",
+            encoding="utf-8",
+        )
+
+        report = manuscript_watchdog.audit_bundle_path(bundle, bundle_format="conference")
+
+        self.assertEqual(report["status"], "block")
+        self.assertTrue(any("prior-art acknowledgement" in item["issue"] for item in report["issues"]))
+
+    def test_adaptive_routing_prior_art_acknowledgement_passes(self):
+        bundle = self.tmpdir_path / "prior_art_ack_bundle"
+        bundle.mkdir()
+        for name in manuscript_watchdog.ICLR_REQUIRED_FILES | manuscript_watchdog.CONTRACT_FILES:
+            (bundle / name).write_text("{}", encoding="utf-8")
+        (bundle / "main.pdf").write_bytes(b"%PDF-1.4\n")
+        body = " ".join(["evidence-backed claim with citation \\cite{a}."] * 400)
+        prior_art = (
+            "We study adaptive routing for selective reasoning. "
+            "The manuscript acknowledges CAR-style certainty adaptive routing \\cite{lu2025car}, "
+            "Self-Route \\cite{he2025selfroute}, Rational Metareasoning \\cite{desabbata2025rational}, "
+            "Route-to-Reason \\cite{pan2025rtr}, and RouteLLM \\cite{ong2024routellm}. "
+        )
+        (bundle / "main.tex").write_text(
+            "\\documentclass{article}\n\\usepackage{iclr2026_conference}\n\\begin{document}\n"
+            + prior_art
+            + body
+            + "\\includegraphics{figures/a.png}\\includegraphics{figures/b.png}\\end{document}\n",
+            encoding="utf-8",
+        )
+
+        report = manuscript_watchdog.audit_bundle_path(bundle, bundle_format="conference")
+
+        self.assertEqual(report["status"], "pass")
+
+    def test_top_venue_decision_can_be_loaded_from_audited_results(self):
+        bundle = self.tmpdir_path / "nested_claim_values_bundle"
+        bundle.mkdir()
+        (bundle / "audited_results").mkdir()
+        for name in manuscript_watchdog.ICLR_REQUIRED_FILES | manuscript_watchdog.CONTRACT_FILES:
+            (bundle / name).write_text("{}", encoding="utf-8")
+        (bundle / "main.pdf").write_bytes(b"%PDF-1.4\n")
+        (bundle / "audited_results" / "claim_values.json").write_text(
+            json.dumps({"top_venue_general_superiority_decision": "eligible_under_strict_top_venue_audit"}),
+            encoding="utf-8",
+        )
+        body = " ".join(["evidence-backed claim with citation \\cite{a}."] * 400)
+        prior_art = (
+            "We study adaptive routing and report state-of-the-art performance under the strict audit. "
+            "The manuscript acknowledges CAR-style certainty adaptive routing \\cite{lu2025car}, "
+            "Self-Route \\cite{he2025selfroute}, Rational Metareasoning \\cite{desabbata2025rational}, "
+            "Route-to-Reason \\cite{pan2025rtr}, and RouteLLM \\cite{ong2024routellm}. "
+        )
+        (bundle / "main.tex").write_text(
+            "\\documentclass{article}\n\\usepackage{iclr2026_conference}\n\\begin{document}\n"
+            + prior_art
+            + body
+            + "\\includegraphics{figures/a.png}\\includegraphics{figures/b.png}\\end{document}\n",
+            encoding="utf-8",
+        )
+
+        report = manuscript_watchdog.audit_bundle_path(bundle, bundle_format="conference")
+
+        self.assertEqual(report["status"], "pass")
+
+    def test_contract_files_can_be_loaded_from_audited_results(self):
+        bundle = self.tmpdir_path / "nested_contract_bundle"
+        bundle.mkdir()
+        audited = bundle / "audited_results"
+        audited.mkdir()
+        for name in manuscript_watchdog.ICLR_REQUIRED_FILES:
+            (bundle / name).write_text("{}", encoding="utf-8")
+        for name in manuscript_watchdog.CONTRACT_FILES:
+            (audited / name).write_text("{}", encoding="utf-8")
+        (bundle / "main.pdf").write_bytes(b"%PDF-1.4\n")
+        (audited / "claim_values.json").write_text(
+            json.dumps({"top_venue_general_superiority_decision": "blocked_missing_strict_top_venue_baseline_audit"}),
+            encoding="utf-8",
+        )
+        body = " ".join(["evidence-backed claim with citation \\cite{a}."] * 400)
+        prior_art = (
+            "We study adaptive routing for selective reasoning. "
+            "The manuscript acknowledges CAR-style certainty adaptive routing \\cite{lu2025car}, "
+            "Self-Route \\cite{he2025selfroute}, Rational Metareasoning \\cite{desabbata2025rational}, "
+            "Route-to-Reason \\cite{pan2025rtr}, and RouteLLM \\cite{ong2024routellm}. "
+        )
+        (bundle / "main.tex").write_text(
+            "\\documentclass{article}\n\\usepackage{iclr2026_conference}\n\\begin{document}\n"
+            + prior_art
+            + body
+            + "\\includegraphics{figures/a.png}\\includegraphics{figures/b.png}\\end{document}\n",
+            encoding="utf-8",
+        )
+
+        report = manuscript_watchdog.audit_bundle_path(bundle, bundle_format="conference")
+
+        self.assertEqual(report["status"], "pass")
+
+    def test_evidence_pending_result_placeholders_block_submission(self):
+        bundle = self.tmpdir_path / "placeholder_result_bundle"
+        bundle.mkdir()
+        for name in manuscript_watchdog.ICLR_REQUIRED_FILES | manuscript_watchdog.CONTRACT_FILES:
+            (bundle / name).write_text("{}", encoding="utf-8")
+        (bundle / "main.pdf").write_bytes(b"%PDF-1.4\n")
+        body = " ".join(["evidence-backed claim with citation \\cite{a}."] * 400)
+        (bundle / "main.tex").write_text(
+            "\\documentclass{article}\n\\usepackage{iclr2026_conference}\n\\begin{document}\n"
+            "No main-result number is reported until the full benchmark completes. "
+            "\\begin{tabular}{cccc} Direct & -- & -- & -- \\\\ \\end{tabular} "
+            + body
+            + "\\includegraphics{figures/a.png}\\includegraphics{figures/b.png}\\end{document}\n",
+            encoding="utf-8",
+        )
+
+        report = manuscript_watchdog.audit_bundle_path(bundle, bundle_format="conference")
+
+        self.assertEqual(report["status"], "block")
+        self.assertTrue(any("blank-result placeholders" in item["issue"] for item in report["issues"]))
 
     def test_reconcile_downgrades_existing_stale_manuscript_auto_job(self):
         database.execute("UPDATE manuscript_runs SET status='stale' WHERE id=1")

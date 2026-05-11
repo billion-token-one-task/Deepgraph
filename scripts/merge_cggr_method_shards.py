@@ -38,7 +38,7 @@ REQUIRED_ABLATIONS = {
 
 
 def _load_json(path: Path) -> Any:
-    return json.loads(path.read_text(encoding="utf-8"))
+    return json.loads(path.read_text(encoding="utf-8-sig"))
 
 
 def _iter_jsonl(path: Path) -> list[dict]:
@@ -64,6 +64,31 @@ def _write_jsonl(path: Path, rows: list[dict]) -> None:
     with path.open("w", encoding="utf-8") as handle:
         for row in rows:
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
+def _load_claim_scope_override(out_workdir: Path) -> tuple[dict | None, Path | None]:
+    merge_config_path = out_workdir / "spec" / "merge_config.json"
+    if not merge_config_path.exists():
+        return None, None
+    try:
+        merge_config = _load_json(merge_config_path)
+    except Exception:
+        return None, None
+    if not isinstance(merge_config, dict):
+        return None, None
+    raw_path = str(merge_config.get("claim_scope_override") or "").strip()
+    if not raw_path:
+        return None, None
+    override_path = Path(raw_path)
+    if not override_path.is_absolute():
+        override_path = out_workdir / override_path
+    if not override_path.exists():
+        return None, override_path
+    try:
+        payload = _load_json(override_path)
+    except Exception:
+        return None, override_path
+    return (payload if isinstance(payload, dict) else None), override_path
 
 
 def _mean(values: list[float]) -> float:
@@ -568,7 +593,9 @@ def merge(shards: list[Path], out_workdir: Path) -> dict:
         routing_rows.extend(_iter_jsonl(results / "routing_decisions.jsonl"))
         failure_rows.extend(_iter_jsonl(results / "failure_cases.jsonl"))
 
-    generation_failures = [row for row in failure_rows if row.get("stage") == "generation_or_scoring"]
+    generation_failures = [
+        row for row in failure_rows if str(row.get("stage") or "").strip().lower() == "generation_or_scoring"
+    ]
     if generation_failures:
         blockers.append("generation_or_scoring failures present in shard failure_cases.jsonl")
     methods_seen = {str(row.get("method") or "") for row in raw_rows if row.get("method")}
@@ -618,12 +645,16 @@ def merge(shards: list[Path], out_workdir: Path) -> dict:
             }
         )
 
+    all_methods = sorted(methods_seen)
     base_config = dict(run_configs[0])
-    base_config["methods"] = sorted(REQUIRED_METHODS)
+    base_config["methods"] = all_methods
     base_config["sharded_run"] = False
     base_config["shard_axes"] = {"method": False, "target": False, "seed": False}
     base_config["merged_from_method_shards"] = [str(path) for path in shards]
     base_config["full_benchmark_completed"] = True
+    claim_scope_override, claim_scope_override_source = _load_claim_scope_override(out_workdir)
+    if claim_scope_override:
+        base_config["claim_scope_override"] = "results/active_claim_scope_override.json"
     _write_json(out_results / "run_config.json", base_config)
 
     _write_jsonl(out_results / "raw_predictions.jsonl", raw_rows)
@@ -641,6 +672,8 @@ def merge(shards: list[Path], out_workdir: Path) -> dict:
     _write_json(out_results / "calibration_reliability.json", calibration_reliability)
     bootstrap = _bootstrap_ci(per_seed_results)
     _write_json(out_results / "bootstrap_ci.json", bootstrap)
+    if claim_scope_override:
+        _write_json(out_results / "active_claim_scope_override.json", claim_scope_override)
 
     datasets = []
     for row in base_config.get("targets") or []:
@@ -666,6 +699,36 @@ def merge(shards: list[Path], out_workdir: Path) -> dict:
         ],
     }
     _write_json(out_results / "environment_report.json", environment_report)
+
+    method_implementation = {
+        "CGGR": {
+            "estimator_type": "fixed proxy-gated executable instantiation",
+            "trained_estimator": False,
+            "proxy_signals": [
+                "task-aware difficulty proxy",
+                "question-structure cues in the selective prompt",
+                "counterfactual-risk and uncertainty wording in the selective prompt",
+            ],
+            "routing_rule": "short branch below the pre-registered proxy threshold; deliberative branch when the proxy exceeds the threshold",
+            "token_budgets": {
+                "direct": 48,
+                "cggr_short_branch": 64,
+                "cggr_deliberative_branch": 224,
+            },
+            "thresholds": {
+                "CGGR": "difficulty >= 0.42 routes to deliberation",
+                "CGGR/no_counterfactual_delta": "difficulty >= 0.58 routes to deliberation",
+                "CGGR/no_lcb": "difficulty >= 0.34 routes to deliberation",
+                "CGGR/no_self_divergence_penalty": "difficulty >= 0.38 routes to deliberation",
+                "CGGR/no_qstruct_term": "fixed 96-token selective branch",
+            },
+            "prompt_policy": {
+                "low_budget_selective_branch": "direct-answer prompt",
+                "routed_branch": "selective-deliberation prompt with question structure, counterfactual risk, and uncertainty cues",
+            },
+            "label_usage": "no benchmark test labels are used for threshold selection in the active run",
+        }
+    }
 
     summary = {
         "primary_metric": "cost_adjusted_accuracy",
@@ -698,10 +761,13 @@ def merge(shards: list[Path], out_workdir: Path) -> dict:
         "budget": {
             "seeds": 5,
             "max_examples_per_dataset_seed": 128,
-            "methods": sorted(REQUIRED_METHODS),
+            "methods": all_methods,
             "target_count": 4,
         },
         "method": "Counterfactual Gain Gated Reasoning (CGGR)",
+        "method_implementation": method_implementation,
+        "claim_scope_override": claim_scope_override or {},
+        "claim_scope_override_source": str(claim_scope_override_source) if claim_scope_override_source else None,
         "duration_seconds": sum(float(summary.get("duration_seconds") or 0.0) for summary in summaries),
         "peak_vram_mb": max(float(summary.get("peak_vram_mb") or 0.0) for summary in summaries),
         "hardware": "NVIDIA L40S",
@@ -713,7 +779,7 @@ def merge(shards: list[Path], out_workdir: Path) -> dict:
         "full_benchmark_completed": True,
         "merged_from_method_shards": [str(path) for path in shards],
         "datasets": datasets,
-        "methods": sorted(REQUIRED_METHODS),
+        "methods": all_methods,
         "model": summary["model"],
         "artifact_paths": {path.name: str(path) for path in out_results.iterdir() if path.is_file()},
     }

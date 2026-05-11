@@ -252,6 +252,58 @@ class GenerateScaffoldTests(unittest.TestCase):
         self.assertIn("claim_route", scaffold["success_criteria"])
         self.assertFalse(scaffold["benchmark_manifest"]["sanity_only"])
 
+    def test_real_benchmark_runner_has_optional_top_venue_baselines(self):
+        insight = {
+            "resource_class": "gpu_large",
+            "proposed_method": {
+                "name": "CGGR",
+                "type": "reasoning",
+                "definition": "Estimate counterfactual reasoning gain before spending extra inference budget.",
+            },
+            "experimental_plan": {
+                "baselines": ["Direct"],
+                "datasets": ["StrategyQA"],
+                "metrics": {"primary": "cost_adjusted_accuracy"},
+                "compute_budget": {"total_gpu_hours": 50},
+            },
+        }
+        codebase = {
+            "url": "scratch",
+            "name": "minimal",
+            "main_train_file": "train.py",
+            "main_eval_command": "python train.py",
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workdir = Path(tmpdir)
+
+            def _fake_call_llm_json(system: str, prompt: str):
+                return (
+                    {
+                        "program_md": "# program",
+                        "evaluate_py": "print('ok')",
+                        "success_criteria": {"metric_name": "cost_adjusted_accuracy"},
+                        "train_py": "print('unused')\n",
+                    },
+                    17,
+                )
+
+            with mock.patch.object(
+                experiment_forge, "call_llm_json", side_effect=_fake_call_llm_json
+            ):
+                experiment_forge.generate_scaffold(insight, codebase, workdir)
+
+            train_py = (workdir / "code" / "train.py").read_text(encoding="utf-8")
+
+        self.assertIn("TOP_VENUE_BASELINE_SPECS", train_py)
+        self.assertIn("DEEPGRAPH_BENCHMARK_INCLUDE_TOP_VENUE_BASELINES", train_py)
+        self.assertIn("CAR-Style Certainty Adaptive Routing", train_py)
+        self.assertIn("Self-Route-Style Mode Routing", train_py)
+        self.assertIn("Rational-Metareasoning VOC Routing", train_py)
+        self.assertIn("car_certainty_gate", train_py)
+        self.assertIn("self_route_mode", train_py)
+        self.assertIn("voc_metareasoning", train_py)
+
     def test_setup_workspace_falls_back_to_archive_when_git_missing(self):
         codebase = {
             "url": "https://github.com/example/project",

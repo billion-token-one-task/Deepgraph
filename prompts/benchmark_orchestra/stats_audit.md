@@ -24,6 +24,8 @@
 - Separate deployable methods from oracle upper bound.
 - Map every accepted claim to exact tables, figures, run ids, and artifact paths.
 - Before accepting any claim, build a requirement-to-artifact checklist and verify the actual files, raw rows, diagnostics, and test coverage behind each item; passing tests, a completed manifest, or a successful verifier are not sufficient unless they cover the claim requirements.
+- Materialize or require `failure_analysis.md` from `failure_cases.jsonl`; summarize failures by method, dataset, stage, and error type, and verify that failures remain in denominators.
+- For broad adaptive-reasoning superiority, require a strict top-venue audit that includes CAR-style certainty routing, Self-Route-style mode routing, and rational-metareasoning/value-of-computation baselines. Route-to-Reason and RouteLLM must be acknowledged as nearby routing work; without a registered comparable artifact, direct superiority over them remains blocked or must be stated as untested. Without the strict audit, set the general-superiority claim to blocked even if the locked baseline comparison is positive.
 
 ## Forbidden
 
@@ -45,4 +47,6 @@ Return Markdown containing:
 - `claim_evidence_map.md`
 - `results_section_snippet.tex` and `limitations_snippet.tex` only after full audit passes
 - `completion_audit.md` with uncovered, weakly verified, blocked, or rejected requirements
+- `failure_analysis.md`
 - `claim_support_decision`: supported, downgraded, or rejected for each claim
+- `top_venue_general_superiority_decision`: eligible only when the stricter top-venue baseline audit passes

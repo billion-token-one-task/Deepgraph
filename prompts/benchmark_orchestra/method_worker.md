@@ -19,8 +19,15 @@
 - `CGGR-confidence`
 - `CGGR-disagreement`
 - `CGGR-random`
-- `CGGR-oracle`
 - `CGGR-full`
+- `CGGR/no_counterfactual_delta`
+- `CGGR/no_lcb`
+- `CGGR/no_self_divergence_penalty`
+- `CGGR/no_qstruct_term`
+
+Oracle routing is not part of the active run45/run46/run47 evidence contract. Add an oracle diagnostic only under a future pre-registered contract, and never merge it into the deployable-method comparison.
+
+For the active repaired run, describe CGGR as a fixed proxy-gated instantiation unless the audited run artifact explicitly contains a trained estimator. Do not claim that CGGR learns a routing policy from benchmark labels; report the task-aware difficulty/question-structure proxy, token-budget thresholds, prompt branch, and ablation mapping exactly as recorded in the runner.
 
 ## Required Logging
 

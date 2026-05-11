@@ -4,6 +4,8 @@ This playbook is the operating contract for turning CGGR from smoke-test evidenc
 
 Current completion audit checkpoint: `docs/cggr_current_completion_audit.md`.
 
+Top-venue novelty checkpoint: `docs/cggr_top_venue_novelty_gap.md`.
+
 ## Current Canonical Runs
 
 | Role | Run | GPU job | Worker | Status | Use in paper |
@@ -16,7 +18,7 @@ Current completion audit checkpoint: `docs/cggr_current_completion_audit.md`.
 Automatic merge watcher:
 
 - Script: `scripts/watch_and_merge_cggr_shards.py --shard-run-id 45 --shard-run-id 46 --merged-run-id 47 --materialize-out-dir workspace\tmp\materialize_bundle_smoke_v2\audited_results --poll-seconds 300 --compile-tex workspace\tmp\materialize_bundle_smoke_v2\main.tex`
-- Logs: `logs/watch-merge-run45-run46-to-run47-v8.out.log`, `logs/watch-merge-run45-run46-to-run47-v8.err.log`
+- Logs: `logs/watch-merge-run45-run46-to-run47-v13.out.log`, `logs/watch-merge-run45-run46-to-run47-v13.err.log`
 - Contract: the watcher must merge only after both shard runs and both GPU jobs are completed, then run the full artifact audit before materializing manuscript tables and compiling the manuscript with audited snippets/tables.
 
 Read-only live-health watcher:
@@ -27,8 +29,16 @@ Read-only live-health watcher:
 
 Prompt gate update:
 
-- `prompts/benchmark_orchestra/system_orchestrator.md`, `stats_audit.md`, and `manuscript_writer.md` now explicitly require a requirement-to-artifact completion audit before claim support.
+- `prompts/benchmark_orchestra/system_orchestrator.md`, `stats_audit.md`, and `manuscript_writer.md` now explicitly require a requirement-to-artifact completion audit before claim support, a failure-analysis gate before discussing failure modes, and a top-venue gate before any SOTA/general adaptive-reasoning claim.
 - Green tests, completed manifests, successful verifier output, and substantial implementation effort are implementation evidence only; they are not paper-completion proxies unless the audit covers every claim requirement.
+
+Top-venue prior-art gate:
+
+- The current locked run can support claims against its registered deployable baselines only after `run_47` passes full audit.
+- It cannot support broad first-method, state-of-the-art, or superiority-over-all-adaptive-reasoning claims.
+- Before a top-venue submission, the paper must acknowledge rational metareasoning/value-of-computation, certainty-based adaptive routing, Self-Route-style mode routing, Route-to-Reason-style joint model/strategy routing, and cost-quality model routing; direct empirical superiority over those methods requires registered benchmark cells and audited artifacts.
+- Optional runner support exists for the first three directly comparable adaptive-reasoning baselines. Set `DEEPGRAPH_BENCHMARK_INCLUDE_TOP_VENUE_BASELINES=1` or explicitly request the labels `CAR-Style Certainty Adaptive Routing`, `Self-Route-Style Mode Routing`, and `Rational-Metareasoning VOC Routing`; then audit the merged artifact with `--require-top-venue-baselines`.
+- A local template can be prepared from the current benchmark contract with `scripts/prepare_cggr_top_venue_baseline_shard.py`; the current prepared template is `workspace/tmp/cggr_top_venue_baseline_shard_template`. The preparation script must sanitize stale learned-router wording, mark the active evidence as fixed proxy-gated, disable trained-estimator/router claims, and filter oracle upper-bound diagnostics out of deployable baseline requirements. This is a launch-ready template, not paper evidence until run, merged, and audited.
 
 Invalid evidence:
 
@@ -149,7 +159,7 @@ You are the Evidence Auditor Agent for CGGR. Run the artifact audit against the 
 
 Done when:
 - `scripts/audit_paper_benchmark_artifacts.py <final_workdir> --require-full` exits 0.
-- `scripts/materialize_audited_cggr_results.py <final_workdir> --out-dir ...` writes tables, significance report, reproducibility statement, claim evidence map, completion audit, claim values, and guarded manuscript snippets.
+- `scripts/materialize_audited_cggr_results.py <final_workdir> --out-dir ...` writes tables, significance report, failure analysis, reproducibility statement, claim evidence map, completion audit, claim values, guarded manuscript snippets, and the watchdog contract/audit JSON files (`problem_awareness.json`, `publication_evidence_contract.json`, `evidence_manifest.json`, `claim_evidence_matrix.json`, `reviewer_report.json`, `paper_quality_report.json`) into the audited results bundle.
 - `main.tex` inputs the materialized main-result, cost/latency, ablation tables, and utility-comparison figure snippet only after those audited files exist.
 - non-blocking audit warnings are carried into `claim_values.json` and the limitations snippet so routing saturation or token-cap diagnostics cannot be silently dropped.
 - every numeric claim in the manuscript has an artifact path and run id.
@@ -193,6 +203,10 @@ Done when:
 7. Routing gate: CGGR zero-deliberation collapse blocks paper evidence; all-route and token-cap saturation require inspection.
 8. Statistical gate: raw rows must cover every required method/dataset/seed/example cell exactly once, and `bootstrap_ci.json`, `per_method_std`, `simple_case_degradation.json`, and `calibration_reliability.json` must be populated before manuscript materialization.
 9. Manuscript gate: materialization script refuses to write result tables unless audit passes.
+10. Top-venue novelty gate: `docs/cggr_top_venue_novelty_gap.md` must be resolved before claiming SOTA, first adaptive reasoning, or general superiority over current adaptive-reasoning work.
+11. Top-venue baseline gate: for SOTA/general-superiority claims, `scripts/audit_paper_benchmark_artifacts.py --require-full --require-top-venue-baselines` must pass on a merged artifact that includes the CAR-style, Self-Route-style, and VOC-style baseline rows.
+12. Top-venue materialization gate: broad adaptive-reasoning superiority claims remain blocked in `claim_values.json` unless `scripts/materialize_audited_cggr_results.py` is run with `--require-top-venue-baselines` on an artifact that passes the stricter audit.
+13. Submission watchdog gate: `orchestrator/manuscript_watchdog.py` must block any submission bundle that asserts top-venue/SOTA/general adaptive-reasoning superiority while root-level `claim_values.json` or `audited_results/claim_values.json` reports `top_venue_general_superiority_decision` as blocked, must accept the six required contract/audit JSON files from either the bundle root or `audited_results/`, must block adaptive-reasoning/routing manuscripts that omit CAR, Self-Route, Rational Metareasoning, Route-to-Reason, or RouteLLM from the nearby prior-art acknowledgement, and must block ready bundles that still contain evidence-pending prose or blank result placeholders.
 
 ## Operational Commands
 
@@ -204,8 +218,17 @@ Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:8080/' -TimeoutSec 10
 .\.venv\Scripts\python.exe scripts\merge_cggr_method_shards.py --out-workdir C:\Users\Kemal\deepgraph_ideas\idea_13\experiments\main\runs\run_47 C:\Users\Kemal\deepgraph_ideas\idea_13\experiments\main\runs\run_45 C:\Users\Kemal\deepgraph_ideas\idea_13\experiments\main\runs\run_46
 .\.venv\Scripts\python.exe scripts\audit_paper_benchmark_artifacts.py C:\Users\Kemal\deepgraph_ideas\idea_13\experiments\main\runs\run_47 --require-full
 
+# Stricter top-venue audit after the optional adaptive-reasoning baseline shard is merged
+.\.venv\Scripts\python.exe scripts\audit_paper_benchmark_artifacts.py <merged_workdir> --require-full --require-top-venue-baselines
+
+# Prepare a local top-venue baseline shard template from the current contract
+.\.venv\Scripts\python.exe scripts\prepare_cggr_top_venue_baseline_shard.py --source-run C:\Users\Kemal\deepgraph_ideas\idea_13\experiments\main\runs\run_45 --out-workdir workspace\tmp\cggr_top_venue_baseline_shard_template --force
+
 # Manuscript table materialization
 .\.venv\Scripts\python.exe scripts\materialize_audited_cggr_results.py C:\Users\Kemal\deepgraph_ideas\idea_13\experiments\main\runs\run_47 --out-dir workspace\tmp\materialize_bundle_smoke_v2\audited_results
+
+# Strict top-venue materialization, only after the top-venue baseline artifact passes the stricter audit
+.\.venv\Scripts\python.exe scripts\materialize_audited_cggr_results.py <merged_workdir> --out-dir <audited_results_dir> --require-top-venue-baselines
 
 # Focused verification
 .\.venv\Scripts\python.exe -m unittest tests.test_vnext_gpu_scheduler tests.test_paper_benchmark_audit tests.test_cggr_shard_contract_audit tests.test_experiment_forge tests.test_merge_cggr_method_shards

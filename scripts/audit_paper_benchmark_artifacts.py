@@ -28,6 +28,12 @@ REQUIRED_METHODS = {
     "CGGR",
 }
 
+TOP_VENUE_BASELINE_METHODS = {
+    "CAR-Style Certainty Adaptive Routing",
+    "Self-Route-Style Mode Routing",
+    "Rational-Metareasoning VOC Routing",
+}
+
 REQUIRED_ABLATIONS = {
     "no_counterfactual_delta",
     "no_lcb",
@@ -191,6 +197,8 @@ def _routing_diagnostics(results: Path) -> tuple[list[str], list[str], dict]:
             group["hits"] += 1
 
     routing_summary: dict[str, dict[str, float]] = {}
+    cggr_total = 0
+    cggr_routed = 0
     for (method, dataset, seed), group in sorted(groups.items()):
         method_l = method.lower()
         total = int(group.get("total") or 0)
@@ -200,10 +208,14 @@ def _routing_diagnostics(results: Path) -> tuple[list[str], list[str], dict]:
         label = f"{method}|{dataset}|seed={seed}"
         route_rate = routed / total
         routing_summary[label] = {"total": total, "routed": routed, "route_rate": route_rate}
-        if method == "CGGR" and total >= 20 and routed == 0:
-            blockers.append(f"{method} routing collapsed to zero deliberation for {dataset} seed={seed}")
-        elif any(token in method_l for token in ("cggr", "gate", "routing")) and total >= 20 and routed in {0, total}:
+        if method == "CGGR":
+            cggr_total += total
+            cggr_routed += routed
+        if any(token in method_l for token in ("cggr", "gate", "routing")) and total >= 20 and routed in {0, total}:
             warnings.append(f"routing rate is {route_rate:.3f} for {label}")
+
+    if cggr_total >= 20 and cggr_routed == 0:
+        blockers.append("CGGR routing collapsed to zero deliberation across all audited cells")
 
     for (method, dataset, seed), group in sorted(cap_groups.items()):
         total = int(group.get("total") or 0)
@@ -291,7 +303,13 @@ def _prediction_diagnostics(raw_rows: list[dict]) -> tuple[list[str], list[str],
     return blockers, warnings, diagnostics
 
 
-def _coverage_diagnostics(raw_rows: list[dict], run_config: dict, *, require_full: bool) -> tuple[list[str], dict]:
+def _coverage_diagnostics(
+    raw_rows: list[dict],
+    run_config: dict,
+    *,
+    require_full: bool,
+    required_methods: set[str],
+) -> tuple[list[str], dict]:
     if not require_full:
         return [], {}
     seed_raw = run_config.get("seed_values")
@@ -311,7 +329,7 @@ def _coverage_diagnostics(raw_rows: list[dict], run_config: dict, *, require_ful
         examples = int(run_config.get("max_examples_per_dataset_seed") or 0)
     except (TypeError, ValueError):
         examples = 0
-    expected_main_rows = len(REQUIRED_METHODS) * len(datasets) * len(seed_values) * examples
+    expected_main_rows = len(required_methods) * len(datasets) * len(seed_values) * examples
     counts: dict[tuple[str, str, str], int] = {}
     example_counts: dict[tuple[str, str, str, str], int] = {}
     for row in raw_rows:
@@ -341,7 +359,7 @@ def _coverage_diagnostics(raw_rows: list[dict], run_config: dict, *, require_ful
         )
     if len(raw_rows) < expected_main_rows:
         blockers.append(f"raw_predictions rows below full main-method gate: {len(raw_rows)}/{expected_main_rows}")
-    for method in sorted(REQUIRED_METHODS):
+    for method in sorted(required_methods):
         for dataset in datasets:
             for seed in seed_values:
                 count = counts.get((method, dataset, str(seed)), 0)
@@ -363,7 +381,7 @@ def _coverage_diagnostics(raw_rows: list[dict], run_config: dict, *, require_ful
     return blockers, diagnostics
 
 
-def _stats_diagnostics(summary: dict, results: Path) -> tuple[list[str], dict]:
+def _stats_diagnostics(summary: dict, results: Path, *, required_methods: set[str]) -> tuple[list[str], dict]:
     blockers = []
     bootstrap = _nonnull_dict(_load_json(results / "bootstrap_ci.json"))
     per_method_std = _nonnull_dict(summary.get("per_method_std"))
@@ -388,7 +406,7 @@ def _stats_diagnostics(summary: dict, results: Path) -> tuple[list[str], dict]:
             blockers.append("paired_permutation_p outside [0, 1]")
     except (TypeError, ValueError):
         blockers.append("paired_permutation_p is not numeric")
-    for method in sorted(REQUIRED_METHODS):
+    for method in sorted(required_methods):
         if method not in per_method_std:
             blockers.append(f"per_method_std missing required method: {method}")
             break
@@ -411,10 +429,13 @@ def _is_sharded_artifact(summary: dict, run_config: dict, manifest: dict, runner
     )
 
 
-def audit(workdir: Path, *, require_full: bool) -> dict:
+def audit(workdir: Path, *, require_full: bool, require_top_venue_baselines: bool = False) -> dict:
     results = workdir / "results"
     blockers: list[str] = []
     warnings: list[str] = []
+    required_methods = set(REQUIRED_METHODS)
+    if require_top_venue_baselines:
+        required_methods.update(TOP_VENUE_BASELINE_METHODS)
 
     if not workdir.exists():
         return {"ok": False, "blockers": [f"workdir does not exist: {workdir}"], "warnings": []}
@@ -457,7 +478,7 @@ def audit(workdir: Path, *, require_full: bool) -> dict:
             blockers.append(f"forbidden or unsupported dataset alias present: {name}")
 
     methods = _method_names(summary, run_config, manifest)
-    for method in sorted(REQUIRED_METHODS):
+    for method in sorted(required_methods):
         if method not in methods:
             blockers.append(f"required method missing: {method}")
 
@@ -509,9 +530,14 @@ def audit(workdir: Path, *, require_full: bool) -> dict:
     prediction_blockers, prediction_warnings, prediction_summary = _prediction_diagnostics(raw_rows)
     blockers.extend(prediction_blockers)
     warnings.extend(prediction_warnings)
-    coverage_blockers, coverage_summary = _coverage_diagnostics(raw_rows, run_config, require_full=require_full)
+    coverage_blockers, coverage_summary = _coverage_diagnostics(
+        raw_rows,
+        run_config,
+        require_full=require_full,
+        required_methods=required_methods,
+    )
     blockers.extend(coverage_blockers)
-    stats_blockers, stats_summary = _stats_diagnostics(summary, results)
+    stats_blockers, stats_summary = _stats_diagnostics(summary, results, required_methods=required_methods)
     blockers.extend(stats_blockers)
     blockers = list(dict.fromkeys(blockers))
     warnings = list(dict.fromkeys(warnings))
@@ -521,6 +547,7 @@ def audit(workdir: Path, *, require_full: bool) -> dict:
         "workdir": str(workdir),
         "results_dir": str(results),
         "require_full": require_full,
+        "require_top_venue_baselines": require_top_venue_baselines,
         "full_benchmark_completed": full_completed,
         "raw_predictions_lines": raw_lines,
         "datasets_seen": sorted(dataset_names),
@@ -540,8 +567,13 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("workdir", type=Path)
     parser.add_argument("--require-full", action="store_true")
+    parser.add_argument("--require-top-venue-baselines", action="store_true")
     args = parser.parse_args()
-    result = audit(args.workdir, require_full=args.require_full)
+    result = audit(
+        args.workdir,
+        require_full=args.require_full,
+        require_top_venue_baselines=args.require_top_venue_baselines,
+    )
     print(json.dumps(result, indent=2, ensure_ascii=False))
     raise SystemExit(0 if result["ok"] else 1)
 

@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+import argparse
+import json
 import re
+import sys
 from pathlib import Path
 from typing import Any
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from db import database as db
 
@@ -35,6 +42,115 @@ def _read_text(path: Path) -> str:
 
 def _issue(severity: str, text: str) -> dict[str, str]:
     return {"severity": severity, "issue": text}
+
+
+def _load_json(path: Path) -> dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _load_claim_values(root: Path) -> dict[str, Any]:
+    for relative in ("claim_values.json", "audited_results/claim_values.json"):
+        payload = _load_json(root / relative)
+        if payload:
+            return payload
+    return {}
+
+
+def _available_contract_files(root: Path, root_files: set[str]) -> set[str]:
+    available = set(root_files)
+    audited_results = root / "audited_results"
+    if audited_results.is_dir():
+        available.update(path.name for path in audited_results.iterdir() if path.is_file())
+    return available
+
+
+def _sentences(text: str) -> list[str]:
+    return [part.strip() for part in re.split(r"(?<=[.!?])\s+", text) if part.strip()]
+
+
+def _top_venue_overclaim_issues(root: Path, main_tex: str) -> list[dict[str, str]]:
+    claim_values = _load_claim_values(root)
+    decision = str(claim_values.get("top_venue_general_superiority_decision") or "").lower()
+    if decision and not decision.startswith("blocked"):
+        return []
+    patterns = [
+        re.compile(r"\b(state[- ]of[- ]the[- ]art|sota)\b.{0,120}\b(result|performance|achiev|outperform|superior|sets?)\b", re.I),
+        re.compile(r"\b(outperform[s]?|beats?|surpass(?:es)?|is superior to)\b.{0,120}\b(adaptive|routing|state[- ]of[- ]the[- ]art|sota|current)\b", re.I),
+        re.compile(r"\bfirst\b(?!\s*,).{0,100}\b(adaptive reasoning|selective deliberation|reasoning routing)\b", re.I),
+    ]
+    guarded_terms = re.compile(r"\b(not|cannot|blocked|requires?|unless|without|pending|only if|not by itself|must not)\b", re.I)
+    issues: list[dict[str, str]] = []
+    for sentence in _sentences(main_tex):
+        if guarded_terms.search(sentence):
+            continue
+        if any(pattern.search(sentence) for pattern in patterns):
+            issues.append(
+                _issue(
+                    "high",
+                    "Manuscript asserts top-venue/SOTA/general adaptive-reasoning superiority while claim_values blocks that claim.",
+                )
+            )
+            break
+    return issues
+
+
+def _adaptive_prior_art_issues(main_tex: str) -> list[dict[str, str]]:
+    lowered = main_tex.lower()
+    discusses_adaptive_reasoning = re.search(
+        r"\b(adaptive[- ]reasoning|adaptive[- ]routing|reasoning routing|selective reasoning|selective deliberation|adaptive compute|adaptive-compute)\b",
+        lowered,
+    )
+    if not discusses_adaptive_reasoning:
+        return []
+    required = {
+        "CAR / certainty-based adaptive routing": (
+            "lu2025car",
+            "certainty-based adaptive",
+            "car-style",
+            "certainty adaptive routing",
+        ),
+        "Self-Route": ("he2025selfroute", "self-route", "self route"),
+        "Rational Metareasoning": ("desabbata2025rational", "rational metareasoning"),
+        "Route-to-Reason": ("pan2025rtr", "route-to-reason", "route to reason"),
+        "RouteLLM": ("ong2024routellm", "routellm", "route llm"),
+    }
+    missing = [label for label, needles in required.items() if not any(needle in lowered for needle in needles)]
+    if not missing:
+        return []
+    return [
+        _issue(
+            "high",
+            "Adaptive-reasoning/routing manuscript is missing required nearby prior-art acknowledgement: "
+            + ", ".join(missing)
+            + ".",
+        )
+    ]
+
+
+def _placeholder_result_issues(main_tex: str) -> list[dict[str, str]]:
+    patterns = [
+        r"no main-result number is reported until",
+        r"values are intentionally blank",
+        r"result cells? (?:is|are) blank",
+        r"evidence[- ]pending",
+        r"withholding any superiority claim until audited artifacts exist",
+        r"empirical claim remains pending",
+        r"---\s*&\s*---",
+        r"\&\s*--\s*\&",
+    ]
+    lowered = main_tex.lower()
+    if any(re.search(pattern, lowered, re.I) for pattern in patterns):
+        return [
+            _issue(
+                "high",
+                "Submission manuscript still contains evidence-pending or blank-result placeholders.",
+            )
+        ]
+    return []
 
 
 def audit_bundle_path(bundle_path: str | Path, *, bundle_format: str = "conference") -> dict[str, Any]:
@@ -68,7 +184,7 @@ def audit_bundle_path(bundle_path: str | Path, *, bundle_format: str = "conferen
         if "\\documentclass{article}" in first_kb and "iclr2026_conference" not in main_tex:
             issues.append(_issue("high", "Conference paper still uses the generic article class."))
 
-    missing_contracts = sorted(CONTRACT_FILES - files)
+    missing_contracts = sorted(CONTRACT_FILES - _available_contract_files(root, files))
     if missing_contracts:
         issues.append(_issue("high", "Bundle is missing paper contract/audit files: " + ", ".join(missing_contracts) + "."))
     if re.search(r"\\author\{[^}]*your name", main_tex, re.IGNORECASE):
@@ -81,6 +197,9 @@ def audit_bundle_path(bundle_path: str | Path, *, bundle_format: str = "conferen
         issues.append(_issue("medium", "Citation count is below a full-paper target."))
     if len(re.findall(r"\\includegraphics", main_tex)) < 2:
         issues.append(_issue("medium", "Figure count is below a benchmark-paper target."))
+    issues.extend(_top_venue_overclaim_issues(root, main_tex))
+    issues.extend(_adaptive_prior_art_issues(main_tex))
+    issues.extend(_placeholder_result_issues(main_tex))
 
     high_count = sum(1 for item in issues if item.get("severity") == "high")
     return {
@@ -214,3 +333,34 @@ def reconcile_stale_manuscript_jobs(*, limit: int = 50) -> int:
     if rows:
         db.commit()
     return len(rows)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Audit manuscript bundles for top-venue readiness.")
+    parser.add_argument("--bundle-path", help="Audit one manuscript bundle directory.")
+    parser.add_argument("--bundle-format", default="conference", help="Bundle format label; default: conference.")
+    parser.add_argument("--audit-ready", action="store_true", help="Audit DB bundles currently marked ready.")
+    parser.add_argument("--limit", type=int, default=50, help="Maximum ready bundles to audit.")
+    parser.add_argument(
+        "--no-mark-stale",
+        action="store_true",
+        help="Report ready-bundle failures without marking DB rows stale.",
+    )
+    args = parser.parse_args(argv)
+
+    if args.bundle_path:
+        report = audit_bundle_path(args.bundle_path, bundle_format=args.bundle_format)
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 1 if report.get("status") == "block" else 0
+
+    if args.audit_ready:
+        report = audit_ready_submission_bundles(limit=args.limit, mark_stale=not args.no_mark_stale)
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 1 if any(item.get("status") == "block" for item in report.get("reports", [])) else 0
+
+    parser.print_help()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

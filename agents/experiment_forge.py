@@ -337,6 +337,13 @@ _STANDARD_REASONING_BASELINES = [
 ]
 
 
+_TOP_VENUE_REASONING_BASELINES = [
+    "CAR-Style Certainty Adaptive Routing",
+    "Self-Route-Style Mode Routing",
+    "Rational-Metareasoning VOC Routing",
+]
+
+
 _STANDARD_REASONING_ABLATIONS = [
     "no_counterfactual_delta",
     "no_lcb",
@@ -584,6 +591,8 @@ def _planned_baselines(plan: dict) -> list[str]:
         token in corpus for token in ("gsm8k", "qa", "reason", "cot", "llm", "musique", "strategyqa", "2wiki")
     ):
         filtered.extend(_STANDARD_REASONING_BASELINES)
+    if any(token in corpus for token in ("top venue", "top-venue", "sota", "state of the art", "car-style", "self-route")):
+        filtered.extend(_TOP_VENUE_REASONING_BASELINES)
     return _unique_non_empty(filtered)
 
 
@@ -1925,15 +1934,20 @@ def _benchmark_recipe_blocker_train_py(*, metric_name: str, error: str, plan: di
 
 def _real_llm_benchmark_train_py(*, method_name: str, metric_name: str, plan: dict) -> str:
     defaults = _real_benchmark_defaults(plan)
+    method_lower = str(method_name or "").lower()
+    cggr_mode = "cggr" in method_lower or "counterfactual gain gated" in method_lower
     defaults_payload = {
         "method_name": method_name,
+        "candidate_method_name": "CGGR" if cggr_mode else method_name,
+        "candidate_kind": "cggr" if cggr_mode else "voc_metareasoning",
+        "cggr_mode": cggr_mode,
         "metric_name": metric_name,
         "model_id": defaults["model_id"],
         "targets": defaults["targets"],
         "max_examples": defaults["max_examples"],
         "seeds": defaults["seeds"],
         "baselines": defaults["baselines"],
-        "ablations": defaults["ablations"],
+        "ablations": defaults["ablations"] if cggr_mode else [],
     }
     defaults_json = json.dumps(defaults_payload, ensure_ascii=False).replace("'''", "\\u0027\\u0027\\u0027")
     return textwrap.dedent("""\
@@ -1966,6 +1980,9 @@ def _real_llm_benchmark_train_py(*, method_name: str, metric_name: str, plan: di
 
     DEFAULTS = json.loads(r'''__DEEPGRAPH_DEFAULTS_JSON__''')
     METHOD_NAME = DEFAULTS["method_name"]
+    CANDIDATE_METHOD = DEFAULTS.get("candidate_method_name") or METHOD_NAME
+    CANDIDATE_KIND = DEFAULTS.get("candidate_kind") or "voc_metareasoning"
+    CGGR_MODE = bool(DEFAULTS.get("cggr_mode"))
     METRIC_NAME = DEFAULTS["metric_name"]
     DEFAULT_MODEL_ID = DEFAULTS["model_id"]
     DEFAULT_MAX_EXAMPLES = int(DEFAULTS["max_examples"])
@@ -1978,11 +1995,10 @@ def _real_llm_benchmark_train_py(*, method_name: str, metric_name: str, plan: di
     DEFAULT_REPAIR_METHODS = (
         "Vanilla Direct Answering",
         "Always-Reason Chain-of-Thought",
-        "CGGR",
-        "CGGR/no_counterfactual_delta",
+        CANDIDATE_METHOD,
     )
 
-    METHOD_SPECS = collections.OrderedDict([
+    BASE_METHOD_SPECS = collections.OrderedDict([
         ("Vanilla Direct Answering", {"kind": "direct", "max_new_tokens": 48}),
         ("Always-Reason Chain-of-Thought", {"kind": "fixed_cot", "max_new_tokens": 192}),
         ("Self-Consistency Reasoning", {"kind": "self_consistency", "max_new_tokens": 192}),
@@ -1990,14 +2006,22 @@ def _real_llm_benchmark_train_py(*, method_name: str, metric_name: str, plan: di
         ("Confidence Gate", {"kind": "confidence_gate", "max_new_tokens": 192}),
         ("Disagreement Routing", {"kind": "disagreement_gate", "max_new_tokens": 192}),
         ("Random Budget-Matched Routing", {"kind": "random_budget_matched", "max_new_tokens": 192}),
-        ("CGGR", {"kind": "cggr", "max_new_tokens": 192}),
     ])
-    ABLATION_SPECS = collections.OrderedDict([
-        ("no_counterfactual_delta", {"kind": "cggr_ablate_counterfactual", "max_new_tokens": 192}),
-        ("no_lcb", {"kind": "cggr_ablate_lcb", "max_new_tokens": 192}),
-        ("no_self_divergence_penalty", {"kind": "cggr_ablate_divergence", "max_new_tokens": 192}),
-        ("no_qstruct_term", {"kind": "cggr_ablate_qstruct", "max_new_tokens": 192}),
+    METHOD_SPECS = collections.OrderedDict(BASE_METHOD_SPECS)
+    METHOD_SPECS[CANDIDATE_METHOD] = {"kind": CANDIDATE_KIND, "max_new_tokens": 192}
+    TOP_VENUE_BASELINE_SPECS = collections.OrderedDict([
+        ("CAR-Style Certainty Adaptive Routing", {"kind": "car_certainty_gate", "max_new_tokens": 192}),
+        ("Self-Route-Style Mode Routing", {"kind": "self_route_mode", "max_new_tokens": 192}),
+        ("Rational-Metareasoning VOC Routing", {"kind": "voc_metareasoning", "max_new_tokens": 192}),
     ])
+    ABLATION_SPECS = collections.OrderedDict()
+    if CGGR_MODE:
+        ABLATION_SPECS.update([
+            ("no_counterfactual_delta", {"kind": "cggr_ablate_counterfactual", "max_new_tokens": 192}),
+            ("no_lcb", {"kind": "cggr_ablate_lcb", "max_new_tokens": 192}),
+            ("no_self_divergence_penalty", {"kind": "cggr_ablate_divergence", "max_new_tokens": 192}),
+            ("no_qstruct_term", {"kind": "cggr_ablate_qstruct", "max_new_tokens": 192}),
+        ])
     BASELINE_ALIASES = {
         "Vanilla Direct Answering": ["direct", "vanilla", "direct_answering"],
         "Always-Reason Chain-of-Thought": ["fixed_cot", "cot", "chain_of_thought"],
@@ -2006,9 +2030,14 @@ def _real_llm_benchmark_train_py(*, method_name: str, metric_name: str, plan: di
         "Confidence Gate": ["confidence_gate", "adaptive_gate"],
         "Disagreement Routing": ["disagreement_gate", "disagreement", "self_consistency_gate"],
         "Random Budget-Matched Routing": ["random_budget_matched", "random_routing", "budget_matched_random"],
+        "CAR-Style Certainty Adaptive Routing": ["car", "car_style", "certainty_adaptive_routing", "certainty_routing"],
+        "Self-Route-Style Mode Routing": ["self_route", "self_route_style", "mode_routing"],
+        "Rational-Metareasoning VOC Routing": ["voc", "value_of_computation", "rational_metareasoning"],
         "CGGR/oracle_router": ["oracle", "oracle_router", "upper_bound"],
-        "CGGR": ["cggr", "candidate", "proposed_method"],
     }
+    BASELINE_ALIASES[CANDIDATE_METHOD] = ["candidate", "proposed_method", "method_under_test"]
+    if CGGR_MODE:
+        BASELINE_ALIASES["CGGR"] = ["cggr", "candidate", "proposed_method"]
 
 
     def _results_dir():
@@ -2286,10 +2315,16 @@ def _real_llm_benchmark_train_py(*, method_name: str, metric_name: str, plan: di
 
     def _method_specs_for_run():
         method_specs = collections.OrderedDict(METHOD_SPECS)
+        requested = os.getenv("DEEPGRAPH_BENCHMARK_METHODS", "").strip()
+        requested_names = [item.strip() for item in requested.split(",") if item.strip()] if requested else []
+        include_top_venue = _env_flag("DEEPGRAPH_BENCHMARK_INCLUDE_TOP_VENUE_BASELINES") or any(
+            name in TOP_VENUE_BASELINE_SPECS for name in requested_names
+        )
+        if include_top_venue:
+            method_specs.update(TOP_VENUE_BASELINE_SPECS)
         for name, spec in ABLATION_SPECS.items():
             if name in DEFAULTS.get("ablations", []):
                 method_specs["CGGR/" + name] = spec
-        requested = os.getenv("DEEPGRAPH_BENCHMARK_METHODS", "").strip()
         requested_all = requested.lower() in {"all", "*"}
         if _env_flag("DEEPGRAPH_BENCHMARK_FULL_RUN") and (not requested or requested_all):
             print(
@@ -2310,13 +2345,13 @@ def _real_llm_benchmark_train_py(*, method_name: str, metric_name: str, plan: di
         selected = collections.OrderedDict()
         missing = []
         for name in names:
-            key = name if name in method_specs else "CGGR/" + name if "CGGR/" + name in method_specs else None
+            key = name if name in method_specs else "CGGR/" + name if CGGR_MODE and "CGGR/" + name in method_specs else None
             if key:
                 selected[key] = method_specs[key]
             else:
                 missing.append(name)
-        if not explicit_subset and "CGGR" not in selected and "CGGR" in method_specs:
-            selected["CGGR"] = method_specs["CGGR"]
+        if not explicit_subset and CANDIDATE_METHOD not in selected and CANDIDATE_METHOD in method_specs:
+            selected[CANDIDATE_METHOD] = method_specs[CANDIDATE_METHOD]
         if not explicit_subset and not any(name in selected for name in ("Vanilla Direct Answering", "Always-Reason Chain-of-Thought")):
             selected = collections.OrderedDict(
                 [("Vanilla Direct Answering", method_specs["Vanilla Direct Answering"]), *selected.items()]
@@ -2660,7 +2695,14 @@ def _real_llm_benchmark_train_py(*, method_name: str, metric_name: str, plan: di
                 "Decompose the question into the smallest useful subquestions, solve them in order, "
                 "then write 'Final answer: <answer>'.\\nQuestion: " + question + "\\nSolution:"
             )
-        if kind.startswith("cggr") or kind in {"confidence_gate", "disagreement_gate", "random_budget_matched"}:
+        if kind.startswith("cggr") or kind in {
+            "confidence_gate",
+            "disagreement_gate",
+            "random_budget_matched",
+            "car_certainty_gate",
+            "self_route_mode",
+            "voc_metareasoning",
+        }:
             return (
                 "Choose the smallest sufficient response. If the answer is clear, do not reason. "
                 "If deliberation is useful, use at most two concise reasoning sentences. "
@@ -2680,6 +2722,12 @@ def _real_llm_benchmark_train_py(*, method_name: str, metric_name: str, plan: di
             return 192 if difficulty >= 0.50 else 56
         if kind == "random_budget_matched":
             return 192 if difficulty >= 0.50 else 56
+        if kind == "car_certainty_gate":
+            return 192 if difficulty >= 0.50 else 56
+        if kind == "self_route_mode":
+            return 192 if difficulty >= 0.46 else 56
+        if kind == "voc_metareasoning":
+            return 192 if difficulty >= 0.44 else 56
         if kind == "cggr":
             return 224 if difficulty >= 0.42 else 64
         if kind == "cggr_ablate_counterfactual":
@@ -2839,6 +2887,40 @@ def _real_llm_benchmark_train_py(*, method_name: str, metric_name: str, plan: di
         return [examples[i] for i in indices]
 
 
+    def _certainty_proxy(question, direct_output, difficulty):
+        answer = _extract_final_answer(direct_output)
+        norm = _normalize_text(answer)
+        uncertainty_markers = r"\\b(maybe|unknown|unclear|unsure|cannot determine|not enough|it depends)\\b"
+        confidence = 1.0 - 0.55 * float(difficulty)
+        if norm and len(norm.split()) <= 8:
+            confidence += 0.12
+        if re.search(uncertainty_markers, norm):
+            confidence -= 0.35
+        if not norm:
+            confidence -= 0.40
+        if re.search(r"\\b(yes|no|true|false)\\b", norm):
+            confidence += 0.04
+        return max(0.0, min(1.0, float(confidence)))
+
+
+    def _question_structure_signal(question, difficulty):
+        text = str(question or "")
+        lowered = text.lower()
+        multihop_terms = len(re.findall(r"\\b(before|after|because|which|who|where|when|compare|between|except|unless)\\b", lowered))
+        numbers = len(re.findall(r"\\d+", text))
+        signal = float(difficulty) + 0.035 * multihop_terms + 0.025 * numbers
+        return max(0.0, min(1.0, signal))
+
+
+    def _route_with_strategy(model, tokenizer, example, strategy, *, difficulty, max_new_tokens):
+        return _generate(
+            model,
+            tokenizer,
+            _build_prompt(example["question"], strategy, difficulty=difficulty),
+            max_new_tokens=max_new_tokens,
+        )
+
+
     def _run_single(model, tokenizer, example, method_name, spec, *, seed):
         kind = spec["kind"]
         difficulty = float(example.get("difficulty") or 0.0)
@@ -2855,8 +2937,91 @@ def _real_llm_benchmark_train_py(*, method_name: str, metric_name: str, plan: di
             return output, tokens, {
                 "difficulty": difficulty,
                 "kind": kind,
+                "max_new_tokens": 192 if deliberate else 56,
                 "routed_to_deliberation": deliberate,
                 "random_budget_matched": True,
+            }
+        if kind == "car_certainty_gate":
+            direct_prompt = _build_prompt(example["question"], "direct", difficulty=difficulty)
+            direct_output, direct_tokens = _generate(model, tokenizer, direct_prompt, max_new_tokens=48)
+            certainty = _certainty_proxy(example["question"], direct_output, difficulty)
+            threshold = float(os.getenv("DEEPGRAPH_CAR_CERTAINTY_THRESHOLD", "0.58"))
+            deliberate = certainty < threshold
+            if deliberate:
+                cot_output, cot_tokens = _route_with_strategy(
+                    model,
+                    tokenizer,
+                    example,
+                    "fixed_cot",
+                    difficulty=difficulty,
+                    max_new_tokens=192,
+                )
+                return cot_output, direct_tokens + cot_tokens, {
+                    "difficulty": difficulty,
+                    "kind": kind,
+                    "max_new_tokens": 192,
+                    "routed_to_deliberation": True,
+                    "certainty_proxy": certainty,
+                    "certainty_threshold": threshold,
+                    "short_answer": _extract_final_answer(direct_output),
+                }
+            return direct_output, direct_tokens, {
+                "difficulty": difficulty,
+                "kind": kind,
+                "max_new_tokens": 48,
+                "routed_to_deliberation": False,
+                "certainty_proxy": certainty,
+                "certainty_threshold": threshold,
+                "short_answer": _extract_final_answer(direct_output),
+            }
+        if kind == "self_route_mode":
+            signal = _question_structure_signal(example["question"], difficulty)
+            threshold = float(os.getenv("DEEPGRAPH_SELF_ROUTE_THRESHOLD", "0.46"))
+            deliberate = signal >= threshold
+            strategy = "fixed_cot" if deliberate else "direct"
+            output, tokens = _route_with_strategy(
+                model,
+                tokenizer,
+                example,
+                strategy,
+                difficulty=difficulty,
+                max_new_tokens=192 if deliberate else 56,
+            )
+            return output, tokens, {
+                "difficulty": difficulty,
+                "kind": kind,
+                "max_new_tokens": 192 if deliberate else 56,
+                "routed_to_deliberation": deliberate,
+                "routing_signal": signal,
+                "routing_threshold": threshold,
+                "route_before_answer": True,
+            }
+        if kind == "voc_metareasoning":
+            structure_signal = _question_structure_signal(example["question"], difficulty)
+            reasoning_cost = float(os.getenv("DEEPGRAPH_VOC_REASONING_COST", "0.11"))
+            simple_case_penalty = 0.10 if difficulty < 0.30 else 0.0
+            expected_value = 0.52 * structure_signal - reasoning_cost - simple_case_penalty
+            threshold = float(os.getenv("DEEPGRAPH_VOC_THRESHOLD", "0.12"))
+            deliberate = expected_value >= threshold
+            strategy = "fixed_cot" if deliberate else "direct"
+            output, tokens = _route_with_strategy(
+                model,
+                tokenizer,
+                example,
+                strategy,
+                difficulty=difficulty,
+                max_new_tokens=192 if deliberate else 56,
+            )
+            return output, tokens, {
+                "difficulty": difficulty,
+                "kind": kind,
+                "max_new_tokens": 192 if deliberate else 56,
+                "routed_to_deliberation": deliberate,
+                "structure_signal": structure_signal,
+                "expected_value_of_computation": expected_value,
+                "routing_threshold": threshold,
+                "reasoning_cost": reasoning_cost,
+                "route_before_answer": True,
             }
         if kind == "disagreement_gate":
             direct_prompt = _build_prompt(example["question"], "direct", difficulty=difficulty)
@@ -2869,6 +3034,7 @@ def _real_llm_benchmark_train_py(*, method_name: str, metric_name: str, plan: di
                 return output, tok_a + tok_b + tok_c, {
                     "difficulty": difficulty,
                     "kind": kind,
+                    "max_new_tokens": 192,
                     "routed_to_deliberation": True,
                     "short_answer_a": _extract_final_answer(out_a),
                     "short_answer_b": _extract_final_answer(out_b),
@@ -2876,6 +3042,7 @@ def _real_llm_benchmark_train_py(*, method_name: str, metric_name: str, plan: di
             return out_a, tok_a + tok_b, {
                 "difficulty": difficulty,
                 "kind": kind,
+                "max_new_tokens": 48,
                 "routed_to_deliberation": False,
                 "short_answer_a": _extract_final_answer(out_a),
                 "short_answer_b": _extract_final_answer(out_b),
@@ -3006,9 +3173,9 @@ def _real_llm_benchmark_train_py(*, method_name: str, metric_name: str, plan: di
             "methods": list(method_specs.keys()),
             "ablations": DEFAULTS.get("ablations", []),
             "cost_lambda": lambda_cost,
-            "prompt_template": "method-specific direct, chain-of-thought, gating, disagreement, and CGGR prompts in _build_prompt",
+            "prompt_template": "method-specific direct, chain-of-thought, gating, disagreement, candidate-routing, and optional CGGR prompts in _build_prompt",
             "decoding": {"default": "greedy", "self_consistency_extra_samples": "temperature=0.7, top_p=0.95"},
-            "reasoning_budget": {"direct": 48, "short_gate": 56, "cot": 192, "cggr": "64-224 max_new_tokens by difficulty"},
+            "reasoning_budget": {"direct": 48, "short_gate": 56, "cot": 192, "candidate": "adaptive 56-224 max_new_tokens by difficulty", "top_venue_baselines": "48-token short branch plus optional 192-token deliberation"},
         })
 
         for seed in seed_values:
@@ -3112,7 +3279,18 @@ def _real_llm_benchmark_train_py(*, method_name: str, metric_name: str, plan: di
                             "latency_seconds": latency_seconds,
                         }
                         _append_jsonl("raw_predictions.jsonl", raw_row)
-                        if spec["kind"].startswith("cggr") or spec["kind"] == "confidence_gate":
+                        if (
+                            spec["kind"].startswith("cggr")
+                            or spec["kind"]
+                            in {
+                                "confidence_gate",
+                                "disagreement_gate",
+                                "random_budget_matched",
+                                "car_certainty_gate",
+                                "self_route_mode",
+                                "voc_metareasoning",
+                            }
+                        ):
                             _append_jsonl("routing_decisions.jsonl", {
                                 "seed": seed,
                                 "dataset": dataset_name,
@@ -3120,7 +3298,7 @@ def _real_llm_benchmark_train_py(*, method_name: str, metric_name: str, plan: di
                                 "example_id": ex.get("example_id"),
                                 **route,
                             })
-                        if method_name == "CGGR" and score["primary_score"] < 0.5:
+                        if method_name == CANDIDATE_METHOD and score["primary_score"] < 0.5:
                             _append_jsonl("failure_cases.jsonl", raw_row)
                     count = max(1, len(examples))
                     metric_value = (total_score / count) - lambda_cost * ((total_tokens / count) / 192.0)
@@ -3195,6 +3373,7 @@ def _real_llm_benchmark_train_py(*, method_name: str, metric_name: str, plan: di
 
         per_method = {}
         per_method_std = {}
+        oracle_method_name = CANDIDATE_METHOD + "/oracle_router"
         for method_name, row in aggregate.items():
             count = max(1, int(row["count"]))
             metric_value = (row["score"] / count) - lambda_cost * ((row["tokens"] / count) / 192.0)
@@ -3211,7 +3390,7 @@ def _real_llm_benchmark_train_py(*, method_name: str, metric_name: str, plan: di
             }
             per_method_std[method_name] = _std(per_seed_method_values.get(method_name, []))
         if oracle_values:
-            per_method["CGGR/oracle_router"] = {
+            per_method[oracle_method_name] = {
                 "cost_adjusted_accuracy": _mean(oracle_values),
                 "metric_value": _mean(oracle_values),
                 "score": _mean(oracle_values),
@@ -3221,7 +3400,7 @@ def _real_llm_benchmark_train_py(*, method_name: str, metric_name: str, plan: di
                 "count": sum(int(row.get("num_examples") or 0) for seed_row in seed_results for row in seed_row.get("datasets", {}).values()),
                 "upper_bound": True,
             }
-            per_method_std["CGGR/oracle_router"] = _std(oracle_values)
+            per_method_std[oracle_method_name] = _std(oracle_values)
 
         for dataset_name, methods in per_dataset_results.items():
             for method_name, row in methods.items():
@@ -3234,11 +3413,11 @@ def _real_llm_benchmark_train_py(*, method_name: str, metric_name: str, plan: di
                 row["route_rate"] = float(row.get("routed", 0.0) / count)
 
         best_method = max(per_method, key=lambda key: per_method[key]["metric_value"])
-        candidate_values = per_seed_method_values.get("CGGR", [])
+        candidate_values = per_seed_method_values.get(CANDIDATE_METHOD, [])
         baseline_name = "Always-Reason Chain-of-Thought" if "Always-Reason Chain-of-Thought" in per_seed_method_values else "Vanilla Direct Answering"
         baseline_values = per_seed_method_values.get(baseline_name, [])
         bootstrap = {
-            "candidate_method": "CGGR",
+            "candidate_method": CANDIDATE_METHOD,
             "baseline_method": baseline_name,
             "candidate_ci95": _bootstrap_ci(candidate_values),
             "baseline_ci95": _bootstrap_ci(baseline_values),
@@ -3252,14 +3431,14 @@ def _real_llm_benchmark_train_py(*, method_name: str, metric_name: str, plan: di
                     "ablation": name,
                     "method": key,
                     "metric_value": per_method[key]["metric_value"],
-                    "delta_vs_cggr": per_method[key]["metric_value"] - per_method.get("CGGR", {}).get("metric_value", 0.0),
+                    "delta_vs_candidate": per_method[key]["metric_value"] - per_method.get(CANDIDATE_METHOD, {}).get("metric_value", 0.0),
                 })
-        if "CGGR/oracle_router" in per_method:
+        if oracle_method_name in per_method:
             ablation_table.append({
                 "ablation": "oracle_router",
-                "method": "CGGR/oracle_router",
-                "metric_value": per_method["CGGR/oracle_router"]["metric_value"],
-                "delta_vs_cggr": per_method["CGGR/oracle_router"]["metric_value"] - per_method.get("CGGR", {}).get("metric_value", 0.0),
+                "method": oracle_method_name,
+                "metric_value": per_method[oracle_method_name]["metric_value"],
+                "delta_vs_candidate": per_method[oracle_method_name]["metric_value"] - per_method.get(CANDIDATE_METHOD, {}).get("metric_value", 0.0),
                 "upper_bound": True,
             })
 
@@ -3295,31 +3474,31 @@ def _real_llm_benchmark_train_py(*, method_name: str, metric_name: str, plan: di
                     "count": count,
                 })
         direct_easy = next((row for row in difficulty_breakdown_table if row["method"] == "Vanilla Direct Answering" and row["difficulty"] == "easy"), {})
-        cggr_easy = next((row for row in difficulty_breakdown_table if row["method"] == "CGGR" and row["difficulty"] == "easy"), {})
+        candidate_easy = next((row for row in difficulty_breakdown_table if row["method"] == CANDIDATE_METHOD and row["difficulty"] == "easy"), {})
         simple_case_degradation = {
             "subset": "easy",
             "baseline_method": "Vanilla Direct Answering",
-            "candidate_method": "CGGR",
+            "candidate_method": CANDIDATE_METHOD,
             "baseline_accuracy": direct_easy.get("accuracy"),
-            "candidate_accuracy": cggr_easy.get("accuracy"),
+            "candidate_accuracy": candidate_easy.get("accuracy"),
             "degradation": (
-                float(cggr_easy.get("accuracy", 0.0) - direct_easy.get("accuracy", 0.0))
-                if direct_easy and cggr_easy
+                float(candidate_easy.get("accuracy", 0.0) - direct_easy.get("accuracy", 0.0))
+                if direct_easy and candidate_easy
                 else None
             ),
-            "candidate_route_rate": cggr_easy.get("route_rate"),
+            "candidate_route_rate": candidate_easy.get("route_rate"),
         }
         calibration_reliability = []
         for bucket_name, proxy_value in (("easy", 0.17), ("medium", 0.50), ("hard", 0.83)):
             direct_row = next((row for row in difficulty_breakdown_table if row["method"] == "Vanilla Direct Answering" and row["difficulty"] == bucket_name), {})
-            cggr_row = next((row for row in difficulty_breakdown_table if row["method"] == "CGGR" and row["difficulty"] == bucket_name), {})
-            if direct_row and cggr_row:
+            candidate_row = next((row for row in difficulty_breakdown_table if row["method"] == CANDIDATE_METHOD and row["difficulty"] == bucket_name), {})
+            if direct_row and candidate_row:
                 calibration_reliability.append({
                     "difficulty_bucket": bucket_name,
                     "difficulty_proxy": proxy_value,
-                    "observed_gain_vs_direct": float(cggr_row.get("accuracy", 0.0) - direct_row.get("accuracy", 0.0)),
-                    "route_rate": cggr_row.get("route_rate"),
-                    "count": cggr_row.get("count"),
+                    "observed_gain_vs_direct": float(candidate_row.get("accuracy", 0.0) - direct_row.get("accuracy", 0.0)),
+                    "route_rate": candidate_row.get("route_rate"),
+                    "count": candidate_row.get("count"),
                 })
         routing_analysis = {
             "methods": [
@@ -3333,7 +3512,8 @@ def _real_llm_benchmark_train_py(*, method_name: str, metric_name: str, plan: di
                     "utility": row["metric_value"],
                 }
                 for row in latency_tokens_table
-                if any(token in row["method"].lower() for token in ("gate", "routing", "cggr", "oracle"))
+                if row["method"] == CANDIDATE_METHOD
+                or any(token in row["method"].lower() for token in ("gate", "routing", "cggr", "oracle"))
             ],
             "easy_medium_hard_breakdown": difficulty_breakdown_table,
             "simple_case_degradation": simple_case_degradation,
@@ -3389,9 +3569,9 @@ def _real_llm_benchmark_train_py(*, method_name: str, metric_name: str, plan: di
                 "methods": list(method_specs.keys()),
                 "ablations": DEFAULTS.get("ablations", []),
                 "cost_lambda": lambda_cost,
-                "prompt_template": "method-specific direct, chain-of-thought, gating, disagreement, and CGGR prompts in _build_prompt",
+                "prompt_template": "method-specific direct, chain-of-thought, gating, disagreement, candidate-routing, and optional CGGR prompts in _build_prompt",
                 "decoding": {"default": "greedy", "self_consistency_extra_samples": "temperature=0.7, top_p=0.95"},
-                "reasoning_budget": {"direct": 48, "short_gate": 56, "cot": 192, "cggr": "64-224 max_new_tokens by difficulty"},
+                "reasoning_budget": {"direct": 48, "short_gate": 56, "cot": 192, "candidate": "adaptive 56-224 max_new_tokens by difficulty", "top_venue_baselines": "48-token short branch plus optional 192-token deliberation"},
             }),
             "per_seed_results": _write_json("per_seed_results.json", seed_results),
             "per_dataset_results": _write_json("per_dataset_results.json", per_dataset_results),
@@ -3413,7 +3593,7 @@ def _real_llm_benchmark_train_py(*, method_name: str, metric_name: str, plan: di
         result = {
             "primary_metric": "cost_adjusted_accuracy",
             "metric_name": "cost_adjusted_accuracy",
-            "candidate_method": "CGGR",
+            "candidate_method": CANDIDATE_METHOD,
             "best_method": best_method,
             "per_method": per_method,
             "per_method_std": per_method_std,
@@ -3452,14 +3632,14 @@ def _real_llm_benchmark_train_py(*, method_name: str, metric_name: str, plan: di
             "hardware": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "CPU",
             "full_benchmark_completed": full_completed,
             "artifact_paths": artifacts,
-            METRIC_NAME: per_method.get("CGGR", {}).get("metric_value", 0.0),
+            METRIC_NAME: per_method.get(CANDIDATE_METHOD, {}).get("metric_value", 0.0),
         }
         result["model"] = {
             **result["model"],
             "hardware": result["hardware"],
-            "prompt_template": "method-specific direct, chain-of-thought, gating, disagreement, and CGGR prompts in _build_prompt",
+            "prompt_template": "method-specific direct, chain-of-thought, gating, disagreement, candidate-routing, and optional CGGR prompts in _build_prompt",
             "decoding": {"default": "greedy", "self_consistency_extra_samples": "temperature=0.7, top_p=0.95"},
-            "reasoning_budget": {"direct": 48, "short_gate": 56, "cot": 192, "cggr": "64-224 max_new_tokens by difficulty"},
+            "reasoning_budget": {"direct": 48, "short_gate": 56, "cot": 192, "candidate": "adaptive 56-224 max_new_tokens by difficulty", "top_venue_baselines": "48-token short branch plus optional 192-token deliberation"},
         }
         artifacts["artifact_manifest"] = _write_json("artifact_manifest.json", {
             "full_benchmark_completed": full_completed,
@@ -3476,7 +3656,7 @@ def _real_llm_benchmark_train_py(*, method_name: str, metric_name: str, plan: di
         print("model: " + model_id)
         print("datasets: " + ", ".join(row["name"] for row in datasets_observed))
         print(f"peak_vram_mb: {peak_mb:.1f}")
-        print(f"{METRIC_NAME}: {per_method.get('CGGR', {}).get('metric_value', 0.0):.6f}")
+        print(f"{METRIC_NAME}: {per_method.get(CANDIDATE_METHOD, {}).get('metric_value', 0.0):.6f}")
         print("FINAL_RESULTS: " + json.dumps(result, ensure_ascii=False))
 
 
