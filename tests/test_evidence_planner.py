@@ -75,6 +75,35 @@ class EvidencePlannerTests(unittest.TestCase):
             )
             self.assertEqual(manifest["assets"], [])
 
+    def test_motivation_overview_diagram_uses_banana_command(self):
+        outline = {
+            "plotting_plan": [
+                {
+                    "figure_id": "fig_motivation_overview",
+                    "plot_type": "diagram",
+                    "title": "Motivation overview",
+                    "objective": "Motivation and overview for selective reasoning.",
+                }
+            ]
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest = run_figure_orchestra(
+                outline=outline,
+                state={"title": "Selective reasoning"},
+                iterations=[],
+                figures_dir=Path(tmpdir),
+                baseline=None,
+                metric_name="accuracy",
+                paperbanana_cmd="printf x > {output}",
+            )
+            self.assertGreaterEqual(manifest["generated_count"], 1)
+            asset = next(
+                row for row in manifest["assets"]
+                if row.get("figure_id") == "fig_motivation_overview"
+            )
+            self.assertEqual(asset["notes"], "paperbanana_ok")
+            self.assertTrue(Path(asset["path"]).exists())
+
 
 if __name__ == "__main__":
     unittest.main()
