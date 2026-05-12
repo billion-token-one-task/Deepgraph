@@ -38,6 +38,10 @@ VALID_SELECTION_STATUS = {
     "blocked",
     "completed",
     "failed",
+    # issue #9 closed-loop transitional states (real_experiment_runner +
+    # agenda_orchestrator.run_real_pipeline write these)
+    "experiment_complete",
+    "evidence_gate_blocked",
 }
 
 

@@ -146,19 +146,16 @@ def _evaluate_default_rules(
             "reason": f"confirmed={confirmed}",
         })
 
-    # If the agenda's required_output declares an evidence_manifest or
-    # experiment_result_packet, enforce its presence on disk.
-    needs_packet = bool(agenda_required) and any(
-        k in (agenda_required.keys() if isinstance(agenda_required, dict) else [])
-        for k in ("experiment_result_packet", "evidence_manifest")
-    ) or True  # always require for agenda_v1_default
-    if needs_packet and not packet:
+    # agenda_v1_default unconditionally requires the experiment_result_packet
+    # on disk. (Future rule sets may make this conditional on agenda_required
+    # declaring "experiment_result_packet" or "evidence_manifest" keys.)
+    if not packet:
         blockers.append({
             "requirement": "experiment_result_packet.json",
             "reason": "missing_or_unreadable",
             "looked_at": packet_path or "(no workdir)",
         })
-    elif packet:
+    else:
         missing_keys = [k for k in REQUIRED_PACKET_KEYS if k not in packet]
         if missing_keys:
             blockers.append({

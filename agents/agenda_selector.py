@@ -24,7 +24,7 @@ from __future__ import annotations
 import json
 from typing import Any, Iterable, Mapping
 
-from contracts.agenda import AgendaSelection, ResearchAgenda
+from contracts.agenda import VALID_SELECTION_STATUS, AgendaSelection, ResearchAgenda
 from contracts.base import ContractValidationError, ensure_dict, ensure_list, ensure_string_list
 from db import database as db
 
@@ -376,6 +376,12 @@ def update_selection_progress(selection_id: int, **fields: Any) -> None:
     unknown = set(fields) - _PROGRESS_FIELDS
     if unknown:
         raise ValueError(f"unknown progress fields: {sorted(unknown)}")
+    if "status" in fields and fields["status"] is not None:
+        if fields["status"] not in VALID_SELECTION_STATUS:
+            raise ValueError(
+                f"invalid selection status {fields['status']!r}; "
+                f"must be one of {sorted(VALID_SELECTION_STATUS)}"
+            )
     if not fields:
         return
     set_clauses = ", ".join(f"{k}=?" for k in fields)

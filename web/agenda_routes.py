@@ -159,6 +159,34 @@ def get_selection_endpoint(selection_id: int):
 # ---------- evidence gate + real benchmark ----------
 
 
+# Hard caps on caller-supplied numeric inputs to /bench. Above these limits
+# the softmax (seq_len^2) score matrix and the wall-clock cost of repeats
+# become a trivial DoS vector. seq_len=2048 keeps the score matrix <= 16 MB
+# in float32 and the whole benchmark under ~5s on commodity CPU.
+_BENCH_INPUT_BOUNDS = {
+    "seq_len":  (16, 2048),
+    "head_dim": (8,  256),
+    "repeats":  (1,  10),
+    "seed":     (0,  2**31 - 1),
+}
+
+
+def _validate_bench_kwargs(body):
+    """Return validated int kwargs or raise ValueError with a client-safe message."""
+    kwargs = {}
+    for k, (lo, hi) in _BENCH_INPUT_BOUNDS.items():
+        if k not in body:
+            continue
+        v = body[k]
+        # Reject bools-as-int (True/False would pass isinstance(int)) and non-int types.
+        if isinstance(v, bool) or not isinstance(v, int):
+            raise ValueError(f"{k} must be an integer")
+        if v < lo or v > hi:
+            raise ValueError(f"{k} must be in [{lo}, {hi}], got {v}")
+        kwargs[k] = v
+    return kwargs
+
+
 @bp.route("/selection/<int:selection_id>/bench", methods=["POST"])
 def run_bench_pipeline(selection_id: int):
     """Run the real micro-benchmark + evidence gate + conditional manuscript.
@@ -166,17 +194,20 @@ def run_bench_pipeline(selection_id: int):
     Issue #9 acceptance: "manuscript bundle 只有在 evidence gate 允许时才生成."
     """
     body = request.get_json(silent=True) or {}
-    kwargs = {}
-    for k in ("seq_len", "head_dim", "seed", "repeats"):
-        if k in body:
-            kwargs[k] = int(body[k])
+    try:
+        kwargs = _validate_bench_kwargs(body)
+    except ValueError as e:
+        return jsonify({"error": "invalid_bench_params", "message": str(e)}), 400
     try:
         result = agenda_orchestrator.run_real_pipeline(selection_id, **kwargs)
     except ValueError as e:
         return jsonify({"error": "not_found", "message": str(e)}), 404
-    except Exception as e:  # noqa: BLE001
-        return jsonify({"error": "bench_failed", "message": str(e),
-                        "error_type": type(e).__name__}), 500
+    except Exception:  # noqa: BLE001
+        # Log full exception server-side; return a generic message to avoid
+        # leaking filesystem paths / DB driver messages to API consumers.
+        import logging
+        logging.exception("bench pipeline failed for selection %s", selection_id)
+        return jsonify({"error": "bench_failed"}), 500
     return jsonify(result), 201
 
 
