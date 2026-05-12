@@ -71,3 +71,20 @@ CREATE TABLE IF NOT EXISTS agenda_revision_plans (
 );
 
 CREATE INDEX IF NOT EXISTS idx_agenda_revision_plans_selection ON agenda_revision_plans(selection_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS agenda_evidence_gates (
+    id BIGSERIAL PRIMARY KEY,
+    selection_id INTEGER NOT NULL,
+    experiment_run_id INTEGER,
+    status TEXT NOT NULL,
+    blockers_json TEXT NOT NULL DEFAULT '[]',
+    metrics_summary_json TEXT NOT NULL DEFAULT '{}',
+    packet_path TEXT,
+    rule_set TEXT NOT NULL DEFAULT 'agenda_v1_default',
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_agenda_evidence_gates_selection
+    ON agenda_evidence_gates(selection_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_agenda_evidence_gates_status
+    ON agenda_evidence_gates(status);

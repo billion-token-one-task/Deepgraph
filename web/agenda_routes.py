@@ -19,7 +19,7 @@ import json
 import yaml  # type: ignore
 from flask import Blueprint, jsonify, request
 
-from agents import agenda_loader, agenda_orchestrator, agenda_selector, reviewer_adapter, revision_planner
+from agents import agenda_loader, agenda_orchestrator, agenda_selector, evidence_gate, reviewer_adapter, revision_planner
 from contracts.agenda import LoopInspectionSnapshot
 from contracts.base import ContractValidationError
 from db import database as db
@@ -104,9 +104,9 @@ def trigger_selection():
     body = request.get_json(silent=True) or {}
     agenda_id = body.get("agenda_id")
     dispatch_mode = body.get("dispatch_mode", "auto")
-    if dispatch_mode not in ("auto", "link", "enqueue", "none"):
+    if dispatch_mode not in ("auto", "link", "enqueue", "bench", "none"):
         return (
-            jsonify({"error": "invalid_dispatch_mode", "message": "must be auto|link|enqueue|none"}),
+            jsonify({"error": "invalid_dispatch_mode", "message": "must be auto|link|enqueue|bench|none"}),
             400,
         )
     if agenda_id:
@@ -154,6 +154,48 @@ def get_selection_endpoint(selection_id: int):
     if row is None:
         return jsonify({"error": "not_found"}), 404
     return jsonify({"selection": row})
+
+
+# ---------- evidence gate + real benchmark ----------
+
+
+@bp.route("/selection/<int:selection_id>/bench", methods=["POST"])
+def run_bench_pipeline(selection_id: int):
+    """Run the real micro-benchmark + evidence gate + conditional manuscript.
+
+    Issue #9 acceptance: "manuscript bundle 只有在 evidence gate 允许时才生成."
+    """
+    body = request.get_json(silent=True) or {}
+    kwargs = {}
+    for k in ("seq_len", "head_dim", "seed", "repeats"):
+        if k in body:
+            kwargs[k] = int(body[k])
+    try:
+        result = agenda_orchestrator.run_real_pipeline(selection_id, **kwargs)
+    except ValueError as e:
+        return jsonify({"error": "not_found", "message": str(e)}), 404
+    except Exception as e:  # noqa: BLE001
+        return jsonify({"error": "bench_failed", "message": str(e),
+                        "error_type": type(e).__name__}), 500
+    return jsonify(result), 201
+
+
+@bp.route("/selection/<int:selection_id>/gate", methods=["POST"])
+def run_evidence_gate(selection_id: int):
+    """Evaluate + persist evidence gate decision for the selection."""
+    try:
+        decision = evidence_gate.run_gate(selection_id)
+    except ValueError as e:
+        return jsonify({"error": "not_found", "message": str(e)}), 404
+    return jsonify({"gate": decision}), 201
+
+
+@bp.route("/selection/<int:selection_id>/gate/latest", methods=["GET"])
+def latest_evidence_gate(selection_id: int):
+    decision = evidence_gate.get_latest_gate(selection_id)
+    if decision is None:
+        return jsonify({"gate": None}), 404
+    return jsonify({"gate": decision})
 
 
 # ---------- review + revision plan ----------

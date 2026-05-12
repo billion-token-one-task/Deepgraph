@@ -17,6 +17,7 @@ Public API:
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 from agents.agenda_selector import get_selection, update_selection_progress
@@ -191,17 +192,122 @@ def enqueue_for_auto_research(selection_id: int) -> dict[str, Any]:
     }
 
 
+def _create_manuscript_run_if_allowed(
+    selection_id: int,
+    insight_id: int,
+    experiment_run_id: int,
+    workdir: str,
+) -> dict[str, Any] | None:
+    """Create manuscript_run + submission_bundle rows. Only call when gate=pass."""
+    manu_id = int(db.insert_returning_id(
+        """
+        INSERT INTO manuscript_runs
+            (experiment_run_id, deep_insight_id, status, workdir)
+        VALUES (?, ?, 'bundle_ready', ?)
+        RETURNING id
+        """,
+        (experiment_run_id, insight_id, workdir),
+    ))
+    db.commit()
+    bundle_id = int(db.insert_returning_id(
+        """
+        INSERT INTO submission_bundles
+            (manuscript_run_id, bundle_format, status, bundle_path, manifest_path)
+        VALUES (?, 'archive_v1', 'ready', ?, ?)
+        RETURNING id
+        """,
+        (manu_id, f"{workdir}/bundle.zip", f"{workdir}/manifest.json"),
+    ))
+    db.commit()
+    update_selection_progress(
+        selection_id,
+        manuscript_run_id=manu_id,
+        submission_bundle_id=bundle_id,
+        status="completed",
+    )
+    return {"manuscript_run_id": manu_id, "submission_bundle_id": bundle_id}
+
+
+def run_real_pipeline(
+    selection_id: int,
+    *,
+    seq_len: int = 512,
+    head_dim: int = 64,
+    seed: int = 1729,
+    repeats: int = 3,
+) -> dict[str, Any]:
+    """End-to-end real path: experiment -> evidence_gate -> conditional manuscript.
+
+    Issue #9 acceptance: "manuscript bundle 只有在 evidence gate 允许时才生成."
+    This function is the single place that enforces the gate as a precondition.
+    """
+    from agents import real_experiment_runner, evidence_gate
+
+    sel = get_selection(selection_id)
+    if not sel:
+        raise ValueError(f"selection {selection_id} not found")
+    if not sel.get("selected_insight_id"):
+        raise ValueError(f"selection {selection_id} has no selected_insight_id")
+
+    insight_id = int(sel["selected_insight_id"])
+
+    # Step 1: run real benchmark (writes experiment_runs + experimental_claims +
+    # experiment_result_packet.json artifact).
+    exp_result = real_experiment_runner.run_real_experiment_for_selection(
+        selection_id,
+        seq_len=seq_len,
+        head_dim=head_dim,
+        seed=seed,
+        repeats=repeats,
+    )
+    experiment_run_id = int(exp_result["run_id"])
+
+    # Step 2: evaluate evidence gate (pass | block + blockers).
+    gate = evidence_gate.run_gate(selection_id)
+
+    # Step 3: conditional manuscript creation.
+    manuscript_payload: dict[str, Any] | None = None
+    if gate["status"] == "pass":
+        workdir = str(Path(exp_result["packet_path"]).parent)
+        manuscript_payload = _create_manuscript_run_if_allowed(
+            selection_id, insight_id, experiment_run_id, workdir,
+        )
+    else:
+        update_selection_progress(
+            selection_id,
+            status="evidence_gate_blocked",
+            error_message="; ".join(
+                f"{b.get('requirement')}: {b.get('reason')}" for b in gate["blockers"]
+            ) or "evidence gate blocked manuscript creation",
+        )
+
+    return {
+        "mode": "bench",
+        "selection_id": selection_id,
+        "insight_id": insight_id,
+        "experiment_run_id": experiment_run_id,
+        "experiment_result": exp_result,
+        "evidence_gate": gate,
+        "manuscript": manuscript_payload,
+        "manuscript_created": manuscript_payload is not None,
+    }
+
+
 def dispatch_selection(selection_id: int, *, mode: str = "auto") -> dict[str, Any]:
     """Dispatch a selection.
 
     mode='link'    : only link existing artifacts (demo path)
     mode='enqueue' : enqueue into auto_research worker (fresh run)
     mode='auto'    : try link first; if nothing linked, fall back to enqueue
+    mode='bench'   : run real micro-benchmark + evidence gate + conditional
+                     manuscript (issue #9 closed-loop path)
     """
     if mode == "link":
         return link_existing_artifacts(selection_id)
     if mode == "enqueue":
         return enqueue_for_auto_research(selection_id)
+    if mode == "bench":
+        return run_real_pipeline(selection_id)
     if mode != "auto":
         raise ValueError(f"unknown dispatch mode: {mode}")
 

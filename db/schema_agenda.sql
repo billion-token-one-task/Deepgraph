@@ -76,3 +76,24 @@ CREATE TABLE IF NOT EXISTS agenda_revision_plans (
 );
 
 CREATE INDEX IF NOT EXISTS idx_agenda_revision_plans_selection ON agenda_revision_plans(selection_id, created_at DESC);
+
+-- Evidence gate decision: pass | block. Created BEFORE manuscript_run so a
+-- blocked decision prevents manuscript creation. issue #9 acceptance:
+-- "manuscript bundle 只有在 evidence gate 允许时才生成".
+CREATE TABLE IF NOT EXISTS agenda_evidence_gates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    selection_id INTEGER NOT NULL,
+    experiment_run_id INTEGER,
+    status TEXT NOT NULL,                      -- pass | block
+    blockers_json TEXT NOT NULL DEFAULT '[]',
+    metrics_summary_json TEXT NOT NULL DEFAULT '{}',
+    packet_path TEXT,
+    rule_set TEXT NOT NULL DEFAULT 'agenda_v1_default',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (selection_id) REFERENCES agenda_selections(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_agenda_evidence_gates_selection
+    ON agenda_evidence_gates(selection_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_agenda_evidence_gates_status
+    ON agenda_evidence_gates(status);
