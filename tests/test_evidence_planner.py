@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from agents.evidence_planner import build_evidence_plan
 from agents.paperorchestra.figure_orchestra import run_figure_orchestra
@@ -75,7 +76,7 @@ class EvidencePlannerTests(unittest.TestCase):
             )
             self.assertEqual(manifest["assets"], [])
 
-    def test_motivation_overview_diagram_uses_banana_command(self):
+    def test_motivation_overview_diagram_uses_banana_by_default(self):
         outline = {
             "plotting_plan": [
                 {
@@ -102,6 +103,37 @@ class EvidencePlannerTests(unittest.TestCase):
                 if row.get("figure_id") == "fig_motivation_overview"
             )
             self.assertEqual(asset["notes"], "paperbanana_ok")
+            self.assertTrue(Path(asset["path"]).exists())
+
+    def test_motivation_overview_diagram_can_opt_out_to_native(self):
+        outline = {
+            "plotting_plan": [
+                {
+                    "figure_id": "fig_motivation_overview",
+                    "plot_type": "diagram",
+                    "title": "Motivation overview",
+                    "objective": "Motivation and overview for selective reasoning.",
+                }
+            ]
+        }
+        with tempfile.TemporaryDirectory() as tmpdir, mock.patch.dict(
+            "os.environ",
+            {"DEEPGRAPH_PAPERBANANA_MOTIVATION_OVERVIEW": "false"},
+        ):
+            manifest = run_figure_orchestra(
+                outline=outline,
+                state={"title": "Selective reasoning"},
+                iterations=[],
+                figures_dir=Path(tmpdir),
+                baseline=None,
+                metric_name="accuracy",
+                paperbanana_cmd="printf x > {output}",
+            )
+            asset = next(
+                row for row in manifest["assets"]
+                if row.get("figure_id") == "fig_motivation_overview"
+            )
+            self.assertEqual(asset["notes"], "native_symbolic_motivation")
             self.assertTrue(Path(asset["path"]).exists())
 
 
