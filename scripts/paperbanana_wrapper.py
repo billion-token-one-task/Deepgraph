@@ -295,6 +295,21 @@ def _build_caption(spec: dict[str, Any]) -> str:
     return title or objective or "Framework overview"
 
 
+def _is_motivation_overview_spec(spec: dict[str, Any]) -> bool:
+    fig = spec.get("figure") or {}
+    text = " ".join(
+        str(part or "")
+        for part in (
+            fig.get("figure_id"),
+            fig.get("title"),
+            fig.get("objective"),
+            spec.get("state_title"),
+            spec.get("problem_statement"),
+        )
+    ).lower()
+    return any(token in text for token in ("motivation", "overview", "teaser", "problem-method-result", "problem method result"))
+
+
 def _check_credentials() -> tuple[bool, str]:
     image_protocol = (_env_first("DEEPGRAPH_PAPERBANANA_IMAGE_PROTOCOL") or "").strip().lower()
     if image_protocol == "openai_compatible" and _env_first("DEEPGRAPH_PAPERBANANA_IMAGE_API_KEY") and _openai_image_base_url():
@@ -312,6 +327,81 @@ def _check_credentials() -> tuple[bool, str]:
 
 def _image_prompt(spec: dict[str, Any], *, caption: str, content: str) -> str:
     fig = spec.get("figure") or {}
+    if _is_motivation_overview_spec(spec):
+        fig_text = " ".join(str(fig.get(key) or "") for key in ("figure_id", "title", "objective")).lower()
+        figure_role = "motivation" if "motivation" in fig_text else "overview"
+        cleaned_caption = _clip(caption, 700)
+        title = str(fig.get("title") or "").strip()
+        if title and cleaned_caption.lower().startswith(f"{title.lower()}."):
+            cleaned_caption = cleaned_caption[len(title) + 1 :].strip()
+        context_lines = [
+            f"Paper title: {_clip(spec.get('state_title'), 200)}",
+            f"Method name: {_clip(spec.get('method_name'), 200)}",
+            f"Problem statement: {_clip(spec.get('problem_statement'), 800)}",
+            f"Existing weakness: {_clip(spec.get('existing_weakness'), 600)}",
+            f"Method summary: {_clip(spec.get('method_summary'), 1200)}",
+        ]
+        contributions = spec.get("contributions") or []
+        if contributions:
+            context_lines.extend(["Key contributions:", _list_block(contributions, limit=6)])
+        cleaned_context = "\n".join(line for line in context_lines if line.strip())
+        if figure_role == "motivation":
+            schema = (
+                "This figure should function as the paper's motivation figure. "
+                "It should look like a publication framework figure with clear regions, concise labels, and a visible scientific contrast. "
+                "The reader should immediately understand what the problem is, why it matters, what is insufficient in the current setting, and what key contrast motivates the proposed direction."
+            )
+        else:
+            schema = (
+                "This figure should function as the paper's overview figure. "
+                "It should summarize the main mechanism or conceptual structure of the method in one unified framework diagram. "
+                "Use a structured multi-region layout with grouped modules, concise labels, arrows, and a clear semantic flow. "
+                "The reader should understand the core idea at a glance."
+            )
+        return "\n".join(
+            [
+                "You are an experienced scientific figure designer preparing a camera-ready figure for a machine learning paper.",
+                "Carefully read the paper context and the figure intent, fully understand the research content, and produce a figure suitable for academic publication.",
+                schema,
+                "The figure should be understandable at a glance, even before the reader studies the full paper.",
+                "Prefer a wide publication-style framework layout with 3 to 5 clearly separated functional regions across the canvas. Each region should have an obvious role in the scientific story.",
+                "Do not make it a plain left-to-right pipeline or a generic flowchart. Create a denser scientific composition with local substructures, internal comparisons, and grouped modules.",
+                "Avoid three equally sized vertical slabs with a single arrow passing through them. Prefer one dominant dense working area plus one or two supporting grouped regions, or an asymmetric multi-cluster arrangement.",
+                "Take inspiration from strong editorial scientific figures: use asymmetric layout, a clear focal region, supporting side clusters, fan-in or fan-out connectors, and local density variation rather than uniform columns.",
+                "A good pattern is: one contextual cluster, one bridge or interface cluster, and one dense main analytical cluster, with a small integrated legend or semantic key in a corner if needed.",
+                "Do not center the figure around one giant symbolic object. The main structure should come from grouped panels, modules, and connections rather than a single metaphor shape.",
+                "Do not place a large title at the top of the image.",
+                "Never add a standalone figure heading such as Figure 1, Motivation, Overview, System Overview, Framework, or any caption-like sentence anywhere in the image.",
+                "Do not create giant comparison banners such as Traditional X vs Proposed Y across the top. If a comparison is necessary, express it with local grouped modules and small embedded labels only.",
+                "Do not add a detached bottom takeaway box, key insight box, or summary strip outside the main composition.",
+                "Do not place a bottom caption, footnote, or explanatory paragraph inside the image.",
+                "Short in-figure labels are allowed and encouraged when they improve scientific clarity. Use concise framework-style labels, module names, arrow labels, and compact legends when necessary.",
+                "Use a disciplined text hierarchy: small integrated panel headers, short module labels inside boxes, and very short arrow labels. Avoid giant all-caps banner text spanning the full canvas.",
+                "If region names are needed, embed them inside the relevant panel and keep them secondary. Do not place oversized text floating above large regions.",
+                "All visible text should use Times New Roman or a very close academic serif font. Avoid sans-serif, poster-like display fonts, handwritten styles, or playful typography.",
+                "Design it like a strong conference framework figure: organized blocks, grouped regions, rounded rectangles when useful, arrows or connectors where they clarify logic, and a composition that feels authored rather than templated.",
+                "Do not over-expand low-level implementation detail. Keep the abstraction at the right level for a publication figure.",
+                "Do not let generic background context occupy too much of the canvas. Large low-information background panels are discouraged. Reserve most visual emphasis for the method logic and the main scientific contrast.",
+                "Use semantic consistency: similar roles should share consistent color, shape, visual weight, iconography, and placement logic. Assign a small palette of 3 to 4 semantic colors and reuse them consistently.",
+                "Each region should contain meaningful internal structure: nested boxes, grouped items, small comparisons, aligned rows, or compact examples. Avoid large empty washes with only one object inside.",
+                "Use a few necessary concrete icons or data thumbnails when they improve comprehension, such as document, message, cache, embedding, user, model, dataset, or output icons. They should be clean, intentional, and tied to real modules rather than decorative.",
+                "When reusing visual elements, introduce controlled differences so repeated modules are not mechanically identical. Avoid long stacks of near-duplicate cards or repeated clipart blocks.",
+                "Allow multiple meaningful visual elements if the figure needs them, but every element must have a clear role in the scientific explanation.",
+                "Avoid decorative concept art, giant symbolic brains, clouds, funnels, waves, logo walls, random icon piles, or visually flashy but semantically empty motifs.",
+                "Avoid collage-like card stacking. The figure should feel like an engineered layout, not a pile of decorative tiles.",
+                "Avoid generic stock shapes that scream AI-generated infographic, such as oversized trapezoid encoders, giant ribbon arrows, or repeated empty neural-network clipart unless grounded in a precise scientific role.",
+                "Do not turn the figure into a toy infographic. It should read like a polished framework figure from a top ML paper.",
+                "Use whitespace well, but do not oversimplify the figure into a vague sparse composition. A richer multi-block framework figure is acceptable if it improves clarity.",
+                "Create visual texture through meaningful structure: nested containers, aligned micro-elements, varied line weights, subtle shadows, and local detail. Do not rely on huge gradients or oversized empty background areas for style.",
+                "A compact legend strip or semantic key is allowed when useful. If used, make it small, integrated, and tucked into a corner or margin. Never let the legend become a bottom-wide banner.",
+                "Favor non-uniform occupancy: let important regions be denser and larger, and let supporting regions be smaller and more compact. Avoid evenly distributing empty space across the canvas.",
+                "The visual style should resemble a modern academic framework diagram template: white background, restrained local tinting, grouped panels, rounded modules, controlled outlines, balanced spacing, moderate line weights, arrows with clear direction, and clean readable labels.",
+                "The output should look like a serious NeurIPS/ICLR/ICML figure prepared for publication.",
+                f"Figure-specific intent: {_clip(fig.get('objective') or caption, 700)}",
+                f"Figure caption context from the paper: {cleaned_caption}",
+                f"Paper context to read and use: {_clip(cleaned_context, 2200)}",
+            ]
+        ).strip()
     labels = [
         str(part)
         for part in [
@@ -403,6 +493,76 @@ def _run_openai_compatible_image_generation(
         return 4
 
     return _write_openai_image_response(output_path=output_path, body=body)
+
+
+def _run_gemini_native_image_generation(
+    *,
+    output_path: Path,
+    prompt: str,
+    aspect_ratio: str,
+) -> int:
+    api_key = _env_first("DEEPGRAPH_PAPERBANANA_IMAGE_API_KEY", "GEMINI_NATIVE_API_KEY")
+    base_url = _normalize_gemini_native_base_url(
+        _env_first("DEEPGRAPH_PAPERBANANA_IMAGE_BASE_URL", "GEMINI_NATIVE_BASE_URL")
+    )
+    model = _env_first("DEEPGRAPH_PAPERBANANA_IMAGE_MODEL", "IMAGE_GEN_MODEL_NAME") or "gemini-2.5-flash-image"
+    if not api_key or not base_url:
+        print("Gemini-native image generation is missing API key or base URL.", file=sys.stderr)
+        return 3
+
+    payload = {
+        "contents": [
+            {
+                "role": "user",
+                "parts": [{"text": prompt}],
+            }
+        ],
+        "generationConfig": {
+            "responseModalities": ["TEXT", "IMAGE"],
+            "imageConfig": {"aspectRatio": aspect_ratio},
+        },
+    }
+    url = f"{base_url}/v1beta/models/{model}:generateContent"
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "x-goog-api-key": api_key,
+            "Content-Type": "application/json",
+            "User-Agent": "DeepGraph-PaperBanana-Wrapper/1.0",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=600) as response:
+            body = json.loads(response.read().decode("utf-8", errors="replace"))
+    except Exception as exc:
+        print(f"Gemini-native image generation failed: {exc}", file=sys.stderr)
+        return 4
+
+    candidates = body.get("candidates") if isinstance(body, dict) else None
+    for candidate in candidates or []:
+        content = candidate.get("content") if isinstance(candidate, dict) else None
+        parts = content.get("parts") if isinstance(content, dict) else None
+        for part in parts or []:
+            if not isinstance(part, dict):
+                continue
+            inline_data = part.get("inlineData") or part.get("inline_data")
+            if not isinstance(inline_data, dict):
+                continue
+            data = inline_data.get("data")
+            if not data:
+                continue
+            try:
+                output_path.parent.mkdir(parents=True, exist_ok=True)
+                output_path.write_bytes(base64.b64decode(str(data)))
+                return 0
+            except Exception as exc:
+                print(f"Gemini-native image base64 decode failed: {exc}", file=sys.stderr)
+                return 4
+    print("Gemini-native image generation response had no inline image data.", file=sys.stderr)
+    return 4
 
 
 def _image_attempt_count() -> int:
@@ -586,6 +746,12 @@ def main() -> int:
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     if not PAPERBANANA_PYTHON.exists() or not PAPERBANANA_ENTRY.exists():
+        if provider == "gemini_native":
+            return _run_gemini_native_image_generation(
+                output_path=output_path,
+                prompt=_image_prompt(spec, caption=caption, content=content),
+                aspect_ratio=aspect_ratio,
+            )
         if provider in {"openai", "openrouter", "openai_compatible_image"}:
             return _run_openai_compatible_image_generation(
                 output_path=output_path,
