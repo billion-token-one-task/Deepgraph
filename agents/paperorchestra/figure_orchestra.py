@@ -28,7 +28,7 @@ def _is_motivation_or_overview_figure(fig: dict[str, Any]) -> bool:
 
 def _banana_motivation_overview_enabled() -> bool:
     raw = os.getenv("DEEPGRAPH_PAPERBANANA_MOTIVATION_OVERVIEW", "true").strip().lower()
-    return raw not in {"0", "false", "no", "off"}
+    return raw in {"1", "true", "yes", "on"}
 
 
 def _default_plot_plan(metric_name: str) -> list[dict[str, Any]]:
@@ -290,6 +290,139 @@ def _render_framework_diagram(fig: dict[str, Any], state: dict, out_path: Path) 
     _draw_arrow(ax, (0.81, 0.58), (0.86, 0.67), "#059669")
     _draw_arrow(ax, (0.81, 0.54), (0.86, 0.44), "#6b7280")
     ax.text(0.43, 0.21, "route iff lower-bound gain is positive", fontsize=7.0, color="#374151")
+    _save_native_matplotlib_figure(fig_obj, out_path)
+    plt.close(fig_obj)
+
+
+def _draw_small_glyph(ax: Any, x: float, y: float, kind: int, color: str = "#64748b", alpha: float = 0.85, size: float = 1.0) -> None:
+    import matplotlib.patches as patches
+
+    if kind % 5 == 0:
+        ax.add_patch(patches.Circle((x, y), 0.010 * size, facecolor="none", edgecolor=color, linewidth=0.9, alpha=alpha))
+    elif kind % 5 == 1:
+        ax.add_patch(patches.RegularPolygon((x, y), 3, radius=0.014 * size, orientation=0.52, facecolor="none", edgecolor=color, linewidth=0.9, alpha=alpha))
+    elif kind % 5 == 2:
+        ax.add_patch(patches.Rectangle((x - 0.010 * size, y - 0.010 * size), 0.020 * size, 0.020 * size, facecolor="none", edgecolor=color, linewidth=0.9, alpha=alpha))
+    elif kind % 5 == 3:
+        ax.plot([x - 0.012 * size, x + 0.012 * size], [y - 0.012 * size, y + 0.012 * size], color=color, linewidth=0.9, alpha=alpha)
+        ax.plot([x - 0.012 * size, x + 0.012 * size], [y + 0.012 * size, y - 0.012 * size], color=color, linewidth=0.9, alpha=alpha)
+    else:
+        ax.add_patch(patches.RegularPolygon((x, y), 6, radius=0.012 * size, facecolor="none", edgecolor=color, linewidth=0.9, alpha=alpha))
+
+
+def _render_symbolic_motivation(fig: dict[str, Any], state: dict, out_path: Path) -> None:
+    plt = _setup_matplotlib()
+    import matplotlib.patches as patches
+    import numpy as np
+
+    rng = np.random.default_rng(7)
+    fig_obj, ax = plt.subplots(figsize=(7.2, 4.05))
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.axis("off")
+
+    # Sparse problem field: many easy cases, a few uncertain/high-value cases.
+    easy = rng.normal(loc=(0.19, 0.52), scale=(0.075, 0.17), size=(54, 2))
+    hard = rng.normal(loc=(0.37, 0.52), scale=(0.035, 0.13), size=(10, 2))
+    for idx, (x, y) in enumerate(easy):
+        if 0.05 < x < 0.35 and 0.12 < y < 0.88:
+            _draw_small_glyph(ax, float(x), float(y), idx, color="#94a3b8", alpha=0.65, size=0.85)
+    for idx, (x, y) in enumerate(hard):
+        if 0.28 < x < 0.48 and 0.14 < y < 0.86:
+            ax.add_patch(patches.Circle((float(x), float(y)), 0.020, facecolor="#d9f0ee", edgecolor="#0f766e", linewidth=0.9, alpha=0.95))
+            _draw_small_glyph(ax, float(x), float(y), idx, color="#0f766e", alpha=1.0, size=0.82)
+
+    # Faint wasted-compute band and missed-value void, expressed without labels.
+    for offset, alpha in [(0.00, 0.11), (0.022, 0.07), (-0.022, 0.07)]:
+        ax.add_patch(
+            patches.Arc(
+                (0.25, 0.50 + offset),
+                0.46,
+                0.58,
+                theta1=-38,
+                theta2=42,
+                linewidth=1.1,
+                color="#f59e0b",
+                alpha=alpha,
+            )
+        )
+    ax.add_patch(patches.Circle((0.33, 0.22), 0.055, facecolor="#f8fafc", edgecolor="#cbd5e1", linewidth=0.9, alpha=0.8))
+    ax.plot([0.302, 0.358], [0.22, 0.22], color="#cbd5e1", linewidth=1.0)
+
+    # Selective aperture as dominant focal anchor.
+    center = (0.56, 0.52)
+    ax.add_patch(patches.Circle(center, 0.175, facecolor="#ffffff", edgecolor="#0b3b63", linewidth=3.0))
+    ax.add_patch(patches.Circle(center, 0.145, facecolor="#ecfeff", edgecolor="#5eead4", linewidth=1.3, alpha=0.65))
+    ax.add_patch(patches.Wedge(center, 0.175, 38, 92, width=0.024, facecolor="#f59e0b", edgecolor="none", alpha=0.75))
+    ax.add_patch(patches.Wedge(center, 0.175, 190, 250, width=0.024, facecolor="#0f766e", edgecolor="none", alpha=0.75))
+    for idx, (x, y) in enumerate([(0.52, 0.58), (0.57, 0.46), (0.61, 0.57), (0.55, 0.52)]):
+        _draw_small_glyph(ax, x, y, idx, color="#0b3b63", alpha=0.95, size=1.0)
+    for angle in np.linspace(0.2, 2.8, 7):
+        ax.plot([0.42, center[0] - 0.13 * np.cos(angle)], [0.30 + 0.04 * np.sin(angle), center[1] - 0.13 * np.sin(angle)], color="#bae6fd", linewidth=0.8, alpha=0.65)
+
+    # Clean resolved set: intentionally simple, no labels.
+    resolved_x = [0.78, 0.84, 0.90]
+    for idx, x in enumerate(resolved_x):
+        _draw_small_glyph(ax, x, 0.57 - idx * 0.035, idx + 2, color="#0b3b63", alpha=1.0, size=1.5)
+        ax.add_patch(patches.Circle((x + 0.026, 0.57 - idx * 0.035), 0.007, facecolor="#f59e0b", edgecolor="none"))
+    ax.plot([0.68, 0.74], [0.52, 0.55], color="#0b3b63", linewidth=1.2, alpha=0.65)
+
+    fig_obj.tight_layout(pad=0.0)
+    _save_native_matplotlib_figure(fig_obj, out_path)
+    plt.close(fig_obj)
+
+
+def _render_symbolic_overview(fig: dict[str, Any], state: dict, out_path: Path) -> None:
+    plt = _setup_matplotlib()
+    import matplotlib.patches as patches
+    import numpy as np
+
+    rng = np.random.default_rng(11)
+    fig_obj, ax = plt.subplots(figsize=(7.2, 4.05))
+    ax.set_xlim(0, 1)
+    ax.set_ylim(0, 1)
+    ax.axis("off")
+
+    # Left evidence/problem manifold.
+    for idx, (x, y) in enumerate(rng.normal(loc=(0.22, 0.55), scale=(0.055, 0.16), size=(28, 2))):
+        if 0.10 < x < 0.35 and 0.16 < y < 0.86:
+            _draw_small_glyph(ax, float(x), float(y), idx, color="#64748b", alpha=0.55, size=0.78)
+    for y in [0.36, 0.50, 0.64]:
+        ax.plot([0.32, 0.42], [y, 0.52], color="#bae6fd", linewidth=0.9, alpha=0.65)
+
+    # Central conservative gate / aperture.
+    center = (0.52, 0.52)
+    for r, c, lw, alpha in [(0.22, "#0b3b63", 2.6, 1.0), (0.18, "#94a3b8", 1.2, 0.9), (0.13, "#5eead4", 1.1, 0.75)]:
+        ax.add_patch(patches.Circle(center, r, facecolor="none", edgecolor=c, linewidth=lw, alpha=alpha))
+    ax.add_patch(patches.Wedge(center, 0.22, 82, 118, width=0.040, facecolor="#ffffff", edgecolor="none"))
+    ax.add_patch(patches.Wedge(center, 0.18, 252, 292, width=0.030, facecolor="#ffffff", edgecolor="none"))
+    ax.add_patch(patches.RegularPolygon(center, 6, radius=0.060, orientation=0.52, facecolor="#d9f0ee", edgecolor="#0f766e", linewidth=1.2, alpha=0.95))
+    for angle in np.linspace(0, 2 * np.pi, 12, endpoint=False):
+        x = center[0] + 0.105 * np.cos(angle)
+        y = center[1] + 0.105 * np.sin(angle)
+        ax.add_patch(patches.Circle((x, y), 0.006, facecolor="#0b3b63", edgecolor="none", alpha=0.85))
+        ax.plot([center[0], x], [center[1], y], color="#94a3b8", linewidth=0.55, alpha=0.45)
+
+    # Cost / confidence / utility cues as tiny side motifs.
+    for idx, x in enumerate([0.46, 0.485, 0.51]):
+        ax.add_patch(patches.Rectangle((x, 0.25 + idx * 0.018), 0.028, 0.006, facecolor="#f59e0b", edgecolor="none", alpha=0.80))
+    ax.plot([0.43, 0.62], [0.27, 0.27], color="#0b3b63", linewidth=1.0, alpha=0.75)
+    ax.add_patch(patches.Arc((0.61, 0.33), 0.070, 0.045, theta1=0, theta2=180, color="#64748b", linewidth=0.9))
+    ax.add_patch(patches.Circle((0.595, 0.328), 0.005, facecolor="#f59e0b", edgecolor="none"))
+
+    # Reasoning field and resolved symbols, not a chain of boxes.
+    for idx, angle in enumerate(np.linspace(0, 2 * np.pi, 18, endpoint=False)):
+        rr = 0.070 + 0.030 * (idx % 3)
+        x = 0.72 + rr * np.cos(angle)
+        y = 0.53 + rr * np.sin(angle)
+        ax.plot([0.72, x], [0.53, y], color="#0b3b63", linewidth=0.65, alpha=0.65)
+        ax.add_patch(patches.Circle((x, y), 0.006, facecolor="#5eead4" if idx % 2 else "#0b3b63", edgecolor="none", alpha=0.9))
+    ax.add_patch(patches.Circle((0.72, 0.53), 0.045, facecolor="#ffffff", edgecolor="#0b3b63", linewidth=1.4))
+    for idx, x in enumerate([0.86, 0.91, 0.955]):
+        _draw_small_glyph(ax, x, 0.55 - idx * 0.025, idx + 1, color="#0b3b63", alpha=0.98, size=1.35)
+        ax.add_patch(patches.Circle((x, 0.55 - idx * 0.025), 0.004, facecolor="#f59e0b", edgecolor="none"))
+
+    fig_obj.tight_layout(pad=0.0)
     _save_native_matplotlib_figure(fig_obj, out_path)
     plt.close(fig_obj)
 
@@ -625,6 +758,14 @@ def render_native_figure(
     text = " ".join(str(fig.get(k) or "") for k in ("figure_id", "title", "plot_type", "objective", "caption")).lower()
     rows = _metric_points(iterations)
     try:
+        if _is_motivation_or_overview_figure(fig):
+            if "motivation" in text:
+                _render_symbolic_motivation(fig, state, out_path)
+                renderer = "symbolic_motivation"
+            else:
+                _render_symbolic_overview(fig, state, out_path)
+                renderer = "symbolic_overview"
+            return _native_asset(fid=fid, fig=fig, out_path=out_path, kind="diagram", renderer=renderer, objective=objective)
         if "benchmark" in text or "method comparison" in text:
             _render_benchmark_method_panel(fig, state, out_path)
             return _native_asset(fid=fid, fig=fig, out_path=out_path, kind="plot", renderer="benchmark_method_panel", objective=objective)
@@ -919,6 +1060,50 @@ def run_postwriting_api_figure_stage(
             for token in ("framework", "overview", "method", "problem", "gating", "architecture")
         )
     ]
+    plan_text = " ".join(
+        " ".join(str(row.get(key) or "") for key in ("figure_id", "title", "objective")).lower()
+        for row in diagram_plan
+    )
+    if "motivation" not in plan_text:
+        diagram_plan.insert(
+            0,
+            {
+                "figure_id": "fig_motivation_symbolic",
+                "plot_type": "diagram",
+                "title": "Motivation",
+                "objective": (
+                    "Create a symbolic motivation figure from the manuscript draft and caption intent: "
+                    "show why the problem matters, what existing methods miss, and what selective reasoning changes. "
+                    "No in-image title, no Fig. caption, no text labels, and no flowchart."
+                ),
+                "caption": (
+                    "Motivation figure contrasting indiscriminate reasoning with selective, evidence-aware reasoning "
+                    "using abstract scientific symbols rather than a process diagram."
+                ),
+                "data_source": "postwriting manuscript draft plus figure caption intent",
+                "aspect_ratio": "16:9",
+            },
+        )
+    if "overview" not in plan_text and "framework" not in plan_text:
+        diagram_plan.insert(
+            1 if diagram_plan else 0,
+            {
+                "figure_id": "fig_overview_symbolic",
+                "plot_type": "diagram",
+                "title": "Overview",
+                "objective": (
+                    "Create a symbolic method overview from the manuscript draft and caption intent: "
+                    "represent the central mechanism, evidence flow, and final research claim as an integrated "
+                    "scientific illustration. No in-image title, no Fig. caption, no text labels, and no flowchart."
+                ),
+                "caption": (
+                    "Overview figure summarizing the proposed mechanism and evidence structure in an abstract "
+                    "camera-ready visual language."
+                ),
+                "data_source": "postwriting manuscript draft plus figure caption intent",
+                "aspect_ratio": "16:9",
+            },
+        )
     if not diagram_plan:
         pa = state.get("problem_awareness") if isinstance(state.get("problem_awareness"), dict) else {}
         diagram_plan = [
