@@ -680,13 +680,25 @@ def _augment_plotting_plan(plan: list[dict[str, Any]], state: dict, iterations: 
     """Bias figures toward verified benchmark evidence and keep diagrams sparse."""
     cleaned: list[dict[str, Any]] = []
     diagram_count = 0
+    kept_special_diagrams: set[str] = set()
     for item in plan:
         if not isinstance(item, dict):
             continue
         fig = dict(item)
         plot_type = str(fig.get("plot_type") or "plot").lower()
         if plot_type == "diagram":
-            if diagram_count >= 1:
+            text = " ".join(str(fig.get(k) or "") for k in ("figure_id", "title", "objective")).lower()
+            is_motivation = "motivation" in text
+            is_overview = any(token in text for token in ("overview", "framework", "architecture"))
+            if is_motivation:
+                if "motivation" in kept_special_diagrams:
+                    continue
+                kept_special_diagrams.add("motivation")
+            elif is_overview:
+                if "overview" in kept_special_diagrams:
+                    continue
+                kept_special_diagrams.add("overview")
+            elif diagram_count >= 2:
                 continue
             diagram_count += 1
         cleaned.append(fig)
