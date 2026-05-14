@@ -1,0 +1,138 @@
+{
+  "issue": "#11",
+  "epic": "Manuscript Venue Routing + Multi-Template Pipeline",
+  "base_ref": "origin/main",
+  "head_ref": "feat/issue-9-agenda-driven-research-loop",
+  "commit": "b029d2b81e8523d9ced7ebffb8e35cbd6fca3ac3",
+  "depends_on": [
+    "#9 (PR #10 same branch)"
+  ],
+  "generated_by": "scripts/demo_full_paper_compile.py + artifacts/d1-d4 cross-reference",
+  "venues": [
+    "iclr2026",
+    "neurips2024",
+    "icml2024",
+    "acl_arr",
+    "cvpr2024",
+    "arxiv_plain"
+  ],
+  "demo_selection_id": null,
+  "generated_bundles": [
+    {
+      "venue": "iclr2026",
+      "bundle_path": "/tmp/full_paper_demo/iclr2026",
+      "main_tex_sha256": "33ea362c680336e3d0989cb18c55be3934e5ee7ab88f308bc943cbbcd1012ca6",
+      "pdf_path": "/tmp/full_paper_demo/iclr2026/paper.pdf",
+      "pdf_bytes": 112048,
+      "compile_status": "pass"
+    },
+    {
+      "venue": "neurips2024",
+      "bundle_path": "/tmp/full_paper_demo/neurips2024",
+      "main_tex_sha256": "c66eb10926c45253455048fe9633fe2acfb85cb5eb7cf9cc5220ef56f242c723",
+      "pdf_path": "/tmp/full_paper_demo/neurips2024/paper.pdf",
+      "pdf_bytes": 119065,
+      "compile_status": "pass"
+    },
+    {
+      "venue": "icml2024",
+      "bundle_path": "/tmp/full_paper_demo/icml2024",
+      "main_tex_sha256": "bf365c425fcf1de93986d2efe66824e77297c455006a8cd3b461541e298dd793",
+      "pdf_path": "/tmp/full_paper_demo/icml2024/paper.pdf",
+      "pdf_bytes": 122331,
+      "compile_status": "pass"
+    },
+    {
+      "venue": "cvpr2024",
+      "bundle_path": "/tmp/full_paper_demo/cvpr2024",
+      "main_tex_sha256": "2d5e4c3d37489b4329ad87a335f78f6d7dc92302ad862f255172b59422b88401",
+      "pdf_path": "/tmp/full_paper_demo/cvpr2024/paper.pdf",
+      "pdf_bytes": 127472,
+      "compile_status": "pass"
+    },
+    {
+      "venue": "acl_arr",
+      "bundle_path": "/tmp/full_paper_demo/acl_arr",
+      "main_tex_sha256": "ca46b353960c5e493659c76164a96a458c4e9e025faf7d242035e29e10b97e7b",
+      "pdf_path": "/tmp/full_paper_demo/acl_arr/paper.pdf",
+      "pdf_bytes": 123864,
+      "compile_status": "pass"
+    },
+    {
+      "venue": "arxiv_plain",
+      "bundle_path": "/tmp/full_paper_demo/arxiv_plain",
+      "main_tex_sha256": "7fe5795cc07f6af22284c73968b618dcde2b3b59acc5edbb1e6c0911b2c81d7f",
+      "pdf_path": "/tmp/full_paper_demo/arxiv_plain/paper.pdf",
+      "pdf_bytes": 129162,
+      "compile_status": "pass"
+    }
+  ],
+  "format_lint": {
+    "clean_fixture_status": "pass",
+    "dirty_fixture_status": "block",
+    "checks_triggered": [
+      "documentclass_present",
+      "bibstyle_matches_venue",
+      "required_packages_present",
+      "page_count_within_budget",
+      "figure_placement_specifiers",
+      "column_layout_consistency",
+      "figure_grid_density"
+    ],
+    "all_venues_pass_happy_path": true,
+    "all_venues_fail_violating_source": true,
+    "evidence_path": "artifacts/d3_format_linter_acceptance.json"
+  },
+  "api_evidence": {
+    "route_endpoint_status": 200,
+    "venue_endpoint_status": 200,
+    "format_lint_endpoint_status": 200,
+    "all_routes": [
+      "GET  /api/manuscript/venues",
+      "POST /api/manuscript/route",
+      "POST /api/manuscript/route/<selection_id>",
+      "GET  /api/manuscript/route/<selection_id>",
+      "POST /api/manuscript/lint",
+      "POST /api/manuscript/lint/<selection_id>",
+      "GET  /api/manuscript/lint_run/<run_id>"
+    ]
+  },
+  "sub_evidence_packages": {
+    "d1_template_router": "artifacts/d1_template_router_acceptance.json",
+    "d2_top_venue_adapters": "artifacts/d2_top_venue_adapters_acceptance.json",
+    "d3_format_linter": "artifacts/d3_format_linter_acceptance.json",
+    "d4_manuscript_routing_api": "artifacts/d4_manuscript_routing_api_acceptance.json"
+  },
+  "test_command": "pytest tests/test_top_venue_adapters.py tests/test_venue_router.py tests/test_format_linter.py tests/test_manuscript_routing_routes.py tests/test_template_adapter.py tests/test_venue_router_tiebreaker.py",
+  "test_summary": "92 passed (D1+D2+D3+D4 scope)",
+  "demo_command": "python scripts/demo_full_paper_compile.py",
+  "demo_summary": "6/6 venues compiled to PDF via tectonic; 10 builds total counting camera-ready toggles",
+  "router_fixture_results": [
+    {
+      "fixture": "CV (Diffusion-based image detection)",
+      "chosen": "cvpr2024",
+      "score": 1.05
+    },
+    {
+      "fixture": "NLP (Cross-lingual transfer for NER)",
+      "chosen": "iclr2026",
+      "score": 0.7
+    },
+    {
+      "fixture": "ML (Long-context linear attention)",
+      "chosen": "iclr2026",
+      "score": 0.85
+    },
+    {
+      "fixture": "Theory (Proof of convergence)",
+      "chosen": "arxiv_plain",
+      "score": 0.65
+    }
+  ],
+  "non_hardcoded_evidence": [
+    "venues_v1.yaml: 6 venue rules drive router; adding test venue requires no Python edit",
+    "router_fixture_results: 4 distinct fixtures, 3 distinct chosen venues, all rule-based",
+    "bundles: 6 distinct main_tex_sha256 (each adapter normalizes preamble + bibstyle per venue)",
+    "submission_mode toggle: ICLR + NeurIPS + ACL + CVPR each emit distinct review vs camera-ready PDFs"
+  ]
+}

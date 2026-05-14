@@ -127,7 +127,7 @@ def main() -> int:
         and readback["template_id"] == "iclr2026"
         and readback["selection_id"] == 20001
         and readback["pass"] is True
-        and len(readback["checks"]) == 7
+        and len(readback["checks"]) == 12
     )
 
     # ------------------------------------------------------------------
@@ -240,6 +240,17 @@ def main() -> int:
              "description": "Width units (\\columnwidth vs \\textwidth) must match adapter.column_layout (D1 user feedback)."},
             {"name": "figure_grid_density", "severity": "warning",
              "description": "Subfigure rows: ≤ 4 panels on single_column / ≤ 2 panels on two_column (D1 user feedback)."},
+            # Issue #14-mandated 5 checks (verbatim names):
+            {"name": "font_size_consistency", "severity": "warning",
+             "description": "Inline \\fontsize / \\large / \\small must not override the venue's global sizing."},
+            {"name": "section_spacing", "severity": "warning",
+             "description": "Consecutive \\section / \\subsection must have body text between them."},
+            {"name": "float_density", "severity": "warning",
+             "description": "Figures + tables per page must not exceed 3 (issue threshold)."},
+            {"name": "citation_density", "severity": "warning",
+             "description": "Citation rate must be ≥ 3 \\cite per 1000 words (issue threshold)."},
+            {"name": "bib_style_match", "severity": "error",
+             "description": "\\bibliographystyle must equal adapter.bibstyle_name (issue alias of bibstyle_matches_venue)."},
         ],
         "happy_path_results": happy_results,
         "violating_source_results": bad_results,

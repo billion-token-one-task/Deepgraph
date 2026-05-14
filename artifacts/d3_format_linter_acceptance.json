@@ -3,7 +3,7 @@
   "epic": "billion-token-one-task/Deepgraph#11",
   "base_ref": "origin/main",
   "head_ref": "feat/issue-9-agenda-driven-research-loop",
-  "commit": "9af5adf281c2ddb11c2d3011f0ad4252e5b8a0f6",
+  "commit": "b029d2b81e8523d9ced7ebffb8e35cbd6fca3ac3",
   "depends_on": [
     "#13 (D2 top venues)"
   ],
@@ -44,6 +44,31 @@
       "name": "figure_grid_density",
       "severity": "warning",
       "description": "Subfigure rows: \u2264 4 panels on single_column / \u2264 2 panels on two_column (D1 user feedback)."
+    },
+    {
+      "name": "font_size_consistency",
+      "severity": "warning",
+      "description": "Inline \\fontsize / \\large / \\small must not override the venue's global sizing."
+    },
+    {
+      "name": "section_spacing",
+      "severity": "warning",
+      "description": "Consecutive \\section / \\subsection must have body text between them."
+    },
+    {
+      "name": "float_density",
+      "severity": "warning",
+      "description": "Figures + tables per page must not exceed 3 (issue threshold)."
+    },
+    {
+      "name": "citation_density",
+      "severity": "warning",
+      "description": "Citation rate must be \u2265 3 \\cite per 1000 words (issue threshold)."
+    },
+    {
+      "name": "bib_style_match",
+      "severity": "error",
+      "description": "\\bibliographystyle must equal adapter.bibstyle_name (issue alias of bibstyle_matches_venue)."
     }
   ],
   "happy_path_results": [
@@ -54,7 +79,7 @@
       "summary": {
         "error_count": 0,
         "warning_count": 0,
-        "info_count": 2
+        "info_count": 4
       },
       "checks_passing": [
         "documentclass_present",
@@ -63,7 +88,12 @@
         "page_count_within_budget",
         "figure_placement_specifiers",
         "column_layout_consistency",
-        "figure_grid_density"
+        "figure_grid_density",
+        "font_size_consistency",
+        "section_spacing",
+        "float_density",
+        "citation_density",
+        "bib_style_match"
       ]
     },
     {
@@ -73,7 +103,7 @@
       "summary": {
         "error_count": 0,
         "warning_count": 1,
-        "info_count": 2
+        "info_count": 4
       },
       "checks_passing": [
         "documentclass_present",
@@ -81,7 +111,12 @@
         "page_count_within_budget",
         "figure_placement_specifiers",
         "column_layout_consistency",
-        "figure_grid_density"
+        "figure_grid_density",
+        "font_size_consistency",
+        "section_spacing",
+        "float_density",
+        "citation_density",
+        "bib_style_match"
       ]
     },
     {
@@ -91,7 +126,7 @@
       "summary": {
         "error_count": 0,
         "warning_count": 0,
-        "info_count": 2
+        "info_count": 4
       },
       "checks_passing": [
         "documentclass_present",
@@ -100,7 +135,12 @@
         "page_count_within_budget",
         "figure_placement_specifiers",
         "column_layout_consistency",
-        "figure_grid_density"
+        "figure_grid_density",
+        "font_size_consistency",
+        "section_spacing",
+        "float_density",
+        "citation_density",
+        "bib_style_match"
       ]
     },
     {
@@ -110,7 +150,7 @@
       "summary": {
         "error_count": 0,
         "warning_count": 0,
-        "info_count": 2
+        "info_count": 4
       },
       "checks_passing": [
         "documentclass_present",
@@ -119,17 +159,22 @@
         "page_count_within_budget",
         "figure_placement_specifiers",
         "column_layout_consistency",
-        "figure_grid_density"
+        "figure_grid_density",
+        "font_size_consistency",
+        "section_spacing",
+        "float_density",
+        "citation_density",
+        "bib_style_match"
       ]
     },
     {
       "template_id": "icml2024",
-      "column_layout": "single_column",
+      "column_layout": "two_column",
       "pass": true,
       "summary": {
         "error_count": 0,
         "warning_count": 0,
-        "info_count": 2
+        "info_count": 4
       },
       "checks_passing": [
         "documentclass_present",
@@ -138,7 +183,12 @@
         "page_count_within_budget",
         "figure_placement_specifiers",
         "column_layout_consistency",
-        "figure_grid_density"
+        "figure_grid_density",
+        "font_size_consistency",
+        "section_spacing",
+        "float_density",
+        "citation_density",
+        "bib_style_match"
       ]
     },
     {
@@ -148,7 +198,7 @@
       "summary": {
         "error_count": 0,
         "warning_count": 0,
-        "info_count": 2
+        "info_count": 4
       },
       "checks_passing": [
         "documentclass_present",
@@ -157,7 +207,12 @@
         "page_count_within_budget",
         "figure_placement_specifiers",
         "column_layout_consistency",
-        "figure_grid_density"
+        "figure_grid_density",
+        "font_size_consistency",
+        "section_spacing",
+        "float_density",
+        "citation_density",
+        "bib_style_match"
       ]
     }
   ],
@@ -167,9 +222,9 @@
       "column_layout": "two_column",
       "pass": false,
       "summary": {
-        "error_count": 3,
+        "error_count": 4,
         "warning_count": 4,
-        "info_count": 0
+        "info_count": 1
       },
       "checks_failing": [
         {
@@ -199,6 +254,10 @@
         {
           "name": "figure_grid_density",
           "severity": "warning"
+        },
+        {
+          "name": "bib_style_match",
+          "severity": "error"
         }
       ]
     },
@@ -209,7 +268,7 @@
       "summary": {
         "error_count": 2,
         "warning_count": 3,
-        "info_count": 1
+        "info_count": 3
       },
       "checks_failing": [
         {
@@ -239,9 +298,9 @@
       "column_layout": "two_column",
       "pass": false,
       "summary": {
-        "error_count": 3,
+        "error_count": 4,
         "warning_count": 4,
-        "info_count": 0
+        "info_count": 1
       },
       "checks_failing": [
         {
@@ -271,6 +330,10 @@
         {
           "name": "figure_grid_density",
           "severity": "warning"
+        },
+        {
+          "name": "bib_style_match",
+          "severity": "error"
         }
       ]
     },
@@ -279,9 +342,9 @@
       "column_layout": "single_column",
       "pass": false,
       "summary": {
-        "error_count": 3,
+        "error_count": 4,
         "warning_count": 3,
-        "info_count": 0
+        "info_count": 1
       },
       "checks_failing": [
         {
@@ -307,17 +370,21 @@
         {
           "name": "figure_grid_density",
           "severity": "warning"
+        },
+        {
+          "name": "bib_style_match",
+          "severity": "error"
         }
       ]
     },
     {
       "template_id": "icml2024",
-      "column_layout": "single_column",
+      "column_layout": "two_column",
       "pass": false,
       "summary": {
-        "error_count": 3,
-        "warning_count": 3,
-        "info_count": 0
+        "error_count": 4,
+        "warning_count": 4,
+        "info_count": 1
       },
       "checks_failing": [
         {
@@ -341,8 +408,16 @@
           "severity": "warning"
         },
         {
+          "name": "column_layout_consistency",
+          "severity": "warning"
+        },
+        {
           "name": "figure_grid_density",
           "severity": "warning"
+        },
+        {
+          "name": "bib_style_match",
+          "severity": "error"
         }
       ]
     },
@@ -351,9 +426,9 @@
       "column_layout": "single_column",
       "pass": false,
       "summary": {
-        "error_count": 3,
+        "error_count": 4,
         "warning_count": 3,
-        "info_count": 0
+        "info_count": 1
       },
       "checks_failing": [
         {
@@ -379,6 +454,10 @@
         {
           "name": "figure_grid_density",
           "severity": "warning"
+        },
+        {
+          "name": "bib_style_match",
+          "severity": "error"
         }
       ]
     }
@@ -389,7 +468,7 @@
     "run_id": 1,
     "ok": true,
     "readback_pass": true,
-    "readback_checks_count": 7
+    "readback_checks_count": 12
   },
   "tiebreaker": {
     "score_delta_threshold": 0.05,

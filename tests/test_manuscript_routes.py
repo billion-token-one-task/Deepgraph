@@ -115,7 +115,7 @@ class ManuscriptRoutesSmokeTests(unittest.TestCase):
         self.assertEqual(rv.status_code, 200)
         body = rv.get_json()
         self.assertTrue(body["lint"]["pass"], body)
-        self.assertEqual(len(body["lint"]["checks"]), 7)
+        self.assertEqual(len(body["lint"]["checks"]), 12)
 
     def test_preview_lint_missing_documentclass_fails(self):
         source = r"\begin{document}body\end{document}"

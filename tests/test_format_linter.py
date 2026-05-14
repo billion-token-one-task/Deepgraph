@@ -63,8 +63,13 @@ class FormatLinterTests(unittest.TestCase):
         self.assertTrue(result["pass"], result)
         self.assertEqual(result["template_id"], "iclr2026")
         self.assertEqual(result["column_layout"], "single_column")
-        self.assertEqual(len(result["checks"]), 7)
+        self.assertEqual(len(result["checks"]), 12)
         self.assertEqual(result["summary"]["error_count"], 0)
+        # Issue #14 contract: the 5 mandated names must be present verbatim.
+        names = {c["name"] for c in result["checks"]}
+        for required in ("font_size_consistency", "section_spacing",
+                         "float_density", "citation_density", "bib_style_match"):
+            self.assertIn(required, names)
 
     # ------------------------------------------------------------------
     # Individual check failures
@@ -202,8 +207,44 @@ class FormatLinterTests(unittest.TestCase):
         self.assertEqual(readback["template_id"], "iclr2026")
         self.assertEqual(readback["selection_id"], 42)
         self.assertTrue(readback["pass"])
-        self.assertEqual(len(readback["checks"]), 7)
+        self.assertEqual(len(readback["checks"]), 12)
         self.assertEqual(readback["rule_set"], "format_linter_v1")
+
+    # ------------------------------------------------------------------
+    # Issue #14: dirty fixture must trip all 5 mandated checks
+    # ------------------------------------------------------------------
+    def test_dirty_fixture_triggers_all_five_issue14_checks(self):
+        from agents.manuscript_templates import get_adapter
+        from agents.format_linter import lint_manuscript
+        adapter = get_adapter("iclr2026")  # bibstyle=iclr2026_conference
+        # Built to fail each of the 5 issue-mandated checks independently:
+        #   - font_size_consistency: \fontsize + \large
+        #   - section_spacing:        two \section in a row with no body
+        #   - float_density:          4 figures across only 1 page
+        #   - citation_density:       1000 words / 0 cites = 0/1000
+        #   - bib_style_match:        \bibliographystyle{plain} vs iclr2026_conference
+        body = " ".join(["lorem"] * 1000)
+        dirty = (
+            r"\documentclass{article}"
+            r"\usepackage{graphicx}\usepackage{amsmath}\usepackage{hyperref}"
+            r"\begin{document}"
+            r"\fontsize{14pt}{18pt}\selectfont \large "
+            r"\section{One}\section{Two}"
+            + body +
+            r"\begin{figure}[t]\caption{a}\end{figure}"
+            r"\begin{figure}[t]\caption{b}\end{figure}"
+            r"\begin{figure}[t]\caption{c}\end{figure}"
+            r"\begin{figure}[t]\caption{d}\end{figure}"
+            r"\bibliographystyle{plain}\bibliography{refs}"
+            r"\end{document}"
+        )
+        result = lint_manuscript(dirty, adapter, page_count=1)
+        by_name = {c["name"]: c for c in result["checks"]}
+        self.assertFalse(by_name["font_size_consistency"]["passed"])
+        self.assertFalse(by_name["section_spacing"]["passed"])
+        self.assertFalse(by_name["float_density"]["passed"])
+        self.assertFalse(by_name["citation_density"]["passed"])
+        self.assertFalse(by_name["bib_style_match"]["passed"])
 
 
 if __name__ == "__main__":

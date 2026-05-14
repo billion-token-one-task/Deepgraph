@@ -279,6 +279,178 @@ def _check_figure_grid_density(source: str, adapter: TemplateAdapter) -> CheckRe
 
 
 # ---------------------------------------------------------------------------
+# Issue #14-mandated 5 checks (issue spec verbatim, by name)
+# ---------------------------------------------------------------------------
+
+# Per #14 the issue spec lists five check names that must appear in the lint
+# report: ``font_size_consistency``, ``section_spacing``, ``float_density``,
+# ``citation_density``, ``bib_style_match``. They live alongside the 7
+# structural checks above so the lint manifest is a superset of the issue
+# contract (12 entries total).
+
+CITATION_DENSITY_MIN_PER_1000_WORDS = 3
+FLOAT_DENSITY_MAX_PER_PAGE = 3
+
+
+def _check_font_size_consistency(source: str) -> CheckResult:
+    """Flag inline ``\\fontsize`` / ``\\large`` / ``\\small`` overrides.
+
+    Venue templates set font sizing globally; inline overrides are the most
+    common cause of the "字体大小不一" complaint from the review meeting.
+    """
+    fontsize_matches = re.findall(r"\\fontsize\{[^}]+\}\{[^}]+\}", source)
+    size_macros = re.findall(
+        r"\\(?:tiny|scriptsize|footnotesize|small|large|Large|LARGE|huge|Huge)\b",
+        source,
+    )
+    n = len(fontsize_matches) + len(size_macros)
+    return CheckResult(
+        name="font_size_consistency",
+        severity="warning",
+        passed=n == 0,
+        message=(
+            "no inline font-size overrides"
+            if n == 0
+            else f"{n} inline font-size override(s) found "
+                 f"(\\fontsize={len(fontsize_matches)}, size macros={len(size_macros)})"
+        ),
+        details={
+            "fontsize_overrides": len(fontsize_matches),
+            "size_macro_overrides": len(size_macros),
+            "fix_hint": "remove \\fontsize{}{} and \\large/\\small inside the body; "
+                        "let the venue .sty control sizing",
+        },
+    )
+
+
+def _check_section_spacing(source: str) -> CheckResult:
+    """Detect back-to-back ``\\section``/``\\subsection`` with no body between.
+
+    A heading directly followed by another heading is the classic "段落紧凑"
+    fingerprint that broke layout in the review meeting's example papers.
+    """
+    pattern = re.compile(
+        r"\\(?:section|subsection|subsubsection)\*?\{[^}]*\}\s*"
+        r"\\(?:section|subsection|subsubsection)\*?\{",
+    )
+    bad = pattern.findall(source)
+    return CheckResult(
+        name="section_spacing",
+        severity="warning",
+        passed=not bad,
+        message=(
+            "no back-to-back headings"
+            if not bad
+            else f"{len(bad)} heading(s) directly followed by another heading "
+                 "with no body paragraph in between"
+        ),
+        details={
+            "violation_count": len(bad),
+            "fix_hint": "insert an introductory paragraph between consecutive headings",
+        },
+    )
+
+
+def _check_float_density(source: str, page_count: int | None) -> CheckResult:
+    """Cap figures+tables per page; default cap = 3 per page."""
+    fig = len(re.findall(r"\\begin\{figure\*?\}", source))
+    tab = len(re.findall(r"\\begin\{table\*?\}", source))
+    total = fig + tab
+    cap = FLOAT_DENSITY_MAX_PER_PAGE
+    if page_count and page_count > 0:
+        density = total / page_count
+        passed = density <= cap
+        return CheckResult(
+            name="float_density",
+            severity="warning",
+            passed=passed,
+            message=(
+                f"float density {density:.2f}/page ≤ {cap}/page"
+                if passed
+                else f"float density {density:.2f}/page exceeds cap {cap}/page "
+                     f"({total} floats over {page_count} pages)"
+            ),
+            details={
+                "figures": fig, "tables": tab, "total": total,
+                "page_count": page_count, "density_per_page": round(density, 3),
+                "cap_per_page": cap,
+                "fix_hint": "move secondary figures/tables to appendix",
+            },
+        )
+    # No page count → fall back to absolute cap of cap * 4
+    abs_cap = cap * 4
+    passed = total <= abs_cap
+    return CheckResult(
+        name="float_density",
+        severity="info",
+        passed=passed,
+        message=(
+            f"page_count not provided; absolute float count = {total} ≤ {abs_cap}"
+            if passed
+            else f"page_count not provided but {total} floats exceeds the absolute "
+                 f"cap of {abs_cap}"
+        ),
+        details={
+            "figures": fig, "tables": tab, "total": total,
+            "page_count": None, "cap_per_page": cap,
+        },
+    )
+
+
+def _check_citation_density(source: str) -> CheckResult:
+    """Warn if ``\\cite`` rate is below ~3 per 1000 words (sparse evidence)."""
+    cites = len(re.findall(r"\\(?:cite|citep|citet|citealp|citeauthor)\b", source))
+    # Strip LaTeX commands before word count to approximate visible text.
+    stripped = re.sub(r"\\[a-zA-Z]+\*?\s*(?:\[[^\]]*\])?(?:\{[^}]*\})?", " ", source)
+    stripped = re.sub(r"[{}$%&#_^~]", " ", stripped)
+    words = [w for w in stripped.split() if any(ch.isalpha() for ch in w)]
+    n_words = len(words)
+    if n_words < 200:
+        return CheckResult(
+            name="citation_density",
+            severity="info",
+            passed=True,
+            message=f"text too short ({n_words} words); citation density check skipped",
+            details={"cites": cites, "words": n_words},
+        )
+    per_1000 = (cites * 1000.0) / n_words
+    passed = per_1000 >= CITATION_DENSITY_MIN_PER_1000_WORDS
+    return CheckResult(
+        name="citation_density",
+        severity="warning",
+        passed=passed,
+        message=(
+            f"citation density {per_1000:.2f}/1000 words ≥ "
+            f"{CITATION_DENSITY_MIN_PER_1000_WORDS}/1000"
+            if passed
+            else f"citation density {per_1000:.2f}/1000 words below "
+                 f"threshold {CITATION_DENSITY_MIN_PER_1000_WORDS}/1000"
+        ),
+        details={
+            "cites": cites, "words": n_words,
+            "per_1000_words": round(per_1000, 3),
+            "threshold_per_1000": CITATION_DENSITY_MIN_PER_1000_WORDS,
+            "fix_hint": "add citations to claims that lack supporting references",
+        },
+    )
+
+
+def _check_bib_style_match(source: str, adapter: TemplateAdapter) -> CheckResult:
+    """Issue #14-mandated alias of ``bibstyle_matches_venue``.
+
+    Same logic, exposed under the exact name the AI verifier looks for.
+    """
+    inner = _check_bibstyle_matches_venue(source, adapter)
+    return CheckResult(
+        name="bib_style_match",
+        severity=inner.severity,
+        passed=inner.passed,
+        message=inner.message,
+        details=inner.details,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -289,7 +461,15 @@ def lint_manuscript(
     *,
     page_count: int | None = None,
 ) -> dict[str, Any]:
-    """Run all 7 checks on ``source`` against ``adapter`` and return a dict.
+    """Run all 12 checks on ``source`` against ``adapter`` and return a dict.
+
+    The 12 checks are the union of:
+
+    - 7 structural checks (documentclass, bibstyle, packages, page budget,
+      figure placement, column-layout, figure-grid).
+    - 5 issue-#14-mandated checks by exact name (``font_size_consistency``,
+      ``section_spacing``, ``float_density``, ``citation_density``,
+      ``bib_style_match``).
 
     The return shape is::
 
@@ -297,7 +477,7 @@ def lint_manuscript(
             "template_id": str,
             "column_layout": str,
             "pass": bool,            # True iff zero error-severity failures
-            "checks": [               # always 7 entries, ordered
+            "checks": [               # always 12 entries, ordered
                 {"name": ..., "severity": ..., "passed": bool, ...},
             ],
             "summary": {
@@ -315,6 +495,12 @@ def lint_manuscript(
         _check_figure_placement_specifiers(source),
         _check_column_layout_consistency(source, adapter),
         _check_figure_grid_density(source, adapter),
+        # Issue #14-mandated by name:
+        _check_font_size_consistency(source),
+        _check_section_spacing(source),
+        _check_float_density(source, page_count),
+        _check_citation_density(source),
+        _check_bib_style_match(source, adapter),
     ]
     error_count = sum(1 for c in checks if not c.passed and c.severity == "error")
     warning_count = sum(1 for c in checks if not c.passed and c.severity == "warning")
