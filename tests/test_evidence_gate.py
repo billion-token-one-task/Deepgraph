@@ -196,6 +196,36 @@ class EvidenceGateTests(unittest.TestCase):
         reqs = [b["requirement"] for b in decision["blockers"]]
         self.assertIn("no_refuted_primary_claims", reqs)
 
+    def test_gate_blocks_when_relative_error_exceeds_threshold(self):
+        """Audit follow-up: gate must block when delta.relative_error is too large.
+
+        The bundled benchmark only verifies presence of required keys; without
+        a magnitude check the gate would greenlight bundles for results the
+        reviewer simultaneously flagged as inconclusive (e.g. rel_err=0.767).
+        """
+        from agents import evidence_gate
+        self._seed_insight(1)
+        sel = self._new_selection(1)
+        # Seed a normally-passing run, then overwrite the packet with a
+        # relative_error that exceeds RELATIVE_ERROR_MAX.
+        self._seed_completed_run(1, sel.selection_id)
+        packet = {
+            "config": {"seq_len": 512, "head_dim": 64, "seed": 1729},
+            "softmax_attention": {"latency_ms_median": 10.0},
+            "linear_attention": {"latency_ms_median": 5.0},
+            "delta": {"latency_speedup_x": 2.0, "relative_error": 0.77},
+        }
+        (self.workdir / "experiment_result_packet.json").write_text(
+            json.dumps(packet), encoding="utf-8",
+        )
+        decision = evidence_gate.run_gate(sel.selection_id)
+        self.assertEqual(decision["status"], "block")
+        reqs = [b["requirement"] for b in decision["blockers"]]
+        self.assertTrue(
+            any(r.startswith("delta.relative_error<=") for r in reqs),
+            f"expected magnitude blocker, got {reqs}",
+        )
+
 
 class RunRealPipelineTests(unittest.TestCase):
     """End-to-end: run_real_pipeline must NOT create manuscript when gate blocks."""
@@ -240,8 +270,16 @@ class RunRealPipelineTests(unittest.TestCase):
         save_agenda(agenda)
         return select_and_persist(agenda)
 
-    def test_pass_path_creates_manuscript(self):
-        """Real benchmark on seq_len=128 produces a real packet -> gate pass -> manuscript created."""
+    def test_real_benchmark_at_low_seq_len_blocks_on_rel_err(self):
+        """Real benchmark at seq_len=128 has rel_err≫0.10 -> gate must block.
+
+        End-to-end coverage of the post-audit magnitude check: the bundled
+        ``linear_attention_elu_plus_1`` kernel does NOT approximate softmax
+        well at low sequence lengths (rel_err ≈ 0.80). The gate's magnitude
+        rule (``RELATIVE_ERROR_MAX = 0.10``) must catch this and prevent
+        manuscript creation. Before the fix this same run produced
+        gate.status="pass" -> manuscript bundle on inconclusive evidence.
+        """
         from agents.agenda_orchestrator import run_real_pipeline
         self._seed_insight(1)
         sel = self._new_selection()
@@ -249,18 +287,69 @@ class RunRealPipelineTests(unittest.TestCase):
         result = run_real_pipeline(
             sel.selection_id, seq_len=128, head_dim=32, seed=1729, repeats=2,
         )
-        self.assertEqual(result["evidence_gate"]["status"], "pass", result)
-        self.assertTrue(result["manuscript_created"], result)
-        self.assertIsNotNone(result["manuscript"])
-        # selection should be marked completed
-        row = self.db.fetchone(
-            "SELECT status, manuscript_run_id, submission_bundle_id "
-            "FROM agenda_selections WHERE id=?",
-            (sel.selection_id,),
+        self.assertEqual(result["evidence_gate"]["status"], "block", result)
+        self.assertFalse(result["manuscript_created"], result)
+        # Magnitude blocker must appear in the blockers list.
+        reqs = [b["requirement"] for b in result["evidence_gate"]["blockers"]]
+        self.assertTrue(
+            any(r.startswith("delta.relative_error<=") for r in reqs),
+            f"expected magnitude blocker, got {reqs}",
         )
-        self.assertEqual(row["status"], "completed")
-        self.assertIsNotNone(row["manuscript_run_id"])
-        self.assertIsNotNone(row["submission_bundle_id"])
+
+    def test_pass_path_creates_manuscript_with_acceptable_rel_err(self):
+        """Pass path: rewrite packet's rel_err to <=threshold -> gate pass -> manuscript created."""
+        from agents.agenda_orchestrator import run_real_pipeline
+        from agents import real_experiment_runner
+
+        self._seed_insight(1)
+        sel = self._new_selection()
+
+        # Wrap the experiment runner so the on-disk packet's rel_err is
+        # patched to a passing value before evidence_gate reads it. This
+        # validates the orchestrator's pass-path machinery without depending
+        # on the (currently-poor) approximation quality of the bundled kernel.
+        original = real_experiment_runner.run_real_experiment_for_selection
+
+        def _patched(selection_id, **kwargs):
+            out = original(selection_id, **kwargs)
+            packet_path = Path(out["packet_path"])
+            packet = json.loads(packet_path.read_text(encoding="utf-8"))
+            packet["delta"]["relative_error"] = 0.05
+            packet_path.write_text(json.dumps(packet), encoding="utf-8")
+            return out
+
+        real_experiment_runner.run_real_experiment_for_selection = _patched
+        try:
+            # Also clear any refuted-claim verdicts so the no_refuted_primary
+            # rule doesn't independently block.
+            from agents.agenda_orchestrator import run_real_pipeline as _run
+            # First run experiment via wrapped function
+            result = _run(
+                sel.selection_id, seq_len=128, head_dim=32, seed=1729, repeats=2,
+            )
+            # Clear any refuted claims that the experiment runner generated
+            # from the (uncorrected) raw metrics and re-evaluate the gate +
+            # manuscript path.
+            from agents import evidence_gate
+            from agents.agenda_orchestrator import _create_manuscript_run_if_allowed
+            self.db.execute(
+                "UPDATE experimental_claims SET verdict='confirmed' "
+                "WHERE run_id=? AND verdict='refuted'",
+                (int(result["experiment_run_id"]),),
+            )
+            self.db.commit()
+            gate = evidence_gate.run_gate(sel.selection_id)
+            self.assertEqual(gate["status"], "pass", gate)
+            workdir = str(
+                Path(result["experiment_result"]["packet_path"]).parent
+            )
+            manu = _create_manuscript_run_if_allowed(
+                sel.selection_id, 1, int(result["experiment_run_id"]), workdir,
+            )
+            self.assertIsNotNone(manu)
+            self.assertIn("manuscript_run_id", manu)
+        finally:
+            real_experiment_runner.run_real_experiment_for_selection = original
 
     def test_blocked_path_does_not_create_manuscript(self):
         """Force-block by deleting packet AFTER run -> rerun gate yields block -> no manuscript."""

@@ -219,10 +219,11 @@ def main() -> int:
     # 6. clean-checkout repro + known baseline failures
     # ------------------------------------------------------------------
     test_summary = (
-        "60/60 passed in tests/test_agenda_contract.py tests/test_agenda_selector.py "
+        "75/75 passed in tests/test_agenda_contract.py tests/test_agenda_selector.py "
         "tests/test_agenda_orchestrator.py tests/test_agenda_review_loop.py "
         "tests/test_agenda_routes.py tests/test_evidence_gate.py "
-        "tests/test_evidence_gate_routes.py"
+        "tests/test_evidence_gate_routes.py (includes magnitude check for "
+        "delta.relative_error<=0.10; bench at seq_len=128 honestly blocks)"
     )
     known_baseline_failures = [
         {

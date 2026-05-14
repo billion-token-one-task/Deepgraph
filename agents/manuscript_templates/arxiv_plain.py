@@ -48,11 +48,14 @@ class ArxivPlainAdapter(TemplateAdapter):
         # ``article`` class plus ``plain`` bibstyle is in every TeX install.
         return []
 
-    def inject_preamble(self, source: str) -> str:
+    def inject_preamble(self, source: str, *, submission_mode: bool = True) -> str:
         """No-op for arXiv plain: only ensure a ``\\documentclass`` exists.
 
-        Idempotent by construction.
+        Idempotent by construction. ``submission_mode`` is accepted for
+        contract uniformity with venue adapters but has no effect — arXiv
+        ships plain articles in a single mode.
         """
+        del submission_mode  # arXiv plain has no review/camera-ready distinction
         if "\\begin{document}" not in source:
             return source
         preamble, marker, body = source.partition(r"\begin{document}")
@@ -60,8 +63,13 @@ class ArxivPlainAdapter(TemplateAdapter):
             preamble = r"\documentclass{article}" + "\n" + preamble
         return preamble + marker + body
 
-    def normalize_source(self, source: str) -> str:
-        """Replicate ``normalize_latex_source(text, force_iclr2026=False)``."""
+    def normalize_source(self, source: str, *, submission_mode: bool = True) -> str:
+        """Replicate ``normalize_latex_source(text, force_iclr2026=False)``.
+
+        ``submission_mode`` accepted for contract uniformity; arXiv plain
+        has no review/camera-ready distinction so it is intentionally unused.
+        """
+        del submission_mode
         text = (source or "").strip()
         if text.startswith("```"):
             lines = text.splitlines()

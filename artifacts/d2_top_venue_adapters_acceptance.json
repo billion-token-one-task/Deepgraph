@@ -3,7 +3,7 @@
   "epic": "billion-token-one-task/Deepgraph#11",
   "base_ref": "origin/main",
   "head_ref": "feat/issue-9-agenda-driven-research-loop",
-  "commit": "08d5f01ab7685b72711c695f38a1f2c11ada45ba",
+  "commit": "235400a8ca68af700df61aefcf01570b0f62521b",
   "depends_on": [
     "#11/#12 (D1 Foundation)"
   ],
@@ -33,7 +33,8 @@
         "neurips_2024.sty",
         "README.md"
       ],
-      "preamble_contains_venue_sty": false,
+      "sty_basename": "neurips_2024",
+      "preamble_contains_venue_sty": true,
       "bibstyle_applied": true
     },
     {
@@ -50,6 +51,7 @@
         "algorithmic.sty",
         "README.md"
       ],
+      "sty_basename": "icml2024",
       "preamble_contains_venue_sty": true,
       "bibstyle_applied": true
     },
@@ -64,7 +66,8 @@
         "acl_natbib.bst",
         "README.md"
       ],
-      "preamble_contains_venue_sty": false,
+      "sty_basename": "acl",
+      "preamble_contains_venue_sty": true,
       "bibstyle_applied": true
     },
     {
@@ -78,7 +81,8 @@
         "ieeenat_fullname.bst",
         "README.md"
       ],
-      "preamble_contains_venue_sty": false,
+      "sty_basename": "cvpr",
+      "preamble_contains_venue_sty": true,
       "bibstyle_applied": true
     }
   ],

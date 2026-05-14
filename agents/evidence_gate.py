@@ -116,6 +116,13 @@ def _load_packet(workdir: str | None) -> tuple[dict[str, Any] | None, str | None
 
 REQUIRED_PACKET_KEYS = ("config", "softmax_attention", "linear_attention", "delta")
 
+# Magnitude threshold: a linear-attention approximation with > 10% relative
+# error against softmax is inconclusive and must not flow into manuscript
+# generation. Audit finding (PR #10 review): without this rule the gate was
+# greenlighting bundles for results the reviewer simultaneously flagged as
+# inconclusive (rel_err=0.767 → status=pass in the acceptance run).
+RELATIVE_ERROR_MAX = 0.10
+
 
 def _evaluate_default_rules(
     selection: Mapping[str, Any],
@@ -161,6 +168,16 @@ def _evaluate_default_rules(
             blockers.append({
                 "requirement": "experiment_result_packet keys",
                 "reason": f"missing_keys={missing_keys}",
+            })
+        # Magnitude check: even when every required key is present, the
+        # approximation error must be small enough that the result is not
+        # self-evidently inconclusive.
+        delta = packet.get("delta") or {}
+        rel_err = delta.get("relative_error")
+        if isinstance(rel_err, (int, float)) and rel_err > RELATIVE_ERROR_MAX:
+            blockers.append({
+                "requirement": f"delta.relative_error<={RELATIVE_ERROR_MAX}",
+                "reason": f"observed={rel_err}",
             })
 
     # A refuted claim about the primary effect blocks publication.

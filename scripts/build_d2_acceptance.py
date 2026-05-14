@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -74,6 +75,19 @@ def main() -> int:
             r"\end{document}" "\n"
         )
         normalized = adapter.normalize_source(sample_body)
+        # The injected ``\usepackage`` name is the adapter's _sty_basename
+        # (the actual .sty file shipped upstream), which differs from the
+        # template_id for 3 of 4 D2 venues (e.g. neurips2024 → neurips_2024,
+        # acl_arr → acl, cvpr2024 → cvpr). Earlier versions of this script
+        # checked ``\usepackage{<template_id>}`` and reported false negatives.
+        sty_basename = getattr(adapter, "_sty_basename", "") or tid
+        # Match both bare ``\usepackage{<sty>}`` and option forms
+        # ``\usepackage[review]{<sty>}`` / ``\usepackage[final]{<sty>}`` so the
+        # submission_mode toggle (which adds an option block) doesn't flip the
+        # check to a false negative.
+        sty_pattern = re.compile(
+            r"\\usepackage(?:\[[^\]]*\])?\{" + re.escape(sty_basename) + r"\}"
+        )
         adapter_meta.append({
             "template_id": adapter.template_id,
             "venue_label": adapter.venue_label,
@@ -81,9 +95,8 @@ def main() -> int:
             "bibstyle_name": adapter.bibstyle_name,
             "max_pages": adapter.max_pages,
             "copied_files": copied,
-            "preamble_contains_venue_sty": (
-                f"\\usepackage{{{tid}}}" in normalized
-            ),
+            "sty_basename": sty_basename,
+            "preamble_contains_venue_sty": bool(sty_pattern.search(normalized)),
             "bibstyle_applied": f"\\bibliographystyle{{{adapter.bibstyle_name}}}" in normalized,
         })
 

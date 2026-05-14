@@ -163,13 +163,14 @@ def preview_lint():
     source = body.get("source") or ""
     page_count = body.get("page_count")
     normalize = body.get("normalize", True)
+    submission_mode = bool(body.get("submission_mode", True))
     adapter, err = _resolve_adapter_or_400(template_id)
     if err is not None:
         return err
     if not isinstance(source, str) or not source.strip():
         return jsonify({"error": "empty_source"}), 400
     if normalize:
-        source = adapter.normalize_source(source)
+        source = adapter.normalize_source(source, submission_mode=submission_mode)
     try:
         result = format_linter.lint_manuscript(source, adapter, page_count=page_count)
     except Exception as e:  # noqa: BLE001
@@ -185,13 +186,14 @@ def persist_lint(selection_id: int):
     source = body.get("source") or ""
     page_count = body.get("page_count")
     normalize = body.get("normalize", True)
+    submission_mode = bool(body.get("submission_mode", True))
     adapter, err = _resolve_adapter_or_400(template_id)
     if err is not None:
         return err
     if not isinstance(source, str) or not source.strip():
         return jsonify({"error": "empty_source"}), 400
     if normalize:
-        source = adapter.normalize_source(source)
+        source = adapter.normalize_source(source, submission_mode=submission_mode)
     result = format_linter.lint_manuscript(source, adapter, page_count=page_count)
     run_id = format_linter.persist_lint_run(
         selection_id=selection_id, adapter=adapter, lint_result=result

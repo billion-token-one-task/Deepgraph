@@ -77,7 +77,12 @@ class BenchAndGateRoutesTests(unittest.TestCase):
         save_agenda(agenda)
         return select_and_persist(agenda)
 
-    def test_bench_endpoint_runs_full_pipeline(self):
+    def test_bench_endpoint_runs_full_pipeline_blocks_on_high_rel_err(self):
+        """End-to-end bench at seq_len=128 naturally produces rel_err≈0.80
+        between softmax and elu+1 linear attention, which exceeds the
+        ``RELATIVE_ERROR_MAX=0.10`` magnitude threshold and must block
+        manuscript creation. Asserts the pipeline reports that block
+        honestly rather than greenlighting an inconclusive result."""
         self._seed_insight()
         sel = self._new_selection()
         resp = self.client.post(
@@ -87,34 +92,64 @@ class BenchAndGateRoutesTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 201, resp.get_data(as_text=True))
         body = resp.get_json()
         self.assertEqual(body["selection_id"], sel.selection_id)
-        self.assertEqual(body["evidence_gate"]["status"], "pass")
-        self.assertTrue(body["manuscript_created"])
+        self.assertEqual(body["evidence_gate"]["status"], "block")
+        self.assertFalse(body["manuscript_created"])
         self.assertIn("packet_path", body["experiment_result"])
+        reqs = [b["requirement"] for b in body["evidence_gate"]["blockers"]]
+        self.assertTrue(
+            any("delta.relative_error" in r for r in reqs),
+            f"expected a delta.relative_error blocker, got {reqs}",
+        )
 
     def test_gate_endpoints_pass_and_fetch(self):
+        """Pass-path coverage: wraps ``run_real_experiment_for_selection`` so
+        the on-disk packet's ``delta.relative_error`` is rewritten to 0.05
+        (below the magnitude threshold) before the gate evaluates it. This
+        exercises the bench -> gate -> latest read chain without depending
+        on the natural error magnitude of the elu+1 linear attention
+        approximation at small seq_len, which is genuinely inconclusive."""
+        from agents import real_experiment_runner
+        import json as _json
+        original = real_experiment_runner.run_real_experiment_for_selection
+
+        def _patched(selection_id, **kwargs):
+            result = original(selection_id, **kwargs)
+            packet_path = Path(result["packet_path"])
+            packet = _json.loads(packet_path.read_text(encoding="utf-8"))
+            packet["delta"]["relative_error"] = 0.05
+            packet_path.write_text(_json.dumps(packet, indent=2), encoding="utf-8")
+            metrics = result.setdefault("metrics", {})
+            delta = metrics.setdefault("delta", {})
+            delta["relative_error"] = 0.05
+            return result
+
         self._seed_insight()
         sel = self._new_selection()
 
-        # 1) bench runs gate as side-effect
-        self.client.post(
-            f"/api/research_agenda/selection/{sel.selection_id}/bench",
-            json={"seq_len": 128, "head_dim": 32, "seed": 1729, "repeats": 2},
-        )
+        real_experiment_runner.run_real_experiment_for_selection = _patched
+        try:
+            # 1) bench runs gate as side-effect
+            self.client.post(
+                f"/api/research_agenda/selection/{sel.selection_id}/bench",
+                json={"seq_len": 128, "head_dim": 32, "seed": 1729, "repeats": 2},
+            )
 
-        # 2) explicit re-run of gate via dedicated endpoint
-        resp = self.client.post(
-            f"/api/research_agenda/selection/{sel.selection_id}/gate"
-        )
-        self.assertEqual(resp.status_code, 201)
-        gate = resp.get_json()["gate"]
-        self.assertEqual(gate["status"], "pass")
+            # 2) explicit re-run of gate via dedicated endpoint
+            resp = self.client.post(
+                f"/api/research_agenda/selection/{sel.selection_id}/gate"
+            )
+            self.assertEqual(resp.status_code, 201)
+            gate = resp.get_json()["gate"]
+            self.assertEqual(gate["status"], "pass")
 
-        # 3) latest fetch
-        resp = self.client.get(
-            f"/api/research_agenda/selection/{sel.selection_id}/gate/latest"
-        )
-        self.assertEqual(resp.status_code, 200)
-        self.assertEqual(resp.get_json()["gate"]["status"], "pass")
+            # 3) latest fetch
+            resp = self.client.get(
+                f"/api/research_agenda/selection/{sel.selection_id}/gate/latest"
+            )
+            self.assertEqual(resp.status_code, 200)
+            self.assertEqual(resp.get_json()["gate"]["status"], "pass")
+        finally:
+            real_experiment_runner.run_real_experiment_for_selection = original
 
     def test_gate_endpoint_blocks_when_no_run(self):
         self._seed_insight()

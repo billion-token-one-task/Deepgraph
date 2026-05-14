@@ -84,19 +84,25 @@ class TemplateAdapter(abc.ABC):
         """
 
     @abc.abstractmethod
-    def inject_preamble(self, source: str) -> str:
+    def inject_preamble(self, source: str, *, submission_mode: bool = True) -> str:
         """Force-inject venue preamble into a LaTeX document body.
 
         MUST be idempotent: running twice on its own output is a no-op beyond
         the first call.
+
+        ``submission_mode=True`` produces the double-blind review preamble;
+        ``submission_mode=False`` produces the camera-ready preamble. Venues
+        with no review/camera-ready distinction (e.g. arxiv_plain) accept
+        the kwarg for contract uniformity and ignore it.
         """
 
     @abc.abstractmethod
-    def normalize_source(self, source: str) -> str:
+    def normalize_source(self, source: str, *, submission_mode: bool = True) -> str:
         """Apply venue-specific LaTeX cleanups (bibstyle, packages, layout).
 
         This is the moral equivalent of the legacy
-        ``normalize_latex_source(text, force_iclr2026=...)`` call.
+        ``normalize_latex_source(text, force_iclr2026=...)`` call. Forwards
+        ``submission_mode`` to :meth:`inject_preamble`.
         """
 
 

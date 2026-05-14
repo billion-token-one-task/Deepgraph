@@ -255,28 +255,41 @@ def assemble_main_tex(state: dict, orchestrated: dict, bundle_format: str) -> st
 """
 
 
-def _ensure_iclr2026_preamble(source: str) -> str:
+def _ensure_iclr2026_preamble(source: str, *, submission_mode: bool = True) -> str:
     """Backward-compatibility shim → ``ICLR2026Adapter.inject_preamble``.
 
     Kept as a top-level name so external callers and tests that imported
     this private helper before D1 still work; the canonical implementation
-    lives in ``agents.manuscript_templates.iclr2026``.
+    lives in ``agents.manuscript_templates.iclr2026``. ``submission_mode``
+    forwards to the adapter so camera-ready callers get the ``[final]``
+    preamble instead of the double-blind review default.
     """
     from agents.manuscript_templates import get_adapter
-    return get_adapter("iclr2026").inject_preamble(source)
+    return get_adapter("iclr2026").inject_preamble(
+        source, submission_mode=submission_mode
+    )
 
 
-def normalize_latex_source(text: str, *, force_iclr2026: bool = False) -> str:
+def normalize_latex_source(
+    text: str,
+    *,
+    force_iclr2026: bool = False,
+    submission_mode: bool = True,
+) -> str:
     """Backward-compatibility shim → ``TemplateAdapter.normalize_source``.
 
     ``force_iclr2026=True`` dispatches to the ICLR 2026 adapter; the
     default ``False`` path dispatches to the arXiv plain adapter. Both
     paths are byte-equivalent to the pre-D1 implementation (verified by
-    ``tests/test_template_adapter.py``).
+    ``tests/test_template_adapter.py``). ``submission_mode`` forwards to
+    the adapter — kept default-True so legacy callers keep emitting the
+    double-blind review build until they opt in to camera-ready.
     """
     from agents.manuscript_templates import get_adapter
     template_id = "iclr2026" if force_iclr2026 else "arxiv_plain"
-    return get_adapter(template_id).normalize_source(text)
+    return get_adapter(template_id).normalize_source(
+        text, submission_mode=submission_mode
+    )
 
 
 def pick_main_tex(orchestrated: dict, state: dict, bundle_format: str) -> str:
