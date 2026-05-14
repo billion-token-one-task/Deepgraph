@@ -279,6 +279,30 @@ ICLR2026_TEMPLATE_FILES = [
     "fancyhdr.sty",
 ]
 
+# D2 (#13): paths for the four additional top-tier venue templates.
+# Each adapter consults its own ``_TEMPLATE_DIR`` + ``_TEMPLATE_FILES`` pair
+# so a venue can be swapped to a different upstream snapshot via env vars
+# without touching adapter code.
+NEURIPS2024_TEMPLATE_DIR = Path(
+    _env_str("DEEPGRAPH_NEURIPS2024_TEMPLATE_DIR", str(PROJECT_ROOT / "third_party" / "neurips2024"))
+)
+NEURIPS2024_TEMPLATE_FILES = ["neurips2024.sty", "README.md"]
+
+ICML2024_TEMPLATE_DIR = Path(
+    _env_str("DEEPGRAPH_ICML2024_TEMPLATE_DIR", str(PROJECT_ROOT / "third_party" / "icml2024"))
+)
+ICML2024_TEMPLATE_FILES = ["icml2024.sty", "README.md"]
+
+ACL_ARR_TEMPLATE_DIR = Path(
+    _env_str("DEEPGRAPH_ACL_ARR_TEMPLATE_DIR", str(PROJECT_ROOT / "third_party" / "acl_arr"))
+)
+ACL_ARR_TEMPLATE_FILES = ["acl_arr.sty", "README.md"]
+
+CVPR2024_TEMPLATE_DIR = Path(
+    _env_str("DEEPGRAPH_CVPR2024_TEMPLATE_DIR", str(PROJECT_ROOT / "third_party" / "cvpr2024"))
+)
+CVPR2024_TEMPLATE_FILES = ["cvpr2024.sty", "README.md"]
+
 # Manuscript venue routing config (issue #11/#12 D1).
 # Set ``DEEPGRAPH_VENUES_CONFIG_PATH`` to point at a custom YAML/JSON file.
 VENUES_CONFIG_PATH = Path(

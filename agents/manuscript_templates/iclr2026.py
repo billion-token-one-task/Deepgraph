@@ -32,6 +32,13 @@ class ICLR2026Adapter(TemplateAdapter):
         return "iclr2026_conference"
 
     @property
+    def column_layout(self) -> str:
+        # iclr2026_conference.sty renders a single-column body (NeurIPS-style
+        # compact 10pt). FormatLinter (D3) uses this to enforce
+        # subfigure-grid density (4-per-row for single column).
+        return "single_column"
+
+    @property
     def bibstyle_name(self) -> str:
         return "iclr2026_conference"
 

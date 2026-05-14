@@ -50,3 +50,73 @@ venues:
       requires_real_data: false
     rejects: {}
     max_pages: 30
+
+  # D2 (#13): four top-tier venues. Triggers are tuned so a representative
+  # CV / NLP / ML state ends up at CVPR / ACL-ARR / NeurIPS or ICML.
+  - template_id: neurips2024
+    schema_version: 1
+    triggers:
+      claim_types: ["empirical", "benchmark"]
+      domains: ["ml", "rl"]
+      keywords:
+        - "neural"
+        - "deep learning"
+        - "representation"
+        - "self-supervised"
+        - "reinforcement"
+      requires_real_data: true
+    rejects:
+      claim_types: ["position"]
+      page_count_max: 11
+    max_pages: 9
+
+  - template_id: icml2024
+    schema_version: 1
+    triggers:
+      claim_types: ["empirical", "benchmark", "theory"]
+      domains: ["ml", "theory", "stats"]
+      keywords:
+        - "optimization"
+        - "generalization"
+        - "training dynamics"
+        - "kernel"
+        - "stochastic"
+      requires_real_data: false
+    rejects:
+      claim_types: ["position"]
+      page_count_max: 10
+    max_pages: 8
+
+  - template_id: acl_arr
+    schema_version: 1
+    triggers:
+      claim_types: ["empirical", "benchmark", "survey"]
+      domains: ["nlp"]
+      keywords:
+        - "language model"
+        - "translation"
+        - "tokenization"
+        - "dialogue"
+        - "linguistic"
+      requires_real_data: true
+    rejects:
+      claim_types: ["position"]
+      page_count_max: 11
+    max_pages: 9
+
+  - template_id: cvpr2024
+    schema_version: 1
+    triggers:
+      claim_types: ["empirical", "benchmark"]
+      domains: ["vision"]
+      keywords:
+        - "image"
+        - "segmentation"
+        - "detection"
+        - "3d reconstruction"
+        - "diffusion"
+      requires_real_data: true
+    rejects:
+      claim_types: ["position", "theory"]
+      page_count_max: 10
+    max_pages: 8

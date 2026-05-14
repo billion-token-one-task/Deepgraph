@@ -55,6 +55,17 @@ class TemplateAdapter(abc.ABC):
         return self.template_id
 
     @property
+    def column_layout(self) -> str:
+        """``"single_column"`` or ``"two_column"``.
+
+        FormatLinter (D3 #14) consumes this to decide which subfigure-grid
+        density / ``\\includegraphics`` width unit it expects (e.g. a
+        two-column venue should use ``\\columnwidth`` rather than
+        ``\\textwidth``). Defaults to single column; override per venue.
+        """
+        return "single_column"
+
+    @property
     @abc.abstractmethod
     def bibstyle_name(self) -> str:
         """LaTeX bibliography style command argument (e.g. ``"plain"``)."""
@@ -147,6 +158,11 @@ def _ensure_builtin_adapters_loaded() -> None:
     # imports trigger the @register side-effect
     from agents.manuscript_templates import iclr2026 as _iclr  # noqa: F401
     from agents.manuscript_templates import arxiv_plain as _arx  # noqa: F401
+    # D2 (#13): four additional top-tier venues.
+    from agents.manuscript_templates import neurips2024 as _nrps  # noqa: F401
+    from agents.manuscript_templates import icml2024 as _icml  # noqa: F401
+    from agents.manuscript_templates import acl_arr as _acl  # noqa: F401
+    from agents.manuscript_templates import cvpr2024 as _cvpr  # noqa: F401
     _builtins_loaded = True
 
 
