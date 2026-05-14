@@ -3,7 +3,7 @@
   "pr": "billion-token-one-task/Deepgraph#10",
   "base_ref": "origin/main",
   "head_ref": "feat/issue-9-agenda-driven-research-loop",
-  "commit": "235400a8ca68af700df61aefcf01570b0f62521b",
+  "commit": "7403700cd2162ae8d6065b9abf0f4f9e8818621b",
   "generated_by": "scripts/build_agenda_loop_acceptance.py",
   "clean_checkout_repro": {
     "install_command": "python -m venv .venv && . .venv/bin/activate && pip install -e .",
@@ -44,10 +44,10 @@
     "run_id": 2,
     "status": "completed",
     "result_packet_path": "/tmp/dg_agenda_real_exp/selection_1/experiment_result_packet.json",
-    "result_packet_sha256": "e46d0f041d6365a7209b56927a3aaf0f2016c2d561a0b3967f738df584de9b7c",
+    "result_packet_sha256": "ef870feef7d385ce74f9977660d617260192d4716cce81e94b49182ba3258154",
     "real_data_or_benchmark_source": "agents/benchmarks/qkv_fixture_512_64.npz (committed deterministic Q/K/V fixture, seq_len=512, head_dim=64); kernels: softmax_attention vs linear_attention_elu_plus_1 on CPU",
     "delta": {
-      "latency_speedup_x": 5.974598407598081,
+      "latency_speedup_x": 5.34735916904575,
       "approximation_l2_distance": 10.13387978273153,
       "relative_error": 0.7670742721257483
     }
