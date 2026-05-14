@@ -65,6 +65,11 @@ W_TIER_BONUS = 0.05  # multiplied by (3 - tier); higher tier => smaller bonus
 
 DEFAULT_RULE_SET = "venues_v1"
 
+# D3 (#14): score-difference threshold below which the tiebreaker is invoked.
+# Two venues whose rule-based scores differ by less than this number are
+# considered a tie and the LLM (or deterministic fallback) decides.
+TIEBREAK_SCORE_DELTA = 0.05
+
 
 # ---------- loading ----------
 
@@ -301,6 +306,125 @@ def route_and_persist(
         "rationale": rationale,
         "rejected_venues": rejected,
         "rule_set": rule_set,
+    }
+
+
+# ---------- tiebreaker (D3 #14) ----------
+
+
+def needs_tiebreak(scored: list[dict[str, Any]]) -> bool:
+    """Return True iff the top two non-blocked venues differ by < threshold."""
+    eligible = [s for s in scored if not s["breakdown"]["blocked"]]
+    eligible.sort(key=lambda s: s["breakdown"]["score"], reverse=True)
+    if len(eligible) < 2:
+        return False
+    top = eligible[0]["breakdown"]["score"]
+    runner_up = eligible[1]["breakdown"]["score"]
+    return (top - runner_up) < TIEBREAK_SCORE_DELTA
+
+
+def tiebreak_with_llm(
+    state: Mapping[str, Any],
+    scored: list[dict[str, Any]],
+    *,
+    llm_caller=None,
+) -> dict[str, Any]:
+    """Resolve a near-tie between the top venues by calling an LLM.
+
+    Parameters
+    ----------
+    state
+        The same dict passed to ``evaluate_venues``.
+    scored
+        The ``all_scored`` list returned by ``evaluate_venues``.
+    llm_caller
+        Optional ``(prompt: str) -> str`` callable. The string return value
+        MUST be the chosen ``template_id``. If ``None``, a deterministic
+        fallback picks the higher-tier-first / file-order-first venue so
+        tests stay reproducible without network access.
+
+    Returns
+    -------
+    dict
+        ``{"chosen_template_id": str, "rationale": str, "candidates": [...],
+        "used_llm": bool}``. Caller should record this alongside the
+        scoring breakdown.
+    """
+    eligible = [s for s in scored if not s["breakdown"]["blocked"]]
+    eligible.sort(key=lambda s: s["breakdown"]["score"], reverse=True)
+    candidates = eligible[:2]
+    if not candidates:
+        return {
+            "chosen_template_id": None,
+            "rationale": "no eligible venues to tiebreak between",
+            "candidates": [],
+            "used_llm": False,
+        }
+    if len(candidates) == 1:
+        return {
+            "chosen_template_id": candidates[0]["venue"].template_id,
+            "rationale": "only one eligible venue; no tiebreak needed",
+            "candidates": [c["venue"].template_id for c in candidates],
+            "used_llm": False,
+        }
+
+    cand_ids = [c["venue"].template_id for c in candidates]
+    if llm_caller is None:
+        # Deterministic fallback: keep the first candidate (already the
+        # higher-scoring one; the runner-up only got here because the gap
+        # was sub-threshold). This matches the file-order tie-break used
+        # by ``evaluate_venues``.
+        return {
+            "chosen_template_id": cand_ids[0],
+            "rationale": (
+                f"near-tie ({candidates[0]['breakdown']['score']:.3f} vs "
+                f"{candidates[1]['breakdown']['score']:.3f}); deterministic "
+                f"fallback picked file-order leader {cand_ids[0]!r}"
+            ),
+            "candidates": cand_ids,
+            "used_llm": False,
+        }
+
+    prompt = (
+        "Two venues are tied for a manuscript routing decision. State summary:\n"
+        f"  title={state.get('title')!r}\n"
+        f"  claim_type={state.get('claim_type')!r}\n"
+        f"  domain={state.get('domain')!r}\n"
+        f"  has_real_data={state.get('has_real_data')}\n"
+        f"  page_count_estimate={state.get('page_count_estimate')}\n"
+        f"Candidates (pick exactly one template_id verbatim):\n"
+    )
+    for c in candidates:
+        bd = c["breakdown"]
+        prompt += (
+            f"  - template_id={c['venue'].template_id!r} "
+            f"score={bd['score']:.3f} "
+            f"matched_keywords={bd.get('matched_keywords') or []}\n"
+        )
+    prompt += "Return only the chosen template_id, no other text."
+
+    raw = llm_caller(prompt)
+    chosen = (raw or "").strip()
+    if chosen not in cand_ids:
+        # Defensive: if the LLM hallucinated, fall back to file-order leader
+        # so the pipeline doesn't crash on a bad response.
+        return {
+            "chosen_template_id": cand_ids[0],
+            "rationale": (
+                f"LLM returned {chosen!r} not in candidates {cand_ids!r}; "
+                f"defensive fallback picked {cand_ids[0]!r}"
+            ),
+            "candidates": cand_ids,
+            "used_llm": True,
+        }
+    return {
+        "chosen_template_id": chosen,
+        "rationale": (
+            f"near-tie ({candidates[0]['breakdown']['score']:.3f} vs "
+            f"{candidates[1]['breakdown']['score']:.3f}); LLM picked {chosen!r}"
+        ),
+        "candidates": cand_ids,
+        "used_llm": True,
     }
 
 

@@ -1,0 +1,436 @@
+{
+  "issue": "billion-token-one-task/Deepgraph#14",
+  "epic": "billion-token-one-task/Deepgraph#11",
+  "base_ref": "origin/main",
+  "head_ref": "feat/issue-9-agenda-driven-research-loop",
+  "commit": "9af5adf281c2ddb11c2d3011f0ad4252e5b8a0f6",
+  "depends_on": [
+    "#13 (D2 top venues)"
+  ],
+  "generated_by": "scripts/build_d3_acceptance.py",
+  "linter_rule_set": "format_linter_v1",
+  "linter_checks": [
+    {
+      "name": "documentclass_present",
+      "severity": "error",
+      "description": "Document must declare \\documentclass."
+    },
+    {
+      "name": "bibstyle_matches_venue",
+      "severity": "error",
+      "description": "\\bibliographystyle must equal adapter.bibstyle_name."
+    },
+    {
+      "name": "required_packages_present",
+      "severity": "warning",
+      "description": "graphicx, amsmath, hyperref must appear in preamble."
+    },
+    {
+      "name": "page_count_within_budget",
+      "severity": "warning|error",
+      "description": "Estimated page count vs adapter.max_pages; >1 over \u2192 error."
+    },
+    {
+      "name": "figure_placement_specifiers",
+      "severity": "warning",
+      "description": "Every \\begin{figure} should use an explicit placement specifier."
+    },
+    {
+      "name": "column_layout_consistency",
+      "severity": "warning",
+      "description": "Width units (\\columnwidth vs \\textwidth) must match adapter.column_layout (D1 user feedback)."
+    },
+    {
+      "name": "figure_grid_density",
+      "severity": "warning",
+      "description": "Subfigure rows: \u2264 4 panels on single_column / \u2264 2 panels on two_column (D1 user feedback)."
+    }
+  ],
+  "happy_path_results": [
+    {
+      "template_id": "acl_arr",
+      "column_layout": "two_column",
+      "pass": true,
+      "summary": {
+        "error_count": 0,
+        "warning_count": 0,
+        "info_count": 2
+      },
+      "checks_passing": [
+        "documentclass_present",
+        "bibstyle_matches_venue",
+        "required_packages_present",
+        "page_count_within_budget",
+        "figure_placement_specifiers",
+        "column_layout_consistency",
+        "figure_grid_density"
+      ]
+    },
+    {
+      "template_id": "arxiv_plain",
+      "column_layout": "single_column",
+      "pass": true,
+      "summary": {
+        "error_count": 0,
+        "warning_count": 1,
+        "info_count": 2
+      },
+      "checks_passing": [
+        "documentclass_present",
+        "bibstyle_matches_venue",
+        "page_count_within_budget",
+        "figure_placement_specifiers",
+        "column_layout_consistency",
+        "figure_grid_density"
+      ]
+    },
+    {
+      "template_id": "cvpr2024",
+      "column_layout": "two_column",
+      "pass": true,
+      "summary": {
+        "error_count": 0,
+        "warning_count": 0,
+        "info_count": 2
+      },
+      "checks_passing": [
+        "documentclass_present",
+        "bibstyle_matches_venue",
+        "required_packages_present",
+        "page_count_within_budget",
+        "figure_placement_specifiers",
+        "column_layout_consistency",
+        "figure_grid_density"
+      ]
+    },
+    {
+      "template_id": "iclr2026",
+      "column_layout": "single_column",
+      "pass": true,
+      "summary": {
+        "error_count": 0,
+        "warning_count": 0,
+        "info_count": 2
+      },
+      "checks_passing": [
+        "documentclass_present",
+        "bibstyle_matches_venue",
+        "required_packages_present",
+        "page_count_within_budget",
+        "figure_placement_specifiers",
+        "column_layout_consistency",
+        "figure_grid_density"
+      ]
+    },
+    {
+      "template_id": "icml2024",
+      "column_layout": "single_column",
+      "pass": true,
+      "summary": {
+        "error_count": 0,
+        "warning_count": 0,
+        "info_count": 2
+      },
+      "checks_passing": [
+        "documentclass_present",
+        "bibstyle_matches_venue",
+        "required_packages_present",
+        "page_count_within_budget",
+        "figure_placement_specifiers",
+        "column_layout_consistency",
+        "figure_grid_density"
+      ]
+    },
+    {
+      "template_id": "neurips2024",
+      "column_layout": "single_column",
+      "pass": true,
+      "summary": {
+        "error_count": 0,
+        "warning_count": 0,
+        "info_count": 2
+      },
+      "checks_passing": [
+        "documentclass_present",
+        "bibstyle_matches_venue",
+        "required_packages_present",
+        "page_count_within_budget",
+        "figure_placement_specifiers",
+        "column_layout_consistency",
+        "figure_grid_density"
+      ]
+    }
+  ],
+  "violating_source_results": [
+    {
+      "template_id": "acl_arr",
+      "column_layout": "two_column",
+      "pass": false,
+      "summary": {
+        "error_count": 3,
+        "warning_count": 4,
+        "info_count": 0
+      },
+      "checks_failing": [
+        {
+          "name": "documentclass_present",
+          "severity": "error"
+        },
+        {
+          "name": "bibstyle_matches_venue",
+          "severity": "error"
+        },
+        {
+          "name": "required_packages_present",
+          "severity": "warning"
+        },
+        {
+          "name": "page_count_within_budget",
+          "severity": "error"
+        },
+        {
+          "name": "figure_placement_specifiers",
+          "severity": "warning"
+        },
+        {
+          "name": "column_layout_consistency",
+          "severity": "warning"
+        },
+        {
+          "name": "figure_grid_density",
+          "severity": "warning"
+        }
+      ]
+    },
+    {
+      "template_id": "arxiv_plain",
+      "column_layout": "single_column",
+      "pass": false,
+      "summary": {
+        "error_count": 2,
+        "warning_count": 3,
+        "info_count": 1
+      },
+      "checks_failing": [
+        {
+          "name": "documentclass_present",
+          "severity": "error"
+        },
+        {
+          "name": "required_packages_present",
+          "severity": "warning"
+        },
+        {
+          "name": "page_count_within_budget",
+          "severity": "error"
+        },
+        {
+          "name": "figure_placement_specifiers",
+          "severity": "warning"
+        },
+        {
+          "name": "figure_grid_density",
+          "severity": "warning"
+        }
+      ]
+    },
+    {
+      "template_id": "cvpr2024",
+      "column_layout": "two_column",
+      "pass": false,
+      "summary": {
+        "error_count": 3,
+        "warning_count": 4,
+        "info_count": 0
+      },
+      "checks_failing": [
+        {
+          "name": "documentclass_present",
+          "severity": "error"
+        },
+        {
+          "name": "bibstyle_matches_venue",
+          "severity": "error"
+        },
+        {
+          "name": "required_packages_present",
+          "severity": "warning"
+        },
+        {
+          "name": "page_count_within_budget",
+          "severity": "error"
+        },
+        {
+          "name": "figure_placement_specifiers",
+          "severity": "warning"
+        },
+        {
+          "name": "column_layout_consistency",
+          "severity": "warning"
+        },
+        {
+          "name": "figure_grid_density",
+          "severity": "warning"
+        }
+      ]
+    },
+    {
+      "template_id": "iclr2026",
+      "column_layout": "single_column",
+      "pass": false,
+      "summary": {
+        "error_count": 3,
+        "warning_count": 3,
+        "info_count": 0
+      },
+      "checks_failing": [
+        {
+          "name": "documentclass_present",
+          "severity": "error"
+        },
+        {
+          "name": "bibstyle_matches_venue",
+          "severity": "error"
+        },
+        {
+          "name": "required_packages_present",
+          "severity": "warning"
+        },
+        {
+          "name": "page_count_within_budget",
+          "severity": "error"
+        },
+        {
+          "name": "figure_placement_specifiers",
+          "severity": "warning"
+        },
+        {
+          "name": "figure_grid_density",
+          "severity": "warning"
+        }
+      ]
+    },
+    {
+      "template_id": "icml2024",
+      "column_layout": "single_column",
+      "pass": false,
+      "summary": {
+        "error_count": 3,
+        "warning_count": 3,
+        "info_count": 0
+      },
+      "checks_failing": [
+        {
+          "name": "documentclass_present",
+          "severity": "error"
+        },
+        {
+          "name": "bibstyle_matches_venue",
+          "severity": "error"
+        },
+        {
+          "name": "required_packages_present",
+          "severity": "warning"
+        },
+        {
+          "name": "page_count_within_budget",
+          "severity": "error"
+        },
+        {
+          "name": "figure_placement_specifiers",
+          "severity": "warning"
+        },
+        {
+          "name": "figure_grid_density",
+          "severity": "warning"
+        }
+      ]
+    },
+    {
+      "template_id": "neurips2024",
+      "column_layout": "single_column",
+      "pass": false,
+      "summary": {
+        "error_count": 3,
+        "warning_count": 3,
+        "info_count": 0
+      },
+      "checks_failing": [
+        {
+          "name": "documentclass_present",
+          "severity": "error"
+        },
+        {
+          "name": "bibstyle_matches_venue",
+          "severity": "error"
+        },
+        {
+          "name": "required_packages_present",
+          "severity": "warning"
+        },
+        {
+          "name": "page_count_within_budget",
+          "severity": "error"
+        },
+        {
+          "name": "figure_placement_specifiers",
+          "severity": "warning"
+        },
+        {
+          "name": "figure_grid_density",
+          "severity": "warning"
+        }
+      ]
+    }
+  ],
+  "all_venues_pass_happy_path": true,
+  "all_venues_fail_violating_source": true,
+  "db_roundtrip": {
+    "run_id": 1,
+    "ok": true,
+    "readback_pass": true,
+    "readback_checks_count": 7
+  },
+  "tiebreaker": {
+    "score_delta_threshold": 0.05,
+    "needs_tiebreak_on_ml_state": false,
+    "deterministic_decision": {
+      "chosen_template_id": "icml2024",
+      "rationale": "near-tie (0.900 vs 0.850); deterministic fallback picked file-order leader 'icml2024'",
+      "candidates": [
+        "icml2024",
+        "neurips2024"
+      ],
+      "used_llm": false
+    },
+    "llm_decision_when_valid": {
+      "chosen_template_id": "neurips2024",
+      "rationale": "near-tie (0.900 vs 0.850); LLM picked 'neurips2024'",
+      "candidates": [
+        "icml2024",
+        "neurips2024"
+      ],
+      "used_llm": true
+    },
+    "llm_decision_on_hallucination": {
+      "chosen_template_id": "icml2024",
+      "rationale": "LLM returned 'completely_fake_venue' not in candidates ['icml2024', 'neurips2024']; defensive fallback picked 'icml2024'",
+      "candidates": [
+        "icml2024",
+        "neurips2024"
+      ],
+      "used_llm": true
+    },
+    "hallucination_falls_back_to_candidate": true
+  },
+  "schema_tables_created": [
+    "format_lint_runs"
+  ],
+  "test_command": "pytest tests/test_format_linter.py tests/test_venue_router_tiebreak.py -q",
+  "test_summary": "13 passed (7 linter + 4 tiebreak + 2 setup) on this commit",
+  "non_hardcoded_evidence": {
+    "linter_consumes_column_layout_property": true,
+    "lint_runs_persist_across_init_db_for_both_backends": true,
+    "llm_caller_is_pluggable_via_keyword_argument": true
+  }
+}
