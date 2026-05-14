@@ -251,15 +251,29 @@ def main() -> int:
     print("=" * 78)
     print("For each venue: normalize source → stage assets → tectonic compile")
     print("=" * 78)
+    # Render plan: every venue gets one build, plus ICLR renders a second
+    # ``camera-ready`` build (submission_mode=False) so reviewers can eyeball
+    # the line-numbers-vs-final difference.
+    build_plan: list[tuple[str, str, dict]] = []
     for venue_id in sorted(list_adapters()):
+        build_plan.append((venue_id, venue_id, {}))
+        if venue_id == "iclr2026":
+            build_plan.append(("iclr2026", "iclr2026_camera_ready",
+                               {"submission_mode": False}))
+
+    for venue_id, build_id, normalize_kwargs in build_plan:
         ad = get_adapter(venue_id)
-        venue_dir = out_root / venue_id
+        venue_dir = out_root / build_id
         venue_dir.mkdir()
         # write refs.bib first so adapter sees real file
         (venue_dir / "refs.bib").write_text(REFS_BIB)
         stage_assets(venue_id, venue_dir)
         # ICLR also wants its preamble math_commands.tex preserved
-        tex = ad.normalize_source(PAPER_BODY)
+        try:
+            tex = ad.normalize_source(PAPER_BODY, **normalize_kwargs)
+        except TypeError:
+            # Non-ICLR adapters don't accept submission_mode — call clean.
+            tex = ad.normalize_source(PAPER_BODY)
         (venue_dir / "paper.tex").write_text(tex)
         # ICLR adapter writes the bundle via copy_files too; mirror that side.
         try:
@@ -269,7 +283,7 @@ def main() -> int:
         compile_res = compile_with_tectonic(venue_dir)
         lint = lint_manuscript(source=tex, adapter=ad, page_count=8)
         summary.append({
-            "venue": venue_id,
+            "venue": build_id,
             "column_layout": ad.column_layout,
             "bibstyle": ad.bibstyle_name,
             "max_pages": ad.max_pages,

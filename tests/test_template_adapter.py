@@ -80,6 +80,37 @@ class TemplateAdapterTests(unittest.TestCase):
         self.assertIn(r"\bibliographystyle{plain}", arx_out)
         self.assertNotIn("iclr2026_conference", arx_out)
 
+    def test_submission_mode_toggle_changes_iclr_preamble(self):
+        """ICLR adapter must support a camera-ready render path.
+
+        ``submission_mode=False`` MUST emit the ``\\iclrfinalcopy`` macro
+        toggle (the official switch the ICLR sty exposes — it does NOT take
+        a ``[final]`` package option) and replace the anonymous author block
+        with a real-author placeholder so reviewers can eyeball the final
+        paper layout.
+        """
+        body = (
+            r"\documentclass{article}" "\n"
+            r"\begin{document}" "\n"
+            r"Body." "\n"
+            r"\end{document}" "\n"
+        )
+        sub = self.iclr.inject_preamble(body, submission_mode=True)
+        final = self.iclr.inject_preamble(body, submission_mode=False)
+        # Submission build: no final-copy toggle, anonymous authors.
+        self.assertNotIn(r"\iclrfinalcopy", sub)
+        self.assertIn("Anonymous authors", sub)
+        # Camera-ready build: \iclrfinalcopy present, no anonymous author.
+        self.assertIn(r"\iclrfinalcopy", final)
+        self.assertNotIn("Anonymous authors", final)
+        # Default (no kwarg) must equal submission_mode=True for back-compat.
+        self.assertEqual(sub, self.iclr.inject_preamble(body))
+        # normalize_source threads the kwarg through.
+        self.assertIn(
+            r"\iclrfinalcopy",
+            self.iclr.normalize_source(body, submission_mode=False),
+        )
+
     def test_legacy_shim_byte_equivalent(self):
         """Pre-D1 normalize_latex_source signature still produces same bytes."""
         from agents.paper_orchestra_pipeline import normalize_latex_source

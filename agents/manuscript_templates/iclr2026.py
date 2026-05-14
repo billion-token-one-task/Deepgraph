@@ -60,22 +60,37 @@ class ICLR2026Adapter(TemplateAdapter):
             copied.append(name)
         return copied
 
-    def inject_preamble(self, source: str) -> str:
-        """Force an ICLR 2026 submission preamble without touching the body.
+    def inject_preamble(self, source: str, *, submission_mode: bool = True) -> str:
+        """Force an ICLR 2026 preamble without touching the body.
 
         Idempotent: if the document already carries the ICLR preamble, the
         ``"iclr2026_conference" not in preamble`` / ``"math_commands.tex"
         not in preamble`` / per-package guards short-circuit each insertion.
+
+        ``submission_mode=True`` (default) emits the double-blind review
+        preamble (line numbers + anonymous author + "Under review" header).
+        ``submission_mode=False`` emits the camera-ready preamble
+        (``[final]`` option strips line numbers + uses the real author block).
         """
         if "\\begin{document}" not in source:
             return source
         preamble, marker, body = source.partition(r"\begin{document}")
         if r"\documentclass" not in preamble:
             preamble = r"\documentclass{article}" + "\n" + preamble
+        # ICLR's official sty uses the ``\iclrfinalcopy`` macro toggle to
+        # switch from double-blind review (line numbers + anonymous) into
+        # camera-ready mode — it does NOT take a ``[final]`` package option.
         if "iclr2026_conference" not in preamble:
             preamble = re.sub(
                 r"(\\documentclass(?:\[[^\]]*\])?\{[^}]+\}\s*)",
                 r"\1\\usepackage{iclr2026_conference,times}" + "\n",
+                preamble,
+                count=1,
+            )
+        if not submission_mode and r"\iclrfinalcopy" not in preamble:
+            preamble = re.sub(
+                r"(\\usepackage\{iclr2026_conference,times\}\s*)",
+                r"\1\\iclrfinalcopy" + "\n",
                 preamble,
                 count=1,
             )
@@ -86,12 +101,23 @@ class ICLR2026Adapter(TemplateAdapter):
             if first_pkg not in preamble:
                 preamble = preamble.rstrip() + "\n" + rf"\usepackage{{{package}}}" + "\n"
         if r"\author" not in preamble:
-            preamble = preamble.rstrip() + "\n" + r"\author{Anonymous authors\\Paper under double-blind review}" + "\n"
+            author_block = (
+                r"\author{Anonymous authors\\Paper under double-blind review}"
+                if submission_mode
+                else r"\author{Author One\\Affiliation One \And Author Two\\Affiliation Two}"
+            )
+            preamble = preamble.rstrip() + "\n" + author_block + "\n"
         preamble = re.sub(r"\\usepackage(?:\[[^\]]*\])?\{geometry\}\s*", "", preamble)
         return preamble + marker + body
 
-    def normalize_source(self, source: str) -> str:
-        """Replicate ``normalize_latex_source(text, force_iclr2026=True)``."""
+    def normalize_source(self, source: str, *, submission_mode: bool = True) -> str:
+        """Replicate ``normalize_latex_source(text, force_iclr2026=True)``.
+
+        ``submission_mode`` is forwarded to :meth:`inject_preamble` so callers
+        can choose between the double-blind review build (default) and the
+        camera-ready build (``submission_mode=False``, strips line numbers
+        + uses real author block).
+        """
         text = (source or "").strip()
         if text.startswith("```"):
             lines = text.splitlines()
@@ -102,7 +128,7 @@ class ICLR2026Adapter(TemplateAdapter):
             text = "\n".join(lines).strip()
         if "```" in text:
             text = text.replace("```latex", "").replace("```tex", "").replace("```", "").strip()
-        text = self.inject_preamble(text)
+        text = self.inject_preamble(text, submission_mode=submission_mode)
         uses_iclr = "iclr2026_conference" in text
         if not uses_iclr:
             text = re.sub(r"\\documentclass\{article\}", r"\\documentclass[10pt]{article}", text, count=1)
