@@ -29,6 +29,11 @@ class ArxivPlainAdapter(TemplateAdapter):
         return "arxiv"
 
     @property
+    def column_layout(self) -> str:
+        # Standard ``article`` class with margin=1in geometry → single column.
+        return "single_column"
+
+    @property
     def bibstyle_name(self) -> str:
         return "plain"
 
@@ -86,6 +91,24 @@ class ArxivPlainAdapter(TemplateAdapter):
                 text,
                 count=1,
             )
+        # Standard packages a typical full paper relies on (tables/figures/
+        # math/hyperlinks). Idempotent: only injected when the body uses the
+        # corresponding macro and the package isn't already loaded.
+        if "\\begin{document}" in text and not uses_iclr:
+            preamble_chk, marker_chk, body_chk = text.partition(r"\begin{document}")
+            extra_pkgs: list[str] = []
+            if ("\\toprule" in body_chk or "\\midrule" in body_chk or "\\bottomrule" in body_chk) \
+                    and "booktabs" not in preamble_chk:
+                extra_pkgs.append("booktabs")
+            if "\\includegraphics" in body_chk and "graphicx" not in preamble_chk:
+                extra_pkgs.append("graphicx")
+            if ("\\href" in body_chk or "\\url" in body_chk) and "hyperref" not in preamble_chk:
+                extra_pkgs.append("hyperref")
+            if extra_pkgs:
+                preamble_chk = preamble_chk.rstrip() + "\n" + "\n".join(
+                    rf"\usepackage{{{p}}}" for p in extra_pkgs
+                ) + "\n"
+                text = preamble_chk + marker_chk + body_chk
         preamble_probe, marker_probe, _body_probe = text.partition(r"\begin{document}")
         if marker_probe and r"\date" not in preamble_probe and not uses_iclr:
             text = preamble_probe.rstrip() + "\n\\date{}\n" + marker_probe + _body_probe

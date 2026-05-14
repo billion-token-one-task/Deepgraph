@@ -29,6 +29,16 @@ class VenueRouterTests(unittest.TestCase):
         os.environ["DEEPGRAPH_DATABASE_URL"] = ""
         os.environ["DEEPGRAPH_DB_PATH"] = str(Path(cls._tmpdir) / "venue.db")
         from db import database as db
+        # Explicit reset so prior tests that override db.DB_PATH (and clean up
+        # their tempdir) don't leave us pointing at a deleted file.
+        for attr in ("sqlite_conn", "pg_conn", "conn"):
+            if hasattr(db._local, attr):
+                try:
+                    getattr(db._local, attr).close()
+                except Exception:
+                    pass
+                delattr(db._local, attr)
+        db.DB_PATH = Path(os.environ["DEEPGRAPH_DB_PATH"])
         db.init_db()
         cls._db = db
 

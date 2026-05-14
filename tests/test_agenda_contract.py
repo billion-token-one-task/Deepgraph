@@ -160,6 +160,7 @@ class AgendaPersistenceTests(unittest.TestCase):
         # Reset cached module-level db connection
         from db import database as db
 
+        self._original_db_path = db.DB_PATH
         if hasattr(db, "_local"):
             for attr in ("sqlite_conn", "pg_conn", "conn"):
                 if hasattr(db._local, attr):
@@ -183,6 +184,9 @@ class AgendaPersistenceTests(unittest.TestCase):
                     except Exception:
                         pass
                     delattr(db._local, attr)
+        # Restore original DB_PATH so downstream tests don't inherit a deleted
+        # tempdir path through the module-level singleton.
+        db.DB_PATH = self._original_db_path
         self._tmpdir.cleanup()
         os.environ.pop("DEEPGRAPH_DB_PATH", None)
 

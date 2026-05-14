@@ -25,6 +25,7 @@ class OrchestratorLinkAndEnqueueTests(unittest.TestCase):
         os.environ["DEEPGRAPH_DB_PATH"] = str(Path(self._tmpdir.name) / "test.db")
         from db import database as db
 
+        self._original_db_path = db.DB_PATH
         for attr in ("sqlite_conn", "pg_conn", "conn"):
             if hasattr(db._local, attr):
                 try:
@@ -46,6 +47,9 @@ class OrchestratorLinkAndEnqueueTests(unittest.TestCase):
                 except Exception:
                     pass
                 delattr(db._local, attr)
+        # Restore original DB_PATH so downstream tests don't inherit a deleted
+        # tempdir path through the module-level singleton.
+        db.DB_PATH = self._original_db_path
         self._tmpdir.cleanup()
         os.environ.pop("DEEPGRAPH_DB_PATH", None)
 

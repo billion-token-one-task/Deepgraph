@@ -40,6 +40,7 @@ class BenchAndGateRoutesTests(unittest.TestCase):
         self._tmpdir = tempfile.TemporaryDirectory()
         os.environ["DEEPGRAPH_DB_PATH"] = str(Path(self._tmpdir.name) / "test.db")
         from db import database as db
+        self._original_db_path = db.DB_PATH
         _reset_db_locals(db)
         db.DB_PATH = Path(os.environ["DEEPGRAPH_DB_PATH"])
         db.init_db()
@@ -50,6 +51,9 @@ class BenchAndGateRoutesTests(unittest.TestCase):
     def tearDown(self):
         from db import database as db
         _reset_db_locals(db)
+        # Restore original DB_PATH so downstream tests don't inherit a deleted
+        # tempdir path through the module-level singleton.
+        db.DB_PATH = self._original_db_path
         self._tmpdir.cleanup()
         os.environ.pop("DEEPGRAPH_DB_PATH", None)
 
