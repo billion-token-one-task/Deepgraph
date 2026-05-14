@@ -251,14 +251,14 @@ def main() -> int:
     print("=" * 78)
     print("For each venue: normalize source → stage assets → tectonic compile")
     print("=" * 78)
-    # Render plan: every venue gets one build, plus ICLR renders a second
-    # ``camera-ready`` build (submission_mode=False) so reviewers can eyeball
-    # the line-numbers-vs-final difference.
+    # Render plan: every venue gets one build, plus ICLR and NeurIPS each
+    # render a second ``camera-ready`` build (submission_mode=False) so
+    # reviewers can eyeball the line-numbers-vs-final difference.
     build_plan: list[tuple[str, str, dict]] = []
     for venue_id in sorted(list_adapters()):
         build_plan.append((venue_id, venue_id, {}))
-        if venue_id == "iclr2026":
-            build_plan.append(("iclr2026", "iclr2026_camera_ready",
+        if venue_id in ("iclr2026", "neurips2024"):
+            build_plan.append((venue_id, f"{venue_id}_camera_ready",
                                {"submission_mode": False}))
 
     for venue_id, build_id, normalize_kwargs in build_plan:

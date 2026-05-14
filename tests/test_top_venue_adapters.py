@@ -58,6 +58,32 @@ class TopVenueAdapterTests(unittest.TestCase):
         self.assertTrue((out / "neurips_2024.sty").exists())
         self.assertEqual(adapter.column_layout, "single_column")
 
+    def test_neurips_submission_mode_toggles_final_option(self):
+        """``submission_mode=False`` MUST emit the ``[final]`` package option
+        which the upstream ``neurips_2024.sty`` uses to switch from the
+        line-numbered double-blind review layout to the camera-ready layout.
+        """
+        from agents.manuscript_templates import get_adapter
+        adapter = get_adapter("neurips2024")
+        body = (
+            r"\documentclass{article}" "\n"
+            r"\begin{document}" "\n"
+            r"Body" "\n"
+            r"\end{document}" "\n"
+        )
+        sub = adapter.inject_preamble(body, submission_mode=True)
+        final = adapter.inject_preamble(body, submission_mode=False)
+        self.assertIn(r"\usepackage{neurips_2024}", sub)
+        self.assertNotIn(r"\usepackage[final]{neurips_2024}", sub)
+        self.assertIn(r"\usepackage[final]{neurips_2024}", final)
+        # Default (no kwarg) stays byte-equivalent to submission_mode=True.
+        self.assertEqual(sub, adapter.inject_preamble(body))
+        # normalize_source threads the kwarg through.
+        self.assertIn(
+            r"\usepackage[final]{neurips_2024}",
+            adapter.normalize_source(body, submission_mode=False),
+        )
+
     def test_neurips_inject_preamble_idempotent(self):
         from agents.manuscript_templates import get_adapter
         adapter = get_adapter("neurips2024")
