@@ -18,7 +18,12 @@ Public API:
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import subprocess
 from typing import Any, Callable, Mapping
+
+import httpx
 
 from contracts.agenda import AgendaReview
 from contracts.base import ContractValidationError, ensure_dict, ensure_list
@@ -254,6 +259,242 @@ def _internal_evidence_gate(ctx: dict[str, Any]) -> AgendaReview:
 register_reviewer("internal_evidence_gate", _internal_evidence_gate)
 
 
+# ---------- LLM reviewer (Anthropic Claude) ----------
+
+
+_ANTHROPIC_DEFAULT_MODEL = "claude-haiku-4-5-20251001"
+_ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
+
+
+def _build_review_prompt(ctx: dict[str, Any]) -> tuple[str, str]:
+    """Render system+user prompts for the LLM reviewer.
+
+    The prompts are pure functions of the experiment evidence context so the
+    LLM is reviewing real numbers, not a templated summary.
+    """
+    selection = ctx["selection"]
+    exp = ctx.get("experiment_run") or {}
+    claims = ctx.get("experimental_claims") or []
+    bundle = ctx.get("submission_bundle")
+    plan = ctx.get("evidence_plan") or {}
+
+    system_prompt = (
+        "You are an experienced ML conference reviewer evaluating an "
+        "agenda-driven research submission. Read the structured evidence "
+        "below and decide one of: accept, minor_revision, major_revision, "
+        "reject. Be terse and concrete. Respond ONLY with a single JSON "
+        "object matching this schema:\n"
+        "{\n"
+        '  "recommendation": "accept|minor_revision|major_revision|reject",\n'
+        '  "confidence": 0.0-1.0,\n'
+        '  "strengths": [str, ...],\n'
+        '  "weaknesses": [str, ...],\n'
+        '  "required_revisions": [str, ...]\n'
+        "}\n"
+        "Cite the actual effect_size / verdict / claim counts you saw."
+    )
+
+    user_payload = {
+        "selected_insight_title": ctx.get("selected_title", ""),
+        "selection_score": selection.get("score"),
+        "selection_rationale": selection.get("rationale"),
+        "experiment_run": {
+            "status": exp.get("status"),
+            "phase": exp.get("phase"),
+            "hypothesis_verdict": exp.get("hypothesis_verdict"),
+            "baseline_metric_name": exp.get("baseline_metric_name"),
+            "baseline_metric_value": exp.get("baseline_metric_value"),
+            "best_metric_value": exp.get("best_metric_value"),
+            "effect_size": exp.get("effect_size"),
+            "effect_pct": exp.get("effect_pct"),
+        },
+        "experimental_claims": [
+            {
+                "claim_text": c.get("claim_text"),
+                "claim_type": c.get("claim_type"),
+                "verdict": c.get("verdict"),
+                "effect_size": c.get("effect_size"),
+                "confidence": c.get("confidence"),
+                "p_value": c.get("p_value"),
+            }
+            for c in claims
+        ],
+        "submission_bundle": (
+            {
+                "status": bundle.get("status"),
+                "bundle_format": bundle.get("bundle_format"),
+                "bundle_path": bundle.get("bundle_path"),
+            }
+            if bundle
+            else None
+        ),
+        "evidence_plan_keys": sorted(list(plan.keys())),
+    }
+    user_prompt = (
+        "Review the following submission evidence and reply with one JSON "
+        "object only:\n\n" + json.dumps(user_payload, indent=2, ensure_ascii=False, default=str)
+    )
+    return system_prompt, user_prompt
+
+
+def _parse_llm_review_json(raw: str) -> dict[str, Any]:
+    """Pull the first balanced JSON object out of the LLM response."""
+    if not raw:
+        raise ValueError("empty LLM response")
+    # strip code fences
+    text = raw.strip()
+    if text.startswith("```"):
+        # ```json ... ```
+        text = text.lstrip("`")
+        if text.startswith("json"):
+            text = text[4:]
+        text = text.rsplit("```", 1)[0].strip()
+    # if there's leading prose, find the first { and last }
+    if not text.startswith("{"):
+        i = text.find("{")
+        j = text.rfind("}")
+        if i == -1 or j == -1 or j <= i:
+            raise ValueError(f"no JSON object found in response: {raw[:200]!r}")
+        text = text[i : j + 1]
+    return json.loads(text)
+
+
+def _call_anthropic_api(model: str, system_prompt: str, user_prompt: str) -> tuple[str, str]:
+    """Call api.anthropic.com directly. Returns (response_text, transport_label).
+
+    Raises on any failure (missing key, http error, malformed response).
+    """
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("ANTHROPIC_API_KEY not set")
+    payload = {
+        "model": model,
+        "max_tokens": 1024,
+        "system": system_prompt,
+        "messages": [{"role": "user", "content": user_prompt}],
+    }
+    headers = {
+        "x-api-key": api_key,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+    }
+    with httpx.Client(timeout=60.0) as client:
+        resp = client.post(_ANTHROPIC_API_URL, headers=headers, json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+    parts = data.get("content") or []
+    text = "".join(p.get("text", "") for p in parts if p.get("type") == "text")
+    if not text:
+        raise RuntimeError(f"anthropic api returned no text content: {data}")
+    return text, f"anthropic_api:{data.get('model', model)}"
+
+
+def _call_claude_cli(system_prompt: str, user_prompt: str) -> tuple[str, str]:
+    """Fallback: subprocess the locally-authed `claude` CLI.
+
+    Returns (response_text, transport_label). Raises on failure.
+    """
+    claude_bin = shutil.which("claude")
+    if not claude_bin:
+        raise RuntimeError("`claude` CLI not on PATH")
+    combined = system_prompt + "\n\n" + user_prompt
+    try:
+        result = subprocess.run(
+            [claude_bin, "-p", combined, "--output-format", "json"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(
+            f"claude CLI failed (rc={exc.returncode}): {exc.stderr[:200]}"
+        ) from exc
+    payload = json.loads(result.stdout)
+    text = payload.get("result", "")
+    # The CLI reports the model under modelUsage keys like
+    # "claude-opus-4-6[1m]"; pick the first one as the canonical name.
+    model_usage = payload.get("modelUsage") or {}
+    if model_usage:
+        model = next(iter(model_usage)).split("[", 1)[0]
+    else:
+        model = payload.get("model") or "claude-cli"
+    if not text:
+        raise RuntimeError(f"claude CLI returned no result text: {payload}")
+    return text, f"claude_cli:{model}"
+
+
+def _claude_haiku_reviewer(ctx: dict[str, Any]) -> AgendaReview:
+    """Real LLM reviewer. Tries Anthropic API first, then claude CLI.
+
+    On any failure, raises — the caller in run_review() decides whether to
+    fall back to the internal evidence gate (see env DEEPGRAPH_REVIEWER_FALLBACK).
+    Reviewer field is tagged with the actual model+transport used so the
+    evidence trail is honest about what produced the review.
+    """
+    selection = ctx["selection"]
+    bundle = ctx.get("submission_bundle")
+    model = os.environ.get("DEEPGRAPH_REVIEWER_MODEL", _ANTHROPIC_DEFAULT_MODEL).strip()
+    system_prompt, user_prompt = _build_review_prompt(ctx)
+
+    errors: list[str] = []
+    text = ""
+    transport = ""
+    for attempt in (
+        lambda: _call_anthropic_api(model, system_prompt, user_prompt),
+        lambda: _call_claude_cli(system_prompt, user_prompt),
+    ):
+        try:
+            text, transport = attempt()
+            break
+        except Exception as exc:  # pragma: no cover - exercised live only
+            errors.append(f"{type(exc).__name__}: {exc}")
+    if not text:
+        raise RuntimeError(
+            "all LLM reviewer transports failed: " + " | ".join(errors)
+        )
+
+    parsed = _parse_llm_review_json(text)
+
+    recommendation = str(parsed.get("recommendation") or "").strip().lower()
+    if recommendation not in {"accept", "minor_revision", "major_revision", "reject"}:
+        raise ValueError(f"LLM returned invalid recommendation: {recommendation!r}")
+    try:
+        confidence = float(parsed.get("confidence", 0.5))
+    except (TypeError, ValueError):
+        confidence = 0.5
+    confidence = max(0.0, min(1.0, confidence))
+
+    def _str_list(value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return [str(x).strip() for x in value if str(x).strip()]
+
+    review = AgendaReview(
+        selection_id=int(selection["id"]),
+        submission_bundle_id=int(bundle["id"]) if bundle else None,
+        manuscript_run_id=selection.get("manuscript_run_id"),
+        reviewer=transport,
+        recommendation=recommendation,
+        confidence=confidence,
+        strengths=_str_list(parsed.get("strengths")),
+        weaknesses=_str_list(parsed.get("weaknesses")),
+        required_revisions=_str_list(parsed.get("required_revisions")),
+        evidence_blockers=[],
+        raw_review={
+            "transport": transport,
+            "model_requested": model,
+            "llm_response": parsed,
+            "errors_before_success": errors,
+        },
+    )
+    review.validate()
+    return review
+
+
+register_reviewer("claude-haiku-4-5", _claude_haiku_reviewer)
+
+
 # ---------- public entry ----------
 
 
@@ -299,14 +540,30 @@ def _persist_review(review: AgendaReview) -> int:
     )
 
 
-def run_review(selection_id: int, *, reviewer: str = "internal_evidence_gate") -> AgendaReview:
+def run_review(
+    selection_id: int,
+    *,
+    reviewer: str = "internal_evidence_gate",
+    fallback: str | None = None,
+) -> AgendaReview:
     fn = _REVIEWERS.get(reviewer)
     if fn is None:
         raise ContractValidationError(
             f"unknown reviewer '{reviewer}'; registered: {list_reviewers()}"
         )
     ctx = _build_review_context(selection_id)
-    review = fn(ctx)
+    try:
+        review = fn(ctx)
+    except Exception as exc:
+        if fallback and fallback in _REVIEWERS and fallback != reviewer:
+            print(
+                f"[reviewer_adapter] primary reviewer '{reviewer}' failed "
+                f"({type(exc).__name__}: {exc}); falling back to '{fallback}'",
+                flush=True,
+            )
+            review = _REVIEWERS[fallback](ctx)
+        else:
+            raise
     review_id = _persist_review(review)
     review.review_id = review_id
     db.commit()

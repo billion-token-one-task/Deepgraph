@@ -142,7 +142,23 @@ def main() -> int:
     # ------------------------------------------------------------------
     # 4. reviewer + revision planner
     # ------------------------------------------------------------------
-    review = reviewer_adapter.run_review(selection_id)
+    # Reviewer selection:
+    # - DEEPGRAPH_REVIEWER=claude-haiku-4-5 enables the real LLM reviewer
+    #   (Anthropic Messages API via ANTHROPIC_API_KEY, falling back to a
+    #    locally-authed `claude` CLI if available).
+    # - Anything else (or unset) uses internal_evidence_gate (rule-based).
+    # - DEEPGRAPH_REVIEWER_FALLBACK=internal_evidence_gate (default) makes the
+    #   build script complete even when no LLM credentials are available so
+    #   CI / clean-checkout repro never breaks.
+    reviewer_name = os.environ.get("DEEPGRAPH_REVIEWER", "internal_evidence_gate").strip()
+    fallback_name = os.environ.get(
+        "DEEPGRAPH_REVIEWER_FALLBACK", "internal_evidence_gate"
+    ).strip() or None
+    review = reviewer_adapter.run_review(
+        selection_id,
+        reviewer=reviewer_name,
+        fallback=fallback_name,
+    )
     review_id = int(review.review_id) if review.review_id else None
     review_path = None
     if review_id is not None:

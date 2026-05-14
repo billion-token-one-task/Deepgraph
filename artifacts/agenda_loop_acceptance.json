@@ -3,7 +3,7 @@
   "pr": "billion-token-one-task/Deepgraph#10",
   "base_ref": "origin/main",
   "head_ref": "feat/issue-9-agenda-driven-research-loop",
-  "commit": "ce9b597f6c8c0ab168738f465d821f214b4d90b9",
+  "commit": "f7b7fbba2e3785125352b8f4f300f11ce2514f5c",
   "generated_by": "scripts/build_agenda_loop_acceptance.py",
   "clean_checkout_repro": {
     "install_command": "python -m venv .venv && . .venv/bin/activate && pip install -e .",
@@ -44,10 +44,10 @@
     "run_id": 2,
     "status": "completed",
     "result_packet_path": "/tmp/dg_agenda_real_exp/selection_1/experiment_result_packet.json",
-    "result_packet_sha256": "c9fcc0a62866776910cee6c8ed58e9a2c1c6cb8a77d6a47e4c9ce72223c15ff6",
+    "result_packet_sha256": "6338199162727e6fddfa12d8c225ba4ab9be08d55d0bce95625677748155be20",
     "real_data_or_benchmark_source": "agents/benchmarks/qkv_fixture_512_64.npz (committed deterministic Q/K/V fixture, seq_len=512, head_dim=64); kernels: softmax_attention vs linear_attention_elu_plus_1 on CPU",
     "delta": {
-      "latency_speedup_x": 6.399515785824259,
+      "latency_speedup_x": 7.064427257107283,
       "approximation_l2_distance": 10.13387978273153,
       "relative_error": 0.7670742721257483
     }
@@ -64,15 +64,15 @@
     "bundle_path": "/tmp/dg_agenda_real_exp/selection_1/bundle.zip"
   },
   "review": {
-    "reviewer": "internal_evidence_gate",
-    "recommendation": "minor_revision",
+    "reviewer": "claude_cli:claude-opus-4-6",
+    "recommendation": "major_revision",
     "review_id": 1,
     "review_path": "artifacts/review_1.json"
   },
   "revision_plan": {
     "plan_id": 1,
     "revision_plan_path": "artifacts/revision_plan_1.json",
-    "item_count": 2
+    "item_count": 5
   },
   "api_evidence": {
     "current_agenda": 200,
