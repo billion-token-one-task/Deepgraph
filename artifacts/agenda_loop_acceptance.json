@@ -3,13 +3,13 @@
   "pr": "billion-token-one-task/Deepgraph#10",
   "base_ref": "origin/main",
   "head_ref": "feat/issue-9-agenda-driven-research-loop",
-  "commit": "5c763ba151e50634fc04964138bd22f3be6b8cb4",
+  "commit": "a2ae107e3e7195551bfe5e928ca2d69fff2082ff",
   "generated_by": "scripts/build_agenda_loop_acceptance.py",
   "clean_checkout_repro": {
     "install_command": "python -m venv .venv && . .venv/bin/activate && pip install -e .",
     "init_db_command": "python -c 'from db import database as db; db.init_db()'",
     "test_command": "pytest tests/test_agenda_contract.py tests/test_agenda_selector.py tests/test_agenda_orchestrator.py tests/test_agenda_review_loop.py tests/test_agenda_routes.py tests/test_evidence_gate.py tests/test_evidence_gate_routes.py -q",
-    "test_summary": "60/60 passed in tests/test_agenda_contract.py tests/test_agenda_selector.py tests/test_agenda_orchestrator.py tests/test_agenda_review_loop.py tests/test_agenda_routes.py tests/test_evidence_gate.py tests/test_evidence_gate_routes.py",
+    "test_summary": "73/73 passed in tests/test_agenda_contract.py tests/test_agenda_selector.py tests/test_agenda_orchestrator.py tests/test_agenda_review_loop.py tests/test_agenda_routes.py tests/test_evidence_gate.py tests/test_evidence_gate_routes.py",
     "demo_command": "DEEPGRAPH_DATABASE_URL='' DEEPGRAPH_DB_PATH=/tmp/agenda_loop_acceptance.db python -m scripts.build_agenda_loop_acceptance",
     "known_baseline_failures": [
       {
