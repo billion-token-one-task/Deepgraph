@@ -3,7 +3,7 @@
   "pr": "billion-token-one-task/Deepgraph#10",
   "base_ref": "origin/main",
   "head_ref": "feat/issue-9-agenda-driven-research-loop",
-  "commit": "f7b7fbba2e3785125352b8f4f300f11ce2514f5c",
+  "commit": "f47820b494386b465e24d5b37a1b058548017a25",
   "generated_by": "scripts/build_agenda_loop_acceptance.py",
   "clean_checkout_repro": {
     "install_command": "python -m venv .venv && . .venv/bin/activate && pip install -e .",
