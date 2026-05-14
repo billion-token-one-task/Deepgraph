@@ -4,14 +4,14 @@ Coverage matrix (≥ 2 cases per adapter as required by the issue):
 
 | Adapter        | Tests                                                     |
 | -------------- | --------------------------------------------------------- |
-| NeurIPS 2024   | copy_files materialises stub assets; column_layout single |
+| NeurIPS 2024   | copy_files materialises assets; column_layout single      |
 |                | inject_preamble idempotent + injects \\usepackage{neurips}|
-| ICML 2024      | bibstyle plainnat applied; max_pages=8                    |
-|                | inject_preamble idempotent                                |
+| ICML 2024      | bibstyle icml2024 applied; max_pages=8                    |
+|                | inject_preamble idempotent (sty drives \\twocolumn)       |
 | ACL ARR        | column_layout two_column; bibstyle acl_natbib applied     |
 |                | inject_preamble idempotent                                |
 | CVPR 2024      | column_layout two_column; max_pages=8; bibstyle           |
-|                | copy_files materialises stub assets                       |
+|                | copy_files materialises real cvpr.sty + ieeenat_fullname  |
 
 Plus router fixtures asserting CV → cvpr2024, NLP → acl_arr, ML/RL → one
 of {neurips2024, iclr2026, icml2024} (rule_set still picks deterministic).
@@ -53,9 +53,9 @@ class TopVenueAdapterTests(unittest.TestCase):
         adapter = get_adapter("neurips2024")
         out = self._scratch("nrps_copy")
         copied = adapter.copy_files(out)
-        self.assertIn("neurips2024.sty", copied)
+        self.assertIn("neurips_2024.sty", copied)
         self.assertIn("README.md", copied)
-        self.assertTrue((out / "neurips2024.sty").exists())
+        self.assertTrue((out / "neurips_2024.sty").exists())
         self.assertEqual(adapter.column_layout, "single_column")
 
     def test_neurips_inject_preamble_idempotent(self):
@@ -70,12 +70,12 @@ class TopVenueAdapterTests(unittest.TestCase):
         once = adapter.inject_preamble(body)
         twice = adapter.inject_preamble(once)
         self.assertEqual(once, twice, "inject_preamble must be idempotent")
-        self.assertIn(r"\usepackage{neurips2024}", once)
+        self.assertIn(r"\usepackage{neurips_2024}", once)
 
     # ------------------------------------------------------------------
     # ICML 2024
     # ------------------------------------------------------------------
-    def test_icml_normalize_applies_plainnat_bibstyle(self):
+    def test_icml_normalize_applies_icml2024_bibstyle(self):
         from agents.manuscript_templates import get_adapter
         adapter = get_adapter("icml2024")
         body = (
@@ -86,7 +86,7 @@ class TopVenueAdapterTests(unittest.TestCase):
             r"\end{document}" "\n"
         )
         out = adapter.normalize_source(body)
-        self.assertIn(r"\bibliographystyle{plainnat}", out)
+        self.assertIn(r"\bibliographystyle{icml2024}", out)
         self.assertEqual(adapter.max_pages, 8)
 
     def test_icml_inject_preamble_idempotent(self):
@@ -102,7 +102,9 @@ class TopVenueAdapterTests(unittest.TestCase):
         twice = adapter.inject_preamble(once)
         self.assertEqual(once, twice)
         self.assertIn(r"\usepackage{icml2024}", once)
-        self.assertEqual(adapter.column_layout, "single_column")
+        # icml2024.sty itself issues \twocolumn, so the adapter declares
+        # two_column to keep FormatLinter (D3) aligned with reality.
+        self.assertEqual(adapter.column_layout, "two_column")
 
     # ------------------------------------------------------------------
     # ACL ARR
@@ -133,7 +135,7 @@ class TopVenueAdapterTests(unittest.TestCase):
         once = adapter.inject_preamble(body)
         twice = adapter.inject_preamble(once)
         self.assertEqual(once, twice)
-        self.assertIn(r"\usepackage{acl_arr}", once)
+        self.assertIn(r"\usepackage{acl}", once)
 
     # ------------------------------------------------------------------
     # CVPR 2024
@@ -143,12 +145,12 @@ class TopVenueAdapterTests(unittest.TestCase):
         adapter = get_adapter("cvpr2024")
         out = self._scratch("cvpr_copy")
         copied = adapter.copy_files(out)
-        self.assertIn("cvpr2024.sty", copied)
+        self.assertIn("cvpr.sty", copied)
         self.assertIn("README.md", copied)
         self.assertEqual(adapter.column_layout, "two_column")
         self.assertEqual(adapter.max_pages, 8)
 
-    def test_cvpr_normalize_applies_ieee_fullname_bibstyle(self):
+    def test_cvpr_normalize_applies_ieeenat_fullname_bibstyle(self):
         from agents.manuscript_templates import get_adapter
         adapter = get_adapter("cvpr2024")
         body = (
@@ -159,7 +161,7 @@ class TopVenueAdapterTests(unittest.TestCase):
             r"\end{document}" "\n"
         )
         out = adapter.normalize_source(body)
-        self.assertIn(r"\bibliographystyle{ieee_fullname}", out)
+        self.assertIn(r"\bibliographystyle{ieeenat_fullname}", out)
 
     # ------------------------------------------------------------------
     # Router integration: domain-specific states route to the right venue.

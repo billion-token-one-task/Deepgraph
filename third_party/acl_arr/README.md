@@ -10,8 +10,10 @@
 
 ## Files
 
-- `acl_arr.sty` — stub placeholder for the upstream `acl.sty` two-column
-  package. The actual upstream file is short and pulled at submission time.
+- `acl.sty` — official ACL two-column style file from the upstream
+  `acl-style-files` repository.
+- `acl_natbib.bst` — natbib bibstyle producing the conference's canonical
+  parenthetical author-year citations (`(Vaswani et al., 2017)`).
 
 ## Notes
 

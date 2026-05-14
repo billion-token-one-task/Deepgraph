@@ -10,12 +10,11 @@
 
 ## Files
 
-- `neurips2024.sty` — minimal stub of the official package that defines the
-  `\documentclass` workflow used by NeurIPS papers. The full asset is not
-  vendored here in this PR because the routing pipeline only needs the
-  adapter contract (`copy_files` / `inject_preamble` / `normalize_source`)
-  to compile correctly under a real TeX install. Replace this stub with the
-  upstream `.sty` before any real submission build.
+- `neurips_2024.sty` — official NeurIPS 2024 single-column style file
+  vendored verbatim from the conference Style Files page. NeurIPS uses
+  natbib defaults, so the adapter pairs this with `bibstyle_name =
+  "unsrtnat"` for the canonical numeric inline citations
+  (`Vaswani et al. [2017]`).
 
 ## Notes
 

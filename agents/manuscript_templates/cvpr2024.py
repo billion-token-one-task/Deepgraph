@@ -1,8 +1,10 @@
 """CVPR 2024 template adapter (D2 #13).
 
-Two-column body, 8-page main limit + unlimited references, ``ieee_fullname``
-bibstyle. CVPR is the canonical computer-vision venue and pairs naturally
-with the vision/recognition router triggers in ``venues_v1.yaml``.
+Two-column body, 8-page main limit + unlimited references,
+``ieeenat_fullname`` bibstyle (the natbib variant of IEEE's
+``IEEEtran`` style used by CVPR's official author kit). CVPR is the
+canonical computer-vision venue and pairs naturally with the
+vision/recognition router triggers in ``venues_v1.yaml``.
 """
 
 from __future__ import annotations
@@ -16,7 +18,7 @@ from agents.manuscript_templates._stub_adapter import _StubVenueAdapter
 class CVPR2024Adapter(_StubVenueAdapter):
     _assets_dir = CVPR2024_TEMPLATE_DIR
     _asset_files = CVPR2024_TEMPLATE_FILES
-    _sty_basename = "cvpr2024"
+    _sty_basename = "cvpr"
 
     @property
     def venue_label(self) -> str:
@@ -28,7 +30,7 @@ class CVPR2024Adapter(_StubVenueAdapter):
 
     @property
     def bibstyle_name(self) -> str:
-        return "ieee_fullname"
+        return "ieeenat_fullname"
 
     @property
     def max_pages(self) -> int:

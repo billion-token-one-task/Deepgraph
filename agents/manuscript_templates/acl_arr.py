@@ -16,7 +16,7 @@ from agents.manuscript_templates._stub_adapter import _StubVenueAdapter
 class ACLArrAdapter(_StubVenueAdapter):
     _assets_dir = ACL_ARR_TEMPLATE_DIR
     _asset_files = ACL_ARR_TEMPLATE_FILES
-    _sty_basename = "acl_arr"
+    _sty_basename = "acl"
 
     @property
     def venue_label(self) -> str:

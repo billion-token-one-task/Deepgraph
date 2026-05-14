@@ -3,7 +3,7 @@
   "epic": "billion-token-one-task/Deepgraph#11",
   "base_ref": "origin/main",
   "head_ref": "feat/issue-9-agenda-driven-research-loop",
-  "commit": "9af5adf281c2ddb11c2d3011f0ad4252e5b8a0f6",
+  "commit": "2cc5aa9c07f67c907fc3ac267513672b08ab095d",
   "depends_on": [
     "#11/#12 (D1 Foundation)"
   ],
@@ -30,20 +30,24 @@
       "bibstyle_name": "unsrtnat",
       "max_pages": 9,
       "copied_files": [
-        "neurips2024.sty",
+        "neurips_2024.sty",
         "README.md"
       ],
-      "preamble_contains_venue_sty": true,
+      "preamble_contains_venue_sty": false,
       "bibstyle_applied": true
     },
     {
       "template_id": "icml2024",
       "venue_label": "icml_2024",
-      "column_layout": "single_column",
-      "bibstyle_name": "plainnat",
+      "column_layout": "two_column",
+      "bibstyle_name": "icml2024",
       "max_pages": 8,
       "copied_files": [
         "icml2024.sty",
+        "icml2024.bst",
+        "fancyhdr.sty",
+        "algorithm.sty",
+        "algorithmic.sty",
         "README.md"
       ],
       "preamble_contains_venue_sty": true,
@@ -56,23 +60,25 @@
       "bibstyle_name": "acl_natbib",
       "max_pages": 9,
       "copied_files": [
-        "acl_arr.sty",
+        "acl.sty",
+        "acl_natbib.bst",
         "README.md"
       ],
-      "preamble_contains_venue_sty": true,
+      "preamble_contains_venue_sty": false,
       "bibstyle_applied": true
     },
     {
       "template_id": "cvpr2024",
       "venue_label": "cvpr_2024",
       "column_layout": "two_column",
-      "bibstyle_name": "ieee_fullname",
+      "bibstyle_name": "ieeenat_fullname",
       "max_pages": 8,
       "copied_files": [
-        "cvpr2024.sty",
+        "cvpr.sty",
+        "ieeenat_fullname.bst",
         "README.md"
       ],
-      "preamble_contains_venue_sty": true,
+      "preamble_contains_venue_sty": false,
       "bibstyle_applied": true
     }
   ],
@@ -328,8 +334,8 @@
       "dir": "third_party/neurips2024",
       "readme_exists": true,
       "readme_bytes": 1226,
-      "sty_stub_exists": true,
-      "sty_stub_bytes": 393,
+      "sty_stub_exists": false,
+      "sty_stub_bytes": 0,
       "notes": "Stub .sty + README.md (source URL + license + date). Full upstream .sty pulled at real submission time per README."
     },
     {
@@ -338,7 +344,7 @@
       "readme_exists": true,
       "readme_bytes": 749,
       "sty_stub_exists": true,
-      "sty_stub_bytes": 231,
+      "sty_stub_bytes": 28048,
       "notes": "Stub .sty + README.md (source URL + license + date). Full upstream .sty pulled at real submission time per README."
     },
     {
@@ -346,8 +352,8 @@
       "dir": "third_party/acl_arr",
       "readme_exists": true,
       "readme_bytes": 754,
-      "sty_stub_exists": true,
-      "sty_stub_bytes": 236,
+      "sty_stub_exists": false,
+      "sty_stub_bytes": 0,
       "notes": "Stub .sty + README.md (source URL + license + date). Full upstream .sty pulled at real submission time per README."
     },
     {
@@ -355,8 +361,8 @@
       "dir": "third_party/cvpr2024",
       "readme_exists": true,
       "readme_bytes": 746,
-      "sty_stub_exists": true,
-      "sty_stub_bytes": 231,
+      "sty_stub_exists": false,
+      "sty_stub_bytes": 0,
       "notes": "Stub .sty + README.md (source URL + license + date). Full upstream .sty pulled at real submission time per README."
     }
   ],
@@ -409,7 +415,7 @@
   },
   "column_layout_inventory": {
     "neurips2024": "single_column",
-    "icml2024": "single_column",
+    "icml2024": "two_column",
     "acl_arr": "two_column",
     "cvpr2024": "two_column",
     "iclr2026": "single_column",

@@ -10,8 +10,10 @@
 
 ## Files
 
-- `cvpr2024.sty` — stub placeholder for the upstream `cvpr.sty` two-column
-  package.
+- `cvpr.sty` — official CVPR two-column author-kit style file.
+- `ieeenat_fullname.bst` — natbib variant of IEEE's `IEEEtran` bibstyle used
+  by the CVPR author kit; produces the conference's canonical numeric
+  citations (`[1]`, `[2, 3]`).
 
 ## Notes
 

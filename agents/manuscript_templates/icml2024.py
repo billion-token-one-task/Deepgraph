@@ -1,8 +1,8 @@
 """ICML 2024 template adapter (D2 #13).
 
-Single-column 10pt body, 8-page main limit + unlimited references,
-``icml2024`` bibstyle alias (we use ``plainnat`` as the substitution since
-ICML's official ``.bst`` ships under the same name as the ``.sty``).
+Two-column 10pt body (``icml2024.sty`` calls ``\\twocolumn`` itself),
+8-page main limit + unlimited references, ``icml2024`` bibstyle from
+the official upstream ``.bst`` shipped under ``third_party/icml2024/``.
 """
 
 from __future__ import annotations
@@ -24,11 +24,13 @@ class ICML2024Adapter(_StubVenueAdapter):
 
     @property
     def column_layout(self) -> str:
-        return "single_column"
+        # icml2024.sty itself issues ``\twocolumn`` — declare it so the
+        # FormatLinter (D3) expects ``\columnwidth`` figure widths.
+        return "two_column"
 
     @property
     def bibstyle_name(self) -> str:
-        return "plainnat"
+        return "icml2024"
 
     @property
     def max_pages(self) -> int:

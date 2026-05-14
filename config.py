@@ -286,22 +286,29 @@ ICLR2026_TEMPLATE_FILES = [
 NEURIPS2024_TEMPLATE_DIR = Path(
     _env_str("DEEPGRAPH_NEURIPS2024_TEMPLATE_DIR", str(PROJECT_ROOT / "third_party" / "neurips2024"))
 )
-NEURIPS2024_TEMPLATE_FILES = ["neurips2024.sty", "README.md"]
+NEURIPS2024_TEMPLATE_FILES = ["neurips_2024.sty", "README.md"]
 
 ICML2024_TEMPLATE_DIR = Path(
     _env_str("DEEPGRAPH_ICML2024_TEMPLATE_DIR", str(PROJECT_ROOT / "third_party" / "icml2024"))
 )
-ICML2024_TEMPLATE_FILES = ["icml2024.sty", "README.md"]
+ICML2024_TEMPLATE_FILES = [
+    "icml2024.sty",
+    "icml2024.bst",
+    "fancyhdr.sty",
+    "algorithm.sty",
+    "algorithmic.sty",
+    "README.md",
+]
 
 ACL_ARR_TEMPLATE_DIR = Path(
     _env_str("DEEPGRAPH_ACL_ARR_TEMPLATE_DIR", str(PROJECT_ROOT / "third_party" / "acl_arr"))
 )
-ACL_ARR_TEMPLATE_FILES = ["acl_arr.sty", "README.md"]
+ACL_ARR_TEMPLATE_FILES = ["acl.sty", "acl_natbib.bst", "README.md"]
 
 CVPR2024_TEMPLATE_DIR = Path(
     _env_str("DEEPGRAPH_CVPR2024_TEMPLATE_DIR", str(PROJECT_ROOT / "third_party" / "cvpr2024"))
 )
-CVPR2024_TEMPLATE_FILES = ["cvpr2024.sty", "README.md"]
+CVPR2024_TEMPLATE_FILES = ["cvpr.sty", "ieeenat_fullname.bst", "README.md"]
 
 # Manuscript venue routing config (issue #11/#12 D1).
 # Set ``DEEPGRAPH_VENUES_CONFIG_PATH`` to point at a custom YAML/JSON file.

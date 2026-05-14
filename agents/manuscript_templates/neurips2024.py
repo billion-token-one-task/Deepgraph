@@ -16,7 +16,7 @@ from agents.manuscript_templates._stub_adapter import _StubVenueAdapter
 class NeurIPS2024Adapter(_StubVenueAdapter):
     _assets_dir = NEURIPS2024_TEMPLATE_DIR
     _asset_files = NEURIPS2024_TEMPLATE_FILES
-    _sty_basename = "neurips2024"
+    _sty_basename = "neurips_2024"
 
     @property
     def venue_label(self) -> str:
