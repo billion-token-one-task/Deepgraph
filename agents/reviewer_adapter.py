@@ -21,6 +21,7 @@ import json
 import os
 import shutil
 import subprocess
+import time
 from typing import Any, Callable, Mapping
 
 import httpx
@@ -104,6 +105,21 @@ def _insight_evidence_plan(insight_id: int | None) -> dict[str, Any]:
     out.setdefault("predictions", row.get("predictions"))
     out.setdefault("falsification", row.get("falsification"))
     return out
+
+
+def _insight_context_row(insight_id: int | None) -> dict[str, Any]:
+    """Fetch the human-facing insight context the LLM reviewer needs."""
+    if not insight_id:
+        return {}
+    row = db.fetchone(
+        """
+        SELECT id, title, tier, problem_statement, predictions, falsification,
+               novelty_status
+        FROM deep_insights WHERE id=?
+        """,
+        (insight_id,),
+    )
+    return dict(row) if row else {}
 
 
 def _bundle_row(bundle_id: int | None) -> dict[str, Any] | None:
@@ -270,32 +286,52 @@ def _build_review_prompt(ctx: dict[str, Any]) -> tuple[str, str]:
     """Render system+user prompts for the LLM reviewer.
 
     The prompts are pure functions of the experiment evidence context so the
-    LLM is reviewing real numbers, not a templated summary.
+    LLM is reviewing real numbers, not a templated summary. The insight's
+    problem_statement + predictions are included so the reviewer can judge
+    whether the experimental claims actually answer the research question
+    (not just whether the numbers look good in isolation).
     """
     selection = ctx["selection"]
     exp = ctx.get("experiment_run") or {}
     claims = ctx.get("experimental_claims") or []
     bundle = ctx.get("submission_bundle")
     plan = ctx.get("evidence_plan") or {}
+    insight = ctx.get("insight") or {}
 
     system_prompt = (
         "You are an experienced ML conference reviewer evaluating an "
         "agenda-driven research submission. Read the structured evidence "
         "below and decide one of: accept, minor_revision, major_revision, "
-        "reject. Be terse and concrete. Respond ONLY with a single JSON "
-        "object matching this schema:\n"
+        "reject.\n\n"
+        "Pay particular attention to whether the experimental_claims "
+        "actually answer the insight's problem_statement and confirm the "
+        "stated predictions. A paper with strong numbers on the wrong "
+        "question is still a major_revision.\n\n"
+        "Be terse and concrete; cite the actual effect_size / verdict / "
+        "claim counts you saw. Respond ONLY with a single JSON object "
+        "matching this schema:\n"
         "{\n"
         '  "recommendation": "accept|minor_revision|major_revision|reject",\n'
         '  "confidence": 0.0-1.0,\n'
         '  "strengths": [str, ...],\n'
         '  "weaknesses": [str, ...],\n'
-        '  "required_revisions": [str, ...]\n'
+        '  "required_revisions": [str, ...],\n'
+        '  "evidence_blockers": [{"requirement": str, "reason": str}, ...]\n'
         "}\n"
-        "Cite the actual effect_size / verdict / claim counts you saw."
+        "evidence_blockers list specific required-but-missing artifacts "
+        "(e.g. ablation result for a key mechanism, prediction not tested, "
+        "scaling sweep absent). Empty list is fine if nothing is missing."
     )
 
     user_payload = {
-        "selected_insight_title": ctx.get("selected_title", ""),
+        "insight": {
+            "title": insight.get("title"),
+            "tier": insight.get("tier"),
+            "novelty_status": insight.get("novelty_status"),
+            "problem_statement": insight.get("problem_statement"),
+            "predictions": insight.get("predictions"),
+            "falsification": insight.get("falsification"),
+        },
         "selection_score": selection.get("score"),
         "selection_rationale": selection.get("rationale"),
         "experiment_run": {
@@ -362,7 +398,8 @@ def _parse_llm_review_json(raw: str) -> dict[str, Any]:
 def _call_anthropic_api(model: str, system_prompt: str, user_prompt: str) -> tuple[str, str]:
     """Call api.anthropic.com directly. Returns (response_text, transport_label).
 
-    Raises on any failure (missing key, http error, malformed response).
+    Retries once on transient 429/5xx errors with a short backoff. Raises on
+    any other failure (missing key, 4xx, malformed response).
     """
     api_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
     if not api_key:
@@ -378,10 +415,31 @@ def _call_anthropic_api(model: str, system_prompt: str, user_prompt: str) -> tup
         "anthropic-version": "2023-06-01",
         "content-type": "application/json",
     }
-    with httpx.Client(timeout=60.0) as client:
-        resp = client.post(_ANTHROPIC_API_URL, headers=headers, json=payload)
-        resp.raise_for_status()
-        data = resp.json()
+    last_exc: Exception | None = None
+    for attempt in range(2):
+        try:
+            with httpx.Client(timeout=60.0) as client:
+                resp = client.post(_ANTHROPIC_API_URL, headers=headers, json=payload)
+            if resp.status_code in (429, 500, 502, 503, 504):
+                last_exc = httpx.HTTPStatusError(
+                    f"transient {resp.status_code}", request=resp.request, response=resp
+                )
+                if attempt == 0:
+                    time.sleep(2.0)
+                    continue
+                raise last_exc
+            resp.raise_for_status()
+            data = resp.json()
+            break
+        except (httpx.TransportError, httpx.TimeoutException) as exc:
+            last_exc = exc
+            if attempt == 0:
+                time.sleep(2.0)
+                continue
+            raise
+    else:  # pragma: no cover - defensive
+        raise last_exc or RuntimeError("anthropic api retry loop exhausted")
+
     parts = data.get("content") or []
     text = "".join(p.get("text", "") for p in parts if p.get("type") == "text")
     if not text:
@@ -470,6 +528,21 @@ def _claude_haiku_reviewer(ctx: dict[str, Any]) -> AgendaReview:
             return []
         return [str(x).strip() for x in value if str(x).strip()]
 
+    def _blocker_list(value: Any) -> list[dict[str, Any]]:
+        if not isinstance(value, list):
+            return []
+        out: list[dict[str, Any]] = []
+        for item in value:
+            if isinstance(item, dict):
+                requirement = str(item.get("requirement") or "").strip()
+                reason = str(item.get("reason") or "").strip()
+                if requirement:
+                    out.append({"requirement": requirement, "reason": reason or "not_demonstrated"})
+            elif isinstance(item, str) and item.strip():
+                # tolerate plain-string blockers from a misbehaving LLM
+                out.append({"requirement": item.strip(), "reason": "not_demonstrated"})
+        return out
+
     review = AgendaReview(
         selection_id=int(selection["id"]),
         submission_bundle_id=int(bundle["id"]) if bundle else None,
@@ -480,7 +553,7 @@ def _claude_haiku_reviewer(ctx: dict[str, Any]) -> AgendaReview:
         strengths=_str_list(parsed.get("strengths")),
         weaknesses=_str_list(parsed.get("weaknesses")),
         required_revisions=_str_list(parsed.get("required_revisions")),
-        evidence_blockers=[],
+        evidence_blockers=_blocker_list(parsed.get("evidence_blockers")),
         raw_review={
             "transport": transport,
             "model_requested": model,
@@ -504,12 +577,15 @@ def _build_review_context(selection_id: int) -> dict[str, Any]:
     claims = _experimental_claims(sel.get("experiment_run_id"))
     bundle = _bundle_row(sel.get("submission_bundle_id"))
     plan = _insight_evidence_plan(sel.get("selected_insight_id"))
+    insight = _insight_context_row(sel.get("selected_insight_id"))
     return {
         "selection": sel,
         "experiment_run": exp,
         "experimental_claims": claims,
         "submission_bundle": bundle,
         "evidence_plan": plan,
+        "insight": insight,
+        "selected_title": insight.get("title") or "",
     }
 
 

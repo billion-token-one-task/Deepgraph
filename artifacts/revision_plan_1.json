@@ -2,43 +2,71 @@
   "plan_id": 1,
   "review_id": 1,
   "selection_id": 1,
-  "rationale": "Reviewer 'claude_cli:claude-opus-4-6' recommended 'major_revision'. Confidence=0.78. Weaknesses to address: Approximation quality is inconclusive: relative L2 error=0.767 (verdict='inconclusive', confidence=0.7) \u2014 a speedup that destroys output quality is not publishable; Only evaluated at seq_len=512, head_dim=64 \u2014 this is trivially short for a paper claiming 'long context' relevance; no scaling results despite 'long_context_scaling' listed in evidence_plan_keys; No downstream task evaluation (perplexity, accuracy) \u2014 latency/memory alone cannot justify the quality\u2013speed tradeoff",
+  "rationale": "Reviewer 'claude_cli:claude-opus-4-6' recommended 'major_revision'. Confidence=0.82. Weaknesses to address: The core prediction \u2014 throughput scales linearly up to 32k tokens \u2014 was never tested. All results are at seq_len=512, three orders of magnitude below the claimed regime.; Approximation error is severe: relative L2 error of 0.767 with verdict 'inconclusive'. The paper's own problem_statement acknowledges existing linear approximations 'lose accuracy' \u2014 this result suggests the proposed method has the same flaw.; No downstream task accuracy reported. Speed without quality is not a contribution; the accuracy-speed tradeoff is uncharacterized.",
   "status": "proposed",
   "next_experiments": [
     {
-      "name": "run_scaling_experiments_at_seq_len_2048_8192_327_0",
-      "rationale": "Run scaling experiments at seq_len \u2208 {2048, 8192, 32768+} to substantiate 'long context' framing",
-      "kind": "evidence_gap",
-      "priority": "medium",
+      "name": "run_the_scaling_sweep_to_32k_tokens_and_demonstr_0",
+      "rationale": "Run the scaling sweep to 32k tokens and demonstrate linear throughput scaling \u2014 this is the single required prediction and it is entirely untested.",
+      "kind": "prediction_test",
+      "priority": "high",
       "source": "review.required_revisions[0]"
     },
     {
-      "name": "add_downstream_quality_metrics_perplexity_task_a_1",
-      "rationale": "Add downstream quality metrics (perplexity, task accuracy) showing the L2 error=0.767 is tolerable, or introduce gating/hybrid attention to bring error below 0.5",
-      "kind": "evidence_gap",
-      "priority": "medium",
+      "name": "ablate_the_chunked_recurrence_mechanism_specific_1",
+      "rationale": "Ablate the chunked recurrence mechanism specifically: show its contribution to both speed and approximation quality versus naive linear attention.",
+      "kind": "ablation",
+      "priority": "high",
       "source": "review.required_revisions[1]"
     },
     {
-      "name": "complete_the_ablation_and_falsification_studies__2",
-      "rationale": "Complete the ablation and falsification studies listed in evidence_plan_keys",
-      "kind": "ablation",
-      "priority": "high",
+      "name": "characterize_the_accuracy_speed_tradeoff_report__2",
+      "rationale": "Characterize the accuracy-speed tradeoff: report perplexity or downstream task metrics at multiple sequence lengths, not just L2 approximation error.",
+      "kind": "evidence_gap",
+      "priority": "medium",
       "source": "review.required_revisions[2]"
     },
     {
-      "name": "report_statistical_significance_p_values_or_conf_3",
-      "rationale": "Report statistical significance (p-values or confidence intervals) for all three claims",
+      "name": "reduce_approximation_error_below_0_5_relative_l2_3",
+      "rationale": "Reduce approximation error below 0.5 relative L2 or provide theoretical/empirical justification for why 0.767 is acceptable in practice.",
       "kind": "evidence_gap",
       "priority": "medium",
       "source": "review.required_revisions[3]"
     },
     {
-      "name": "address_the_drop_in_replacement_concern_explicit_4",
-      "rationale": "Address the drop-in replacement concern explicitly: under what conditions is the approximation acceptable?",
+      "name": "report_results_with_p_values_or_confidence_inter_4",
+      "rationale": "Report results with p-values or confidence intervals across multiple random seeds \u2014 all three claims currently lack p_value.",
       "kind": "evidence_gap",
       "priority": "medium",
       "source": "review.required_revisions[4]"
+    },
+    {
+      "name": "blocker_long_context_scaling_0",
+      "rationale": "Resolve evidence blocker: Listed in evidence_plan_keys but no scaling results beyond seq_len=512 appear in claims. The required prediction (linear scaling to 32k) is completely untested.",
+      "kind": "evidence_gap",
+      "priority": "high",
+      "source": "review.evidence_blockers[0]"
+    },
+    {
+      "name": "blocker_ablation_1",
+      "rationale": "Resolve evidence blocker: Listed in evidence_plan_keys but no ablation results appear in experimental_claims. Chunked recurrence contribution is unknown.",
+      "kind": "evidence_gap",
+      "priority": "high",
+      "source": "review.evidence_blockers[1]"
+    },
+    {
+      "name": "blocker_falsification_2",
+      "rationale": "Resolve evidence blocker: Listed in evidence_plan_keys but insight falsification is null and no falsification evidence is presented. The high approximation error (0.767) could itself be a falsification signal that was not addressed.",
+      "kind": "evidence_gap",
+      "priority": "high",
+      "source": "review.evidence_blockers[2]"
+    },
+    {
+      "name": "blocker_predictions_3",
+      "rationale": "Resolve evidence blocker: The single required prediction (linear throughput scaling to 32k tokens) has no corresponding experimental claim.",
+      "kind": "prediction_test",
+      "priority": "high",
+      "source": "review.evidence_blockers[3]"
     }
   ]
 }

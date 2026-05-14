@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
+
+import httpx
 
 os.environ.setdefault("DEEPGRAPH_DATABASE_URL", "")
 
@@ -220,6 +224,133 @@ class ReviewLoopTests(unittest.TestCase):
         self.assertEqual(latest_review["id"], review.review_id)
         latest_plan = get_latest_plan_for_selection(sel.selection_id)
         self.assertEqual(latest_plan["id"], plan.plan_id)
+
+
+class LlmReviewerTransportTests(ReviewLoopTests):
+    """P0 coverage for the real-LLM reviewer's transport + fallback chain.
+
+    Mocks httpx + subprocess so the fallback chain is exercised without
+    hitting the real Anthropic API or requiring the `claude` CLI to be
+    installed in CI.
+    """
+
+    _LLM_PAYLOAD = {
+        "recommendation": "minor_revision",
+        "confidence": 0.7,
+        "strengths": ["effect_size=0.13 confirmed at p=0.01"],
+        "weaknesses": ["No long-context scaling experiments"],
+        "required_revisions": ["Add seq_len=2048+ runs"],
+        "evidence_blockers": [
+            {"requirement": "long_context_scaling", "reason": "not_tested"}
+        ],
+    }
+
+    def _fake_anthropic_response(self, payload):
+        class _Resp:
+            status_code = 200
+
+            def __init__(self, p):
+                self._p = p
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {
+                    "model": "claude-haiku-4-5-20251001",
+                    "content": [{"type": "text", "text": json.dumps(self._p)}],
+                }
+
+        return _Resp(payload)
+
+    def test_llm_reviewer_anthropic_api_path_success(self):
+        from agents import reviewer_adapter
+        from agents.reviewer_adapter import run_review
+
+        sel, _ = self._setup_selection_with_artifacts(verdict="confirmed", with_bundle=True)
+
+        fake_resp = self._fake_anthropic_response(self._LLM_PAYLOAD)
+        with mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test-stub"}, clear=False), \
+             mock.patch("agents.reviewer_adapter.httpx.Client") as MockClient:
+            MockClient.return_value.__enter__.return_value.post.return_value = fake_resp
+            review = run_review(sel.selection_id, reviewer="claude-haiku-4-5")
+
+        self.assertTrue(review.reviewer.startswith("anthropic_api:"), review.reviewer)
+        self.assertEqual(review.recommendation, "minor_revision")
+        # P0.2: evidence_blockers populated by the LLM, not hard-coded empty
+        self.assertEqual(len(review.evidence_blockers), 1)
+        self.assertEqual(review.evidence_blockers[0]["requirement"], "long_context_scaling")
+
+    def test_llm_reviewer_falls_back_to_claude_cli(self):
+        """API path fails (no key); CLI subprocess succeeds."""
+        from agents.reviewer_adapter import run_review
+
+        sel, _ = self._setup_selection_with_artifacts(verdict="confirmed", with_bundle=True)
+
+        cli_stdout = json.dumps({
+            "result": json.dumps(self._LLM_PAYLOAD),
+            "modelUsage": {"claude-opus-4-6[1m]": {"inputTokens": 100, "outputTokens": 50}},
+        })
+
+        class _CompletedProcess:
+            returncode = 0
+            stdout = cli_stdout
+            stderr = ""
+
+        with mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": ""}, clear=False), \
+             mock.patch("agents.reviewer_adapter.shutil.which", return_value="/usr/bin/claude"), \
+             mock.patch(
+                 "agents.reviewer_adapter.subprocess.run",
+                 return_value=_CompletedProcess(),
+             ):
+            review = run_review(sel.selection_id, reviewer="claude-haiku-4-5")
+
+        self.assertTrue(review.reviewer.startswith("claude_cli:"), review.reviewer)
+        self.assertIn("claude-opus-4-6", review.reviewer)
+        self.assertEqual(review.recommendation, "minor_revision")
+
+    def test_llm_reviewer_all_transports_fail_uses_fallback(self):
+        """API + CLI both fail; run_review() honors fallback=internal_evidence_gate."""
+        from agents.reviewer_adapter import run_review
+
+        sel, _ = self._setup_selection_with_artifacts(verdict="confirmed", with_bundle=True)
+
+        with mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": ""}, clear=False), \
+             mock.patch("agents.reviewer_adapter.shutil.which", return_value=None):
+            review = run_review(
+                sel.selection_id,
+                reviewer="claude-haiku-4-5",
+                fallback="internal_evidence_gate",
+            )
+
+        self.assertEqual(review.reviewer, "internal_evidence_gate")
+
+    def test_llm_reviewer_retries_once_on_transient_5xx(self):
+        from agents.reviewer_adapter import run_review
+
+        sel, _ = self._setup_selection_with_artifacts(verdict="confirmed", with_bundle=True)
+
+        class _Fail503:
+            status_code = 503
+            request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+
+            def raise_for_status(self):
+                raise httpx.HTTPStatusError("503", request=self.request, response=self)
+
+            def json(self):
+                return {}
+
+        ok_resp = self._fake_anthropic_response(self._LLM_PAYLOAD)
+        responses = [_Fail503(), ok_resp]
+
+        with mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test-stub"}, clear=False), \
+             mock.patch("agents.reviewer_adapter.time.sleep"), \
+             mock.patch("agents.reviewer_adapter.httpx.Client") as MockClient:
+            MockClient.return_value.__enter__.return_value.post.side_effect = responses
+            review = run_review(sel.selection_id, reviewer="claude-haiku-4-5")
+
+        self.assertTrue(review.reviewer.startswith("anthropic_api:"))
+        self.assertEqual(review.recommendation, "minor_revision")
 
 
 if __name__ == "__main__":

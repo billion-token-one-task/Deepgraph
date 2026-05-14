@@ -2,25 +2,42 @@
   "review_id": 1,
   "reviewer": "claude_cli:claude-opus-4-6",
   "recommendation": "major_revision",
-  "confidence": 0.78,
+  "confidence": 0.82,
   "strengths": [
-    "Latency claim confirmed with large effect_size=7.06 (85.8% reduction), confidence=0.85",
-    "Memory reduction confirmed: 6.32MB\u21920.68MB (effect_size=5.64)",
-    "Experiment pipeline completed end-to-end with reproducible bundle"
+    "Large latency reduction (88.9%, effect_size=8.97x) is convincing and well-confirmed at seq_len=512.",
+    "Memory reduction from 6.32MB to 0.68MB (5.6x) adds practical value beyond speed.",
+    "Pipeline executed end-to-end with bundle ready; experimental methodology is reproducible."
   ],
   "weaknesses": [
-    "Approximation quality is inconclusive: relative L2 error=0.767 (verdict='inconclusive', confidence=0.7) \u2014 a speedup that destroys output quality is not publishable",
-    "Only evaluated at seq_len=512, head_dim=64 \u2014 this is trivially short for a paper claiming 'long context' relevance; no scaling results despite 'long_context_scaling' listed in evidence_plan_keys",
-    "No downstream task evaluation (perplexity, accuracy) \u2014 latency/memory alone cannot justify the quality\u2013speed tradeoff",
-    "No p-values reported for any claim; memory claim confidence is only 0.65",
-    "Evidence plan lists 'ablation', 'falsification', 'predictions' keys but none of their results appear in the submission \u2014 incomplete experimental protocol"
+    "The core prediction \u2014 throughput scales linearly up to 32k tokens \u2014 was never tested. All results are at seq_len=512, three orders of magnitude below the claimed regime.",
+    "Approximation error is severe: relative L2 error of 0.767 with verdict 'inconclusive'. The paper's own problem_statement acknowledges existing linear approximations 'lose accuracy' \u2014 this result suggests the proposed method has the same flaw.",
+    "No downstream task accuracy reported. Speed without quality is not a contribution; the accuracy-speed tradeoff is uncharacterized.",
+    "The 'chunked recurrence' mechanism from the title is not evidenced in any claim or ablation \u2014 unclear if it was even implemented.",
+    "Memory claim confidence is only 0.65, and no scaling behavior of memory is shown across sequence lengths."
   ],
   "required_revisions": [
-    "Run scaling experiments at seq_len \u2208 {2048, 8192, 32768+} to substantiate 'long context' framing",
-    "Add downstream quality metrics (perplexity, task accuracy) showing the L2 error=0.767 is tolerable, or introduce gating/hybrid attention to bring error below 0.5",
-    "Complete the ablation and falsification studies listed in evidence_plan_keys",
-    "Report statistical significance (p-values or confidence intervals) for all three claims",
-    "Address the drop-in replacement concern explicitly: under what conditions is the approximation acceptable?"
+    "Run the scaling sweep to 32k tokens and demonstrate linear throughput scaling \u2014 this is the single required prediction and it is entirely untested.",
+    "Ablate the chunked recurrence mechanism specifically: show its contribution to both speed and approximation quality versus naive linear attention.",
+    "Characterize the accuracy-speed tradeoff: report perplexity or downstream task metrics at multiple sequence lengths, not just L2 approximation error.",
+    "Reduce approximation error below 0.5 relative L2 or provide theoretical/empirical justification for why 0.767 is acceptable in practice.",
+    "Report results with p-values or confidence intervals across multiple random seeds \u2014 all three claims currently lack p_value."
   ],
-  "evidence_blockers": []
+  "evidence_blockers": [
+    {
+      "requirement": "long_context_scaling",
+      "reason": "Listed in evidence_plan_keys but no scaling results beyond seq_len=512 appear in claims. The required prediction (linear scaling to 32k) is completely untested."
+    },
+    {
+      "requirement": "ablation",
+      "reason": "Listed in evidence_plan_keys but no ablation results appear in experimental_claims. Chunked recurrence contribution is unknown."
+    },
+    {
+      "requirement": "falsification",
+      "reason": "Listed in evidence_plan_keys but insight falsification is null and no falsification evidence is presented. The high approximation error (0.767) could itself be a falsification signal that was not addressed."
+    },
+    {
+      "requirement": "predictions",
+      "reason": "The single required prediction (linear throughput scaling to 32k tokens) has no corresponding experimental claim."
+    }
+  ]
 }
