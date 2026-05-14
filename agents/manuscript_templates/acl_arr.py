@@ -17,6 +17,9 @@ class ACLArrAdapter(_StubVenueAdapter):
     _assets_dir = ACL_ARR_TEMPLATE_DIR
     _asset_files = ACL_ARR_TEMPLATE_FILES
     _sty_basename = "acl"
+    # ACL's upstream .sty defaults to camera-ready (``\ExecuteOptions{final}``)
+    # — flip into line-numbered double-blind review with ``[review]``.
+    _submission_option = "review"
 
     @property
     def venue_label(self) -> str:

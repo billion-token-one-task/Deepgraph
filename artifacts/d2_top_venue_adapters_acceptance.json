@@ -3,7 +3,7 @@
   "epic": "billion-token-one-task/Deepgraph#11",
   "base_ref": "origin/main",
   "head_ref": "feat/issue-9-agenda-driven-research-loop",
-  "commit": "2cc5aa9c07f67c907fc3ac267513672b08ab095d",
+  "commit": "08d5f01ab7685b72711c695f38a1f2c11ada45ba",
   "depends_on": [
     "#11/#12 (D1 Foundation)"
   ],
@@ -333,7 +333,7 @@
       "venue": "neurips2024",
       "dir": "third_party/neurips2024",
       "readme_exists": true,
-      "readme_bytes": 1226,
+      "readme_bytes": 1096,
       "sty_stub_exists": false,
       "sty_stub_bytes": 0,
       "notes": "Stub .sty + README.md (source URL + license + date). Full upstream .sty pulled at real submission time per README."
@@ -342,7 +342,7 @@
       "venue": "icml2024",
       "dir": "third_party/icml2024",
       "readme_exists": true,
-      "readme_bytes": 749,
+      "readme_bytes": 1044,
       "sty_stub_exists": true,
       "sty_stub_bytes": 28048,
       "notes": "Stub .sty + README.md (source URL + license + date). Full upstream .sty pulled at real submission time per README."
@@ -351,7 +351,7 @@
       "venue": "acl_arr",
       "dir": "third_party/acl_arr",
       "readme_exists": true,
-      "readme_bytes": 754,
+      "readme_bytes": 846,
       "sty_stub_exists": false,
       "sty_stub_bytes": 0,
       "notes": "Stub .sty + README.md (source URL + license + date). Full upstream .sty pulled at real submission time per README."
@@ -360,7 +360,7 @@
       "venue": "cvpr2024",
       "dir": "third_party/cvpr2024",
       "readme_exists": true,
-      "readme_bytes": 746,
+      "readme_bytes": 903,
       "sty_stub_exists": false,
       "sty_stub_bytes": 0,
       "notes": "Stub .sty + README.md (source URL + license + date). Full upstream .sty pulled at real submission time per README."

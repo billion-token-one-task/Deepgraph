@@ -149,6 +149,27 @@ class TopVenueAdapterTests(unittest.TestCase):
         self.assertIn(r"\bibliographystyle{acl_natbib}", out)
         self.assertEqual(adapter.column_layout, "two_column")
 
+    def test_acl_arr_submission_mode_toggles_review_option(self):
+        """ACL .sty defaults to camera-ready. ``submission_mode=True`` must
+        emit ``[review]`` to enter the line-numbered double-blind build.
+        ``submission_mode=False`` falls back to the bare default (final).
+        """
+        from agents.manuscript_templates import get_adapter
+        adapter = get_adapter("acl_arr")
+        body = (
+            r"\documentclass{article}" "\n"
+            r"\begin{document}" "\n"
+            r"X" "\n"
+            r"\end{document}" "\n"
+        )
+        sub = adapter.inject_preamble(body, submission_mode=True)
+        final = adapter.inject_preamble(body, submission_mode=False)
+        self.assertIn(r"\usepackage[review]{acl}", sub)
+        self.assertNotIn(r"\usepackage[review]{acl}", final)
+        self.assertIn(r"\usepackage{acl}", final)
+        # Default (no kwarg) stays byte-equivalent to submission_mode=True.
+        self.assertEqual(sub, adapter.inject_preamble(body))
+
     def test_acl_arr_inject_preamble_idempotent(self):
         from agents.manuscript_templates import get_adapter
         adapter = get_adapter("acl_arr")
@@ -161,7 +182,10 @@ class TopVenueAdapterTests(unittest.TestCase):
         once = adapter.inject_preamble(body)
         twice = adapter.inject_preamble(once)
         self.assertEqual(once, twice)
-        self.assertIn(r"\usepackage{acl}", once)
+        # ACL defaults to ``submission_mode=True`` → ``[review]`` option,
+        # which switches the upstream .sty into the line-numbered double-blind
+        # review build the routing pipeline actually wants to submit.
+        self.assertIn(r"\usepackage[review]{acl}", once)
 
     # ------------------------------------------------------------------
     # CVPR 2024
@@ -175,6 +199,24 @@ class TopVenueAdapterTests(unittest.TestCase):
         self.assertIn("README.md", copied)
         self.assertEqual(adapter.column_layout, "two_column")
         self.assertEqual(adapter.max_pages, 8)
+
+    def test_cvpr_submission_mode_toggles_review_option(self):
+        """CVPR .sty defaults to camera-ready. ``submission_mode=True`` must
+        emit ``[review]`` to enter the line-numbered double-blind build.
+        """
+        from agents.manuscript_templates import get_adapter
+        adapter = get_adapter("cvpr2024")
+        body = (
+            r"\documentclass{article}" "\n"
+            r"\begin{document}" "\n"
+            r"X" "\n"
+            r"\end{document}" "\n"
+        )
+        sub = adapter.inject_preamble(body, submission_mode=True)
+        final = adapter.inject_preamble(body, submission_mode=False)
+        self.assertIn(r"\usepackage[review]{cvpr}", sub)
+        self.assertNotIn(r"\usepackage[review]{cvpr}", final)
+        self.assertIn(r"\usepackage{cvpr}", final)
 
     def test_cvpr_normalize_applies_ieeenat_fullname_bibstyle(self):
         from agents.manuscript_templates import get_adapter

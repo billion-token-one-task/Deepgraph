@@ -33,6 +33,22 @@ class _StubVenueAdapter(TemplateAdapter):
     _asset_files: List[str] = []  # overridden by subclass
     _sty_basename: str = ""  # e.g. "neurips2024" → loads neurips2024.sty
 
+    # Per-venue submission/camera-ready toggles. Each upstream .sty exposes
+    # its own option syntax — declare which option (if any) flips that
+    # venue out of its natural default into the opposite mode.
+    #
+    #   _submission_option : if non-empty, passed when ``submission_mode=True``
+    #                        (e.g. ACL/CVPR default to camera-ready, need
+    #                        ``[review]`` to enter line-numbered mode).
+    #   _final_option      : if non-empty, passed when ``submission_mode=False``
+    #                        (e.g. NeurIPS defaults to submission, needs
+    #                        ``[final]`` to enter camera-ready mode).
+    #
+    # When both are empty (e.g. ICML — single rendering mode) the
+    # ``submission_mode`` kwarg has no effect on this venue.
+    _submission_option: str = ""
+    _final_option: str = ""
+
     def copy_files(self, bundle_dir: Path) -> List[str]:
         copied: list[str] = []
         if not self._assets_dir.exists():
@@ -46,7 +62,16 @@ class _StubVenueAdapter(TemplateAdapter):
             copied.append(name)
         return copied
 
-    def inject_preamble(self, source: str) -> str:
+    def _sty_option_for_mode(self, submission_mode: bool) -> str:
+        """Return the ``[opt]`` option block to attach to ``\\usepackage``.
+
+        Empty string means "default mode of this venue's .sty" — caller
+        emits a bare ``\\usepackage{<sty>}``.
+        """
+        opt = self._submission_option if submission_mode else self._final_option
+        return f"[{opt}]" if opt else ""
+
+    def inject_preamble(self, source: str, *, submission_mode: bool = True) -> str:
         """Idempotent ``\\usepackage{<venue_sty>}`` insertion.
 
         Mirrors the ICLR adapter's contract: no-op once the venue package
@@ -56,6 +81,10 @@ class _StubVenueAdapter(TemplateAdapter):
         For ``two_column`` venues the documentclass gets a ``twocolumn``
         option so the rendered PDF actually flips to two columns even when
         the shipped venue ``.sty`` is a stub that doesn't set it itself.
+
+        ``submission_mode`` picks between the venue's review and camera-ready
+        renderings via the ``_submission_option`` / ``_final_option`` class
+        attributes — see those declarations for the per-venue mapping.
         """
         if "\\begin{document}" not in source:
             return source
@@ -83,9 +112,10 @@ class _StubVenueAdapter(TemplateAdapter):
             )
         sty = self._sty_basename
         if sty and sty not in preamble:
+            sty_opts = self._sty_option_for_mode(submission_mode)
             preamble = re.sub(
                 r"(\\documentclass(?:\[[^\]]*\])?\{[^}]+\}\s*)",
-                rf"\1\\usepackage{{{sty}}}" + "\n",
+                rf"\1\\usepackage{sty_opts}{{{sty}}}" + "\n",
                 preamble,
                 count=1,
             )
@@ -96,7 +126,7 @@ class _StubVenueAdapter(TemplateAdapter):
                 preamble = preamble.rstrip() + "\n" + rf"\usepackage{{{package}}}" + "\n"
         return preamble + marker + body
 
-    def normalize_source(self, source: str) -> str:
+    def normalize_source(self, source: str, *, submission_mode: bool = True) -> str:
         """Apply a minimal-but-deterministic venue normalisation.
 
         Steps (all idempotent):
@@ -115,7 +145,7 @@ class _StubVenueAdapter(TemplateAdapter):
             text = "\n".join(lines).strip()
         if "```" in text:
             text = text.replace("```latex", "").replace("```tex", "").replace("```", "").strip()
-        text = self.inject_preamble(text)
+        text = self.inject_preamble(text, submission_mode=submission_mode)
         bib = self.bibstyle_name
         if "\\bibliography{" in text and "\\bibliographystyle{" not in text:
             text = re.sub(

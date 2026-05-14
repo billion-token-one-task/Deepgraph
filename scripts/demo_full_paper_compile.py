@@ -251,13 +251,15 @@ def main() -> int:
     print("=" * 78)
     print("For each venue: normalize source → stage assets → tectonic compile")
     print("=" * 78)
-    # Render plan: every venue gets one build, plus ICLR and NeurIPS each
-    # render a second ``camera-ready`` build (submission_mode=False) so
-    # reviewers can eyeball the line-numbers-vs-final difference.
+    # Render plan: every venue gets the submission-mode build (default), and
+    # the four venues that expose a submission/camera-ready toggle each get a
+    # second ``camera-ready`` build (``submission_mode=False``) so reviewers
+    # can eyeball the line-numbers-vs-final difference side-by-side.
+    DUAL_MODE_VENUES = ("iclr2026", "neurips2024", "acl_arr", "cvpr2024")
     build_plan: list[tuple[str, str, dict]] = []
     for venue_id in sorted(list_adapters()):
         build_plan.append((venue_id, venue_id, {}))
-        if venue_id in ("iclr2026", "neurips2024"):
+        if venue_id in DUAL_MODE_VENUES:
             build_plan.append((venue_id, f"{venue_id}_camera_ready",
                                {"submission_mode": False}))
 
@@ -269,10 +271,11 @@ def main() -> int:
         (venue_dir / "refs.bib").write_text(REFS_BIB)
         stage_assets(venue_id, venue_dir)
         # ICLR also wants its preamble math_commands.tex preserved
+        # ICLR + all 3 stub adapters (NeurIPS/ACL/CVPR) accept submission_mode;
+        # arxiv_plain ignores unknown kwargs via its signature so this is safe.
         try:
             tex = ad.normalize_source(PAPER_BODY, **normalize_kwargs)
         except TypeError:
-            # Non-ICLR adapters don't accept submission_mode — call clean.
             tex = ad.normalize_source(PAPER_BODY)
         (venue_dir / "paper.tex").write_text(tex)
         # ICLR adapter writes the bundle via copy_files too; mirror that side.
