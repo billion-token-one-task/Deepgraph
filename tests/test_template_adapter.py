@@ -1,0 +1,106 @@
+"""Tests for TemplateAdapter base + ICLR2026 / arXiv plain adapters.
+
+Issue #11/#12 D1. Coverage:
+1. ICLR adapter.copy_files() materialises every shipped sty/bst/tex.
+2. arXiv adapter.copy_files() is a no-op (no shipped venue assets).
+3. inject_preamble is idempotent: f(f(x)) == f(x).
+4. normalize_source handles bibstyle replacement on both branches.
+5. The legacy ``normalize_latex_source(force_iclr2026=...)`` shim returns
+   byte-identical output to the adapter call (regression guard for the
+   ``bundle_format=='conference'`` byte-level diff acceptance criterion).
+"""
+
+import os
+import sys
+import unittest
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+
+class TemplateAdapterTests(unittest.TestCase):
+    def setUp(self):
+        from agents.manuscript_templates import get_adapter
+        self.iclr = get_adapter("iclr2026")
+        self.arx = get_adapter("arxiv_plain")
+        self.tmp = Path(os.environ.get("TMPDIR", "/tmp")) / "dg_test_template_adapter"
+        self.tmp.mkdir(parents=True, exist_ok=True)
+        # Wipe between runs so copy_files results are unambiguous
+        for p in self.tmp.glob("*"):
+            try:
+                p.unlink()
+            except IsADirectoryError:
+                pass
+
+    def test_iclr_copy_files_includes_all_assets(self):
+        copied = self.iclr.copy_files(self.tmp)
+        # ICLR template ships at least the .sty + .bst + math_commands.tex
+        expected_must = {
+            "iclr2026_conference.sty",
+            "iclr2026_conference.bst",
+            "math_commands.tex",
+        }
+        self.assertTrue(
+            expected_must.issubset(set(copied)),
+            f"missing required ICLR assets: copied={copied}",
+        )
+        for name in copied:
+            self.assertTrue((self.tmp / name).exists(), f"{name} not materialised")
+
+    def test_arxiv_copy_files_is_noop(self):
+        copied = self.arx.copy_files(self.tmp)
+        self.assertEqual(copied, [], "arxiv_plain must not copy venue assets")
+
+    def test_inject_preamble_is_idempotent(self):
+        raw = (
+            r"\documentclass{article}" "\n"
+            r"\begin{document}" "\n"
+            r"Hello" "\n"
+            r"\end{document}" "\n"
+        )
+        once = self.iclr.inject_preamble(raw)
+        twice = self.iclr.inject_preamble(once)
+        self.assertEqual(once, twice, "inject_preamble must be idempotent")
+        self.assertIn("iclr2026_conference", once)
+        self.assertIn("math_commands.tex", once)
+
+    def test_normalize_source_handles_bibstyle_on_both_branches(self):
+        body = (
+            r"\documentclass{article}" "\n"
+            r"\begin{document}" "\n"
+            r"Some content." "\n"
+            r"\bibliography{refs}" "\n"
+            r"\end{document}" "\n"
+        )
+        iclr_out = self.iclr.normalize_source(body)
+        self.assertIn(r"\bibliographystyle{iclr2026_conference}", iclr_out)
+        arx_out = self.arx.normalize_source(body)
+        self.assertIn(r"\bibliographystyle{plain}", arx_out)
+        self.assertNotIn("iclr2026_conference", arx_out)
+
+    def test_legacy_shim_byte_equivalent(self):
+        """Pre-D1 normalize_latex_source signature still produces same bytes."""
+        from agents.paper_orchestra_pipeline import normalize_latex_source
+        body = (
+            r"\documentclass{article}" "\n"
+            r"\begin{document}" "\n"
+            r"Sample doc." "\n"
+            r"\bibliography{refs}" "\n"
+            r"\end{document}" "\n"
+        )
+        # Legacy True branch must equal direct ICLR adapter call
+        self.assertEqual(
+            normalize_latex_source(body, force_iclr2026=True),
+            self.iclr.normalize_source(body),
+        )
+        # Legacy False branch must equal direct arXiv adapter call
+        self.assertEqual(
+            normalize_latex_source(body, force_iclr2026=False),
+            self.arx.normalize_source(body),
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

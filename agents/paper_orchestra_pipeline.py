@@ -256,116 +256,27 @@ def assemble_main_tex(state: dict, orchestrated: dict, bundle_format: str) -> st
 
 
 def _ensure_iclr2026_preamble(source: str) -> str:
-    """Force an ICLR 2026 submission preamble without touching the paper body."""
-    if "\\begin{document}" not in source:
-        return source
-    preamble, marker, body = source.partition(r"\begin{document}")
-    if r"\documentclass" not in preamble:
-        preamble = r"\documentclass{article}" + "\n" + preamble
-    if "iclr2026_conference" not in preamble:
-        preamble = re.sub(
-            r"(\\documentclass(?:\[[^\]]*\])?\{[^}]+\}\s*)",
-            r"\1\\usepackage{iclr2026_conference,times}" + "\n",
-            preamble,
-            count=1,
-        )
-    if "math_commands.tex" not in preamble:
-        preamble = preamble.rstrip() + "\n" + r"\input{math_commands.tex}" + "\n"
-    for package in ("graphicx", "booktabs", "amsmath,amssymb", "hyperref", "url"):
-        first_pkg = package.split(",", 1)[0]
-        if first_pkg not in preamble:
-            preamble = preamble.rstrip() + "\n" + rf"\usepackage{{{package}}}" + "\n"
-    if r"\author" not in preamble:
-        preamble = preamble.rstrip() + "\n" + r"\author{Anonymous authors\\Paper under double-blind review}" + "\n"
-    preamble = re.sub(r"\\usepackage(?:\[[^\]]*\])?\{geometry\}\s*", "", preamble)
-    return preamble + marker + body
+    """Backward-compatibility shim → ``ICLR2026Adapter.inject_preamble``.
+
+    Kept as a top-level name so external callers and tests that imported
+    this private helper before D1 still work; the canonical implementation
+    lives in ``agents.manuscript_templates.iclr2026``.
+    """
+    from agents.manuscript_templates import get_adapter
+    return get_adapter("iclr2026").inject_preamble(source)
 
 
 def normalize_latex_source(text: str, *, force_iclr2026: bool = False) -> str:
-    """Strip markdown fences that LLMs sometimes wrap around LaTeX documents."""
-    source = (text or "").strip()
-    if source.startswith("```"):
-        lines = source.splitlines()
-        if lines and lines[0].strip().startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        source = "\n".join(lines).strip()
-    if "```" in source:
-        source = source.replace("```latex", "").replace("```tex", "").replace("```", "").strip()
-    if force_iclr2026:
-        source = _ensure_iclr2026_preamble(source)
-    uses_iclr = "iclr2026_conference" in source
-    if not uses_iclr:
-        source = re.sub(r"\\documentclass\{article\}", r"\\documentclass[10pt]{article}", source, count=1)
-    if "\\begin{document}" in source and "microtype" not in source and not uses_iclr:
-        source = re.sub(
-            r"(\\documentclass(?:\[[^\]]*\])?\{[^}]+\}\s*)",
-            r"\1\n\\usepackage{microtype}\n",
-            source,
-            count=1,
-        )
-    if "\\begin{document}" in source and "geometry" not in source and not uses_iclr:
-        source = re.sub(
-            r"(\\documentclass(?:\[[^\]]*\])?\{[^}]+\}\s*)",
-            r"\1\n\\usepackage[margin=1in]{geometry}\n",
-            source,
-            count=1,
-        )
-    preamble_probe, marker_probe, _body_probe = source.partition(r"\begin{document}")
-    if marker_probe and r"\date" not in preamble_probe and not uses_iclr:
-        source = preamble_probe.rstrip() + "\n\\date{}\n" + marker_probe + _body_probe
-    source = re.sub(
-        r"(\\maketitle\s*)\\section\{Abstract\}\s*(.*?)(?=\\section\{Introduction\})",
-        r"\1\\begin{abstract}\n\2\n\\end{abstract}\n",
-        source,
-        count=1,
-        flags=re.DOTALL,
-    )
-    if "\\bibliography{" in source and "\\bibliographystyle{" not in source:
-        style = "iclr2026_conference" if uses_iclr else "plain"
-        source = re.sub(
-            r"(\s*)\\bibliography\{",
-            rf"\1\\bibliographystyle{{{style}}}\1\\bibliography{{",
-            source,
-            count=1,
-        )
-    if uses_iclr:
-        source = re.sub(r"\\bibliographystyle\{[^}]+\}", r"\\bibliographystyle{iclr2026_conference}", source)
-    preamble, marker, body = source.partition(r"\begin{document}")
-    if marker:
-        needs_cleveref = ("\\Cref" in body or "\\cref" in body) and "cleveref" not in preamble
-        needs_ams = (
-            any(cmd in body for cmd in ("\\mathbb", "\\operatorname", "\\text", "\\eqref"))
-            and "amsmath" not in preamble
-        )
-        if needs_ams or needs_cleveref:
-            if needs_ams and "cleveref" in preamble:
-                preamble = preamble.replace(
-                    r"\usepackage{cleveref}",
-                    r"\usepackage{amsmath,amssymb}" + "\n" + r"\usepackage{cleveref}",
-                    1,
-                )
-                needs_ams = False
-            additions = []
-            if needs_ams:
-                additions.append(r"\usepackage{amsmath,amssymb}")
-            if needs_cleveref:
-                additions.append(r"\usepackage{cleveref}")
-            if additions:
-                preamble = preamble.rstrip() + "\n" + "\n".join(additions) + "\n"
-            source = preamble + marker + body
-        elif "cleveref" in preamble and "amsmath" in preamble:
-            clever_idx = preamble.find("cleveref")
-            ams_idx = preamble.find("amsmath")
-            if clever_idx >= 0 and ams_idx >= 0 and clever_idx < ams_idx:
-                preamble = preamble.replace(r"\usepackage{cleveref}", "")
-                preamble = preamble.replace(
-                    r"\usepackage{amsmath,amssymb}",
-                    r"\usepackage{amsmath,amssymb}" + "\n" + r"\usepackage{cleveref}",
-                )
-                source = preamble + marker + body
-    return source + ("\n" if source and not source.endswith("\n") else "")
+    """Backward-compatibility shim → ``TemplateAdapter.normalize_source``.
+
+    ``force_iclr2026=True`` dispatches to the ICLR 2026 adapter; the
+    default ``False`` path dispatches to the arXiv plain adapter. Both
+    paths are byte-equivalent to the pre-D1 implementation (verified by
+    ``tests/test_template_adapter.py``).
+    """
+    from agents.manuscript_templates import get_adapter
+    template_id = "iclr2026" if force_iclr2026 else "arxiv_plain"
+    return get_adapter(template_id).normalize_source(text)
 
 
 def pick_main_tex(orchestrated: dict, state: dict, bundle_format: str) -> str:
@@ -451,17 +362,14 @@ def _bundle_dir_for_format(root: Path, bundle_format: str) -> Path:
 
 
 def _copy_iclr2026_template_files(bundle_dir: Path) -> list[str]:
-    copied: list[str] = []
-    if not ICLR2026_TEMPLATE_DIR.exists():
-        return copied
-    for name in ICLR2026_TEMPLATE_FILES:
-        src = ICLR2026_TEMPLATE_DIR / name
-        if not src.exists():
-            continue
-        dst = bundle_dir / name
-        shutil.copy2(src, dst)
-        copied.append(name)
-    return copied
+    """Backward-compatibility shim → ``ICLR2026Adapter.copy_files``.
+
+    Preserved so existing call sites (and any external imports) keep
+    working unchanged. The canonical implementation lives in
+    ``agents.manuscript_templates.iclr2026``.
+    """
+    from agents.manuscript_templates import get_adapter
+    return get_adapter("iclr2026").copy_files(bundle_dir)
 
 
 INCLUDEGRAPHICS_RE = re.compile(r"\\includegraphics(?:\[[^\]]*\])?\{([^}]+)\}")

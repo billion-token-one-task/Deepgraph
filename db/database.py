@@ -606,6 +606,29 @@ def init_db():
                         get_conn().commit()
                     except Exception:
                         pass
+                # Issue #11/#12 (D1): manuscript_venue_selections table.
+                schema_venue_routing_path = Path(__file__).parent / "schema_venue_routing.sql"
+                if schema_venue_routing_path.exists():
+                    try:
+                        for stmt in schema_venue_routing_path.read_text(encoding="utf-8").split(";"):
+                            lines = stmt.split("\n")
+                            while lines and lines[0].strip().startswith("--"):
+                                lines.pop(0)
+                            s = "\n".join(lines).strip()
+                            # SQLite-only AUTOINCREMENT keyword would crash PG;
+                            # rewrite to BIGSERIAL on the fly.
+                            s = s.replace(
+                                "INTEGER PRIMARY KEY AUTOINCREMENT",
+                                "BIGSERIAL PRIMARY KEY",
+                            )
+                            if s and not s.startswith("--"):
+                                try:
+                                    get_conn().execute(s)
+                                except Exception:
+                                    pass
+                        get_conn().commit()
+                    except Exception:
+                        pass
                 _ensure_vnext_migrations()
                 _ensure_grounding_schema()
                 schema_feedback = Path(__file__).parent / "schema_insight_feedback.sql"
@@ -649,6 +672,9 @@ def init_db():
     schema_agenda_path = Path(__file__).parent / "schema_agenda.sql"
     if schema_agenda_path.exists():
         conn.executescript(schema_agenda_path.read_text(encoding="utf-8"))
+    schema_venue_routing_path = Path(__file__).parent / "schema_venue_routing.sql"
+    if schema_venue_routing_path.exists():
+        conn.executescript(schema_venue_routing_path.read_text(encoding="utf-8"))
     _ensure_vnext_migrations()
     _ensure_grounding_schema()
     schema_feedback = Path(__file__).parent / "schema_insight_feedback.sql"

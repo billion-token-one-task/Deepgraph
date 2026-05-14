@@ -279,6 +279,15 @@ ICLR2026_TEMPLATE_FILES = [
     "fancyhdr.sty",
 ]
 
+# Manuscript venue routing config (issue #11/#12 D1).
+# Set ``DEEPGRAPH_VENUES_CONFIG_PATH`` to point at a custom YAML/JSON file.
+VENUES_CONFIG_PATH = Path(
+    _env_str(
+        "DEEPGRAPH_VENUES_CONFIG_PATH",
+        str(PROJECT_ROOT / "manuscript_venues" / "venues_v1.yaml"),
+    )
+)
+
 # PaperOrchestra full §4 pipeline (S2 + parallel plot/lit + AgentReview loop)
 SEMANTIC_SCHOLAR_API_KEY = _env_str("DEEPGRAPH_SEMANTIC_SCHOLAR_API_KEY", "")
 # Optional: shell command template for PaperBanana-style diagrams; must write output image path.

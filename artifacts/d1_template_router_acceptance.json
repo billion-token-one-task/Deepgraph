@@ -1,0 +1,67 @@
+{
+  "issue": "billion-token-one-task/Deepgraph#12",
+  "epic": "billion-token-one-task/Deepgraph#11",
+  "base_ref": "origin/main",
+  "head_ref": "feat/issue-9-agenda-driven-research-loop",
+  "commit": "2ad50e2bff9cc482cde2ade50dc7738ec3f04164",
+  "depends_on": [
+    "#9 / PR #10 (agenda loop scaffolding)"
+  ],
+  "generated_by": "scripts/build_d1_acceptance.py",
+  "adapter_contract": [
+    "bibstyle_name",
+    "copy_files",
+    "inject_preamble",
+    "max_pages",
+    "normalize_source",
+    "template_id",
+    "venue_label"
+  ],
+  "registered_venues": [
+    "arxiv_plain",
+    "iclr2026"
+  ],
+  "router_fixture_results": [
+    {
+      "fixture": "benchmark_state",
+      "chosen": "iclr2026",
+      "score": 1.05,
+      "rejected": [
+        {
+          "venue": "arxiv_plain",
+          "reason": "lower_score_than_selected"
+        }
+      ]
+    },
+    {
+      "fixture": "theory_only_state",
+      "chosen": "arxiv_plain",
+      "score": 0.75,
+      "rejected": [
+        {
+          "venue": "iclr2026",
+          "reason": "page_count_estimate=14 > rejects.page_count_max=12; triggers.requires_real_data set but state.has_real_data is False"
+        }
+      ]
+    }
+  ],
+  "persisted_routing": {
+    "routing_id": 1,
+    "selection_id": 10001,
+    "chosen_template_id": "iclr2026",
+    "rule_set": "venues_v1",
+    "readback_matches_write": true
+  },
+  "legacy_main_tex_sha256_before": "fce302cfbec279f3b292c485af499883fc042565809cbe4b941297205348459c",
+  "legacy_main_tex_sha256_after": "fce302cfbec279f3b292c485af499883fc042565809cbe4b941297205348459c",
+  "legacy_diff_empty": true,
+  "schema_tables_created": [
+    "manuscript_venue_selections"
+  ],
+  "test_command": "pytest tests/test_template_adapter.py tests/test_venue_router.py -q",
+  "test_summary": "10 passed (5 adapter + 5 router) on this commit",
+  "non_hardcoded_evidence": {
+    "yaml_only_venue_addition_works": true,
+    "two_distinct_fixtures_route_to_two_distinct_venues": true
+  }
+}
