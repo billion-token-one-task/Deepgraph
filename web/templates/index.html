@@ -456,6 +456,46 @@
                         <div class="card-header"><h3>Loop Inspection</h3></div>
                         <pre id="agendaLoopView" style="padding:12px 16px;font-size:0.74rem;color:var(--text-dim);max-height:480px;overflow:auto;white-space:pre-wrap;"></pre>
                     </div>
+
+                    <!-- ── Manuscript Routing (#15 / D4) ───────────────── -->
+                    <div class="card" style="margin-top:14px;">
+                        <div class="card-header">
+                            <h3>Manuscript Routing &amp; Format Lint</h3>
+                            <span class="badge badge-dim" id="venueCountBadge">— venues</span>
+                        </div>
+                        <div style="padding:12px 16px;display:flex;flex-direction:column;gap:10px;">
+                            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+                                <button id="mrLoadVenuesBtn" class="btn-secondary">Refresh Venues</button>
+                                <button id="mrPreviewRouteBtn" class="btn-primary">Preview Route</button>
+                                <button id="mrPreviewLintBtn" class="btn-secondary">Preview Lint</button>
+                                <label style="display:flex;gap:4px;align-items:center;font-size:0.78rem;color:var(--text-dim);">
+                                    <input type="checkbox" id="mrIncludeTiebreak"> include tiebreak
+                                </label>
+                            </div>
+                            <details>
+                                <summary style="cursor:pointer;color:var(--text-dim);font-size:0.85rem;">State JSON (for route preview)</summary>
+                                <textarea id="mrStateInput" style="width:100%;min-height:120px;margin-top:6px;background:var(--bg-elev);color:inherit;border:1px solid var(--border);border-radius:6px;padding:8px;font-family:monospace;font-size:0.78rem;">{
+  "title": "Self-supervised image segmentation with diffusion priors",
+  "claim_type": "empirical",
+  "domain": "vision",
+  "has_real_data": true,
+  "tier": 1,
+  "page_count_estimate": 8
+}</textarea>
+                            </details>
+                            <details>
+                                <summary style="cursor:pointer;color:var(--text-dim);font-size:0.85rem;">Lint payload (template_id + source)</summary>
+                                <input id="mrTemplateIdInput" placeholder="template_id (e.g. iclr2026)" value="iclr2026" style="width:100%;margin-top:6px;background:var(--bg-elev);color:inherit;border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-family:monospace;font-size:0.78rem;">
+                                <input id="mrPageCountInput" type="number" placeholder="page_count (optional)" value="8" style="width:100%;margin-top:6px;background:var(--bg-elev);color:inherit;border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-family:monospace;font-size:0.78rem;">
+                                <textarea id="mrSourceInput" style="width:100%;min-height:120px;margin-top:6px;background:var(--bg-elev);color:inherit;border:1px solid var(--border);border-radius:6px;padding:8px;font-family:monospace;font-size:0.78rem;">\documentclass{article}
+\begin{document}
+Hello world.
+\bibliography{refs}
+\end{document}</textarea>
+                            </details>
+                            <pre id="mrResultView" style="padding:0;font-size:0.74rem;color:var(--text-dim);max-height:360px;overflow:auto;white-space:pre-wrap;">No result yet.</pre>
+                        </div>
+                    </div>
                 </div>
             </section>
 
@@ -467,5 +507,6 @@
 
     <script src="/static/js/app.js"></script>
     <script src="/static/js/agenda.js"></script>
+    <script src="/static/js/manuscript_routing.js"></script>
 </body>
 </html>

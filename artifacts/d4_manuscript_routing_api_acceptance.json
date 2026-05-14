@@ -1,0 +1,115 @@
+{
+  "issue": "billion-token-one-task/Deepgraph#15",
+  "epic": "billion-token-one-task/Deepgraph#11",
+  "base_ref": "origin/main",
+  "head_ref": "feat/issue-9-agenda-driven-research-loop",
+  "commit": "9af5adf281c2ddb11c2d3011f0ad4252e5b8a0f6",
+  "depends_on": [
+    "#13 (D2 top venues)",
+    "#14 (D3 lint + tiebreak)"
+  ],
+  "generated_by": "scripts/build_d4_acceptance.py",
+  "routes_registered": [
+    "GET  /api/manuscript/venues",
+    "POST /api/manuscript/route",
+    "POST /api/manuscript/route/<selection_id>",
+    "GET  /api/manuscript/route/<selection_id>",
+    "POST /api/manuscript/lint",
+    "POST /api/manuscript/lint/<selection_id>",
+    "GET  /api/manuscript/lint_run/<run_id>"
+  ],
+  "endpoint_probes": {
+    "GET /api/manuscript/venues": {
+      "status": 200,
+      "venue_count": 6,
+      "template_ids": [
+        "acl_arr",
+        "arxiv_plain",
+        "cvpr2024",
+        "iclr2026",
+        "icml2024",
+        "neurips2024"
+      ]
+    },
+    "POST /api/manuscript/route (cv_state)": {
+      "status": 200,
+      "chosen": "cvpr2024",
+      "score": 1.05
+    },
+    "POST /api/manuscript/route (ml_state + tiebreak)": {
+      "status": 200,
+      "chosen": "icml2024",
+      "needs_tiebreak": false,
+      "tiebreak_chosen": "icml2024",
+      "tiebreak_used_llm": false
+    },
+    "POST /api/manuscript/lint (happy)": {
+      "status": 200,
+      "pass": true,
+      "summary": {
+        "error_count": 0,
+        "info_count": 2,
+        "warning_count": 0
+      }
+    },
+    "POST /api/manuscript/lint (missing documentclass)": {
+      "status": 200,
+      "pass": false,
+      "summary": {
+        "error_count": 1,
+        "info_count": 2,
+        "warning_count": 1
+      }
+    },
+    "POST /api/manuscript/lint/424242 (persist)": {
+      "status": 201,
+      "run_id": 1,
+      "pass": true
+    },
+    "GET /api/manuscript/lint_run/1 (readback)": {
+      "status": 200,
+      "template_id": "iclr2026",
+      "selection_id": 424242
+    },
+    "POST /api/manuscript/lint (unknown template_id)": {
+      "status": 404,
+      "error": "unknown_template_id",
+      "registered_inclusion": true
+    }
+  },
+  "dashboard": {
+    "card_id": "venueCountBadge",
+    "card_anchor_text_in_index_html": "Manuscript Routing &amp; Format Lint",
+    "card_present_in_index_html": true,
+    "js_file": "web/static/js/manuscript_routing.js",
+    "js_bytes": 3216,
+    "js_bindings": [
+      "mrLoadVenuesBtn \u2192 GET  /api/manuscript/venues",
+      "mrPreviewRouteBtn \u2192 POST /api/manuscript/route",
+      "mrPreviewLintBtn \u2192 POST /api/manuscript/lint"
+    ],
+    "js_calls_api": true,
+    "script_registered_in_index_html": true
+  },
+  "demo_script": {
+    "path": "scripts/demo_manuscript_routing.py",
+    "command": "DEEPGRAPH_DATABASE_URL=\"\" DEEPGRAPH_DB_PATH=/tmp/demo_mr.db python -m scripts.demo_manuscript_routing",
+    "exercises": [
+      "list_adapters() registry (6 adapters)",
+      "evaluate_venues for 3 domain fixtures",
+      "needs_tiebreak + tiebreak_with_llm deterministic fallback",
+      "lint_manuscript happy vs missing-documentclass",
+      "persist_lint_run + get_lint_run round-trip",
+      "Flask test_client over all 6 endpoints"
+    ]
+  },
+  "test_suite": {
+    "command": "pytest tests/test_manuscript_routes.py tests/test_format_linter.py tests/test_venue_router_tiebreak.py tests/test_top_venue_adapters.py -q",
+    "expected_count": "7 + 8 + 5 + 12 = 32 passing"
+  },
+  "non_hardcoded_evidence": {
+    "blueprint_loaded_via_register": true,
+    "routes_consume_yaml_venue_config_only": true,
+    "dashboard_card_no_business_logic_only_proxies_api": true
+  }
+}
