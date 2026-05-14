@@ -3,7 +3,7 @@
   "epic": "Manuscript Venue Routing + Multi-Template Pipeline",
   "base_ref": "origin/main",
   "head_ref": "feat/issue-9-agenda-driven-research-loop",
-  "commit": "6578d741d2808f1af3c5ff32117ccb7402f5afda",
+  "commit": "ef157979e987f079c744f4c63961fa56c19131dd",
   "depends_on": [
     "#9 (PR #10 same branch)"
   ],

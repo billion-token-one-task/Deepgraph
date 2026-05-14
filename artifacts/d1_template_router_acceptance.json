@@ -3,7 +3,7 @@
   "epic": "billion-token-one-task/Deepgraph#11",
   "base_ref": "origin/main",
   "head_ref": "feat/issue-9-agenda-driven-research-loop",
-  "commit": "2ad50e2bff9cc482cde2ade50dc7738ec3f04164",
+  "commit": "ef157979e987f079c744f4c63961fa56c19131dd",
   "depends_on": [
     "#9 / PR #10 (agenda loop scaffolding)"
   ],
@@ -18,8 +18,12 @@
     "venue_label"
   ],
   "registered_venues": [
+    "acl_arr",
     "arxiv_plain",
-    "iclr2026"
+    "cvpr2024",
+    "iclr2026",
+    "icml2024",
+    "neurips2024"
   ],
   "router_fixture_results": [
     {
@@ -28,7 +32,23 @@
       "score": 1.05,
       "rejected": [
         {
+          "venue": "neurips2024",
+          "reason": "lower_score_than_selected"
+        },
+        {
           "venue": "arxiv_plain",
+          "reason": "lower_score_than_selected"
+        },
+        {
+          "venue": "icml2024",
+          "reason": "lower_score_than_selected"
+        },
+        {
+          "venue": "acl_arr",
+          "reason": "lower_score_than_selected"
+        },
+        {
+          "venue": "cvpr2024",
           "reason": "lower_score_than_selected"
         }
       ]
@@ -41,6 +61,22 @@
         {
           "venue": "iclr2026",
           "reason": "page_count_estimate=14 > rejects.page_count_max=12; triggers.requires_real_data set but state.has_real_data is False"
+        },
+        {
+          "venue": "neurips2024",
+          "reason": "page_count_estimate=14 > rejects.page_count_max=11; triggers.requires_real_data set but state.has_real_data is False"
+        },
+        {
+          "venue": "icml2024",
+          "reason": "page_count_estimate=14 > rejects.page_count_max=10"
+        },
+        {
+          "venue": "acl_arr",
+          "reason": "page_count_estimate=14 > rejects.page_count_max=11; triggers.requires_real_data set but state.has_real_data is False"
+        },
+        {
+          "venue": "cvpr2024",
+          "reason": "claim_type=theory in rejects.claim_types; page_count_estimate=14 > rejects.page_count_max=10; triggers.requires_real_data set but state.has_real_data is False"
         }
       ]
     }

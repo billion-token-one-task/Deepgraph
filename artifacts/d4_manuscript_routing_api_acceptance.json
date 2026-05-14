@@ -3,7 +3,7 @@
   "epic": "billion-token-one-task/Deepgraph#11",
   "base_ref": "origin/main",
   "head_ref": "feat/issue-9-agenda-driven-research-loop",
-  "commit": "9af5adf281c2ddb11c2d3011f0ad4252e5b8a0f6",
+  "commit": "ef157979e987f079c744f4c63961fa56c19131dd",
   "depends_on": [
     "#13 (D2 top venues)",
     "#14 (D3 lint + tiebreak)"
@@ -48,7 +48,7 @@
       "pass": true,
       "summary": {
         "error_count": 0,
-        "info_count": 2,
+        "info_count": 4,
         "warning_count": 0
       }
     },
@@ -57,7 +57,7 @@
       "pass": false,
       "summary": {
         "error_count": 1,
-        "info_count": 2,
+        "info_count": 5,
         "warning_count": 1
       }
     },

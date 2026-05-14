@@ -225,12 +225,11 @@ def main() -> int:
         "tests/test_evidence_gate_routes.py (includes magnitude check for "
         "delta.relative_error<=0.10; bench at seq_len=128 honestly blocks)"
     )
+    # Re-verified against origin/main at PR HEAD: only 2 of the originally
+    # documented 3 baseline failures still fail; `test_merge_candidate_
+    # context_helpers_exist` now passes on both branches and was removed from
+    # this list to keep the evidence trail honest.
     known_baseline_failures = [
-        {
-            "test": "tests/test_evidence_graph.py::EvidenceGraphSummaryTests::"
-                    "test_merge_candidate_context_helpers_exist",
-            "reason": "pre-existing on origin/main; unrelated to agenda loop",
-        },
         {
             "test": "tests/test_parallel_orchestration.py::AutoResearchSchedulingTests::"
                     "test_process_candidate_blocks_underspecified_verification",
