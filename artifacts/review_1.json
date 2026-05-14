@@ -1,0 +1,24 @@
+{
+  "review_id": 1,
+  "reviewer": "internal_evidence_gate",
+  "recommendation": "minor_revision",
+  "confidence": 0.7,
+  "strengths": [
+    "Linear attention reduces prefill latency by 84.4% at seq_len=512, head_dim=64.",
+    "Linear attention reduces peak memory from 6.32MB to 0.68MB.",
+    "Hypothesis confirmed with positive effect_size=1.4630 (84.37%)"
+  ],
+  "weaknesses": [
+    "inconclusive: Linear attention approximation error is large: relative L2 error = 0.767 (>= 0.5); may not be a drop-in replacement."
+  ],
+  "required_revisions": [
+    "Provide required evidence: prediction (not_tested)."
+  ],
+  "evidence_blockers": [
+    {
+      "requirement": "prediction",
+      "statement": "Throughput scales linearly in sequence length up to 32k tokens.",
+      "reason": "not_tested"
+    }
+  ]
+}

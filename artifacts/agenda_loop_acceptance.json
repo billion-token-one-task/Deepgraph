@@ -1,0 +1,82 @@
+{
+  "issue": "billion-token-one-task/Deepgraph#9",
+  "pr": "billion-token-one-task/Deepgraph#10",
+  "base_ref": "origin/main",
+  "head_ref": "feat/issue-9-agenda-driven-research-loop",
+  "commit": "ce9b597f6c8c0ab168738f465d821f214b4d90b9",
+  "generated_by": "scripts/build_agenda_loop_acceptance.py",
+  "clean_checkout_repro": {
+    "install_command": "python -m venv .venv && . .venv/bin/activate && pip install -e .",
+    "init_db_command": "python -c 'from db import database as db; db.init_db()'",
+    "test_command": "pytest tests/test_agenda_contract.py tests/test_agenda_selector.py tests/test_agenda_orchestrator.py tests/test_agenda_review_loop.py tests/test_agenda_routes.py tests/test_evidence_gate.py tests/test_evidence_gate_routes.py -q",
+    "test_summary": "60/60 passed in tests/test_agenda_contract.py tests/test_agenda_selector.py tests/test_agenda_orchestrator.py tests/test_agenda_review_loop.py tests/test_agenda_routes.py tests/test_evidence_gate.py tests/test_evidence_gate_routes.py",
+    "demo_command": "DEEPGRAPH_DATABASE_URL='' DEEPGRAPH_DB_PATH=/tmp/agenda_loop_acceptance.db python -m scripts.build_agenda_loop_acceptance",
+    "known_baseline_failures": [
+      {
+        "test": "tests/test_evidence_graph.py::EvidenceGraphSummaryTests::test_merge_candidate_context_helpers_exist",
+        "reason": "pre-existing on origin/main; unrelated to agenda loop"
+      },
+      {
+        "test": "tests/test_parallel_orchestration.py::AutoResearchSchedulingTests::test_process_candidate_blocks_underspecified_verification",
+        "reason": "pre-existing on origin/main; auto_research scheduling test"
+      },
+      {
+        "test": "tests/test_validation_loop_metrics.py::ValidationMetricParsingTests::test_validation_benchmark_env_preserves_paper_grade_contract_budget",
+        "reason": "pre-existing on origin/main; benchmark env contract default drift"
+      }
+    ]
+  },
+  "agenda_config_path": "research_agendas/token_scale_v1.yaml",
+  "active_agenda": {
+    "agenda_id": 1,
+    "name": "token_scale_efficiency_v1",
+    "version": "v1"
+  },
+  "selection": {
+    "selection_id": 1,
+    "selected_deep_insight_id": 1,
+    "selected_title": "Linear attention with chunked recurrence for long context",
+    "selection_score": 0.656,
+    "selection_rationale": "Selected insight #1 (Linear attention with chunked recurrence for long context) for agenda 'token_scale_efficiency_v1' (score=0.66). Matched focus: long context. Matched prefer keywords: linear attention. Paradigm score: 0.78; feasibility: 1.00.",
+    "rejected_candidates_count": 6
+  },
+  "experiment": {
+    "run_id": 2,
+    "status": "completed",
+    "result_packet_path": "/tmp/dg_agenda_real_exp/selection_1/experiment_result_packet.json",
+    "result_packet_sha256": "c9fcc0a62866776910cee6c8ed58e9a2c1c6cb8a77d6a47e4c9ce72223c15ff6",
+    "real_data_or_benchmark_source": "agents/benchmarks/qkv_fixture_512_64.npz (committed deterministic Q/K/V fixture, seq_len=512, head_dim=64); kernels: softmax_attention vs linear_attention_elu_plus_1 on CPU",
+    "delta": {
+      "latency_speedup_x": 6.399515785824259,
+      "approximation_l2_distance": 10.13387978273153,
+      "relative_error": 0.7670742721257483
+    }
+  },
+  "evidence_gate": {
+    "status": "pass",
+    "blockers": [],
+    "rule_set": "agenda_v1_default",
+    "report_path": "DB table agenda_evidence_gates row for selection_id=1"
+  },
+  "manuscript": {
+    "created": true,
+    "bundle_id": 2,
+    "bundle_path": "/tmp/dg_agenda_real_exp/selection_1/bundle.zip"
+  },
+  "review": {
+    "reviewer": "internal_evidence_gate",
+    "recommendation": "minor_revision",
+    "review_id": 1,
+    "review_path": "artifacts/review_1.json"
+  },
+  "revision_plan": {
+    "plan_id": 1,
+    "revision_plan_path": "artifacts/revision_plan_1.json",
+    "item_count": 2
+  },
+  "api_evidence": {
+    "current_agenda": 200,
+    "latest_selection": 200,
+    "loop_snapshot": 200
+  }
+}
