@@ -82,6 +82,18 @@ def _sanitize_latex_citations(tex: str, allowed_keys: set[str], fallback_keys: l
     return CITE_PATTERN.sub(_replace, tex)
 
 
+def _retry_call_llm(system: str, user: str, *, attempts: int = 3) -> tuple[str, int]:
+    last_exc: Exception | None = None
+    for _ in range(max(1, attempts)):
+        try:
+            return call_llm(system, user)
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("retry_call_llm failed without an exception")
+
+
 def run_paperorchestra_full(
     state: dict,
     literature_block: str,
@@ -259,15 +271,17 @@ def run_paperorchestra_full(
         cutoff=cutoff,
     )
     intro_rw = o.get("intro_related_work_plan") if isinstance(o, dict) else {}
+    lit_registry_small = citation_registry_prompt[:32]
+    lit_collected_small = collected[:24]
     lit_user = (
         "--- template.tex ---\n"
         + template_tex
         + "\n--- intro_related_work_plan ---\n"
-        + json.dumps(intro_rw, ensure_ascii=False, default=str)[:16000]
+        + json.dumps(intro_rw, ensure_ascii=False, default=str)[:12000]
         + "\n--- project_idea ---\n"
-        + idea_md[:12000]
+        + idea_md[:9000]
         + "\n--- project_experimental_log ---\n"
-        + exp_log_md[:12000]
+        + exp_log_md[:8000]
         + "\n--- paper_intent.json ---\n"
         + paper_intent_json
         + "\n--- problem_awareness.json ---\n"
@@ -279,21 +293,21 @@ def run_paperorchestra_full(
         + "\n--- claim_evidence_matrix.json ---\n"
         + claim_matrix_json
         + "\n--- citation_registry.json ---\n"
-        + json.dumps(citation_registry_prompt, ensure_ascii=False)[:200000]
+        + json.dumps(lit_registry_small, ensure_ascii=False)[:60000]
         + "\n--- claim_citation_map.json ---\n"
-        + json.dumps(claim_citation_map, ensure_ascii=False)[:120000]
+        + json.dumps(claim_citation_map, ensure_ascii=False)[:40000]
         + "\n--- citation_checklist ---\n"
         + json.dumps(
             {
-                "allowed_cite_keys": bib_keys[:120],
+                "allowed_cite_keys": bib_keys[:32],
                 "rule": "Only cite keys listed here. Do not invent any new citation key.",
             },
             ensure_ascii=False,
         )
         + "\n--- collected_papers ---\n"
-        + json.dumps(collected, ensure_ascii=False)[:200000]
+        + json.dumps(lit_collected_small, ensure_ascii=False)[:60000]
     )
-    lit_tex, _ = call_llm(lit_sys, lit_user)
+    lit_tex, _ = _retry_call_llm(lit_sys, lit_user, attempts=3)
     lit_tex = _sanitize_latex_citations(lit_tex or "", allowed_keys, fallback_cites)
 
     # ── Section Writing Agent ─────────────────────────────────────────────
@@ -326,41 +340,79 @@ def run_paperorchestra_full(
         )
     if not fig_list:
         fig_list = [{"figure_id": str(c.get("figure_id") or ""), "file": "", "caption": str(c.get("caption") or "")} for c in captions]
-    sec_user = (
-        "--- outline.json ---\n"
-        + json.dumps(o, ensure_ascii=False, default=str)[:24000]
-        + "\n--- idea.md ---\n"
-        + idea_md[:12000]
-        + "\n--- experimental_log.md ---\n"
-        + exp_log_md[:12000]
-        + "\n--- paper_intent.json ---\n"
-        + paper_intent_json
-        + "\n--- problem_awareness.json ---\n"
-        + problem_awareness_json
-        + "\n--- publication_evidence_contract.json ---\n"
-        + evidence_contract_json
-        + "\n--- evidence_manifest.json ---\n"
-        + evidence_manifest_json
-        + "\n--- claim_evidence_matrix.json ---\n"
-        + claim_matrix_json
-        + "\n--- method_reproducibility_requirements.json ---\n"
-        + method_requirements_json
-        + "\n--- quality_gates.json ---\n"
-        + quality_gates_json
-        + "\n--- citation_map.json ---\n"
-        + json.dumps({k: citation_map.get(k, {}) for k in bib_keys[:80]}, ensure_ascii=False)[:120000]
-        + "\n--- claim_citation_map.json ---\n"
-        + json.dumps(claim_citation_map, ensure_ascii=False)[:120000]
-        + "\n--- citation_registry.json ---\n"
-        + json.dumps(citation_registry_prompt, ensure_ascii=False)[:200000]
-        + "\n--- conference_guidelines.md ---\n"
-        + guidelines
-        + "\n--- figures_list ---\n"
-        + json.dumps(fig_list, ensure_ascii=False)
-        + "\n--- partial_template_after_lit ---\n"
-        + (lit_tex or "")[:48000]
+    citation_map_small = {k: citation_map.get(k, {}) for k in bib_keys[:24]}
+    citation_registry_small = citation_registry_prompt[:32]
+
+    def _focused_outline(section_title: str) -> dict[str, Any]:
+        raw = o.get("section_plan") or []
+        picked = []
+        for sec in raw:
+            if not isinstance(sec, dict):
+                continue
+            title = str(sec.get("section_title") or "").lower()
+            want = section_title.lower()
+            if want == "method" and "method" in title:
+                picked.append(sec)
+            elif want == "experiments" and ("experiment" in title or "evaluation" in title):
+                picked.append(sec)
+            elif want == "discussion_conclusion" and ("discussion" in title or "conclusion" in title):
+                picked.append(sec)
+        return {
+            "title": o.get("title"),
+            "intro_related_work_plan": o.get("intro_related_work_plan"),
+            "section_plan": picked,
+        }
+
+    def _section_user(section_title: str, partial_template: str) -> str:
+        return (
+            "--- outline.json ---\n"
+            + json.dumps(_focused_outline(section_title), ensure_ascii=False, default=str)[:16000]
+            + "\n--- idea.md ---\n"
+            + idea_md[:10000]
+            + "\n--- experimental_log.md ---\n"
+            + exp_log_md[:10000]
+            + "\n--- paper_intent.json ---\n"
+            + paper_intent_json
+            + "\n--- problem_awareness.json ---\n"
+            + problem_awareness_json
+            + "\n--- publication_evidence_contract.json ---\n"
+            + evidence_contract_json
+            + "\n--- evidence_manifest.json ---\n"
+            + evidence_manifest_json
+            + "\n--- claim_evidence_matrix.json ---\n"
+            + claim_matrix_json
+            + "\n--- method_reproducibility_requirements.json ---\n"
+            + method_requirements_json
+            + "\n--- quality_gates.json ---\n"
+            + quality_gates_json
+            + "\n--- citation_map.json ---\n"
+            + json.dumps(citation_map_small, ensure_ascii=False)[:40000]
+            + "\n--- claim_citation_map.json ---\n"
+            + json.dumps(claim_citation_map, ensure_ascii=False)[:40000]
+            + "\n--- citation_registry.json ---\n"
+            + json.dumps(citation_registry_small, ensure_ascii=False)[:60000]
+            + "\n--- conference_guidelines.md ---\n"
+            + guidelines
+            + "\n--- figures_list ---\n"
+            + json.dumps(fig_list[:8], ensure_ascii=False)
+            + "\n--- partial_template_after_lit ---\n"
+            + partial_template[:28000]
+            + "\n--- target_section ---\n"
+            + section_title
+            + "\nOnly fill or revise the target section and keep the rest concise and stable."
+        )
+
+    sec_out_method, _ = _retry_call_llm(sec_sys, _section_user("Method", lit_tex or ""), attempts=3)
+    sec_out_method = _sanitize_latex_citations(sec_out_method or "", allowed_keys, fallback_cites)
+
+    sec_out_exp, _ = _retry_call_llm(sec_sys, _section_user("Experiments", sec_out_method or lit_tex or ""), attempts=3)
+    sec_out_exp = _sanitize_latex_citations(sec_out_exp or "", allowed_keys, fallback_cites)
+
+    sec_out, _ = _retry_call_llm(
+        sec_sys,
+        _section_user("Discussion_Conclusion", sec_out_exp or sec_out_method or lit_tex or ""),
+        attempts=3,
     )
-    sec_out, _ = call_llm(sec_sys, sec_user)
     sec_out = _sanitize_latex_citations(sec_out or "", allowed_keys, fallback_cites)
 
     postwrite_figures = run_postwriting_api_figure_stage(
