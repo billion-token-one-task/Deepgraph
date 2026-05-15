@@ -26,6 +26,8 @@ let providerTimer   = null;
 let papersLoaded    = false;
 let oppsLoaded      = false;
 let providersLoaded = false;
+let paperProgressLoaded = false;
+let generatedPapersLoaded = false;
 let sidebarCollapsed = false;
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -70,6 +72,13 @@ function timeAgo(ts) {
     return Math.floor(s / 86400) + 'd ago';
 }
 
+function fmtDateTime(ts) {
+    if (!ts) return '';
+    const d = new Date(ts);
+    if (Number.isNaN(d.getTime())) return String(ts);
+    return d.toLocaleString();
+}
+
 // ── Tab Navigation ───────────────────────────────────────────────────
 
 function switchTab(tab) {
@@ -101,6 +110,14 @@ function onTabActivated(tab) {
             break;
         case 'papers':
             if (!papersLoaded) loadPapers();
+            break;
+        case 'paper-progress':
+            loadPaperProgressTab();
+            paperProgressLoaded = true;
+            break;
+        case 'generated-papers':
+            loadGeneratedPapersTab();
+            generatedPapersLoaded = true;
             break;
         case 'discoveries':
             loadDiscoveriesTab();
@@ -1056,6 +1073,231 @@ function renderPapers() {
             </div>
         </div>`;
     }).join('');
+}
+
+// ── Paper Progress Tabs ─────────────────────────────────────────────
+
+function statusBadge(label, tone = 'dim') {
+    const cls = {
+        green: 'badge-green',
+        red: 'badge-red',
+        gold: 'badge-gold',
+        accent: 'badge-accent',
+        dim: 'badge-dim',
+    }[tone] || 'badge-dim';
+    return `<span class="badge ${cls}">${esc(label)}</span>`;
+}
+
+function toneForPaperStage(stage) {
+    const key = String(stage || '').toLowerCase();
+    if (key.includes('reasoned') || key.includes('done') || key.includes('bundle_ready')) return 'green';
+    if (key.includes('error') || key.includes('failed') || key.includes('blocked')) return 'red';
+    if (key.includes('research') || key.includes('writing') || key.includes('verify')) return 'accent';
+    if (key.includes('experiment') || key.includes('gpu') || key.includes('review')) return 'gold';
+    return 'dim';
+}
+
+function paperPreviewHref(insightId, kind = 'index') {
+    if (!insightId) return '';
+    if (kind === 'pdf') return `/papers/${insightId}/pdf`;
+    if (kind === 'tex') return `/papers/${insightId}/tex`;
+    return `/papers/${insightId}`;
+}
+
+function renderMiniStatGrid(targetId, items) {
+    const root = el(targetId);
+    if (!root) return;
+    root.innerHTML = items.map(item => `
+        <div class="stat-card stat-card-mini">
+            <div class="stat-number">${esc(String(item.value ?? 0))}</div>
+            <div class="stat-label">${esc(item.label)}</div>
+        </div>
+    `).join('');
+}
+
+function renderPaperPipelineRows(rows) {
+    const list = el('paperProgressPipelineList');
+    const count = el('paperProgressPipelineCount');
+    if (!list || !count) return;
+    const papers = (rows || []).slice(0, 20);
+    count.textContent = papers.length;
+    if (!papers.length) {
+        list.innerHTML = '<p class="empty-msg">No papers are moving through the pipeline right now.</p>';
+        return;
+    }
+    list.innerHTML = papers.map(item => `
+        <div class="paper-flow-item">
+            <div class="paper-flow-head">
+                <div class="paper-flow-title">${esc(trunc(item.title || item.id || 'Untitled paper', 120))}</div>
+                ${statusBadge(item.processing_stage || item.status || 'queued', toneForPaperStage(item.processing_stage || item.status))}
+            </div>
+            <div class="paper-flow-meta">
+                <span>${esc(item.id || '-')}</span>
+                <span>${esc(item.status || 'unknown')}</span>
+                ${item.updated_at ? `<span>${esc(timeAgo(item.updated_at))}</span>` : ''}
+            </div>
+            ${item.stage_last_error ? `<div class="paper-flow-note paper-flow-error">${esc(trunc(item.stage_last_error, 240))}</div>` : ''}
+        </div>
+    `).join('');
+}
+
+function renderPaperGenerationRows(jobs, manuscripts) {
+    const list = el('paperProgressGenerationList');
+    const count = el('paperProgressGenerationCount');
+    if (!list || !count) return;
+
+    const activeJobs = (jobs || []).filter(job => !['completed', 'failed'].includes(String(job.status || '').toLowerCase()));
+    const activeManuscripts = (manuscripts || []).filter(row => {
+        const status = String(row.status || '').toLowerCase();
+        return status && !['stale', 'completed', 'ready'].includes(status);
+    });
+    const total = activeJobs.length + activeManuscripts.length;
+    count.textContent = total;
+
+    if (!total) {
+        list.innerHTML = '<p class="empty-msg">No paper-generation jobs are active right now.</p>';
+        return;
+    }
+
+    const jobCards = activeJobs.map(job => {
+        const stage = friendlyAutomationStage(job.status, job.stage);
+        const previewUrl = paperPreviewHref(job.deep_insight_id, 'index');
+        return `
+            <div class="paper-flow-item">
+                <div class="paper-flow-head">
+                    <div class="paper-flow-title">${esc(trunc(job.title || `Idea #${job.deep_insight_id}`, 120))}</div>
+                    ${statusBadge(stage, toneForPaperStage(job.stage || job.status))}
+                </div>
+                <div class="paper-flow-meta">
+                    <span>Idea #${esc(job.deep_insight_id || '-')}</span>
+                    ${job.experiment_status ? `<span>Experiment: ${esc(job.experiment_status)}</span>` : ''}
+                    ${job.updated_at ? `<span>${esc(timeAgo(job.updated_at))}</span>` : ''}
+                </div>
+                ${job.last_note ? `<div class="paper-flow-note">${esc(trunc(job.last_note, 220))}</div>` : ''}
+                ${job.last_error ? `<div class="paper-flow-note paper-flow-error">${esc(trunc(job.last_error, 220))}</div>` : ''}
+                <div class="paper-flow-actions">
+                    <button class="btn-preview" onclick="window._dg.viewPaperGeneration(${Number(job.deep_insight_id)})">View details</button>
+                    ${previewUrl ? `<button class="btn-preview" onclick="window.open('${esc(previewUrl)}','_blank')">Open paper preview</button>` : ''}
+                </div>
+            </div>
+        `;
+    });
+
+    const manuscriptCards = activeManuscripts.map(row => `
+        <div class="paper-flow-item">
+            <div class="paper-flow-head">
+                <div class="paper-flow-title">${esc(trunc(row.insight_title || `Manuscript #${row.id}`, 120))}</div>
+                ${statusBadge(row.status || 'drafting', toneForPaperStage(row.status))}
+            </div>
+            <div class="paper-flow-meta">
+                <span>Manuscript #${esc(row.id || '-')}</span>
+                ${row.hypothesis_verdict ? `<span>Verdict: ${esc(row.hypothesis_verdict)}</span>` : ''}
+                ${row.updated_at ? `<span>${esc(timeAgo(row.updated_at))}</span>` : ''}
+            </div>
+            ${row.workdir ? `<div class="paper-flow-note">${esc(trunc(row.workdir, 220))}</div>` : ''}
+            <div class="paper-flow-actions">
+                ${row.deep_insight_id ? `<button class="btn-preview" onclick="window.open('${esc(paperPreviewHref(row.deep_insight_id, 'index'))}','_blank')">Open paper preview</button>` : ''}
+            </div>
+        </div>
+    `);
+
+    list.innerHTML = jobCards.concat(manuscriptCards).join('');
+}
+
+async function loadPaperProgressTab() {
+    try {
+        const [automation, jobs, manuscripts] = await Promise.all([
+            api('/api/automation'),
+            api('/api/auto_research/jobs?limit=50'),
+            api('/api/manuscripts?limit=50'),
+        ]);
+        const current = (automation || {}).current_work || {};
+        const activeManuscripts = (manuscripts || []).filter(row => {
+            const status = String(row.status || '').toLowerCase();
+            return status && !['stale', 'completed', 'ready'].includes(status);
+        });
+        renderMiniStatGrid('paperProgressStats', [
+            { label: 'Pipeline Papers', value: (current.papers || []).length },
+            { label: 'Paper Jobs', value: (jobs || []).filter(job => !['completed', 'failed'].includes(String(job.status || '').toLowerCase())).length },
+            { label: 'Active Manuscripts', value: activeManuscripts.length },
+            { label: 'Blocked Jobs', value: ((automation || {}).auto_research || {}).blocked || 0 },
+        ]);
+        renderPaperPipelineRows(current.papers || []);
+        renderPaperGenerationRows(jobs || [], manuscripts || []);
+    } catch (e) {
+        const listA = el('paperProgressPipelineList');
+        const listB = el('paperProgressGenerationList');
+        if (listA) listA.innerHTML = `<p class="empty-msg">Failed to load paper progress: ${esc(e.message)}</p>`;
+        if (listB) listB.innerHTML = `<p class="empty-msg">Failed to load paper generation jobs: ${esc(e.message)}</p>`;
+    }
+}
+
+function manuscriptTone(status) {
+    const key = String(status || '').toLowerCase();
+    if (key === 'bundle_ready' || key === 'ready') return 'green';
+    if (key === 'stale' || key === 'failed' || key === 'blocked') return 'red';
+    if (key.includes('draft')) return 'accent';
+    return 'dim';
+}
+
+function renderGeneratedPapers(manuscripts) {
+    const list = el('generatedPapersList');
+    const count = el('generatedPapersCount');
+    if (!list || !count) return;
+    const rows = (manuscripts || []).slice(0, 100);
+    count.textContent = rows.length;
+    if (!rows.length) {
+        list.innerHTML = '<p class="empty-msg">No manuscript runs have been generated yet.</p>';
+        return;
+    }
+    list.innerHTML = rows.map(row => {
+        const preview = row.deep_insight_id ? paperPreviewHref(row.deep_insight_id, 'index') : '';
+        return `
+            <div class="paper-flow-item">
+                <div class="paper-flow-head">
+                    <div class="paper-flow-title">${esc(trunc(row.insight_title || `Manuscript #${row.id}`, 130))}</div>
+                    ${statusBadge(row.status || 'generated', manuscriptTone(row.status))}
+                </div>
+                <div class="paper-flow-meta">
+                    <span>Manuscript #${esc(row.id || '-')}</span>
+                    ${row.experiment_run_id ? `<span>Run #${esc(row.experiment_run_id)}</span>` : ''}
+                    ${row.hypothesis_verdict ? `<span>Verdict: ${esc(row.hypothesis_verdict)}</span>` : ''}
+                    ${row.updated_at ? `<span>${esc(timeAgo(row.updated_at))}</span>` : ''}
+                </div>
+                <div class="paper-flow-meta">
+                    ${row.created_at ? `<span>Generated: ${esc(fmtDateTime(row.created_at))}</span>` : ''}
+                    ${row.updated_at ? `<span>Updated: ${esc(fmtDateTime(row.updated_at))}</span>` : ''}
+                </div>
+                ${row.workdir ? `<div class="paper-flow-note">${esc(trunc(row.workdir, 220))}</div>` : ''}
+                <div class="paper-flow-note">Use the paper page to open only the assets that actually exist for this manuscript.</div>
+                <div class="paper-flow-actions">
+                    ${preview ? `<button class="btn-preview" onclick="window.open('${esc(preview)}','_blank')">Open paper page</button>` : ''}
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+async function loadGeneratedPapersTab() {
+    try {
+        const manuscripts = await api('/api/manuscripts?limit=100');
+        const counts = (manuscripts || []).reduce((acc, row) => {
+            const key = String(row.status || 'unknown').toLowerCase();
+            acc.total += 1;
+            acc[key] = (acc[key] || 0) + 1;
+            return acc;
+        }, { total: 0 });
+        renderMiniStatGrid('generatedPapersStats', [
+            { label: 'Total Manuscripts', value: counts.total || 0 },
+            { label: 'Ready', value: counts.ready || counts.bundle_ready || 0 },
+            { label: 'Stale', value: counts.stale || 0 },
+            { label: 'Drafting', value: counts.drafting || 0 },
+        ]);
+        renderGeneratedPapers(manuscripts || []);
+    } catch (e) {
+        const list = el('generatedPapersList');
+        if (list) list.innerHTML = `<p class="empty-msg">Failed to load generated papers: ${esc(e.message)}</p>`;
+    }
 }
 
 async function togglePaper(rowEl) {
@@ -2081,6 +2323,9 @@ window._dg = {
     togglePaper,
     updateMatrixMetric,
     searchNav,
+    viewPaperGeneration(insightId) {
+        return this.viewExperimentGroup(insightId);
+    },
 
     async viewExperimentGroup(insightId) {
         try {
@@ -2340,6 +2585,8 @@ function init() {
 
     setInterval(() => {
         if (activeTab === 'experiments') loadExperimentsTab();
+        if (activeTab === 'paper-progress') loadPaperProgressTab();
+        if (activeTab === 'generated-papers') loadGeneratedPapersTab();
         if (activeTab === 'discoveries') loadDiscoveriesTab();
     }, 10000);
 }

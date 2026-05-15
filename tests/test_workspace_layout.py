@@ -79,6 +79,22 @@ class WorkspaceLayoutTests(unittest.TestCase):
         self.assertTrue(marker.exists())
         self.assertEqual(marker.read_text(encoding="utf-8"), str(layout["run_root"]))
 
+    def test_get_idea_workspace_tolerates_existing_current_symlink(self):
+        database.execute("INSERT INTO deep_insights (id, tier, title) VALUES (1, 2, 'Idea Workspace')")
+        database.commit()
+
+        root = self.workspace_root / "idea_1"
+        target = root / "legacy_target"
+        target.mkdir(parents=True, exist_ok=True)
+        current_link = root / "experiments" / "main" / "current"
+        current_link.parent.mkdir(parents=True, exist_ok=True)
+        current_link.symlink_to(target, target_is_directory=True)
+
+        layout = workspace_layout.get_idea_workspace(1)
+
+        self.assertTrue(Path(layout["experiment_current_root"]).is_symlink())
+        self.assertEqual(Path(layout["experiment_current_root"]).resolve(), target.resolve())
+
     def test_backfill_script_maps_legacy_run_and_manuscript_dirs(self):
         legacy_run = Path(self.tmpdir.name) / "legacy_run"
         (legacy_run / "code").mkdir(parents=True, exist_ok=True)
