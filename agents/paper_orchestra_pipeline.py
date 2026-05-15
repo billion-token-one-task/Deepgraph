@@ -165,8 +165,35 @@ def _fallback_related_work(state: dict, orchestrated: dict) -> str:
     return "\n\n".join(snippets) or _latex_escape(str(state.get("evidence_summary") or "Verified prior work is listed in references.bib."))
 
 
-def assemble_main_tex(state: dict, orchestrated: dict, bundle_format: str) -> str:
-    venue = "Conference submission draft" if bundle_format == "conference" else "Journal draft"
+def assemble_main_tex(
+    state: dict,
+    orchestrated: dict,
+    bundle_format: str,
+    *,
+    template_id: str = "iclr2026",
+) -> str:
+    """Render the per-bundle main.tex.
+
+    ``template_id`` selects which venue's skeleton to emit:
+    - ``"iclr2026"`` with ``bundle_format=="conference"`` (default) keeps
+      the legacy byte-equivalent ICLR skeleton so existing fixtures /
+      diff tests do not regress.
+    - Any other ``template_id`` (or non-conference bundle_format) emits a
+      venue-neutral skeleton; the adapter's ``normalize_source`` injects
+      the venue's preamble + bibstyle downstream via
+      :func:`normalize_latex_source` / :func:`pick_main_tex`.
+    """
+    use_iclr_skeleton = bundle_format == "conference" and template_id == "iclr2026"
+    # NOTE: We deliberately do NOT splice venue_label into ``\date{}``.
+    # ``_StubVenueAdapter.inject_preamble`` guards its ``\usepackage`` injection
+    # via ``sty not in preamble`` (substring match), so dumping the venue
+    # ``_sty_basename`` anywhere in the preamble — e.g. ``\date{neurips_2024}``
+    # — would short-circuit the injection. Keep the date label generic.
+    venue = (
+        "Conference submission draft"
+        if bundle_format == "conference"
+        else "Journal draft"
+    )
     refined = orchestrated.get("refined") if isinstance(orchestrated.get("refined"), dict) else {}
     abs_tex = refined.get("abstract") or "See experiments section for quantitative results."
     intro = refined.get("introduction") or state.get("problem_statement", "")
@@ -197,7 +224,7 @@ def assemble_main_tex(state: dict, orchestrated: dict, bundle_format: str) -> st
 {problem_spine}
 \section{{Related Work}}
 {related}"""
-    if bundle_format == "conference":
+    if use_iclr_skeleton:
         return rf"""\documentclass{{article}}
 \usepackage{{iclr2026_conference,times}}
 \input{{math_commands.tex}}
@@ -275,30 +302,58 @@ def normalize_latex_source(
     *,
     force_iclr2026: bool = False,
     submission_mode: bool = True,
+    template_id: str | None = None,
 ) -> str:
     """Backward-compatibility shim → ``TemplateAdapter.normalize_source``.
 
-    ``force_iclr2026=True`` dispatches to the ICLR 2026 adapter; the
-    default ``False`` path dispatches to the arXiv plain adapter. Both
-    paths are byte-equivalent to the pre-D1 implementation (verified by
-    ``tests/test_template_adapter.py``). ``submission_mode`` forwards to
-    the adapter — kept default-True so legacy callers keep emitting the
+    Resolution order:
+      1. Explicit ``template_id`` (the decoupled path — router output flows
+         through here).
+      2. ``force_iclr2026=True`` → ``"iclr2026"`` (legacy boolean kept so
+         pre-D1 callers don't break).
+      3. Default → ``"arxiv_plain"``.
+
+    All three paths route through the registered adapter, so adding a new
+    venue requires zero edits here. ``submission_mode`` forwards to the
+    adapter — kept default-True so legacy callers keep emitting the
     double-blind review build until they opt in to camera-ready.
     """
     from agents.manuscript_templates import get_adapter
-    template_id = "iclr2026" if force_iclr2026 else "arxiv_plain"
+    if template_id is None:
+        template_id = "iclr2026" if force_iclr2026 else "arxiv_plain"
     return get_adapter(template_id).normalize_source(
         text, submission_mode=submission_mode
     )
 
 
-def pick_main_tex(orchestrated: dict, state: dict, bundle_format: str) -> str:
-    """Prefer full refined LaTeX if the model returned a complete ``\\documentclass`` document."""
+def pick_main_tex(
+    orchestrated: dict,
+    state: dict,
+    bundle_format: str,
+    *,
+    template_id: str | None = None,
+    submission_mode: bool = True,
+) -> str:
+    """Prefer full refined LaTeX if the model returned a complete ``\\documentclass`` document.
+
+    ``template_id`` is the venue-routing decoupling hook. When omitted it
+    falls back to ``"iclr2026"`` for conference bundles and ``"arxiv_plain"``
+    for everything else — preserving the pre-D1 default. Explicit values
+    (e.g. ``"neurips2024"``, ``"acl_arr"``) are dispatched through the
+    adapter registry.
+    """
     full = (orchestrated.get("refinement_full_text") or "").strip()
-    force_iclr2026 = bundle_format == "conference"
+    if template_id is None:
+        template_id = "iclr2026" if bundle_format == "conference" else "arxiv_plain"
     if full and "\\documentclass" in full[:2000]:
-        return normalize_latex_source(full, force_iclr2026=force_iclr2026)
-    return normalize_latex_source(assemble_main_tex(state, orchestrated, bundle_format), force_iclr2026=force_iclr2026)
+        return normalize_latex_source(
+            full, template_id=template_id, submission_mode=submission_mode
+        )
+    return normalize_latex_source(
+        assemble_main_tex(state, orchestrated, bundle_format, template_id=template_id),
+        template_id=template_id,
+        submission_mode=submission_mode,
+    )
 
 
 def _compile_main_pdf(bundle_dir: Path) -> dict:
@@ -968,8 +1023,19 @@ def _write_blocked_current_marker(layout: dict, report: dict) -> None:
 def generate_bundle_paper_orchestra(
     run_id: int,
     bundle_formats: list[str] | None = None,
+    *,
+    template_id: str | None = None,
 ) -> dict:
-    """PaperOrchestra-based bundle generation with verified citations and figure manifests."""
+    """PaperOrchestra-based bundle generation with verified citations and figure manifests.
+
+    ``template_id`` is the venue-routing decoupling hook (D1/D2 #12/#13).
+    When omitted, conference bundles default to ``"iclr2026"`` (legacy
+    behaviour, byte-equivalent) and journal bundles default to
+    ``"arxiv_plain"``. Callers that have run :func:`agents.venue_router.
+    route_and_persist` can pass the chosen ``template_id`` to dispatch
+    template-file copying + preamble injection through the adapter
+    registry instead of the hard-coded ICLR path.
+    """
     db.init_db()
     run = db.fetchone("SELECT * FROM experiment_runs WHERE id=?", (run_id,))
     if not run:
@@ -1186,12 +1252,32 @@ def generate_bundle_paper_orchestra(
     db.execute("DELETE FROM manuscript_assets WHERE manuscript_run_id=?", (manuscript_run_id,))
     db.execute("DELETE FROM submission_bundles WHERE manuscript_run_id=?", (manuscript_run_id,))
 
+    # D1/D2 (#12/#13): resolve venue once per bundle_format. Caller-supplied
+    # ``template_id`` wins (router output); otherwise fall back to the
+    # legacy mapping so unchanged call sites stay byte-equivalent.
+    def _resolve_template_id(fmt: str) -> str:
+        if template_id:
+            return template_id
+        return "iclr2026" if fmt == "conference" else "arxiv_plain"
+
     preferred_bundle_dir: Path | None = None
     for bundle_format in bundle_formats:
+        effective_template_id = _resolve_template_id(bundle_format)
         bundle_dir = paper_bundle_root(int(run["deep_insight_id"]), bundle_format, insight=insight)
         figures_dir = bundle_dir / "figures"
         _ensure_dirs(figures_dir)
-        copied_template_files = _copy_iclr2026_template_files(bundle_dir) if bundle_format == "conference" else []
+        # Adapter-dispatched template-file copy (replaces the pre-D1
+        # ``_copy_iclr2026_template_files`` hard-coded branch). Each
+        # registered adapter knows which .sty / .bst / supporting files
+        # to ship; non-conference bundles get an empty list because the
+        # arxiv_plain adapter declares no assets.
+        try:
+            from agents.manuscript_templates import get_adapter
+            copied_template_files = get_adapter(effective_template_id).copy_files(bundle_dir)
+        except KeyError:
+            copied_template_files = (
+                _copy_iclr2026_template_files(bundle_dir) if bundle_format == "conference" else []
+            )
         if shared_fig.exists():
             for p in sorted(shared_fig.glob("*")):
                 if p.is_file():
@@ -1201,11 +1287,14 @@ def generate_bundle_paper_orchestra(
             json.dumps(orchestrated.get("plotting") or {}, indent=2, default=str)[:100_000],
         )
 
-        main_tex = pick_main_tex(orchestrated, state, bundle_format)
+        main_tex = pick_main_tex(
+            orchestrated, state, bundle_format, template_id=effective_template_id
+        )
         bundle_bibtex = bibtex
         main_tex, bundle_bibtex, removed_cite_keys = _clean_topic_citations(main_tex, bundle_bibtex, state)
         orchestrated.setdefault("citation_cleanup", {})[bundle_format] = {
             "removed_offtopic_cite_keys": removed_cite_keys,
+            "template_id": effective_template_id,
             "iclr2026_template_files": copied_template_files,
         }
         _write(bundle_dir / "main.tex", main_tex)

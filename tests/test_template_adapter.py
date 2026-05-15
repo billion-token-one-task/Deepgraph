@@ -132,6 +132,73 @@ class TemplateAdapterTests(unittest.TestCase):
             self.arx.normalize_source(body),
         )
 
+    def test_normalize_latex_source_template_id_routes_to_adapter(self):
+        """The new ``template_id`` kwarg dispatches through the adapter registry.
+
+        Closes the legacy ``assemble_main_tex`` / ``pick_main_tex`` hard-coded
+        ICLR boundary documented in PR #10. Each registered venue must be
+        reachable via ``normalize_latex_source(template_id=...)``.
+        """
+        from agents.paper_orchestra_pipeline import normalize_latex_source
+        from agents.manuscript_templates import get_adapter
+        body = (
+            r"\documentclass{article}" "\n"
+            r"\begin{document}" "\n"
+            r"Body." "\n"
+            r"\bibliography{refs}" "\n"
+            r"\end{document}" "\n"
+        )
+        for template_id in ("iclr2026", "neurips2024", "icml2024", "acl_arr", "cvpr2024", "arxiv_plain"):
+            with self.subTest(template_id=template_id):
+                out = normalize_latex_source(body, template_id=template_id)
+                self.assertEqual(out, get_adapter(template_id).normalize_source(body))
+
+    def test_normalize_latex_source_template_id_overrides_force_flag(self):
+        """``template_id`` takes precedence over the legacy ``force_iclr2026`` flag."""
+        from agents.paper_orchestra_pipeline import normalize_latex_source
+        body = (
+            r"\documentclass{article}" "\n"
+            r"\begin{document}" "\n"
+            r"Body." "\n"
+            r"\bibliography{refs}" "\n"
+            r"\end{document}" "\n"
+        )
+        # force_iclr2026=True but template_id=arxiv_plain → arxiv wins
+        out = normalize_latex_source(body, force_iclr2026=True, template_id="arxiv_plain")
+        self.assertNotIn("iclr2026_conference", out)
+        self.assertIn(r"\bibliographystyle{plain}", out)
+
+    def test_pick_main_tex_routes_through_adapter(self):
+        """``pick_main_tex(template_id=...)`` produces venue-specific output.
+
+        Verifies the legacy bundle-loop hard-coding (issue #11 known boundary)
+        is gone: a non-ICLR ``template_id`` yields a non-ICLR preamble even
+        when ``bundle_format == "conference"``.
+        """
+        from agents.paper_orchestra_pipeline import pick_main_tex
+        state = {
+            "title": "T",
+            "baseline_metric_name": "acc",
+            "baseline_metric_value": 0.1,
+            "problem_statement": "P",
+            "method_summary": "M",
+        }
+        orchestrated: dict = {}
+        # Default (no template_id) → conference bundle still gets ICLR (back-compat)
+        default_out = pick_main_tex(orchestrated, state, "conference")
+        self.assertIn("iclr2026_conference", default_out)
+        # Explicit neurips2024 → NeurIPS preamble (sty basename `neurips_2024`),
+        # no ICLR sty.
+        nips_out = pick_main_tex(orchestrated, state, "conference", template_id="neurips2024")
+        self.assertIn(r"\usepackage{neurips_2024}", nips_out)
+        self.assertIn(r"\bibliographystyle{unsrtnat}", nips_out)
+        self.assertNotIn("iclr2026_conference", nips_out)
+        # Explicit acl_arr (two-column venue) → twocolumn option + acl sty
+        acl_out = pick_main_tex(orchestrated, state, "conference", template_id="acl_arr")
+        self.assertIn("twocolumn", acl_out)
+        self.assertIn(r"\usepackage", acl_out)
+        self.assertNotIn("iclr2026_conference", acl_out)
+
 
 if __name__ == "__main__":
     unittest.main()
