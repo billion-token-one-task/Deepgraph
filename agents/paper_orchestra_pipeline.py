@@ -170,19 +170,21 @@ def assemble_main_tex(
     orchestrated: dict,
     bundle_format: str,
     *,
-    template_id: str = "iclr2026",
+    template_id: str | None = None,
 ) -> str:
     """Render the per-bundle main.tex.
 
-    ``template_id`` selects which venue's skeleton to emit:
-    - ``"iclr2026"`` with ``bundle_format=="conference"`` (default) keeps
-      the legacy byte-equivalent ICLR skeleton so existing fixtures /
-      diff tests do not regress.
-    - Any other ``template_id`` (or non-conference bundle_format) emits a
-      venue-neutral skeleton; the adapter's ``normalize_source`` injects
-      the venue's preamble + bibstyle downstream via
-      :func:`normalize_latex_source` / :func:`pick_main_tex`.
+    ``template_id`` selects which venue's skeleton to emit. When omitted
+    it falls back to ``"iclr2026"`` for ``bundle_format=="conference"``
+    and ``"arxiv_plain"`` otherwise, preserving the pre-D1 byte-equivalent
+    output for unchanged call sites. Only the (conference + iclr2026)
+    combination emits the ICLR-specific skeleton; every other venue gets
+    the neutral skeleton and the adapter's ``normalize_source`` injects
+    the venue's preamble + bibstyle downstream via
+    :func:`normalize_latex_source` / :func:`pick_main_tex`.
     """
+    if template_id is None:
+        template_id = "iclr2026" if bundle_format == "conference" else "arxiv_plain"
     use_iclr_skeleton = bundle_format == "conference" and template_id == "iclr2026"
     # NOTE: We deliberately do NOT splice venue_label into ``\date{}``.
     # ``_StubVenueAdapter.inject_preamble`` guards its ``\usepackage`` injection
@@ -1293,7 +1295,7 @@ def generate_bundle_paper_orchestra(
         orchestrated.setdefault("citation_cleanup", {})[bundle_format] = {
             "removed_offtopic_cite_keys": removed_cite_keys,
             "template_id": effective_template_id,
-            "iclr2026_template_files": copied_template_files,
+            "template_files": copied_template_files,
         }
         _write(bundle_dir / "main.tex", main_tex)
         materialized_assets = _materialize_referenced_figures(
