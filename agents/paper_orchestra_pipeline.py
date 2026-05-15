@@ -1270,14 +1270,12 @@ def generate_bundle_paper_orchestra(
         # ``_copy_iclr2026_template_files`` hard-coded branch). Each
         # registered adapter knows which .sty / .bst / supporting files
         # to ship; non-conference bundles get an empty list because the
-        # arxiv_plain adapter declares no assets.
-        try:
-            from agents.manuscript_templates import get_adapter
-            copied_template_files = get_adapter(effective_template_id).copy_files(bundle_dir)
-        except KeyError:
-            copied_template_files = (
-                _copy_iclr2026_template_files(bundle_dir) if bundle_format == "conference" else []
-            )
+        # arxiv_plain adapter declares no assets. An unknown template_id
+        # MUST raise — silently falling back to ICLR would let a bad
+        # router decision ship NeurIPS preamble with ICLR sty files and
+        # fail compilation with no actionable error.
+        from agents.manuscript_templates import get_adapter
+        copied_template_files = get_adapter(effective_template_id).copy_files(bundle_dir)
         if shared_fig.exists():
             for p in sorted(shared_fig.glob("*")):
                 if p.is_file():
