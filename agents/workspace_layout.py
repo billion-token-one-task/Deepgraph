@@ -93,6 +93,26 @@ def _migrate_legacy_idea_workspace(workspace_root: Path) -> None:
         shutil.move(str(legacy_exp), str(suite_main))
 
 
+def _ensure_dir_or_current_link(path: Path) -> None:
+    """Create a directory unless the path is already a symlink/current pointer.
+
+    ``current`` paths are allowed to be:
+    - a real directory
+    - a symlink to the canonical run / paper dir
+    - a placeholder directory later populated with ``CURRENT_RUN.txt``
+
+    ``Path.mkdir(exist_ok=True)`` still raises ``FileExistsError`` on symlinks
+    on some runtimes, so we special-case them here.
+    """
+    if path.is_symlink():
+        return
+    if path.exists():
+        if path.is_dir():
+            return
+        raise FileExistsError(f"Workspace path exists and is not a directory: {path}")
+    path.mkdir(parents=True, exist_ok=True)
+
+
 def _resolve_suite_for_run(run_id: int) -> str:
     row = db.fetchone("SELECT experiment_suite FROM experiment_runs WHERE id=?", (int(run_id),))
     if row:
@@ -137,14 +157,14 @@ def get_idea_workspace(insight_id: int, insight: dict | None = None, *, create: 
         "canonical_run_id": insight.get("canonical_run_id"),
     }
     if create:
-        workspace_root.mkdir(parents=True, exist_ok=True)
-        plan_root.mkdir(parents=True, exist_ok=True)
+        _ensure_dir_or_current_link(workspace_root)
+        _ensure_dir_or_current_link(plan_root)
         for key in ("paper_root", "paper_current_root", "paper_bundles_root", "paper_manifests_root"):
-            Path(layout[key]).mkdir(parents=True, exist_ok=True)
-        experiments_root.mkdir(parents=True, exist_ok=True)
+            _ensure_dir_or_current_link(Path(layout[key]))
+        _ensure_dir_or_current_link(experiments_root)
         for suite in KNOWN_EXPERIMENT_SUITES:
-            (experiments_root / suite / "runs").mkdir(parents=True, exist_ok=True)
-            (experiments_root / suite / "current").mkdir(parents=True, exist_ok=True)
+            _ensure_dir_or_current_link(experiments_root / suite / "runs")
+            _ensure_dir_or_current_link(experiments_root / suite / "current")
 
     if sync_db and insight.get("id") is not None:
         desired = {
@@ -197,10 +217,10 @@ def ensure_run_workspace(
         "spec_root": run_root / "spec",
         "codex_root": run_root / "codex",
     }
-    suite_runs_root.mkdir(parents=True, exist_ok=True)
-    suite_current_root.mkdir(parents=True, exist_ok=True)
+    _ensure_dir_or_current_link(suite_runs_root)
+    _ensure_dir_or_current_link(suite_current_root)
     for key in ("run_root", "code_root", "results_root", "spec_root", "codex_root"):
-        Path(info[key]).mkdir(parents=True, exist_ok=True)
+        _ensure_dir_or_current_link(Path(info[key]))
     return info
 
 

@@ -69,7 +69,15 @@
                 </button>
                 <button class="nav-item" data-tab="papers">
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M4 3h8l4 4v10a1 1 0 01-1 1H4a1 1 0 01-1-1V4a1 1 0 011-1z" stroke="currentColor" stroke-width="1.5"/><path d="M12 3v4h4" stroke="currentColor" stroke-width="1.5"/><path d="M6 10h8M6 13h5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-                    <span>Papers</span>
+                    <span>Paper DB</span>
+                </button>
+                <button class="nav-item" data-tab="paper-progress">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M4 4h12v12H4z" stroke="currentColor" stroke-width="1.5"/><path d="M6.5 6.5h7M6.5 10h5.5M6.5 13.5h3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="14.5" cy="14.5" r="2.5" stroke="currentColor" stroke-width="1.5"/></svg>
+                    <span>In Progress</span>
+                </button>
+                <button class="nav-item" data-tab="generated-papers">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M4 3h8l4 4v10a1 1 0 01-1 1H4a1 1 0 01-1-1V4a1 1 0 011-1z" stroke="currentColor" stroke-width="1.5"/><path d="M12 3v4h4M7 11l2 2 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                    <span>Generated</span>
                 </button>
                 <button class="nav-item" data-tab="discoveries">
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M10 1L12.5 6.5 18.5 7.5 14 11.5 15 17.5 10 14.5 5 17.5 6 11.5 1.5 7.5 7.5 6.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
@@ -281,6 +289,47 @@
                             </div>
                         </div>
                         <div class="papers-list" id="papersList"></div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ── In Progress Papers Tab ───────────────────────── -->
+            <section class="tab-panel" id="tab-paper-progress">
+                <div class="tab-scroll">
+                    <div class="stat-grid paper-mini-stats" id="paperProgressStats"></div>
+                    <div class="card">
+                        <div class="card-header">
+                            <h3>Pipeline Papers</h3>
+                            <span class="badge badge-dim" id="paperProgressPipelineCount">0</span>
+                        </div>
+                        <div class="paper-flow-list" id="paperProgressPipelineList">
+                            <p class="empty-msg">No papers are moving through the pipeline right now.</p>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header">
+                            <h3>Research Paper Generation</h3>
+                            <span class="badge badge-dim" id="paperProgressGenerationCount">0</span>
+                        </div>
+                        <div class="paper-flow-list" id="paperProgressGenerationList">
+                            <p class="empty-msg">No paper-generation jobs are active right now.</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- ── Generated Papers Tab ─────────────────────────── -->
+            <section class="tab-panel" id="tab-generated-papers">
+                <div class="tab-scroll">
+                    <div class="stat-grid paper-mini-stats" id="generatedPapersStats"></div>
+                    <div class="card">
+                        <div class="card-header">
+                            <h3>Generated Papers</h3>
+                            <span class="badge badge-dim" id="generatedPapersCount">0</span>
+                        </div>
+                        <div class="paper-flow-list" id="generatedPapersList">
+                            <p class="empty-msg">No manuscript runs have been generated yet.</p>
+                        </div>
                     </div>
                 </div>
             </section>

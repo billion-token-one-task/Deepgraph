@@ -900,6 +900,76 @@ header#topBar {
     overflow-y: auto;
 }
 
+.paper-mini-stats {
+    margin-bottom: 14px;
+}
+
+.stat-card-mini {
+    min-height: 86px;
+}
+
+.paper-flow-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.paper-flow-item {
+    border: 1px solid var(--border);
+    background: var(--bg-card);
+    border-radius: var(--radius);
+    padding: 14px 16px;
+    transition: border-color var(--transition), background var(--transition), transform var(--transition);
+}
+
+.paper-flow-item:hover {
+    border-color: var(--border-hover);
+    background: var(--bg-card-hover);
+    transform: translateY(-1px);
+}
+
+.paper-flow-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 12px;
+    margin-bottom: 8px;
+}
+
+.paper-flow-title {
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    line-height: 1.45;
+}
+
+.paper-flow-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    color: var(--text-dim);
+    font-size: 0.72rem;
+    margin-bottom: 8px;
+}
+
+.paper-flow-note {
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+    line-height: 1.6;
+    margin-top: 6px;
+}
+
+.paper-flow-error {
+    color: var(--red);
+}
+
+.paper-flow-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 12px;
+}
+
 .paper-row {
     padding: 12px 14px;
     border-radius: 8px;

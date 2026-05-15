@@ -18,6 +18,7 @@ dependencies = [
   "numpy>=1.26",
   "pydantic>=2.0",
   "pymupdf>=1.24",
+  "PyYAML>=6.0",
   "waitress>=3.0",
 ]
 keywords = ["knowledge-graph", "science", "literature-mining", "arxiv", "research-ideas", "open-science"]
