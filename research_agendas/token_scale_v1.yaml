@@ -1,0 +1,44 @@
+# Sample agenda v1 — token-scale / efficiency focused
+# Used as the default demo agenda for issue #9.
+version: v1
+name: token_scale_efficiency_v1
+description: >
+  Prioritize deep insights that improve efficiency of large-scale token training
+  (sub-quadratic attention, structured sparsity, scaling laws), penalize ones
+  that depend on closed-source datasets.
+focus:
+  - sub-quadratic attention
+  - long context
+  - structured sparsity
+  - scaling laws
+  - efficient training
+prefer:
+  keywords:
+    - linear attention
+    - state space model
+    - mixture of experts
+    - flash attention
+    - structured pruning
+  tiers:
+    - tier_1
+    - tier_2
+  paradigm_score_min: 0.45
+  feasibility_score_min: 0.35
+  resource_class:
+    - small
+    - medium
+reject:
+  keywords:
+    - closed-source dataset
+    - proprietary corpus only
+    - human evaluation only
+  statuses:
+    - rejected
+    - blocked
+  novelty_status:
+    - duplicate
+    - prior_art_found
+required_output:
+  - experiment_plan
+  - manuscript_bundle
+  - revision_plan_on_review

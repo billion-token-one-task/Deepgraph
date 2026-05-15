@@ -165,8 +165,37 @@ def _fallback_related_work(state: dict, orchestrated: dict) -> str:
     return "\n\n".join(snippets) or _latex_escape(str(state.get("evidence_summary") or "Verified prior work is listed in references.bib."))
 
 
-def assemble_main_tex(state: dict, orchestrated: dict, bundle_format: str) -> str:
-    venue = "Conference submission draft" if bundle_format == "conference" else "Journal draft"
+def assemble_main_tex(
+    state: dict,
+    orchestrated: dict,
+    bundle_format: str,
+    *,
+    template_id: str | None = None,
+) -> str:
+    """Render the per-bundle main.tex.
+
+    ``template_id`` selects which venue's skeleton to emit. When omitted
+    it falls back to ``"iclr2026"`` for ``bundle_format=="conference"``
+    and ``"arxiv_plain"`` otherwise, preserving the pre-D1 byte-equivalent
+    output for unchanged call sites. Only the (conference + iclr2026)
+    combination emits the ICLR-specific skeleton; every other venue gets
+    the neutral skeleton and the adapter's ``normalize_source`` injects
+    the venue's preamble + bibstyle downstream via
+    :func:`normalize_latex_source` / :func:`pick_main_tex`.
+    """
+    if template_id is None:
+        template_id = "iclr2026" if bundle_format == "conference" else "arxiv_plain"
+    use_iclr_skeleton = bundle_format == "conference" and template_id == "iclr2026"
+    # NOTE: We deliberately do NOT splice venue_label into ``\date{}``.
+    # ``_StubVenueAdapter.inject_preamble`` guards its ``\usepackage`` injection
+    # via ``sty not in preamble`` (substring match), so dumping the venue
+    # ``_sty_basename`` anywhere in the preamble — e.g. ``\date{neurips_2024}``
+    # — would short-circuit the injection. Keep the date label generic.
+    venue = (
+        "Conference submission draft"
+        if bundle_format == "conference"
+        else "Journal draft"
+    )
     refined = orchestrated.get("refined") if isinstance(orchestrated.get("refined"), dict) else {}
     abs_tex = refined.get("abstract") or "See experiments section for quantitative results."
     intro = refined.get("introduction") or state.get("problem_statement", "")
@@ -197,7 +226,7 @@ def assemble_main_tex(state: dict, orchestrated: dict, bundle_format: str) -> st
 {problem_spine}
 \section{{Related Work}}
 {related}"""
-    if bundle_format == "conference":
+    if use_iclr_skeleton:
         return rf"""\documentclass{{article}}
 \usepackage{{iclr2026_conference,times}}
 \input{{math_commands.tex}}
@@ -255,126 +284,78 @@ def assemble_main_tex(state: dict, orchestrated: dict, bundle_format: str) -> st
 """
 
 
-def _ensure_iclr2026_preamble(source: str) -> str:
-    """Force an ICLR 2026 submission preamble without touching the paper body."""
-    if "\\begin{document}" not in source:
-        return source
-    preamble, marker, body = source.partition(r"\begin{document}")
-    if r"\documentclass" not in preamble:
-        preamble = r"\documentclass{article}" + "\n" + preamble
-    if "iclr2026_conference" not in preamble:
-        preamble = re.sub(
-            r"(\\documentclass(?:\[[^\]]*\])?\{[^}]+\}\s*)",
-            r"\1\\usepackage{iclr2026_conference,times}" + "\n",
-            preamble,
-            count=1,
-        )
-    if "math_commands.tex" not in preamble:
-        preamble = preamble.rstrip() + "\n" + r"\input{math_commands.tex}" + "\n"
-    for package in ("graphicx", "booktabs", "amsmath,amssymb", "hyperref", "url"):
-        first_pkg = package.split(",", 1)[0]
-        if first_pkg not in preamble:
-            preamble = preamble.rstrip() + "\n" + rf"\usepackage{{{package}}}" + "\n"
-    if r"\author" not in preamble:
-        preamble = preamble.rstrip() + "\n" + r"\author{Anonymous authors\\Paper under double-blind review}" + "\n"
-    preamble = re.sub(r"\\usepackage(?:\[[^\]]*\])?\{geometry\}\s*", "", preamble)
-    return preamble + marker + body
+def _ensure_iclr2026_preamble(source: str, *, submission_mode: bool = True) -> str:
+    """Backward-compatibility shim → ``ICLR2026Adapter.inject_preamble``.
 
-
-def normalize_latex_source(text: str, *, force_iclr2026: bool = False) -> str:
-    """Strip markdown fences that LLMs sometimes wrap around LaTeX documents."""
-    source = (text or "").strip()
-    if source.startswith("```"):
-        lines = source.splitlines()
-        if lines and lines[0].strip().startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        source = "\n".join(lines).strip()
-    if "```" in source:
-        source = source.replace("```latex", "").replace("```tex", "").replace("```", "").strip()
-    if force_iclr2026:
-        source = _ensure_iclr2026_preamble(source)
-    uses_iclr = "iclr2026_conference" in source
-    if not uses_iclr:
-        source = re.sub(r"\\documentclass\{article\}", r"\\documentclass[10pt]{article}", source, count=1)
-    if "\\begin{document}" in source and "microtype" not in source and not uses_iclr:
-        source = re.sub(
-            r"(\\documentclass(?:\[[^\]]*\])?\{[^}]+\}\s*)",
-            r"\1\n\\usepackage{microtype}\n",
-            source,
-            count=1,
-        )
-    if "\\begin{document}" in source and "geometry" not in source and not uses_iclr:
-        source = re.sub(
-            r"(\\documentclass(?:\[[^\]]*\])?\{[^}]+\}\s*)",
-            r"\1\n\\usepackage[margin=1in]{geometry}\n",
-            source,
-            count=1,
-        )
-    preamble_probe, marker_probe, _body_probe = source.partition(r"\begin{document}")
-    if marker_probe and r"\date" not in preamble_probe and not uses_iclr:
-        source = preamble_probe.rstrip() + "\n\\date{}\n" + marker_probe + _body_probe
-    source = re.sub(
-        r"(\\maketitle\s*)\\section\{Abstract\}\s*(.*?)(?=\\section\{Introduction\})",
-        r"\1\\begin{abstract}\n\2\n\\end{abstract}\n",
-        source,
-        count=1,
-        flags=re.DOTALL,
+    Kept as a top-level name so external callers and tests that imported
+    this private helper before D1 still work; the canonical implementation
+    lives in ``agents.manuscript_templates.iclr2026``. ``submission_mode``
+    forwards to the adapter so camera-ready callers get the ``[final]``
+    preamble instead of the double-blind review default.
+    """
+    from agents.manuscript_templates import get_adapter
+    return get_adapter("iclr2026").inject_preamble(
+        source, submission_mode=submission_mode
     )
-    if "\\bibliography{" in source and "\\bibliographystyle{" not in source:
-        style = "iclr2026_conference" if uses_iclr else "plain"
-        source = re.sub(
-            r"(\s*)\\bibliography\{",
-            rf"\1\\bibliographystyle{{{style}}}\1\\bibliography{{",
-            source,
-            count=1,
-        )
-    if uses_iclr:
-        source = re.sub(r"\\bibliographystyle\{[^}]+\}", r"\\bibliographystyle{iclr2026_conference}", source)
-    preamble, marker, body = source.partition(r"\begin{document}")
-    if marker:
-        needs_cleveref = ("\\Cref" in body or "\\cref" in body) and "cleveref" not in preamble
-        needs_ams = (
-            any(cmd in body for cmd in ("\\mathbb", "\\operatorname", "\\text", "\\eqref"))
-            and "amsmath" not in preamble
-        )
-        if needs_ams or needs_cleveref:
-            if needs_ams and "cleveref" in preamble:
-                preamble = preamble.replace(
-                    r"\usepackage{cleveref}",
-                    r"\usepackage{amsmath,amssymb}" + "\n" + r"\usepackage{cleveref}",
-                    1,
-                )
-                needs_ams = False
-            additions = []
-            if needs_ams:
-                additions.append(r"\usepackage{amsmath,amssymb}")
-            if needs_cleveref:
-                additions.append(r"\usepackage{cleveref}")
-            if additions:
-                preamble = preamble.rstrip() + "\n" + "\n".join(additions) + "\n"
-            source = preamble + marker + body
-        elif "cleveref" in preamble and "amsmath" in preamble:
-            clever_idx = preamble.find("cleveref")
-            ams_idx = preamble.find("amsmath")
-            if clever_idx >= 0 and ams_idx >= 0 and clever_idx < ams_idx:
-                preamble = preamble.replace(r"\usepackage{cleveref}", "")
-                preamble = preamble.replace(
-                    r"\usepackage{amsmath,amssymb}",
-                    r"\usepackage{amsmath,amssymb}" + "\n" + r"\usepackage{cleveref}",
-                )
-                source = preamble + marker + body
-    return source + ("\n" if source and not source.endswith("\n") else "")
 
 
-def pick_main_tex(orchestrated: dict, state: dict, bundle_format: str) -> str:
-    """Prefer full refined LaTeX if the model returned a complete ``\\documentclass`` document."""
+def normalize_latex_source(
+    text: str,
+    *,
+    force_iclr2026: bool = False,
+    submission_mode: bool = True,
+    template_id: str | None = None,
+) -> str:
+    """Backward-compatibility shim → ``TemplateAdapter.normalize_source``.
+
+    Resolution order:
+      1. Explicit ``template_id`` (the decoupled path — router output flows
+         through here).
+      2. ``force_iclr2026=True`` → ``"iclr2026"`` (legacy boolean kept so
+         pre-D1 callers don't break).
+      3. Default → ``"arxiv_plain"``.
+
+    All three paths route through the registered adapter, so adding a new
+    venue requires zero edits here. ``submission_mode`` forwards to the
+    adapter — kept default-True so legacy callers keep emitting the
+    double-blind review build until they opt in to camera-ready.
+    """
+    from agents.manuscript_templates import get_adapter
+    if template_id is None:
+        template_id = "iclr2026" if force_iclr2026 else "arxiv_plain"
+    return get_adapter(template_id).normalize_source(
+        text, submission_mode=submission_mode
+    )
+
+
+def pick_main_tex(
+    orchestrated: dict,
+    state: dict,
+    bundle_format: str,
+    *,
+    template_id: str | None = None,
+    submission_mode: bool = True,
+) -> str:
+    """Prefer full refined LaTeX if the model returned a complete ``\\documentclass`` document.
+
+    ``template_id`` is the venue-routing decoupling hook. When omitted it
+    falls back to ``"iclr2026"`` for conference bundles and ``"arxiv_plain"``
+    for everything else — preserving the pre-D1 default. Explicit values
+    (e.g. ``"neurips2024"``, ``"acl_arr"``) are dispatched through the
+    adapter registry.
+    """
     full = (orchestrated.get("refinement_full_text") or "").strip()
-    force_iclr2026 = bundle_format == "conference"
+    if template_id is None:
+        template_id = "iclr2026" if bundle_format == "conference" else "arxiv_plain"
     if full and "\\documentclass" in full[:2000]:
-        return normalize_latex_source(full, force_iclr2026=force_iclr2026)
-    return normalize_latex_source(assemble_main_tex(state, orchestrated, bundle_format), force_iclr2026=force_iclr2026)
+        return normalize_latex_source(
+            full, template_id=template_id, submission_mode=submission_mode
+        )
+    return normalize_latex_source(
+        assemble_main_tex(state, orchestrated, bundle_format, template_id=template_id),
+        template_id=template_id,
+        submission_mode=submission_mode,
+    )
 
 
 def _compile_main_pdf(bundle_dir: Path) -> dict:
@@ -451,17 +432,14 @@ def _bundle_dir_for_format(root: Path, bundle_format: str) -> Path:
 
 
 def _copy_iclr2026_template_files(bundle_dir: Path) -> list[str]:
-    copied: list[str] = []
-    if not ICLR2026_TEMPLATE_DIR.exists():
-        return copied
-    for name in ICLR2026_TEMPLATE_FILES:
-        src = ICLR2026_TEMPLATE_DIR / name
-        if not src.exists():
-            continue
-        dst = bundle_dir / name
-        shutil.copy2(src, dst)
-        copied.append(name)
-    return copied
+    """Backward-compatibility shim → ``ICLR2026Adapter.copy_files``.
+
+    Preserved so existing call sites (and any external imports) keep
+    working unchanged. The canonical implementation lives in
+    ``agents.manuscript_templates.iclr2026``.
+    """
+    from agents.manuscript_templates import get_adapter
+    return get_adapter("iclr2026").copy_files(bundle_dir)
 
 
 INCLUDEGRAPHICS_RE = re.compile(r"\\includegraphics(?:\[[^\]]*\])?\{([^}]+)\}")
@@ -1047,8 +1025,19 @@ def _write_blocked_current_marker(layout: dict, report: dict) -> None:
 def generate_bundle_paper_orchestra(
     run_id: int,
     bundle_formats: list[str] | None = None,
+    *,
+    template_id: str | None = None,
 ) -> dict:
-    """PaperOrchestra-based bundle generation with verified citations and figure manifests."""
+    """PaperOrchestra-based bundle generation with verified citations and figure manifests.
+
+    ``template_id`` is the venue-routing decoupling hook (D1/D2 #12/#13).
+    When omitted, conference bundles default to ``"iclr2026"`` (legacy
+    behaviour, byte-equivalent) and journal bundles default to
+    ``"arxiv_plain"``. Callers that have run :func:`agents.venue_router.
+    route_and_persist` can pass the chosen ``template_id`` to dispatch
+    template-file copying + preamble injection through the adapter
+    registry instead of the hard-coded ICLR path.
+    """
     db.init_db()
     run = db.fetchone("SELECT * FROM experiment_runs WHERE id=?", (run_id,))
     if not run:
@@ -1265,12 +1254,30 @@ def generate_bundle_paper_orchestra(
     db.execute("DELETE FROM manuscript_assets WHERE manuscript_run_id=?", (manuscript_run_id,))
     db.execute("DELETE FROM submission_bundles WHERE manuscript_run_id=?", (manuscript_run_id,))
 
+    # D1/D2 (#12/#13): resolve venue once per bundle_format. Caller-supplied
+    # ``template_id`` wins (router output); otherwise fall back to the
+    # legacy mapping so unchanged call sites stay byte-equivalent.
+    def _resolve_template_id(fmt: str) -> str:
+        if template_id:
+            return template_id
+        return "iclr2026" if fmt == "conference" else "arxiv_plain"
+
     preferred_bundle_dir: Path | None = None
     for bundle_format in bundle_formats:
+        effective_template_id = _resolve_template_id(bundle_format)
         bundle_dir = paper_bundle_root(int(run["deep_insight_id"]), bundle_format, insight=insight)
         figures_dir = bundle_dir / "figures"
         _ensure_dirs(figures_dir)
-        copied_template_files = _copy_iclr2026_template_files(bundle_dir) if bundle_format == "conference" else []
+        # Adapter-dispatched template-file copy (replaces the pre-D1
+        # ``_copy_iclr2026_template_files`` hard-coded branch). Each
+        # registered adapter knows which .sty / .bst / supporting files
+        # to ship; non-conference bundles get an empty list because the
+        # arxiv_plain adapter declares no assets. An unknown template_id
+        # MUST raise — silently falling back to ICLR would let a bad
+        # router decision ship NeurIPS preamble with ICLR sty files and
+        # fail compilation with no actionable error.
+        from agents.manuscript_templates import get_adapter
+        copied_template_files = get_adapter(effective_template_id).copy_files(bundle_dir)
         if shared_fig.exists():
             for p in sorted(shared_fig.glob("*")):
                 if p.is_file():
@@ -1280,12 +1287,15 @@ def generate_bundle_paper_orchestra(
             json.dumps(orchestrated.get("plotting") or {}, indent=2, default=str)[:100_000],
         )
 
-        main_tex = pick_main_tex(orchestrated, state, bundle_format)
+        main_tex = pick_main_tex(
+            orchestrated, state, bundle_format, template_id=effective_template_id
+        )
         bundle_bibtex = bibtex
         main_tex, bundle_bibtex, removed_cite_keys = _clean_topic_citations(main_tex, bundle_bibtex, state)
         orchestrated.setdefault("citation_cleanup", {})[bundle_format] = {
             "removed_offtopic_cite_keys": removed_cite_keys,
-            "iclr2026_template_files": copied_template_files,
+            "template_id": effective_template_id,
+            "template_files": copied_template_files,
         }
         _write(bundle_dir / "main.tex", main_tex)
         materialized_assets = _materialize_referenced_figures(

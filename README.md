@@ -142,6 +142,18 @@ python3.12 main.py
 
 The SciForge discovery pipeline has additional tuning knobs via `DISCOVERY_BULK_*` environment variables — see [config.py](config.py) for the full list.
 
+## Manuscript Venue Routing
+
+When `paper_idea_agent` decides an insight is worth a paper, the manuscript pipeline routes it through a per-venue adapter chain rather than a single hard-coded ICLR template. The routing stack:
+
+1. `agents/venue_router.py` reads `agents/venues.yaml` (6 venues: `iclr2026`, `neurips2025`, `acl_arr`, `emnlp2025`, `cvpr2024`, `iccv2025`) and picks a primary + secondary based on subject area, deadline window, and submission_mode.
+2. `agents/manuscript_templates/` resolves the choice into a `TemplateAdapter` (column layout, bibstyle, page budget, required packages) via `get_adapter(template_id)`.
+3. `agents/format_linter.py` runs 12 checks against the rendered LaTeX — 7 structural plus the 5 mandated by issue #14 (`font_size_consistency`, `section_spacing`, `float_density`, `citation_density`, `bib_style_match`); a failure blocks the submission gate.
+4. `agents/paper_orchestra_pipeline.py` calls `require_submission_ready()` so synthetic data never reaches a manuscript bundle.
+5. The Flask routes under `web/manuscript_routes.py` expose `/api/manuscript/route` and the dashboard panel for human review.
+
+Entry point: pass `venue_hint=` to `paper_orchestra_pipeline.run(...)` or set `DEEPGRAPH_DEFAULT_VENUE` in `.env`. See `docs/top_venue_manuscript_chain.md` for the full router → adapter → linter → gate diagram.
+
 ## Science Taxonomy
 
 The `open_science` profile spans:

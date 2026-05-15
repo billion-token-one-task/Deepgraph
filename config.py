@@ -340,6 +340,46 @@ ICLR2026_TEMPLATE_FILES = _split_csv(_toml_get("manuscript.iclr2026_template_fil
     "fancyhdr.sty",
 ]
 
+# D2 (#13): paths for the four additional top-tier venue templates.
+# Each adapter consults its own ``_TEMPLATE_DIR`` + ``_TEMPLATE_FILES`` pair
+# so a venue can be swapped to a different upstream snapshot via env vars
+# without touching adapter code.
+NEURIPS2024_TEMPLATE_DIR = Path(
+    _env_str("DEEPGRAPH_NEURIPS2024_TEMPLATE_DIR", str(PROJECT_ROOT / "third_party" / "neurips2024"))
+)
+NEURIPS2024_TEMPLATE_FILES = ["neurips_2024.sty", "README.md"]
+
+ICML2024_TEMPLATE_DIR = Path(
+    _env_str("DEEPGRAPH_ICML2024_TEMPLATE_DIR", str(PROJECT_ROOT / "third_party" / "icml2024"))
+)
+ICML2024_TEMPLATE_FILES = [
+    "icml2024.sty",
+    "icml2024.bst",
+    "fancyhdr.sty",
+    "algorithm.sty",
+    "algorithmic.sty",
+    "README.md",
+]
+
+ACL_ARR_TEMPLATE_DIR = Path(
+    _env_str("DEEPGRAPH_ACL_ARR_TEMPLATE_DIR", str(PROJECT_ROOT / "third_party" / "acl_arr"))
+)
+ACL_ARR_TEMPLATE_FILES = ["acl.sty", "acl_natbib.bst", "README.md"]
+
+CVPR2024_TEMPLATE_DIR = Path(
+    _env_str("DEEPGRAPH_CVPR2024_TEMPLATE_DIR", str(PROJECT_ROOT / "third_party" / "cvpr2024"))
+)
+CVPR2024_TEMPLATE_FILES = ["cvpr.sty", "ieeenat_fullname.bst", "README.md"]
+
+# Manuscript venue routing config (issue #11/#12 D1).
+# Set ``DEEPGRAPH_VENUES_CONFIG_PATH`` to point at a custom YAML/JSON file.
+VENUES_CONFIG_PATH = Path(
+    _env_str(
+        "DEEPGRAPH_VENUES_CONFIG_PATH",
+        str(PROJECT_ROOT / "manuscript_venues" / "venues_v1.yaml"),
+    )
+)
+
 # PaperOrchestra full §4 pipeline (S2 + parallel plot/lit + AgentReview loop)
 SEMANTIC_SCHOLAR_API_KEY = _env_str("DEEPGRAPH_SEMANTIC_SCHOLAR_API_KEY", "", "paper_orchestra.semantic_scholar_api_key")
 # Optional: shell command template for PaperBanana-style diagrams; must write output image path.
