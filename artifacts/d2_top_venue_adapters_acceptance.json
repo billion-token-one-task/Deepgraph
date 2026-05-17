@@ -2,8 +2,8 @@
   "issue": "billion-token-one-task/Deepgraph#13",
   "epic": "billion-token-one-task/Deepgraph#11",
   "base_ref": "origin/main",
-  "head_ref": "feat/issue-9-agenda-driven-research-loop",
-  "commit": "7403700cd2162ae8d6065b9abf0f4f9e8818621b",
+  "head_ref": "fix/issue-9-docs-repro-fixup",
+  "commit": "44ae888a0c1c42a5b283ee68fa0d6e83b1df6658",
   "depends_on": [
     "#11/#12 (D1 Foundation)"
   ],

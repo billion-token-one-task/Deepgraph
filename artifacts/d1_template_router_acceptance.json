@@ -2,8 +2,8 @@
   "issue": "billion-token-one-task/Deepgraph#12",
   "epic": "billion-token-one-task/Deepgraph#11",
   "base_ref": "origin/main",
-  "head_ref": "feat/issue-9-agenda-driven-research-loop",
-  "commit": "ef157979e987f079c744f4c63961fa56c19131dd",
+  "head_ref": "fix/issue-9-docs-repro-fixup",
+  "commit": "44ae888a0c1c42a5b283ee68fa0d6e83b1df6658",
   "depends_on": [
     "#9 / PR #10 (agenda loop scaffolding)"
   ],

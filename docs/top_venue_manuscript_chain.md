@@ -36,13 +36,13 @@ bundle reaches the gate.
 paper_idea_agent
        │
        ▼
-venue_router.py ──reads── agents/venues.yaml  (6 venues registered)
+venue_router.py ──reads── manuscript_venues/venues_v1.yaml  (6 venues registered)
        │                  ├─ iclr2026     (single_column, iclr2026_conference)
-       │                  ├─ neurips2025  (single_column, neurips_2025)
+       │                  ├─ neurips2024  (single_column, unsrtnat)
+       │                  ├─ icml2024     (two_column,    icml2024)
        │                  ├─ acl_arr      (two_column,    acl_natbib)
-       │                  ├─ emnlp2025    (two_column,    acl_natbib)
-       │                  ├─ cvpr2024     (two_column,    ieee_fullname)
-       │                  └─ iccv2025     (two_column,    ieee_fullname)
+       │                  ├─ cvpr2024     (two_column,    ieeenat_fullname)
+       │                  └─ arxiv_plain  (single_column, plain)
        │
        ▼   (primary, secondary, reasons)
 manuscript_templates.get_adapter(template_id) → TemplateAdapter
@@ -74,9 +74,9 @@ web/manuscript_routes.py
 ```
 
 The router is a pure function of `(insight_metadata, now, available_venues)`;
-its scoring weights live in `venues.yaml` so adding a venue is config-only —
-drop a new entry plus the matching `manuscript_templates/<id>.py` adapter and
-the rest of the chain picks it up.
+its scoring weights live in `manuscript_venues/venues_v1.yaml` so adding a
+venue is config-only — drop a new entry plus the matching
+`manuscript_templates/<id>.py` adapter and the rest of the chain picks it up.
 
 ## Enforced Standard
 
@@ -107,7 +107,7 @@ the rest of the chain picks it up.
 
 - `paper_idea_agent.py`: produces problem-aware paper ideas.
 - `agents/venue_router.py` (#12): selects primary/secondary venue from
-  `agents/venues.yaml`.
+  `manuscript_venues/venues_v1.yaml`.
 - `agents/manuscript_templates/` (#13): per-venue `TemplateAdapter`
   implementations (column layout, bibstyle, page budget, packages,
   `normalize_source`, `submission_mode` toggle).
@@ -138,7 +138,7 @@ the rest of the chain picks it up.
 | Issue | Evidence JSON | Notes |
 |-------|---------------|-------|
 | #11 (epic) | `artifacts/manuscript_venue_routing_acceptance.json` | umbrella, references d1-d4 |
-| #12 (D1)   | `artifacts/d1_template_router_acceptance.json` | router + adapter base + venues.yaml |
+| #12 (D1)   | `artifacts/d1_template_router_acceptance.json` | router + adapter base + `manuscript_venues/venues_v1.yaml` |
 | #13 (D2)   | `artifacts/d2_top_venue_adapters_acceptance.json` | 6 venues × 3 fixtures, sha256 distinct |
 | #14 (D3)   | `artifacts/d3_format_linter_acceptance.json` | 12 checks, db roundtrip True |
 | #15 (D4)   | `artifacts/d4_manuscript_routing_api_acceptance.json` | API contract + dashboard hooks |

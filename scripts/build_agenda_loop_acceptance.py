@@ -47,6 +47,49 @@ def _sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+# Fields stripped from the experiment_result_packet before structural hashing.
+# These cover:
+#   * wallclock-derived metrics (latency_ms_*, peak_memory_mb, latency_speedup_x)
+#   * DB auto-increment ids (experiment_run_id, selection_id, deep_insight_id)
+#   * absolute filesystem paths (packet_path, workdir, etc.)
+# Everything else — config, seeds, kernel names, deterministic outputs
+# (output_shape, output_l2_norm, approximation_l2_distance, relative_error) —
+# is byte-stable across runs with a fixed seed.
+_PACKET_NON_DETERMINISTIC_FIELDS = frozenset({
+    "latency_ms_median", "latency_ms_min", "latency_ms_max",
+    "peak_memory_mb", "latency_speedup_x",
+    "experiment_run_id", "selection_id", "deep_insight_id",
+    "packet_path", "workdir",
+})
+
+
+def _strip_non_deterministic(obj):
+    """Recursively drop wallclock / id / path fields so the digest is stable."""
+    if isinstance(obj, dict):
+        return {
+            k: _strip_non_deterministic(v)
+            for k, v in obj.items()
+            if k not in _PACKET_NON_DETERMINISTIC_FIELDS
+        }
+    if isinstance(obj, list):
+        return [_strip_non_deterministic(v) for v in obj]
+    return obj
+
+
+def _structural_sha256(path: Path) -> str:
+    """SHA-256 of the packet with non-deterministic fields removed.
+
+    Used so the acceptance bundle can promise byte-stable verification
+    against the seeded benchmark (config + Q/K/V fixture + kernel impls +
+    deterministic outputs) without falsely claiming wallclock latency
+    digits are reproducible. Reviewer feedback on PR #10 (item #3).
+    """
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    stripped = _strip_non_deterministic(raw)
+    canonical = json.dumps(stripped, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
 def _git(*args: str) -> str:
     out = subprocess.check_output(["git", *args], cwd=REPO_ROOT, text=True)
     return out.strip()
@@ -126,7 +169,10 @@ def main() -> int:
     manuscript = pipeline.get("manuscript")
 
     packet_path = Path(pipeline["experiment_result"]["packet_path"])
-    packet_sha = _sha256(packet_path) if packet_path.exists() else ""
+    # Structural digest — strips wallclock latency, DB auto-increment ids,
+    # and absolute paths so the value is byte-stable across re-runs of the
+    # same seeded benchmark. See ``_structural_sha256`` for the field list.
+    packet_sha = _structural_sha256(packet_path) if packet_path.exists() else ""
 
     bundle_path = None
     bundle_id = None
@@ -283,13 +329,22 @@ def main() -> int:
                 ) or {}
             ).get("status", "unknown"),
             "result_packet_path": str(packet_path),
-            "result_packet_sha256": packet_sha,
+            # Renamed from ``result_packet_sha256`` (PR #10 review item #3):
+            # the value is now computed over the packet with non-deterministic
+            # fields stripped, so the digest is honestly reproducible.
+            "result_packet_structural_sha256": packet_sha,
             "real_data_or_benchmark_source": (
                 "agents/benchmarks/qkv_fixture_512_64.npz "
                 "(committed deterministic Q/K/V fixture, seq_len=512, head_dim=64); "
                 "kernels: softmax_attention vs linear_attention_elu_plus_1 on CPU"
             ),
-            "delta": pipeline["experiment_result"].get("metrics", {}).get("delta", {}),
+            # Strip wallclock-derived fields (latency_speedup_x etc.) so the
+            # serialized ``delta`` block matches the byte-reproducibility
+            # claim around ``result_packet_structural_sha256`` — review
+            # item #3 was about the bundle JSON itself, not only the hash.
+            "delta": _strip_non_deterministic(
+                pipeline["experiment_result"].get("metrics", {}).get("delta", {})
+            ),
         },
         "evidence_gate": {
             "status": gate["status"],

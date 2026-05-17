@@ -129,7 +129,9 @@ active_agenda                — id + name + version
 selection.selection_id       — primary key in agenda_selections
 selection.rejected_count     — non-zero; selector recorded reasons
 experiment.run_id            — primary key in experiment_runs
-experiment.result_packet_sha256 — sha256 of experiment_result_packet.json
+experiment.result_packet_structural_sha256 — sha256 of experiment_result_packet.json
+                                with wallclock + DB ids + abs paths stripped
+                                (reproducible across runs on the same machine)
 evidence_gate.status         — pass | block
 manuscript.bundle_id         — only present when gate=pass
 review.review_id             — primary key in agenda_reviews
