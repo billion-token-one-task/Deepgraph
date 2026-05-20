@@ -1,0 +1,72 @@
+{
+  "plan_id": 1,
+  "review_id": 1,
+  "selection_id": 1,
+  "rationale": "Reviewer 'internal_evidence_gate' recommended 'minor_revision'. Confidence=0.70. Weaknesses to address: inconclusive: Linear attention approximation error is large: relative L2 error = 0.767 (>= 0.5); may not be a drop-in replacement.; Confirmed result but no submission_bundle produced.",
+  "status": "proposed",
+  "next_experiments": [
+    {
+      "name": "generate_a_manuscript_bundle_via_paperorchestra_0",
+      "rationale": "Generate a manuscript bundle via PaperOrchestra.",
+      "kind": "evidence_gap",
+      "priority": "medium",
+      "source": "review.required_revisions[0]"
+    },
+    {
+      "name": "provide_required_evidence_main_table_not_demonst_1",
+      "rationale": "Provide required evidence: main_table (not_demonstrated).",
+      "kind": "evidence_gap",
+      "priority": "medium",
+      "source": "review.required_revisions[1]"
+    },
+    {
+      "name": "provide_required_evidence_ablation_not_demonstra_2",
+      "rationale": "Provide required evidence: ablation (not_demonstrated).",
+      "kind": "ablation",
+      "priority": "medium",
+      "source": "review.required_revisions[2]"
+    },
+    {
+      "name": "provide_required_evidence_long_context_scaling_n_3",
+      "rationale": "Provide required evidence: long_context_scaling (not_demonstrated).",
+      "kind": "evidence_gap",
+      "priority": "medium",
+      "source": "review.required_revisions[3]"
+    },
+    {
+      "name": "provide_required_evidence_prediction_not_tested_4",
+      "rationale": "Provide required evidence: prediction (not_tested).",
+      "kind": "prediction_test",
+      "priority": "medium",
+      "source": "review.required_revisions[4]"
+    },
+    {
+      "name": "blocker_main_table_0",
+      "rationale": "Resolve evidence blocker: not_demonstrated",
+      "kind": "evidence_gap",
+      "priority": "medium",
+      "source": "review.evidence_blockers[0]"
+    },
+    {
+      "name": "blocker_ablation_1",
+      "rationale": "Resolve evidence blocker: not_demonstrated",
+      "kind": "evidence_gap",
+      "priority": "medium",
+      "source": "review.evidence_blockers[1]"
+    },
+    {
+      "name": "blocker_long_context_scaling_2",
+      "rationale": "Resolve evidence blocker: not_demonstrated",
+      "kind": "evidence_gap",
+      "priority": "medium",
+      "source": "review.evidence_blockers[2]"
+    },
+    {
+      "name": "blocker_prediction_3",
+      "rationale": "Resolve evidence blocker: Throughput scales linearly in sequence length up to 32k tokens.",
+      "kind": "prediction_test",
+      "priority": "medium",
+      "source": "review.evidence_blockers[3]"
+    }
+  ]
+}

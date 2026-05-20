@@ -1,0 +1,87 @@
+\section{Dataset Details}
+\label{appendix:dataset_details}
+
+\subsection{Data Distribution}
+\label{appendix:data_distribution}
+
+\begin{figure}[htbp]
+    \centering
+    %=========== ROW 1: CVPR 2025 =========
+    \begin{subfigure}[b]{0.32\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{content/figures/cvpr2025_analysis/citations_boxplot.png}
+        \caption{Citation Count Distribution}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[b]{0.32\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{content/figures/cvpr2025_analysis/lengths_boxplot.png}
+        \caption{Material Length Distribution}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[b]{0.32\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{content/figures/cvpr2025_analysis/num_figures_and_tables_dist.png}
+        \caption{Tables/Figures Distribution}
+    \end{subfigure}
+    
+    \caption{CVPR 2025 Dataset Statistics}
+    \label{fig:cvpr2025_distribution}
+\end{figure}
+
+\begin{figure}[htbp]
+    \centering
+    % ========= ROW 2: ICLR 2025 ===========
+    \begin{subfigure}[b]{0.32\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{content/figures/iclr2025_analysis/citations_boxplot.png}
+        \caption{Citation Count Distribution}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[b]{0.32\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{content/figures/iclr2025_analysis/lengths_boxplot.png}
+        \caption{Material Length Distribution}
+    \end{subfigure}
+    \hfill
+    \begin{subfigure}[b]{0.32\textwidth}
+        \centering
+        \includegraphics[width=\linewidth]{content/figures/iclr2025_analysis/num_figures_and_tables_dist.png}
+        \caption{Tables/Figures Distribution}
+    \end{subfigure}
+    \caption{ICLR 2025 Dataset Statistics}
+    \label{fig:iclr2025_distribution}
+\end{figure}
+
+\input{content/tables/appendix_dataset_distribution}
+
+
+In this section, we detail the data distribution of \ourdataset{}. As shown in Figure~\ref{fig:cvpr2025_distribution}, Figure~\ref{fig:iclr2025_distribution} and Table~\ref{tab:appendix_dataset_stats}, ICLR 2025 papers exhibit higher visual and analytical density than CVPR 2025, averaging roughly twice as many figures (9.19 vs.\ 5.20) and tables (8.13 vs.\ 4.20). Consequently, ICLR experimental logs are substantially longer (2,387 vs.\ 1,530 words). To ensure controlled evaluations, reverse-engineered input materials remain strictly consistent across both venues: Dense idea files average 1,083 (CVPR) and 1,057 (ICLR) words, while Sparse idea files are constrained to 591 (CVPR) and 587 (ICLR) words. Both datasets maintain comparable citation distributions, averaging ${\sim}59$ total references per manuscript.
+
+\subsection{Raw Material Extraction}
+\label{appendix:raw_material_extraction}
+
+The raw materials for \ourdataset{} are extracted using Gemini-3.1-Pro (prompts detailed in App.~\ref{appendix:material_gen_prompts}). To systematically control the granularity of the provided concepts while ensuring the empirical data is extracted with high fidelity and minimal leakage, our pipeline employs two key mechanisms:
+
+\begin{itemize}
+    \item \textbf{Controlled Idea Density (Dense vs.\ Sparse):} The \textit{Dense} variant is prompted to explicitly preserve all mathematical formulations, loss functions, and \mylatex{} variables from the source text. Conversely, the \textit{Sparse} variant abstracts away mathematical notation, describing formal architectures through high-level conceptual narratives.
+
+    \item \textbf{Structured Context Injection:} Naive text-only extraction often corrupts tabular and mathematical data. To ensure the \textit{Experimental Log} maintains strict fidelity to the original paper's content, we first parse the source PDF into markdown using MinerU~\citep{wang2024mineruopensourcesolutionprecise}. We independently extract visual assets and their original captions using PDFFigures~2.0~\citep{pdffigures2}. Rather than relying solely on unstructured markdown, we inject the extracted images of all tables and figures as multi-modal context blocks into Gemini-3.1-Pro. Sourced with this direct visual context during extraction, the model is then requested to flatten all explicit document references (e.g., stripping ``as shown in Figure 2'') and translate visual information into standalone factual observations, forcing downstream agents to autonomously reconstruct the empirical narrative.
+\end{itemize}
+
+\subsection{Raw Material Example}
+\label{appendix:raw_material_data_example}
+
+In this section, we present a complete data sample comprising the sparse idea ($\mathcal{I}_{\text{sparse}}$), dense idea ($\mathcal{I}_{\text{dense}}$), and experimental log ($\mathcal{E}$) extracted from a randomly selected paper~\citep{11093026} in the CVPR 2025 split.
+
+\begin{rawmaterialbox}[Sparse Idea ($\mathcal{I}_{sparse}$)]
+\input{content/example_raw_materials/sparse_idea}
+\end{rawmaterialbox}
+
+\begin{rawmaterialbox}[Dense Idea ($\mathcal{I}_{dense}$)]
+\input{content/example_raw_materials/dense_idea}
+\end{rawmaterialbox}
+
+\begin{rawmaterialbox}[Experimental Log ($\mathcal{E}$)]
+\input{content/example_raw_materials/experimental_log}
+\end{rawmaterialbox}

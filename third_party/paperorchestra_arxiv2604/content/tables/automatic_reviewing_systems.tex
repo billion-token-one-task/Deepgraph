@@ -1,0 +1,47 @@
+% ==========================================
+% TABLE: Auto Reviewing System Results
+% ==========================================
+\begin{table}[tbp]
+    \centering
+    \resizebox{\textwidth}{!}{
+    \begin{tabular}{llccccccccc}
+        \toprule
+        \textbf{Venue} & \textbf{Pipeline} & \begin{tabular}{@{}c@{}}\textbf{Originality} \\ \textbf{(1-4)}\end{tabular} & \begin{tabular}{@{}c@{}}\textbf{Quality} \\ \textbf{(1-4)}\end{tabular} & \begin{tabular}{@{}c@{}}\textbf{Clarity} \\ \textbf{(1-4)}\end{tabular} & \begin{tabular}{@{}c@{}}\textbf{Significance} \\ \textbf{(1-4)}\end{tabular} & \begin{tabular}{@{}c@{}}\textbf{Soundness} \\ \textbf{(1-4)}\end{tabular} & \begin{tabular}{@{}c@{}}\textbf{Presentation} \\ \textbf{(1-4)}\end{tabular} & \begin{tabular}{@{}c@{}}\textbf{Contribution} \\ \textbf{(1-4)}\end{tabular} & \begin{tabular}{@{}c@{}}\textbf{Overall} \\ \textbf{(1-10)}\end{tabular} & \begin{tabular}{@{}c@{}}\textbf{Acceptance} \\ \textbf{Rate (\%)}\end{tabular} \\
+        \midrule
+        \multicolumn{11}{c}{\cellcolor{gray!15}\textbf{AI Scientist-v2 Reviewer~\citep{yamada2025aiscientistv2}}} \\
+        \midrule
+        \multirow{4}{*}{CVPR 2025} 
+        & Original (GT)   & 2.96 & \textbf{2.81} & \textbf{3.44} & \textbf{3.06} & \textbf{2.74} & \textbf{3.26} & \textbf{2.91} & \textbf{5.95} & \textbf{71.00} \\
+        \cmidrule{2-11}
+        & SingleAgent      & \cellcolor{best_color}\textbf{3.01} & 2.27 & 2.78 & \cellcolor{best_color}3.03 & 2.26 & 2.79 & \cellcolor{best_color}2.74 & 4.60 & 33.00 \\
+        & AI Scientist-v2  & 2.93 & 2.11 & 2.80 & 2.85 & 2.15 & 2.82 & 2.61 & 4.22 & 22.00 \\
+        & \ourmethod{}~(PlotOff)     & 2.95 & \cellcolor{best_color}2.43 & \cellcolor{best_color}3.40 & 2.97 & \cellcolor{best_color}2.42 & \cellcolor{best_color}3.22 & \cellcolor{best_color}2.74 & \cellcolor{best_color}5.12 & \cellcolor{best_color}48.00 \\
+        \midrule
+        \multirow{4}{*}{ICLR 2025} 
+        & Original (GT)   & \textbf{2.99} & \textbf{2.79} & \textbf{3.41} & \textbf{3.03} & \textbf{2.76} & \textbf{3.30} & \textbf{2.94} & \textbf{5.81} & \textbf{63.00} \\
+        \cmidrule{2-11}
+        & SingleAgent     & \cellcolor{best_color}2.70 & 1.67 & 2.20 & 2.44 & 1.76 & 2.19 & 2.09 & 3.22 & 4.00 \\
+        & AI Scientist-v2 & 2.58 & 1.76 & 2.27 & 2.46 & 1.82 & 2.29 & 2.16 & 3.42 & 11.00 \\
+        & \ourmethod{}~(PlotOff)     & 2.68 & \cellcolor{best_color}2.10 & \cellcolor{best_color}2.82 & \cellcolor{best_color}2.57 & \cellcolor{best_color}2.12 & \cellcolor{best_color}2.79 & \cellcolor{best_color}2.37 & \cellcolor{best_color}4.10 & \cellcolor{best_color}22.00 \\
+        \midrule
+        \multicolumn{11}{c}{\cellcolor{gray!15}\textbf{ScholarPeer Reviewer~\citep{goyal2026scholarpeer}}} \\
+        \midrule
+        \multirow{4}{*}{CVPR 2025} 
+        & Original (GT)   & \textbf{3.22} & \textbf{3.02} & 3.54 & \textbf{3.63} & 2.87 & 3.39 & \textbf{3.42} & \textbf{7.07} & \textbf{86.00} \\
+        \cmidrule{2-11}
+        & SingleAgent     & \cellcolor{best_color}\textbf{3.22} & 2.79 & 3.46 & 3.48 & 2.72 & 3.34 & 3.29 & 6.35 & 71.00 \\
+        & AI Scientist-v2 & 3.11 & 2.71 & 3.44 & 3.39 & 2.64 & 3.37 & 3.22 & 6.30 & 70.00 \\
+        & \ourmethod{}~(PlotOff)  & 3.13 & \cellcolor{best_color}2.95 & \cellcolor{best_color}\textbf{3.75} & \cellcolor{best_color}3.56 & \cellcolor{best_color}\textbf{2.91} & \cellcolor{best_color}\textbf{3.64} & \cellcolor{best_color}3.34 & \cellcolor{best_color}6.93 & \cellcolor{best_color}84.00 \\
+        \midrule
+        \multirow{4}{*}{ICLR 2025} 
+        & Original (GT)   & \textbf{3.33} & \textbf{3.14} & \textbf{3.76} & \textbf{3.74} & \textbf{3.05} & \textbf{3.59} & \textbf{3.57} & \textbf{7.48} & \textbf{94.00} \\
+        \cmidrule{2-11}
+        & SingleAgent     & 3.26 & 2.73 & 3.27 & 3.48 & 2.71 & 3.20 & 3.25 & 6.35 & 72.00 \\
+        & AI Scientist-v2 & 3.23 & 2.62 & 3.28 & 3.41 & 2.60 & 3.23 & 3.11 & 6.04 & 64.00 \\
+        & \ourmethod{}~(PlotOff)     & \cellcolor{best_color}3.35 & \cellcolor{best_color}2.96 & \cellcolor{best_color}3.65 &\cellcolor{best_color}3.59 & \cellcolor{best_color}2.94 & \cellcolor{best_color}3.48 & \cellcolor{best_color}3.37 & \cellcolor{best_color}7.03 & \cellcolor{best_color}81.00 \\
+        \bottomrule
+    \end{tabular}
+    }
+  \caption{Holistic technical quality evaluation via the AI Scientist-v2~\citep{yamada2025aiscientistv2} and ScholarPeer~\citep{goyal2026scholarpeer} frameworks (Sparse Idea Setting). Higher scores indicate better manuscript quality and higher simulated acceptance rates. \textbf{Bold} indicates best scores; while \colorbox{best_color}{green} highlights the highest score achieved by an AI pipeline.}
+  \label{tab:combined_reviewer_quality}
+\end{table}

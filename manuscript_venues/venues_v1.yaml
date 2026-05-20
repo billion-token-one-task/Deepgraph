@@ -1,0 +1,122 @@
+# Venue routing rules for the manuscript pipeline.
+# Issue #11/#12 (D1 Foundation): seeded with the two adapters that ship
+# in this PR — ``iclr2026`` and ``arxiv_plain``. D2 (#13) adds NeurIPS /
+# ICML / ACL-ARR / CVPR. Adding a new venue is a YAML edit only.
+#
+# Schema (per venue):
+#   template_id      str   — must match agents.manuscript_templates.get_adapter id
+#   schema_version   int   — bump to invalidate cached routes
+#   triggers              — additive positive signals
+#     claim_types: [...]   case-insensitive match against state.claim_type
+#     domains:    [...]    case-insensitive match against state.domain
+#     keywords:   [...]    substring match against title + problem_statement
+#     requires_real_data: bool  set True for venues that gate on real experiments
+#   rejects              — hard reject signals
+#     claim_types: [...]   any match blocks the venue
+#     page_count_max: int  state.page_count_estimate above this blocks
+#   max_pages   int        soft page budget passed to the FormatLinter (D3)
+
+version: v1
+
+venues:
+  - template_id: iclr2026
+    schema_version: 1
+    triggers:
+      claim_types: ["empirical", "benchmark"]
+      domains: ["ml", "nlp", "vision", "rl"]
+      keywords:
+        - "benchmark"
+        - "attention"
+        - "transformer"
+        - "scaling"
+        - "long context"
+      requires_real_data: true
+    rejects:
+      claim_types: ["position"]
+      page_count_max: 12
+    max_pages: 9
+
+  - template_id: arxiv_plain
+    schema_version: 1
+    triggers:
+      claim_types: ["theory", "position", "survey", "empirical"]
+      domains: ["ml", "theory", "nlp", "vision", "rl", "math", "stats"]
+      keywords:
+        - "proof"
+        - "theorem"
+        - "analysis"
+        - "review"
+        - "survey"
+      requires_real_data: false
+    rejects: {}
+    max_pages: 30
+
+  # D2 (#13): four top-tier venues. Triggers are tuned so a representative
+  # CV / NLP / ML state ends up at CVPR / ACL-ARR / NeurIPS or ICML.
+  - template_id: neurips2024
+    schema_version: 1
+    triggers:
+      claim_types: ["empirical", "benchmark"]
+      domains: ["ml", "rl"]
+      keywords:
+        - "neural"
+        - "deep learning"
+        - "representation"
+        - "self-supervised"
+        - "reinforcement"
+      requires_real_data: true
+    rejects:
+      claim_types: ["position"]
+      page_count_max: 11
+    max_pages: 9
+
+  - template_id: icml2024
+    schema_version: 1
+    triggers:
+      claim_types: ["empirical", "benchmark", "theory"]
+      domains: ["ml", "theory", "stats"]
+      keywords:
+        - "optimization"
+        - "generalization"
+        - "training dynamics"
+        - "kernel"
+        - "stochastic"
+      requires_real_data: false
+    rejects:
+      claim_types: ["position"]
+      page_count_max: 10
+    max_pages: 8
+
+  - template_id: acl_arr
+    schema_version: 1
+    triggers:
+      claim_types: ["empirical", "benchmark", "survey"]
+      domains: ["nlp"]
+      keywords:
+        - "language model"
+        - "translation"
+        - "tokenization"
+        - "dialogue"
+        - "linguistic"
+      requires_real_data: true
+    rejects:
+      claim_types: ["position"]
+      page_count_max: 11
+    max_pages: 9
+
+  - template_id: cvpr2024
+    schema_version: 1
+    triggers:
+      claim_types: ["empirical", "benchmark"]
+      domains: ["vision"]
+      keywords:
+        - "image"
+        - "segmentation"
+        - "detection"
+        - "3d reconstruction"
+        - "diffusion"
+      requires_real_data: true
+    rejects:
+      claim_types: ["position", "theory"]
+      page_count_max: 10
+    max_pages: 8

@@ -1,0 +1,27 @@
+% ==========================================
+% TABLE: Citation F1 Quality
+% ==========================================
+\begin{table}[tbp]
+    \centering
+    \resizebox{\textwidth}{!}{%
+    \begin{tabular}{ll c c ccc ccc}
+        \toprule
+        \multirow{2}{*}{\textbf{Venue}} & \multirow{2}{*}{\textbf{Pipeline}} & \multirow{2}{*}{\begin{tabular}{@{}c@{}}\textbf{GT Avg} \\ \textbf{\# Cites}\end{tabular}} & \multirow{2}{*}{\begin{tabular}{@{}c@{}}\textbf{Avg} \\ \textbf{\# Cites}\end{tabular}} & \multicolumn{3}{c}{\textbf{Gemini-3.1-Pro}} & \multicolumn{3}{c}{\textbf{GPT5}} \\
+        \cmidrule(lr){5-7} \cmidrule(lr){8-10}
+        & & & & \begin{tabular}{@{}c@{}}\textbf{Overall} \\ \textbf{F1}\end{tabular} & \begin{tabular}{@{}c@{}}\textbf{P0} \\ \textbf{Recall}\end{tabular} & \begin{tabular}{@{}c@{}}\textbf{P1} \\ \textbf{Recall}\end{tabular} & \begin{tabular}{@{}c@{}}\textbf{Overall} \\ \textbf{F1}\end{tabular} & \begin{tabular}{@{}c@{}}\textbf{P0} \\ \textbf{Recall }\end{tabular} & \begin{tabular}{@{}c@{}}\textbf{P1} \\ \textbf{Recall}\end{tabular} \\
+        \midrule
+        \multirow{3}{*}{CVPR 2025} 
+        & SingleAgent      & \multirow{3}{*}{58.52} & 11.46 & 28.03 & 60.84 & 2.77 & 28.16 & 63.04 & 3.27 \\
+        & AI Scientist-v2  & & 14.18 & 17.15 & 36.12 & 3.26 & 17.26 & 37.46 &  3.30 \\
+        & \ourmethod{} (PlotOff)     & & \cellcolor{best_color}47.98 & \cellcolor{best_color}\textbf{29.65} & \cellcolor{best_color}\textbf{63.58} & \cellcolor{best_color}\textbf{15.85} & \cellcolor{best_color}\textbf{29.92} & \cellcolor{best_color}\textbf{65.17} & \cellcolor{best_color}\textbf{16.43} \\
+        \midrule
+        \multirow{3}{*}{ICLR 2025} 
+        & SingleAgent      & \multirow{3}{*}{59.18} & 9.75 & 23.16 & 48.41 & 3.09 & 23.29 & 50.75 & 3.23 \\
+        & AI Scientist-v2  & & 13.71 & 15.80 & 33.66 & 3.07 & 15.94 & 34.73 & 3.36  \\
+        & \ourmethod{} (PlotOff)     & & \cellcolor{best_color}45.73 & \cellcolor{best_color}\textbf{27.76} & \cellcolor{best_color}\textbf{54.48} & \cellcolor{best_color}\textbf{16.43} & \cellcolor{best_color}\textbf{27.97} & \cellcolor{best_color}\textbf{55.70} & \cellcolor{best_color}\textbf{17.11} \\
+        \bottomrule
+    \end{tabular}%
+    } % End of resizebox
+    \caption{Citation F1 evaluation (Sparse Idea Setting). P0 and P1 denote must-cite and good-to-cite references, respectively. F1 and Recall are percentages.}
+    \label{tab:citation_f1}
+\end{table}

@@ -1,0 +1,9 @@
+# GROBID — scientific PDF → TEI XML (https://github.com/kermitt2/grobid)
+# Start: docker compose -f docker-compose.grobid.yml up -d
+# Service listens on localhost:8070 (set DEEPGRAPH_GROBID_URL if you remap the port)
+
+services:
+  grobid:
+    image: lfoppiano/grobid:0.8.0
+    ports:
+      - "8070:8070"

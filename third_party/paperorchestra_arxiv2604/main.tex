@@ -1,0 +1,63 @@
+\documentclass[11pt, a4paper, goog]{google}
+
+\usepackage[authoryear, sort&compress, round]{natbib}
+\input{preamble}
+\bibliographystyle{abbrvnat}
+
+% Remove these if they are not needed
+% \keywords{paper template, tools}
+
+% comment out if logo should not be used
+\uselogo{} 
+
+% Paper Title
+\title{\textls[-2]{\ourmethod: A Multi-Agent Framework} for Automated AI Research Paper Writing}
+
+% Can leave this option out if you do not wish to add a corresponding author.
+\correspondingauthor{yiwensong@google.com, yalesong@google.com, jinsungyoon@google.com}
+
+% Use the internally issued paper ID, if available
+\reportnumber{0001} % Leave blank if n/a
+
+% Assign your own date to the report.
+% Can comment out if not needed or leave blank if n/a.
+\renewcommand{\today}{}
+
+% Can have as many authors and as many affiliations as needed. Best to indicate joint
+% first-authorship as shown below.
+\author[1]{Yiwen Song}
+\author[1]{Yale Song}
+\author[1]{Tomas Pfister}
+\author[1]{Jinsung Yoon}
+
+% Affiliations *must* come after the declaration of \author[]
+\affil[1]{\thepa{}{}}
+
+\begin{abstract}
+Synthesizing unstructured research materials into manuscripts is an essential yet under-explored challenge in AI-driven scientific discovery. Existing autonomous writers are rigidly coupled to specific experimental pipelines, and produce superficial literature reviews. We introduce \ourmethod, a multi-agent framework for automated AI research paper writing. It flexibly transforms unconstrained pre-writing materials into submission-ready \mylatex{} manuscripts, including comprehensive literature synthesis and generated visuals, such as plots and conceptual diagrams. To evaluate performance, we present \ourdataset, the first standardized benchmark of reverse-engineered raw materials from 200 top-tier AI conference papers, alongside a comprehensive suite of automated evaluators. In side-by-side human evaluations, \ourmethod{} significantly outperforms autonomous baselines, achieving an absolute win rate margin of \textbf{50\%--68\%} in literature review quality, and \textbf{14\%--38\%} in overall manuscript quality. (Project Page: \url{https://yiwen-song.github.io/paper_orchestra/})
+\end{abstract}
+
+\begin{document}
+
+\maketitle
+
+\input{content/intro}
+\input{content/related_work}
+\input{content/task_and_dataset}
+\input{content/method}
+\input{content/experiments}
+\input{content/conclusion}
+\input{content/ethics}
+
+\bibliography{main}
+
+\clearpage
+\appendix
+\input{content/appendix_limitations}
+\input{content/appendix_cost}
+\input{content/appendix_dataset_details}
+\input{content/appendix_experiment_details}
+\input{content/appendix_visulization_full_paper}
+\input{content/appendix_prompts}
+
+\end{document}

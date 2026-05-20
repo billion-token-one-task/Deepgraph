@@ -1,0 +1,122 @@
+\section{Experiment Details}
+\label{appendix:exp_details}
+
+\subsection{Models and Configuration}
+\label{appendix:model_details}
+
+\paragraph{API Access} We access all models from the Gemini-3 family (\texttt{gemini-3.1-pro-preview}, \texttt{gemini-\\3-flash-preview}, and \texttt{gemini-3-pro-image-preview}) via the Google Cloud Vertex AI platform. The GPT model (\texttt{gpt-5-2025-08-07}) is accessed via the official OpenAI API. Paper searches for verification and metadata fetching are conducted using the Semantic Scholar API (\url{https://api.semanticscholar.org/graph/v1/paper/search}).
+
+\paragraph{Model Usage} The primary manuscript writing backbone for \ourmethod{} and all baselines is strictly fixed to Gemini-3.1-Pro. For literature discovery, \ourmethod{} utilizes Gemini-3-Flash with Google Search grounding. To ensure a fair comparison, we also use Gemini-3-Flash for the citation gathering process in AI Scientist-v2.
+
+\paragraph{Evaluation Settings} For automated technical quality evaluations (AgentReview~\citep{jin2024agentreview}, AI Scientist-v2 Reviewer~\citep{yamada2025aiscientistv2}, and ScholarPeer~\citep{goyal2026scholarpeer}), we apply a universal temperature of 0.75 (Gemini-3.1-Pro) to balance instruction adherence with creative synthesis. For automated side-by-side evaluations, Gemini-3.1-Pro is set to a temperature of 0.0 to guarantee reproducibility. Since GPT-5 does not currently support temperature adjustment, we operate it at its fixed default temperature of 1.0 across all evaluations. During ScholarPeer~\citep{goyal2026scholarpeer} evaluation, we disable the baseline scouting agent for all pipelines to isolate presentation quality from fixed experimental constraints.
+
+\paragraph{Research Cutoff} We align the research cutoff dates with the official submission deadlines of each venue: November 2024 for CVPR 2025 papers and October 2024 for ICLR 2025 papers.
+
+
+\subsection{Baseline Selection}
+\label{appendix:baseline_selection}
+
+We explain why several existing systems are not included as baselines:
+
+\begin{itemize}
+    \item \textbf{OmniScientist}~\citep{shao2025omniscientist}: Lacks a publicly available, reproducible codebase.
+    \item \textbf{PaperRobot}~\citep{wang2019paperrobot} and \textbf{Data-to-Paper}~\citep{technion2024datatopaper}: Do not support end-to-end generation of submission-ready \mylatex\ manuscripts.
+    \item \textbf{AI-Researcher}~\citep{tang2025ai}: Operates as a full research pipeline requiring highly structured intermediate states (e.g., pre-written sections, curated literature summaries) rather than unconstrained raw materials. Adapting it to our setting would require reconstructing these abstractions, bypassing the core synthesis challenge our benchmark evaluates.
+    \item \textbf{CycleResearcher}~\citep{weng2024cycleresearcher}: Requires a structured BibTeX reference list as input—an artifact rarely available during early drafting. The model also fails on unstructured inputs outside its specific training format, preventing it from directly processing raw materials.
+    \item \textbf{Generic RAG pipelines} (\citep{wu2025autosurvey2}, \citep{go2025lira}): Designed primarily for literature surveys, these lack the specialized mechanisms required to autonomously draft, structure, and format full submission-ready research papers.
+\end{itemize}
+
+\subsection{Citation Verification}
+\label{appendix:citation_verification}
+
+To guarantee the factual accuracy and relevance of the generated literature review, our system employs a two-phase retrieval and verification pipeline for citation gathering. First, we use Gemini-3-Flash with Google Search grounding to rapidly discover candidate papers based on the generated outline. Following this discovery phase, each candidate paper undergoes strict sequential verification via the Semantic Scholar API to extract abstracts and metadata.
+
+During verification, each candidate must resolve to a valid Semantic Scholar entity via a fuzzy title match (Levenshtein distance ratio $> 70$~\citep{Levenshtein1965BinaryCC}), augmented by a point-bonus for exact year alignment. To enter the final context pool, the entity must possess a retrievable abstract and strictly predate the research cutoff (when specified down to the month, the system defaults to the first day of that month as the strict boundary). Finally, gathered citations are deduplicated using unique paper ID keys.
+
+Once the papers are verified and enriched with metadata (including authors, venue, year, citation count, and abstract), the compiled context is passed to the primary writing agent. To enforce high citation density and eliminate hallucinated references, the system prompt strictly constrains the model to cite only the provided verified papers, explicitly mandating that at least 90\% of the gathered literature pool must be actively integrated and cited when synthesizing the \textit{Introduction} and \textit{Related Work} sections.
+
+
+% TODO: Design a metric (e2e matching) to find out whether there's citation hallucination in baselines.
+
+% TODO: Find out whether during writing process the agent accidentally using hallucinated citations.
+
+\subsection{Information Leakage Prevention}
+\label{appendix:info_leakage}
+
+To ensure textual and visual originality while mitigating the risk of LLMs reconstructing memorized training data, we enforce a universal \textbf{Anti-Leakage Prompt} across \ourmethod{} and all baselines. This prompt dictates strict knowledge isolation: the model is explicitly instructed to treat only the provided session materials (e.g., \texttt{idea.md} and \texttt{experimental\_log.md}) as its absolute source of truth. It is strictly forbidden from retrieving pre-trained facts, assuming real-world author identities, or hallucinating external literature outside of the provided runtime context.
+
+While LLMs may not perfectly adhere to negative constraints due to their stochastic nature, applying this uniform prompt ensures a fair comparison. By restricting all generation pipelines (Single Agent, AI Scientist-v2, and \ourmethod{}) to the exact same informational boundaries and backbone LLM, we effectively isolate manuscript synthesis performance from pre-training biases.
+
+The universal anti-leakage prompt injected into all paper-writing pipelines is as follows:
+
+% ---------------------------------------------------------
+% ---------------------------------------------------------
+
+\begin{leakpromptbox}[Anti-Leakage Prompt]
+\input{content/prompts/anti_leakage_prompt}
+\end{leakpromptbox}
+
+% ---------------------------------------------------------
+% ---------------------------------------------------------
+
+\subsection{Human Evaluation}
+\label{appendix:human_eval}
+
+\begin{figure}[h]
+  \centering
+  \begin{subfigure}[b]{0.48\textwidth}
+    \centering
+    \includegraphics[width=\textwidth]{content/figures/human_eval_lit_heatmap.png}
+    \caption{SxS Results: Literature Review Quality}
+    \label{fig:human_eval_heatmap_lit}
+  \end{subfigure}
+  \hfill
+  \begin{subfigure}[b]{0.48\textwidth}
+    \centering
+    \includegraphics[width=\textwidth]{content/figures/human_eval_overall_heatmap.png}
+    \caption{SxS Results: Overall Paper Quality}
+    \label{fig:human_eval_heatmap_overall}
+  \end{subfigure}
+  \caption{\textbf{Human Side-by-Side (SxS) Evaluation Results.} Heatmaps display the win rate margin (\%) of \ourmethod{} against baselines across various evaluation dimensions. Positive values (green) favor our approach. \ourmethod{} consistently outperforms both AI baselines (Single Agent and AI Scientist-v2), though a quality gap remains compared to the human-written ground truth (GT).}
+  \label{fig:human_eval_heatmaps_appendix}
+\end{figure}
+
+We developed a Streamlit interface (Figure~\ref{fig:human_eval_interface}) for blind SxS comparison of generated manuscripts. Annotators evaluated paper pairs on a 3-point scale (Win, Tie, Loss) across two aspects: (1) \textit{Literature Review Quality} (evaluating the \textit{Introduction} and \textit{Related Work}) based on problem framing, prior work coverage, synthesis, positioning, and readability; and (2) \textit{Overall Paper Quality} (evaluating the full manuscript) based on scientific depth, technical execution, logical flow, writing clarity, evidence presentation, and academic style. 
+
+Eleven AI researchers completed 180 randomized, paired evaluations across 40 sampled papers from \ourdataset{} (120 unique paper pairs). For each evaluation, annotators answered 12 fine-grained diagnostic questions before making a final holistic judgment. As shown in Figure~\ref{fig:human_eval_heatmaps_appendix}, our approach, \ourmethod{}, systematically outperforms all AI baselines across every evaluation metric. While a quality gap remains when compared to the human-written papers (GT), \ourmethod{} achieves substantial win margins over all evaluated AI baselines in both literature review synthesis and overall paper quality.
+\vspace{1em}
+
+\begin{figure}[htbp]
+  \centering
+  \begin{subfigure}[b]{\textwidth}
+    \centering
+    \includegraphics[width=0.8\linewidth]{content/figures/human_eval_ui_1.png}
+    \caption{Side-by-Side Document View}
+    \label{fig:human_eval_ui_top}
+  \end{subfigure}
+  
+  \vspace{1em} % Adds vertical space between the two rows
+  
+  \begin{subfigure}[b]{\textwidth}
+    \centering
+    \includegraphics[width=0.75\linewidth]{content/figures/human_eval_ui_2.png}
+    \caption{Evaluation Questionnaire}
+    \label{fig:human_eval_ui_bottom}
+  \end{subfigure}
+  \caption{\textbf{Streamlit-based Human Evaluation Interface.} The custom UI displays two manuscripts side-by-side (a) and provides a fine-grained questionnaire alongside a final preference selection (b).}
+  \label{fig:human_eval_interface}
+\end{figure}
+
+% ---------------------------------------------------------
+% ---------------------------------------------------------
+
+The detailed annotation guidelines and rubric provided to the human annotators are listed below:
+
+\begin{humanevalbox}[Human Annotation Guidelines \& Rubric]
+\input{content/prompts/human_eval_guideline}
+\end{humanevalbox}
+
+
+
+% ---------------------------------------------------------
+% ---------------------------------------------------------

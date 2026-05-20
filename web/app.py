@@ -1,0 +1,1773 @@
+"""Flask web application for DeepGraph dashboard."""
+import json
+import importlib.util
+import shutil
+import threading
+import time
+import traceback
+from pathlib import Path
+from typing import Any
+from flask import Flask, Response, abort, jsonify, render_template, request, send_file, url_for
+from agents.workspace_layout import get_idea_workspace, list_paper_assets, plan_file_path, resolve_paper_asset
+from config import APP_NAME, APP_SUBTITLE, PROFILE, ROOT_NODE_ID
+from db import database as db
+from db import evidence_graph as graph
+from db import opportunity_engine as opp
+from db import taxonomy as tax
+from orchestrator.pipeline import get_events, run_continuous, log_event, get_stats_dict
+from agents.taxonomy_expander import run_expansion
+from web.agenda_routes import register as register_agenda_routes
+from web.manuscript_routes import register as register_manuscript_routes
+
+app = Flask(__name__,
+            template_folder="templates",
+            static_folder="static")
+
+register_agenda_routes(app)
+register_manuscript_routes(app)
+
+_pipeline_running = False
+_pipeline_lock = threading.Lock()
+
+_ACTIVE_EXPERIMENT_STATUSES = {"pending", "scaffolding", "reproducing", "testing", "running_gpu", "running_cpu"}
+
+
+def _json_load(value: Any, default: Any) -> Any:
+    if value is None:
+        return default
+    if isinstance(value, (dict, list)):
+        return value
+    try:
+        return json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return default
+
+
+def _manual_api_removed_response():
+    return jsonify(
+        {
+            "error": "Manual web actions have been removed. This deployment is fixed-flow and read-only from the UI.",
+            "mode": "fixed_flow_read_only",
+        }
+    ), 410
+
+
+def _api_failure(scope: str, exc: Exception, status: int = 500):
+    try:
+        db.rollback()
+    except Exception:
+        pass
+    message = str(exc)
+    log_event("error", {"step": scope, "error": message})
+    print(f"[API] {scope} failed: {message}\n{traceback.format_exc()}", flush=True)
+    return jsonify({"status": "error", "scope": scope, "error": message}), status
+
+
+_MANUAL_EXPERIMENT_POST_PATHS = {
+    "/api/research/launch",
+    "/api/deep_insights/generate",
+    "/api/experiments/forge",
+    "/api/experiments/run_full",
+}
+
+
+@app.before_request
+def block_manual_experiment_post_apis():
+    if request.method == "POST" and request.path in _MANUAL_EXPERIMENT_POST_PATHS:
+        return _manual_api_removed_response()
+    if request.method == "POST" and request.path.endswith("/verify"):
+        return _manual_api_removed_response()
+    if request.method == "POST" and request.path.endswith("/research"):
+        return _manual_api_removed_response()
+    if request.method == "POST" and request.path.endswith("/run"):
+        return _manual_api_removed_response()
+
+
+def _pick_canonical_run(runs: list[dict], canonical_run_id: int | None = None) -> dict | None:
+    if not runs:
+        return None
+    if canonical_run_id:
+        for run in runs:
+            if int(run.get("id") or 0) == int(canonical_run_id):
+                return run
+    for run in runs:
+        if (run.get("status") or "") in _ACTIVE_EXPERIMENT_STATUSES:
+            return run
+    return runs[0]
+
+
+def _read_json_file(path: Path) -> Any:
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _deep_insight_is_displayable(row: dict) -> bool:
+    """Hide incomplete mechanism-first placeholders from the dashboard."""
+    title = " ".join(str(row.get("title") or "").strip().lower().split())
+    generic_title = title in {"mechanism-first insight", "mechanism first insight", "deep insight", "paper idea"}
+    core_fields = (
+        "formal_structure",
+        "transformation",
+        "problem_statement",
+        "existing_weakness",
+        "proposed_method",
+        "experimental_plan",
+        "evidence_summary",
+    )
+    has_core = any(str(row.get(field) or "").strip() for field in core_fields)
+    if generic_title and not has_core:
+        return False
+    if generic_title and int(row.get("tier") or 0) == 1:
+        field_a = _json_load(row.get("field_a"), {})
+        field_b = _json_load(row.get("field_b"), {})
+        if not row.get("formal_structure") and not row.get("transformation") and not field_a and not field_b:
+            return False
+    return True
+
+
+def _plan_snapshot(insight: dict) -> dict[str, Any]:
+    insight_id = int(insight["id"])
+    return {
+        "experiment_spec": _read_json_file(plan_file_path(insight_id, "experiment_spec.json", insight=insight)),
+        "proxy_config": _read_json_file(plan_file_path(insight_id, "proxy_config.json", insight=insight)),
+        "evidence_plan": _read_json_file(plan_file_path(insight_id, "evidence_plan.json", insight=insight)),
+        "manuscript_input_state": _read_json_file(plan_file_path(insight_id, "manuscript_input_state.json", insight=insight)),
+        "manuscript_blockers": _read_json_file(plan_file_path(insight_id, "manuscript_blockers.json", insight=insight)),
+        "latest_status": _read_json_file(plan_file_path(insight_id, "latest_status.json", insight=insight)),
+    }
+
+
+def _paper_preview_urls(insight_id: int, assets: list[dict]) -> dict[str, str | None]:
+    asset_paths = {str(asset.get("path") or "") for asset in assets}
+    pdf_path = next((path for path in sorted(asset_paths) if path.endswith("/main.pdf") or path == "current/main.pdf"), None)
+    tex_path = next((path for path in sorted(asset_paths) if path.endswith("/main.tex") or path == "current/main.tex"), None)
+    return {
+        "index": url_for("paper_preview_index", insight_id=insight_id),
+        "pdf": url_for("paper_preview_pdf", insight_id=insight_id) if pdf_path else None,
+        "tex": url_for("paper_preview_tex", insight_id=insight_id) if tex_path else None,
+    }
+
+
+def _workspace_payload(insight: dict) -> dict[str, Any]:
+    layout = get_idea_workspace(int(insight["id"]), insight=insight, create=True, sync_db=True)
+    assets = list_paper_assets(int(insight["id"]), insight=insight)
+    preview_urls = _paper_preview_urls(int(insight["id"]), assets)
+    return {
+        "workspace_root": str(layout["workspace_root"]),
+        "experiment_root": str(layout["experiment_root"]),
+        "plan_root": str(layout["plan_root"]),
+        "paper_root": str(layout["paper_root"]),
+        "canonical_run_id": insight.get("canonical_run_id"),
+        "plan_snapshot": _plan_snapshot(insight),
+        "paper_assets": assets,
+        "paper_preview_urls": preview_urls,
+    }
+
+
+def _artifact_counts_for_runs(run_ids: list[int]) -> dict[int, dict[str, int]]:
+    if not run_ids:
+        return {}
+    placeholders = ",".join("?" for _ in run_ids)
+    rows = db.fetchall(
+        f"""
+        SELECT run_id, artifact_type, COUNT(*) AS c
+        FROM experiment_artifacts
+        WHERE run_id IN ({placeholders})
+        GROUP BY run_id, artifact_type
+        """,
+        tuple(run_ids),
+    )
+    grouped: dict[int, dict[str, int]] = {}
+    for row in rows:
+        run_id = int(row["run_id"])
+        grouped.setdefault(run_id, {})[str(row["artifact_type"])] = int(row["c"])
+    return grouped
+
+
+def _claim_counts_for_runs(run_ids: list[int]) -> dict[int, int]:
+    if not run_ids:
+        return {}
+    placeholders = ",".join("?" for _ in run_ids)
+    rows = db.fetchall(
+        f"""
+        SELECT run_id, COUNT(*) AS c
+        FROM experimental_claims
+        WHERE run_id IN ({placeholders})
+        GROUP BY run_id
+        """,
+        tuple(run_ids),
+    )
+    return {int(row["run_id"]): int(row["c"]) for row in rows}
+
+
+def _summarize_run(run: dict, artifact_counts: dict[str, int] | None = None, claim_count: int = 0) -> dict:
+    artifact_counts = artifact_counts or {}
+    return {
+        **dict(run),
+        "artifact_counts": artifact_counts,
+        "artifact_total": sum(artifact_counts.values()),
+        "has_plot_artifacts": artifact_counts.get("plot", 0) > 0,
+        "has_bundle": bool(run.get("submission_bundle_id")),
+        "claim_count": claim_count,
+    }
+
+
+def _planned_tracks(insight: dict, runs: list[dict]) -> list[dict]:
+    evidence_plan = _json_load(insight.get("evidence_plan"), {})
+    experimental_plan = _json_load(insight.get("experimental_plan"), {})
+    ablations = experimental_plan.get("ablations") or []
+    has_plot = any((run.get("artifact_counts") or {}).get("plot", 0) > 0 for run in runs)
+    has_bundle = any(run.get("has_bundle") for run in runs) or (insight.get("submission_status") == "bundle_ready")
+    main_state = "not_started"
+    canonical = _pick_canonical_run(runs, insight.get("canonical_run_id"))
+    if canonical:
+        main_state = canonical.get("status") or "unknown"
+    return [
+        {"key": "main", "label": "主实验", "enabled": True, "state": main_state},
+        {
+            "key": "ablation",
+            "label": "消融",
+            "enabled": bool((evidence_plan.get("ablation") or {}).get("enabled") or ablations),
+            "state": f"{len(ablations)} planned" if ablations else ("enabled" if (evidence_plan.get("ablation") or {}).get("enabled") else "not_planned"),
+        },
+        {
+            "key": "visualization",
+            "label": "可视化",
+            "enabled": bool((evidence_plan.get("visualization") or {}).get("enabled") or has_plot),
+            "state": "artifacts_ready" if has_plot else ("planned" if (evidence_plan.get("visualization") or {}).get("enabled") else "not_planned"),
+        },
+        {
+            "key": "bundle",
+            "label": "论文包",
+            "enabled": True,
+            "state": "bundle_ready" if has_bundle else (insight.get("submission_status") or "not_started"),
+        },
+    ]
+
+
+def _planned_tracks(insight: dict, runs: list[dict]) -> list[dict]:
+    evidence_plan = _json_load(insight.get("evidence_plan"), {})
+    experimental_plan = _json_load(insight.get("experimental_plan"), {})
+    ablations = experimental_plan.get("ablations") or []
+    has_plot = any((run.get("artifact_counts") or {}).get("plot", 0) > 0 for run in runs)
+    has_bundle = any(run.get("has_bundle") for run in runs) or (insight.get("submission_status") == "bundle_ready")
+    canonical = _pick_canonical_run(runs, insight.get("canonical_run_id"))
+    return [
+        {
+            "key": "main",
+            "label": "Main experiment",
+            "enabled": True,
+            "state": (canonical or {}).get("status") or "not_started",
+        },
+        {
+            "key": "ablation",
+            "label": "Ablation",
+            "enabled": bool((evidence_plan.get("ablation") or {}).get("enabled") or ablations),
+            "state": f"{len(ablations)} planned" if ablations else ("enabled" if (evidence_plan.get("ablation") or {}).get("enabled") else "not_planned"),
+        },
+        {
+            "key": "visualization",
+            "label": "Visualization",
+            "enabled": bool((evidence_plan.get("visualization") or {}).get("enabled") or has_plot),
+            "state": "artifacts_ready" if has_plot else ("planned" if (evidence_plan.get("visualization") or {}).get("enabled") else "not_planned"),
+        },
+        {
+            "key": "bundle",
+            "label": "Paper bundle",
+            "enabled": True,
+            "state": "bundle_ready" if has_bundle else (insight.get("submission_status") or "not_started"),
+        },
+    ]
+
+
+def _build_experiment_group_payload(*, insight: dict, auto_job: dict | None, runs: list[dict]) -> dict:
+    runs = sorted(
+        runs,
+        key=lambda row: (str(row.get("created_at") or ""), int(row.get("id") or 0)),
+        reverse=True,
+    )
+    latest_run = runs[0] if runs else None
+    canonical_run = _pick_canonical_run(runs, insight.get("canonical_run_id"))
+    run_status_counts: dict[str, int] = {}
+    for run in runs:
+        key = str(run.get("status") or "unknown")
+        run_status_counts[key] = run_status_counts.get(key, 0) + 1
+    updated_at = (
+        (auto_job or {}).get("updated_at")
+        or (canonical_run or {}).get("created_at")
+        or (latest_run or {}).get("created_at")
+        or insight.get("updated_at")
+        or insight.get("created_at")
+    )
+    workspace = _workspace_payload(insight)
+    return {
+        "insight": insight,
+        "auto_job": auto_job,
+        "latest_run": latest_run,
+        "canonical_run": canonical_run,
+        "run_count": len(runs),
+        "run_status_counts": run_status_counts,
+        "planned_tracks": _planned_tracks(insight, runs),
+        "updated_at": updated_at,
+        "runs": runs,
+        **workspace,
+    }
+
+
+def _service_counts(table: str, status_column: str = "status") -> dict[str, int]:
+    rows = db.fetchall(
+        f"""
+        SELECT {status_column} AS status, COUNT(*) AS c
+        FROM {table}
+        GROUP BY {status_column}
+        """
+    )
+    return {str(row["status"] or "unknown"): int(row["c"] or 0) for row in rows}
+
+
+def _safe_service_payload(name: str, fn):
+    try:
+        return fn()
+    except Exception as exc:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        log_event("error", {"step": f"{name}_status", "error": str(exc)})
+        return {"status": "error", "error": str(exc)}
+
+
+def _recent_evoscientist_sessions(limit: int = 5) -> list[dict]:
+    rows = db.fetchall(
+        """
+        SELECT arj.deep_insight_id, arj.status, arj.stage, arj.research_workdir,
+               arj.last_note, arj.last_error, arj.updated_at, di.title
+        FROM auto_research_jobs arj
+        JOIN deep_insights di ON di.id = arj.deep_insight_id
+        WHERE arj.research_workdir IS NOT NULL
+           OR arj.status IN ('verifying', 'researching')
+           OR arj.stage LIKE '%evosci%'
+           OR arj.stage LIKE '%research%'
+        ORDER BY arj.updated_at DESC
+        LIMIT ?
+        """,
+        (limit,),
+    )
+    sessions = []
+    for row in rows:
+        item = dict(row)
+        workdir = item.get("research_workdir")
+        if workdir:
+            wd = Path(str(workdir))
+            session: dict[str, Any] = {"workdir": str(wd), "exists": wd.exists()}
+            if wd.exists():
+                final_report = wd / "final_report.md"
+                proposal = wd / "research_proposal.md"
+                log_path = wd / "evoscientist.log"
+                session["final_report_ready"] = final_report.is_file() and final_report.stat().st_size > 100
+                session["proposal_ready"] = proposal.is_file()
+                if log_path.is_file():
+                    try:
+                        mtime = log_path.stat().st_mtime
+                        session["log_age_seconds"] = round(time.time() - mtime, 2)
+                        with log_path.open("rb") as fh:
+                            fh.seek(0, 2)
+                            size = fh.tell()
+                            fh.seek(max(0, size - 2000))
+                            session["log_tail"] = fh.read().decode("utf-8", errors="replace")
+                    except OSError as exc:
+                        session["log_error"] = str(exc)
+            item["session"] = session
+        sessions.append(item)
+    return sessions
+
+
+def _current_work_snapshot() -> dict[str, list[dict]]:
+    recent_run_window = (
+        "er.created_at > NOW() - INTERVAL '12 hours'"
+        if db.use_postgres()
+        else "er.created_at > datetime('now', '-12 hours')"
+    )
+    recent_pipeline = []
+    for event in reversed(get_events(0)[-80:]):
+        data = event.get("data") or {}
+        event_type = event.get("type") or ""
+        step = data.get("step") or event_type
+        if event_type not in {
+            "paper_worker",
+            "step",
+            "pipeline_start",
+            "pipeline_done",
+            "recovery",
+            "abstraction_done",
+            "bridge_done",
+            "error",
+        } and not step:
+            continue
+        title = step.replace("_", " ").strip().title() if step else event_type
+        detail_parts = []
+        for key in ("paper_id", "node_id", "max_papers", "batch_size", "papers_processed", "error"):
+            value = data.get(key)
+            if value not in (None, ""):
+                detail_parts.append(f"{key}={value}")
+        recent_pipeline.append(
+            {
+                "title": title,
+                "status": event_type,
+                "stage": step,
+                "last_note": ", ".join(detail_parts),
+                "updated_at": event.get("timestamp"),
+            }
+        )
+        if len(recent_pipeline) >= 6:
+            break
+
+    papers = db.fetchall(
+        """
+        SELECT id, title, status, processing_stage, stage_last_error, updated_at
+        FROM papers
+        WHERE status IN ('processing', 'extracted')
+        ORDER BY updated_at DESC
+        LIMIT 8
+        """
+    )
+    plans = db.fetchall(
+        """
+        SELECT arj.deep_insight_id, arj.status, arj.stage, arj.last_note, arj.last_error,
+               arj.updated_at, di.title
+        FROM auto_research_jobs arj
+        JOIN deep_insights di ON di.id = arj.deep_insight_id
+        WHERE arj.status IN ('queued', 'eligible', 'review_pending', 'smoke_only')
+           OR arj.stage LIKE '%review%'
+           OR arj.stage LIKE '%forge%'
+           OR arj.stage LIKE '%formal%'
+        ORDER BY arj.updated_at DESC
+        LIMIT 8
+        """
+    )
+    experiments = db.fetchall(
+        f"""
+        SELECT er.id, er.deep_insight_id, er.status, er.phase, er.iterations_total,
+               er.iterations_kept, er.hypothesis_verdict, er.effect_pct,
+               er.created_at, di.title
+        FROM experiment_runs er
+        JOIN deep_insights di ON di.id = er.deep_insight_id
+        WHERE er.status IN ('pending', 'scaffolding', 'reproducing', 'testing', 'running_gpu', 'running_cpu')
+          AND (er.status IN ('running_gpu', 'running_cpu', 'testing') OR {recent_run_window})
+          AND (
+                EXISTS (
+                    SELECT 1 FROM gpu_jobs gj
+                    WHERE gj.experiment_run_id=er.id
+                      AND gj.status IN ('queued', 'running')
+                )
+                OR NOT EXISTS (
+                    SELECT 1 FROM gpu_jobs gj
+                    WHERE gj.experiment_run_id=er.id
+                )
+              )
+          AND NOT EXISTS (
+                SELECT 1 FROM experiment_runs newer
+                WHERE newer.deep_insight_id=er.deep_insight_id
+                  AND newer.created_at > er.created_at
+                  AND newer.status IN ('completed', 'failed', 'bundle_ready')
+              )
+        ORDER BY er.created_at DESC
+        LIMIT 8
+        """
+    )
+    manuscripts = db.fetchall(
+        """
+        SELECT mr.id, mr.experiment_run_id, mr.deep_insight_id, mr.status, mr.workdir,
+               mr.updated_at, di.title
+        FROM manuscript_runs mr
+        LEFT JOIN deep_insights di ON di.id = mr.deep_insight_id
+        ORDER BY mr.updated_at DESC
+        LIMIT 8
+        """
+    )
+    return {
+        "pipeline": recent_pipeline,
+        "papers": papers,
+        "experiment_plans": plans,
+        "experiments": experiments,
+        "manuscripts": manuscripts,
+    }
+
+
+def _automation_snapshot() -> dict:
+    from orchestrator import auto_research, paper_worker
+
+    paper_worker_status = _safe_service_payload("paper_worker", paper_worker.get_status)
+    auto_research_status = _safe_service_payload("auto_research", auto_research.get_status)
+
+    def gpu_status():
+        workers = db.fetchall(
+            """
+            SELECT id, hostname, gpu_index, gpu_model, total_mem_gb, status, heartbeat_at
+            FROM gpu_workers
+            ORDER BY gpu_index, id
+            """
+        )
+        counts = _service_counts("gpu_jobs")
+        return {
+            "workers": workers,
+            "total_jobs": sum(counts.values()),
+            "queued_jobs": counts.get("queued", 0),
+            "running_jobs": counts.get("running", 0),
+            "completed_jobs": counts.get("completed", 0),
+            "failed_jobs": counts.get("failed", 0),
+        }
+
+    def evoscientist_status():
+        from agents.evosci_requirements import evosci_binary_path, evosci_installed
+
+        sessions = _recent_evoscientist_sessions(limit=5)
+        active = [
+            item for item in sessions
+            if (item.get("session") or {}).get("active") or item.get("status") in {"verifying", "researching"}
+        ]
+        return {
+            "available": evosci_installed(),
+            "binary_path": str(evosci_binary_path()),
+            "active_count": len(active),
+            "recent_sessions": sessions,
+        }
+
+    def paperorchestra_status():
+        manuscripts = db.fetchall(
+            """
+            SELECT mr.*, di.title AS insight_title
+            FROM manuscript_runs mr
+            LEFT JOIN deep_insights di ON di.id = mr.deep_insight_id
+            ORDER BY mr.updated_at DESC
+            LIMIT 5
+            """
+        )
+        counts = _service_counts("manuscript_runs")
+        return {
+            "available": importlib.util.find_spec("agents.paperorchestra") is not None,
+            "backend": "paper_orchestra",
+            "latex_available": bool(shutil.which("latexmk") or shutil.which("pdflatex")),
+            "counts": counts,
+            "active_count": int(counts.get("drafting", 0)),
+            "recent_runs": manuscripts,
+        }
+
+    return {
+        "paper_worker": paper_worker_status,
+        "auto_research": auto_research_status,
+        "gpu_scheduler": _safe_service_payload("gpu_scheduler", gpu_status),
+        "evoscientist": _safe_service_payload("evoscientist", evoscientist_status),
+        "paperorchestra": _safe_service_payload("paperorchestra", paperorchestra_status),
+        "current_work": _safe_service_payload("current_work", _current_work_snapshot),
+    }
+
+
+def _load_experiment_groups() -> list[dict]:
+    insights = db.fetchall(
+        """
+        SELECT di.*, arj.id AS auto_job_id, arj.status AS auto_status, arj.stage AS auto_stage,
+               arj.cpu_eligible, arj.cpu_reason, arj.assigned_worker, arj.artifact_bundle_id,
+               arj.experiment_run_id AS auto_experiment_run_id, arj.research_workdir,
+               arj.last_note, arj.last_error, arj.updated_at AS auto_updated_at,
+               arj.created_at AS auto_created_at
+        FROM deep_insights di
+        LEFT JOIN auto_research_jobs arj ON arj.deep_insight_id = di.id
+        WHERE arj.id IS NOT NULL
+           OR EXISTS (SELECT 1 FROM experiment_runs er WHERE er.deep_insight_id = di.id)
+        ORDER BY COALESCE(arj.updated_at, di.updated_at, di.created_at) DESC
+        """
+    )
+    if not insights:
+        return []
+
+    insight_ids = [int(row["id"]) for row in insights]
+    placeholders = ",".join("?" for _ in insight_ids)
+    run_rows = db.fetchall(
+        f"""
+        SELECT er.*, di.title AS insight_title, di.tier AS insight_tier
+        FROM experiment_runs er
+        JOIN deep_insights di ON di.id = er.deep_insight_id
+        WHERE er.deep_insight_id IN ({placeholders})
+        ORDER BY er.created_at DESC, er.id DESC
+        """,
+        tuple(insight_ids),
+    )
+    run_ids = [int(row["id"]) for row in run_rows]
+    artifact_counts = _artifact_counts_for_runs(run_ids)
+    claim_counts = _claim_counts_for_runs(run_ids)
+
+    grouped_runs: dict[int, list[dict]] = {}
+    for run in run_rows:
+        deep_insight_id = int(run["deep_insight_id"])
+        grouped_runs.setdefault(deep_insight_id, []).append(
+            _summarize_run(
+                run,
+                artifact_counts=artifact_counts.get(int(run["id"]), {}),
+                claim_count=claim_counts.get(int(run["id"]), 0),
+            )
+        )
+
+    groups = []
+    for row in insights:
+        insight = dict(row)
+        insight_id = int(insight["id"])
+        auto_job = None
+        if insight.get("auto_job_id") is not None:
+            auto_job = {
+                "id": insight.get("auto_job_id"),
+                "status": insight.get("auto_status"),
+                "stage": insight.get("auto_stage"),
+                "cpu_eligible": insight.get("cpu_eligible"),
+                "cpu_reason": insight.get("cpu_reason"),
+                "assigned_worker": insight.get("assigned_worker"),
+                "artifact_bundle_id": insight.get("artifact_bundle_id"),
+                "experiment_run_id": insight.get("auto_experiment_run_id"),
+                "research_workdir": insight.get("research_workdir"),
+                "last_note": insight.get("last_note"),
+                "last_error": insight.get("last_error"),
+                "updated_at": insight.get("auto_updated_at"),
+                "created_at": insight.get("auto_created_at"),
+            }
+        groups.append(
+            _build_experiment_group_payload(
+                insight=insight,
+                auto_job=auto_job,
+                runs=grouped_runs.get(insight_id, []),
+            )
+        )
+    groups.sort(key=lambda item: str(item.get("updated_at") or ""), reverse=True)
+    return groups
+
+
+@app.route("/")
+def index():
+    return render_template(
+        "index.html",
+        app_name=APP_NAME,
+        subtitle=APP_SUBTITLE,
+        root_node_id=ROOT_NODE_ID,
+        profile=PROFILE,
+    )
+
+
+@app.route("/api/meta")
+def api_meta():
+    backend = db.describe_backend()
+    return jsonify({
+        "app_name": APP_NAME,
+        "subtitle": APP_SUBTITLE,
+        "root_node_id": ROOT_NODE_ID,
+        "profile": PROFILE,
+        "database": backend,
+    })
+
+
+# ── Stats ──────────────────────────────────────────────────────────
+
+@app.route("/api/stats")
+def api_stats():
+    return jsonify(get_stats_dict())
+
+
+@app.route("/api/providers")
+def api_providers():
+    """Get LLM provider stats (round-robin load balancing)."""
+    from agents.llm_client import get_provider_stats
+    return jsonify(get_provider_stats())
+
+
+@app.route("/api/processing")
+def api_processing():
+    """Get papers currently being processed + recently completed (last 15s)."""
+    rows = db.fetchall(
+        f"""SELECT id, title, status FROM papers
+           WHERE status IN ('processing', 'extracted')
+              OR (status IN ('reasoned', 'error') AND {db.sql_updated_after_seconds(15)})
+           ORDER BY CASE status WHEN 'processing' THEN 0 WHEN 'extracted' THEN 1 ELSE 2 END, updated_at DESC
+           LIMIT 30"""
+    )
+    processing_count = db.fetchone("SELECT COUNT(*) as c FROM papers WHERE status='processing'")["c"]
+    paper_worker_status = {}
+    try:
+        from orchestrator import paper_worker
+        paper_worker_status = paper_worker.get_status()
+    except Exception as exc:
+        paper_worker_status = {"running": False, "error": str(exc)}
+    with _pipeline_lock:
+        is_running = _pipeline_running or bool(paper_worker_status.get("running")) or processing_count > 0
+    return jsonify({"papers": rows, "pipeline_running": is_running, "paper_worker": paper_worker_status})
+
+
+@app.route("/api/automation")
+def api_automation():
+    """Read-only status for background automation workers."""
+    try:
+        return jsonify(_automation_snapshot())
+    except Exception as exc:
+        return _api_failure("automation", exc)
+
+
+# ── Taxonomy Navigation ───────────────────────────────────────────
+
+@app.route("/api/taxonomy")
+def api_taxonomy():
+    """Return the full taxonomy tree as a flat list."""
+    return jsonify(tax.get_taxonomy_flat())
+
+
+@app.route("/api/taxonomy/<node_id>")
+def api_taxonomy_node(node_id):
+    """Get a node, its children (with counts), breadcrumb path, papers, and matrix."""
+    node = tax.get_node(node_id)
+    if not node:
+        return jsonify({"error": "Node not found"}), 404
+
+    children = tax.get_children(node_id)
+    breadcrumb = tax.get_breadcrumb(node_id)
+    papers = tax.get_node_papers(node_id, limit=50)
+    paper_clusters = tax.get_node_paper_clusters(node_id)
+    is_leaf = len(children) == 0
+    # Only load heavy data for leaf nodes
+    intersections = tax.get_subfield_intersection_matrix(node_id) if not is_leaf else {}
+    matrix = tax.get_method_dataset_matrix(node_id) if is_leaf else {"methods": [], "datasets": [], "metrics": [], "cells": {}}
+    gaps = tax.get_node_gaps(node_id) if is_leaf else []
+    # Only return cached data - never block on LLM generation during page load
+    opportunities = opp.get_node_opportunities(node_id)
+    summary = tax.get_node_summary(node_id)
+    graph_summary = graph.get_node_graph_summary(node_id)
+
+    return jsonify({
+        "node": dict(node),
+        "children": children,
+        "breadcrumb": breadcrumb,
+        "is_leaf": is_leaf,
+        "papers": papers,
+        "paper_clusters": paper_clusters,
+        "intersections": intersections,
+        "matrix": matrix,
+        "gaps": gaps,
+        "opportunities": opportunities,
+        "summary": summary,
+        "graph_summary": graph_summary,
+    })
+
+
+@app.route("/api/taxonomy/<node_id>/children")
+def api_taxonomy_children(node_id):
+    """Get just the children of a node with counts."""
+    children = tax.get_children(node_id)
+    return jsonify(children)
+
+
+@app.route("/api/taxonomy/<node_id>/matrix")
+def api_taxonomy_matrix(node_id):
+    """Get the method x dataset matrix for a node."""
+    matrix = tax.get_method_dataset_matrix(node_id)
+    return jsonify(matrix)
+
+
+@app.route("/api/taxonomy/<node_id>/intersections")
+def api_taxonomy_intersections(node_id):
+    """Get the subfield intersection matrix for a node."""
+    return jsonify(tax.get_subfield_intersection_matrix(node_id))
+
+
+@app.route("/api/taxonomy/<node_id>/papers")
+def api_taxonomy_papers(node_id):
+    """Get papers for a node."""
+    limit = request.args.get("limit", 50, type=int)
+    papers = tax.get_node_papers(node_id, limit=limit)
+    return jsonify(papers)
+
+
+@app.route("/api/taxonomy/<node_id>/paper_clusters")
+def api_taxonomy_paper_clusters(node_id):
+    """Get paper clusters for a node."""
+    return jsonify(tax.get_node_paper_clusters(node_id))
+
+
+@app.route("/api/taxonomy/<node_id>/gaps")
+def api_taxonomy_gaps(node_id):
+    """Get matrix gaps for a node."""
+    gaps = tax.get_node_gaps(node_id)
+    return jsonify(gaps)
+
+
+@app.route("/api/taxonomy/<node_id>/opportunities")
+def api_taxonomy_opportunities(node_id):
+    """Get richer deterministic opportunity themes for a node."""
+    return jsonify(opp.get_node_opportunities(node_id))
+
+
+@app.route("/api/insights")
+def api_insights():
+    """Get deep research insights from the insight agent."""
+    limit = request.args.get("limit", 50, type=int)
+    node_id = request.args.get("node_id", "")
+    insight_type = request.args.get("type", "")
+
+    sql = "SELECT * FROM insights WHERE 1=1"
+    params = []
+    if node_id:
+        sql += " AND (node_id=? OR node_id LIKE ? || '.%')"
+        params.extend([node_id, node_id])
+    if insight_type:
+        sql += " AND insight_type=?"
+        params.append(insight_type)
+    sql += " ORDER BY (novelty_score + feasibility_score) DESC, created_at DESC LIMIT ?"
+    params.append(limit)
+
+    rows = db.fetchall(sql, tuple(params))
+    return jsonify(rows)
+
+
+@app.route("/api/patterns")
+def api_patterns():
+    """Get cross-domain abstract patterns."""
+    limit = request.args.get("limit", 50, type=int)
+    node_id = request.args.get("node_id", "")
+    level = request.args.get("level", "")
+
+    sql = "SELECT * FROM patterns WHERE 1=1"
+    params = []
+    if node_id:
+        sql += " AND node_id=?"
+        params.append(node_id)
+    if level:
+        sql += " AND abstraction_level=?"
+        params.append(level)
+    sql += " ORDER BY domain_count DESC, created_at DESC LIMIT ?"
+    params.append(limit)
+
+    rows = db.fetchall(sql, tuple(params))
+    return jsonify(rows)
+
+
+@app.route("/api/bridges")
+def api_bridges():
+    """Get cross-domain bridge insights."""
+    limit = request.args.get("limit", 20, type=int)
+    rows = db.fetchall(
+        "SELECT * FROM insights WHERE insight_type='cross_domain_bridge' "
+        "ORDER BY (novelty_score + feasibility_score) DESC LIMIT ?",
+        (limit,)
+    )
+    return jsonify(rows)
+
+
+@app.route("/api/taxonomy/<node_id>/graph")
+def api_taxonomy_graph(node_id):
+    """Get the entity-relation graph summary for a node."""
+    return jsonify(graph.ensure_node_graph_summary(node_id) or {})
+
+
+@app.route("/api/papers/<paper_id>/graph")
+def api_paper_graph(paper_id):
+    """Get entity-relation evidence for one paper."""
+    return jsonify(graph.get_paper_graph(paper_id))
+
+
+@app.route("/api/graph/merge_candidates")
+def api_graph_merge_candidates():
+    """List entity merge candidates."""
+    status = request.args.get("status", "pending")
+    entity_type = request.args.get("entity_type", "") or None
+    limit = request.args.get("limit", 100, type=int)
+    return jsonify(graph.list_merge_candidates_with_context(status=status, limit=limit, entity_type=entity_type))
+
+
+@app.route("/api/graph/merge_candidates/<int:candidate_id>")
+def api_graph_merge_candidate(candidate_id: int):
+    """Get one merge candidate with supporting context."""
+    row = graph.get_merge_candidate_context(candidate_id)
+    if not row:
+        return jsonify({"error": "Candidate not found"}), 404
+    return jsonify(row)
+
+
+@app.route("/api/graph/merge_candidates/refresh", methods=["POST"])
+def api_graph_merge_candidates_refresh():
+    """Refresh heuristic merge candidates."""
+    entity_type = request.json.get("entity_type") if request.is_json else None
+    min_score = request.json.get("min_score", 0.84) if request.is_json else 0.84
+    max_entities_per_type = request.json.get("max_entities_per_type", 500) if request.is_json else 500
+
+    def run_refresh():
+        log_event("merge_candidates_refresh_start", {
+            "entity_type": entity_type,
+            "min_score": min_score,
+            "max_entities_per_type": max_entities_per_type,
+        })
+        stats = graph.refresh_merge_candidates(
+            entity_type=entity_type,
+            min_score=min_score,
+            max_entities_per_type=max_entities_per_type,
+        )
+        log_event("merge_candidates_refresh_done", stats)
+
+    thread = threading.Thread(target=run_refresh, daemon=True)
+    thread.start()
+    return jsonify({"status": "started", "entity_type": entity_type, "min_score": min_score})
+
+
+@app.route("/api/graph/merge_candidates/<int:candidate_id>/decision", methods=["POST"])
+def api_graph_merge_candidate_decision(candidate_id: int):
+    """Accept or reject a merge candidate."""
+    decision = request.json.get("decision", "rejected") if request.is_json else "rejected"
+    note = request.json.get("note", "") if request.is_json else ""
+    row = graph.decide_merge_candidate(candidate_id, decision=decision, note=note)
+    if not row:
+        return jsonify({"error": "Candidate not found"}), 404
+    log_event("merge_candidate_decision", {
+        "candidate_id": candidate_id,
+        "decision": decision,
+    })
+    return jsonify(row)
+
+
+# ── Search ─────────────────────────────────────────────────────────
+
+@app.route("/api/search")
+def api_search():
+    """Search across papers, methods, gaps, and taxonomy nodes."""
+    q = request.args.get("q", "").strip()
+    if not q or len(q) < 2:
+        return jsonify({"papers": [], "methods": [], "gaps": [], "nodes": [], "opportunities": []})
+
+    search_term = f"%{q}%"
+
+    papers = db.fetchall(
+        """SELECT p.id, p.title, p.status, p.published_date,
+                  pi.plain_summary, pi.work_type
+           FROM papers p
+           LEFT JOIN paper_insights pi ON p.id = pi.paper_id
+           WHERE p.title LIKE ? OR p.abstract LIKE ? OR pi.plain_summary LIKE ?
+           ORDER BY p.published_date DESC
+           LIMIT 15""",
+        (search_term, search_term, search_term),
+    )
+
+    methods = db.fetchall(
+        """SELECT DISTINCT method_name as name, COUNT(*) as result_count,
+                  COUNT(DISTINCT paper_id) as paper_count
+           FROM results
+           WHERE method_name LIKE ?
+           GROUP BY method_name
+           ORDER BY paper_count DESC
+           LIMIT 10""",
+        (search_term,),
+    )
+
+    gaps = db.fetchall(
+        """SELECT mg.*, tn.name as node_name
+           FROM matrix_gaps mg
+           JOIN taxonomy_nodes tn ON mg.node_id = tn.id
+           WHERE mg.gap_description LIKE ? OR mg.method_name LIKE ?
+              OR mg.dataset_name LIKE ? OR mg.research_proposal LIKE ?
+           ORDER BY mg.value_score DESC
+           LIMIT 10""",
+        (search_term, search_term, search_term, search_term),
+    )
+
+    nodes = db.fetchall(
+        """SELECT t.*,
+                  (SELECT COUNT(DISTINCT pt.paper_id)
+                   FROM paper_taxonomy pt
+                   WHERE pt.node_id = t.id OR pt.node_id LIKE t.id || '.%') AS paper_count
+           FROM taxonomy_nodes t
+           WHERE t.name LIKE ? OR t.description LIKE ? OR t.id LIKE ?
+           ORDER BY paper_count DESC
+           LIMIT 10""",
+        (search_term, search_term, search_term),
+    )
+
+    opportunities = db.fetchall(
+        """SELECT no.*, tn.name as node_name
+           FROM node_opportunities no
+           JOIN taxonomy_nodes tn ON no.node_id = tn.id
+           WHERE no.title LIKE ? OR no.description LIKE ?
+           ORDER BY no.value_score DESC
+           LIMIT 10""",
+        (search_term, search_term),
+    )
+
+    return jsonify({
+        "papers": papers,
+        "methods": methods,
+        "gaps": gaps,
+        "nodes": nodes,
+        "opportunities": opportunities,
+    })
+
+
+# ── Recently Discovered ───────────────────────────────────────────
+
+@app.route("/api/recent_discoveries")
+def api_recent_discoveries():
+    """Get recently discovered gaps, contradictions, opportunities, and taxonomy expansions."""
+    limit = request.args.get("limit", 10, type=int)
+
+    recent_gaps = db.fetchall(
+        """SELECT mg.*, tn.name as node_name
+           FROM matrix_gaps mg
+           JOIN taxonomy_nodes tn ON mg.node_id = tn.id
+           ORDER BY mg.created_at DESC LIMIT ?""",
+        (limit,),
+    )
+
+    recent_contradictions = db.fetchall(
+        """SELECT c.*, ca.claim_text as claim_a_text, ca.paper_id as paper_a,
+                  cb.claim_text as claim_b_text, cb.paper_id as paper_b
+           FROM contradictions c
+           LEFT JOIN claims ca ON c.claim_a_id = ca.id
+           LEFT JOIN claims cb ON c.claim_b_id = cb.id
+           ORDER BY c.created_at DESC LIMIT ?""",
+        (limit,),
+    )
+
+    recent_opportunities = db.fetchall(
+        """SELECT no.*, tn.name as node_name
+           FROM node_opportunities no
+           JOIN taxonomy_nodes tn ON no.node_id = tn.id
+           ORDER BY no.created_at DESC LIMIT ?""",
+        (limit,),
+    )
+
+    recent_papers = db.fetchall(
+        """SELECT p.id, p.title, p.published_date, p.status,
+                  pi.plain_summary, pi.work_type
+           FROM papers p
+           LEFT JOIN paper_insights pi ON p.id = pi.paper_id
+           WHERE p.status IN ('extracted', 'reasoned')
+           ORDER BY p.updated_at DESC LIMIT ?""",
+        (limit,),
+    )
+
+    return jsonify({
+        "gaps": recent_gaps,
+        "contradictions": recent_contradictions,
+        "opportunities": recent_opportunities,
+        "papers": recent_papers,
+    })
+
+
+# ── Taxonomy Expansion Trigger ────────────────────────────────────
+
+@app.route("/api/taxonomy/expand", methods=["POST"])
+def api_taxonomy_expand():
+    """Manually trigger taxonomy expansion."""
+    min_papers = request.json.get("min_papers", 10) if request.is_json else 10
+
+    def do_expand():
+        log_event("taxonomy_expansion_start", {"min_papers": min_papers})
+        results = run_expansion(min_papers=min_papers)
+        for exp in results:
+            if exp.get("new_children"):
+                log_event("taxonomy_expanded", {
+                    "node_id": exp["node_id"],
+                    "new_children": exp["new_children"],
+                    "papers_reassigned": exp["papers_reassigned"],
+                })
+        log_event("taxonomy_expansion_done", {
+            "nodes_checked": len(results),
+            "nodes_expanded": sum(1 for e in results if e.get("new_children")),
+        })
+
+    thread = threading.Thread(target=do_expand, daemon=True)
+    thread.start()
+    return jsonify({"status": "started", "min_papers": min_papers})
+
+
+# ── Legacy Endpoints (kept for compatibility) ─────────────────────
+
+@app.route("/api/papers")
+def api_papers():
+    limit = request.args.get("limit", 50, type=int)
+    status = request.args.get("status", "")
+    if status:
+        papers = db.fetchall(
+            "SELECT id, title, status, token_cost, created_at FROM papers WHERE status=? ORDER BY updated_at DESC LIMIT ?",
+            (status, limit))
+    else:
+        papers = db.fetchall(
+            "SELECT id, title, status, token_cost, created_at FROM papers ORDER BY updated_at DESC LIMIT ?",
+            (limit,))
+    return jsonify(papers)
+
+
+@app.route("/api/claims")
+def api_claims():
+    limit = request.args.get("limit", 100, type=int)
+    paper_id = request.args.get("paper_id", "")
+    if paper_id:
+        claims = db.fetchall("SELECT * FROM claims WHERE paper_id=?", (paper_id,))
+    else:
+        claims = db.fetchall("SELECT * FROM claims ORDER BY id DESC LIMIT ?", (limit,))
+    return jsonify(claims)
+
+
+@app.route("/api/results")
+def api_results():
+    """Get structured results, optionally filtered."""
+    limit = request.args.get("limit", 100, type=int)
+    paper_id = request.args.get("paper_id", "")
+    node_id = request.args.get("node_id", "")
+    method = request.args.get("method", "")
+
+    sql = "SELECT DISTINCT r.*, p.title as paper_title FROM results r JOIN papers p ON r.paper_id = p.id"
+    params = []
+    if node_id:
+        sql += " JOIN result_taxonomy rt ON rt.result_id = r.id"
+    sql += " WHERE 1=1"
+    if paper_id:
+        sql += " AND r.paper_id=?"
+        params.append(paper_id)
+    if node_id:
+        sql += " AND (rt.node_id=? OR rt.node_id LIKE ? || '.%')"
+        params.extend([node_id, node_id])
+    if method:
+        sql += " AND r.method_name=?"
+        params.append(method)
+    sql += " ORDER BY r.id DESC LIMIT ?"
+    params.append(limit)
+
+    rows = db.fetchall(sql, tuple(params))
+    return jsonify(rows)
+
+
+@app.route("/api/contradictions")
+def api_contradictions():
+    limit = request.args.get("limit", 50, type=int)
+    rows = db.fetchall("""
+        SELECT c.*, ca.claim_text as claim_a_text, ca.paper_id as paper_a,
+               cb.claim_text as claim_b_text, cb.paper_id as paper_b
+        FROM contradictions c
+        LEFT JOIN claims ca ON c.claim_a_id = ca.id
+        LEFT JOIN claims cb ON c.claim_b_id = cb.id
+        ORDER BY c.id DESC LIMIT ?
+    """, (limit,))
+    return jsonify(rows)
+
+
+@app.route("/api/matrix_gaps")
+def api_matrix_gaps():
+    """Get all matrix gaps, optionally filtered by node."""
+    limit = request.args.get("limit", 50, type=int)
+    node_id = request.args.get("node_id", "")
+    if node_id:
+        rows = db.fetchall(
+            """SELECT mg.*, tn.name as node_name
+               FROM matrix_gaps mg
+               JOIN taxonomy_nodes tn ON mg.node_id = tn.id
+               WHERE mg.node_id=? OR mg.node_id LIKE ? || '.%'
+               ORDER BY mg.value_score DESC LIMIT ?""",
+            (node_id, node_id, limit))
+    else:
+        rows = db.fetchall(
+            """SELECT mg.*, tn.name as node_name
+               FROM matrix_gaps mg
+               JOIN taxonomy_nodes tn ON mg.node_id = tn.id
+               ORDER BY mg.value_score DESC LIMIT ?""",
+            (limit,))
+    return jsonify(rows)
+
+
+# ── Events (SSE) ──────────────────────────────────────────────────
+
+@app.route("/api/events")
+def api_events():
+    """SSE endpoint for real-time updates."""
+    def generate():
+        # Start from near the end - only send last 20 events on connect
+        all_events = get_events(0)
+        last_seq = max(0, all_events[-1]["seq"] - 20) if all_events else 0
+        while True:
+            events = get_events(last_seq)
+            for e in events:
+                yield f"data: {json.dumps(e, ensure_ascii=False, default=str)}\n\n"
+                last_seq = e["seq"] + 1
+            time.sleep(2)  # slower polling = less browser load
+
+    return Response(generate(), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+# ── Pipeline Control ──────────────────────────────────────────────
+
+@app.route("/api/start", methods=["POST"])
+def api_start():
+    """Start the pipeline."""
+    global _pipeline_running
+    max_papers = request.json.get("max_papers", 20) if request.is_json else 20
+
+    with _pipeline_lock:
+        if _pipeline_running:
+            return jsonify({"status": "already_running", "max_papers": max_papers})
+        _pipeline_running = True
+
+    def safe_run(n):
+        global _pipeline_running
+        import traceback as tb
+        try:
+            run_continuous(n)
+        except Exception as e:
+            print(f"[PIPELINE CRASH] {e}", flush=True)
+            print(tb.format_exc(), flush=True)
+            log_event("error", {"step": "pipeline_crash", "error": str(e),
+                                "traceback": tb.format_exc()})
+        finally:
+            with _pipeline_lock:
+                _pipeline_running = False
+
+    thread = threading.Thread(target=safe_run, args=(max_papers,), daemon=True)
+    thread.start()
+    return jsonify({"status": "started", "max_papers": max_papers})
+
+
+@app.route("/api/backfill_graph", methods=["POST"])
+def api_backfill_graph():
+    """Backfill graph evidence from existing structured records."""
+    overwrite = request.json.get("overwrite", False) if request.is_json else False
+    limit = request.json.get("limit") if request.is_json else None
+
+    def run_backfill():
+        log_event("backfill_start", {"overwrite": overwrite, "limit": limit})
+        stats = graph.backfill_graph_from_structured_data(limit=limit, overwrite=overwrite)
+        log_event("backfill_done", stats)
+
+    thread = threading.Thread(target=run_backfill, daemon=True)
+    thread.start()
+    return jsonify({"status": "started", "overwrite": overwrite, "limit": limit})
+
+
+# ── EvoScientist Bridge ──────────────────────────────────────────────
+
+@app.route("/api/research/launch", methods=["POST"])
+def api_research_launch():
+    """Launch EvoScientist research from a DeepGraph insight."""
+    from agents.research_bridge import launch_evoscientist
+    insight_id = request.json.get("insight_id") if request.is_json else None
+    if not insight_id:
+        return jsonify({"error": "insight_id required"}), 400
+    try:
+        result = launch_evoscientist(int(insight_id))
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/research/status")
+def api_research_status():
+    """Check status of an EvoScientist research session."""
+    from agents.research_bridge import get_research_status
+    workdir = request.args.get("workdir", "")
+    if not workdir:
+        return jsonify({"error": "workdir required"}), 400
+    return jsonify(get_research_status(workdir))
+
+
+@app.route("/api/research/proposal/<int:insight_id>")
+def api_research_proposal(insight_id):
+    """Preview the research proposal that would be sent to EvoScientist."""
+    from agents.research_bridge import gather_context, format_proposal
+    try:
+        ctx = gather_context(insight_id)
+        if not ctx.get("insight"):
+            return jsonify({"error": "Insight not found"}), 404
+        proposal = format_proposal(ctx)
+        return jsonify({
+            "insight_id": insight_id,
+            "title": ctx["insight"]["title"],
+            "paper_count": len(ctx["papers"]),
+            "claim_count": len(ctx["claims"]),
+            "contradiction_count": len(ctx["contradictions"]),
+            "proposal": proposal,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/insights/rank", methods=["POST"])
+def api_rank_insights():
+    """Rank all insights by paradigm-breaking potential."""
+    from agents.insight_ranker import rank_insights_batch
+    def run_ranking():
+        log_event("ranking_start", {})
+        stats = rank_insights_batch()
+        log_event("ranking_done", stats)
+    thread = threading.Thread(target=run_ranking, daemon=True)
+    thread.start()
+    return jsonify({"status": "started"})
+
+
+# ── Deep Insights (Tier 1 / Tier 2) ─────────────────────────────────
+
+@app.route("/api/deep_insights")
+def api_deep_insights():
+    """List deep insights with optional tier/status filter."""
+    tier = request.args.get("tier", "", type=str)
+    status = request.args.get("status", "")
+    limit = request.args.get("limit", 50, type=int)
+
+    sql = "SELECT * FROM deep_insights WHERE 1=1"
+    params = []
+    if tier:
+        sql += " AND tier=?"
+        try:
+            params.append(int(tier))
+        except (ValueError, TypeError):
+            return jsonify({"error": "Invalid tier value"}), 400
+    if status:
+        sql += " AND status=?"
+        params.append(status)
+    fetch_limit = min(max(limit * 4, limit), 200)
+    sql += " ORDER BY CASE WHEN adversarial_score IS NOT NULL THEN adversarial_score ELSE 0 END DESC, created_at DESC LIMIT ?"
+    params.append(fetch_limit)
+
+    try:
+        rows = db.fetchall(sql, tuple(params))
+        if request.args.get("include_placeholders") not in {"1", "true", "yes"}:
+            rows = [row for row in rows if _deep_insight_is_displayable(row)]
+        return jsonify(rows[:limit])
+    except Exception as exc:
+        return _api_failure("deep_insights", exc)
+
+
+@app.route("/api/deep_insights/<int:insight_id>")
+def api_deep_insight_detail(insight_id):
+    """Get full detail for one deep insight."""
+    row = db.fetchone("SELECT * FROM deep_insights WHERE id=?", (insight_id,))
+    if not row:
+        return jsonify({"error": "Not found"}), 404
+    return jsonify(dict(row))
+
+
+@app.route("/api/deep_insights/generate", methods=["POST"])
+def api_generate_deep_insights():
+    """Trigger discovery pipeline (harvest + Tier 1 + Tier 2).
+
+    JSON body (optional):
+      tier: "1" | "2" | "both" (default both)
+      bulk: true — use DISCOVERY_BULK_* wider signals + expand all Tier2 problems
+    """
+    from orchestrator.discovery_scheduler import run_full_discovery
+    tier = request.json.get("tier", "both") if request.is_json else "both"
+    bulk = bool(request.json.get("bulk")) if request.is_json else False
+
+    def do_discovery():
+        if tier == "1":
+            from orchestrator.discovery_scheduler import harvest_signals, run_tier1_discovery
+            harvest_signals()
+            run_tier1_discovery(bulk=bulk)
+        elif tier == "2":
+            from orchestrator.discovery_scheduler import harvest_signals, run_tier2_discovery
+            harvest_signals()
+            run_tier2_discovery(bulk=bulk)
+        else:
+            run_full_discovery(bulk=bulk)
+
+    t = threading.Thread(target=do_discovery, daemon=True)
+    t.start()
+    return jsonify({"status": "started", "tier": tier, "bulk": bulk})
+
+
+@app.route("/api/deep_insights/<int:insight_id>/verify", methods=["POST"])
+def api_verify_deep_insight(insight_id):
+    """Launch novelty verification via EvoScientist."""
+    from agents.novelty_verifier import launch_verification
+    try:
+        result = launch_verification(insight_id)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/deep_insights/<int:insight_id>/verify_status")
+def api_verify_status(insight_id):
+    """Check verification status."""
+    from agents.novelty_verifier import check_verification_result
+    return jsonify(check_verification_result(insight_id))
+
+
+@app.route("/api/deep_insights/<int:insight_id>/research", methods=["POST"])
+def api_deep_insight_research(insight_id):
+    """Launch full EvoScientist research session."""
+    from agents.novelty_verifier import launch_full_research
+    try:
+        result = launch_full_research(insight_id)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/deep_insights/signals")
+def api_deep_insight_signals():
+    """Get current signal harvester data."""
+    try:
+        overlaps = db.fetchall(
+            "SELECT * FROM node_entity_overlap ORDER BY overlap_score DESC LIMIT 20")
+        pattern_ms = db.fetchall(
+            "SELECT * FROM pattern_matches ORDER BY similarity_score DESC LIMIT 15")
+        clusters = db.fetchall(
+            "SELECT * FROM contradiction_clusters ORDER BY cluster_size DESC")
+        plateaus = db.fetchall(
+            "SELECT * FROM performance_plateaus ORDER BY method_count DESC LIMIT 15")
+        protocol = db.fetchall(
+            "SELECT * FROM protocol_artifacts ORDER BY support_count DESC LIMIT 15")
+        negative = db.fetchall(
+            "SELECT * FROM negative_space_gaps ORDER BY support_count DESC LIMIT 15")
+        bridges = db.fetchall(
+            "SELECT * FROM hidden_variable_bridges ORDER BY score DESC LIMIT 15")
+        claim_gaps = db.fetchall(
+            "SELECT * FROM claim_method_gaps ORDER BY support_count DESC LIMIT 15")
+        return jsonify({
+            "entity_overlaps": overlaps,
+            "pattern_matches": pattern_ms,
+            "contradiction_clusters": clusters,
+            "performance_plateaus": plateaus,
+            "protocol_artifacts": protocol,
+            "negative_space_gaps": negative,
+            "hidden_variable_bridges": bridges,
+            "claim_method_gaps": claim_gaps,
+        })
+    except Exception as exc:
+        return _api_failure("deep_insight_signals", exc)
+
+
+@app.route("/api/discovery/candidates")
+def api_discovery_candidates():
+    from agents.discovery_supervisor import collect_candidate_pool
+
+    limit = request.args.get("limit", 50, type=int)
+    return jsonify(collect_candidate_pool(limit=limit))
+
+
+@app.route("/api/discovery/rankings")
+def api_discovery_rankings():
+    from agents.discovery_supervisor import rank_candidates
+
+    limit = request.args.get("limit", 20, type=int)
+    return jsonify(rank_candidates(limit=limit))
+
+
+# ── SciForge: Experiment Validation ──────────────────────────────────
+
+@app.route("/api/experiments")
+def api_experiments():
+    """List experiment runs with optional status/insight filter."""
+    status = request.args.get("status", "")
+    insight_id = request.args.get("insight_id", "", type=str)
+    limit = request.args.get("limit", 50, type=int)
+
+    sql = """SELECT er.*, di.title as insight_title, di.tier as insight_tier
+             FROM experiment_runs er
+             JOIN deep_insights di ON er.deep_insight_id = di.id
+             WHERE 1=1"""
+    params = []
+    if status:
+        sql += " AND er.status=?"
+        params.append(status)
+    if insight_id:
+        sql += " AND er.deep_insight_id=?"
+        try:
+            params.append(int(insight_id))
+        except (ValueError, TypeError):
+            return jsonify({"error": "Invalid insight_id value"}), 400
+    sql += " ORDER BY er.created_at DESC LIMIT ?"
+    params.append(limit)
+
+    try:
+        rows = db.fetchall(sql, tuple(params))
+        return jsonify(rows)
+    except Exception as exc:
+        return _api_failure("experiments", exc)
+
+
+@app.route("/api/experiment_groups")
+def api_experiment_groups():
+    """List idea-centric experiment groups for the dashboard."""
+    status = request.args.get("status", "")
+    limit = request.args.get("limit", 50, type=int)
+    groups = _load_experiment_groups()
+    if status:
+        groups = [
+            group
+            for group in groups
+            if ((group.get("canonical_run") or {}).get("status") == status)
+        ]
+    return jsonify(groups[:limit])
+
+
+@app.route("/api/experiment_groups/<int:insight_id>")
+def api_experiment_group_detail(insight_id):
+    """Get one idea-centric experiment group with run history."""
+    groups = _load_experiment_groups()
+    for group in groups:
+        if int(group["insight"]["id"]) == insight_id:
+            return jsonify(group)
+    return jsonify({"error": "Not found"}), 404
+
+
+def _load_paper_preview_context(insight_id: int) -> tuple[dict, dict]:
+    insight = db.fetchone("SELECT * FROM deep_insights WHERE id=?", (insight_id,))
+    if not insight:
+        abort(404)
+    payload = _workspace_payload(dict(insight))
+    return dict(insight), payload
+
+
+def _pick_main_asset(assets: list[dict], suffix: str) -> str | None:
+    for asset in assets:
+        path = str(asset.get("path") or "")
+        if path.endswith(f"/main{suffix}") or path == f"current/main{suffix}":
+            return path
+    return None
+
+
+@app.route("/papers/<int:insight_id>")
+def paper_preview_index(insight_id):
+    insight, payload = _load_paper_preview_context(insight_id)
+    return render_template(
+        "paper_preview.html",
+        insight=insight,
+        paper_assets=payload["paper_assets"],
+        preview_urls=payload["paper_preview_urls"],
+        plan_snapshot=payload["plan_snapshot"],
+    )
+
+
+@app.route("/papers/<int:insight_id>/view/<path:asset>")
+def paper_preview_asset(insight_id, asset):
+    insight = db.fetchone("SELECT * FROM deep_insights WHERE id=?", (insight_id,))
+    if not insight:
+        abort(404)
+    try:
+        resolved = resolve_paper_asset(insight_id, asset, insight=dict(insight))
+    except ValueError:
+        abort(404)
+    if not resolved.exists() or not resolved.is_file():
+        abort(404)
+    return send_file(resolved, as_attachment=False)
+
+
+@app.route("/papers/<int:insight_id>/pdf")
+def paper_preview_pdf(insight_id):
+    insight, payload = _load_paper_preview_context(insight_id)
+    pdf_asset = _pick_main_asset(payload["paper_assets"], ".pdf")
+    if not pdf_asset:
+        return jsonify({"error": "Compiled PDF not found for this idea"}), 404
+    resolved = resolve_paper_asset(insight_id, pdf_asset, insight=insight)
+    return send_file(resolved, as_attachment=False)
+
+
+@app.route("/papers/<int:insight_id>/tex")
+def paper_preview_tex(insight_id):
+    insight, payload = _load_paper_preview_context(insight_id)
+    tex_asset = _pick_main_asset(payload["paper_assets"], ".tex")
+    if not tex_asset:
+        return jsonify({"error": "main.tex not found for this idea"}), 404
+    resolved = resolve_paper_asset(insight_id, tex_asset, insight=insight)
+    return send_file(resolved, as_attachment=False)
+
+
+@app.route("/api/experiments/<int:run_id>")
+def api_experiment_detail(run_id):
+    """Get full detail for one experiment run including iterations."""
+    run = db.fetchone(
+        """SELECT er.*, di.title as insight_title, di.tier as insight_tier
+           FROM experiment_runs er
+           JOIN deep_insights di ON er.deep_insight_id = di.id
+           WHERE er.id=?""", (run_id,))
+    if not run:
+        return jsonify({"error": "Not found"}), 404
+
+    iterations = db.fetchall(
+        """SELECT * FROM experiment_iterations WHERE run_id=?
+           ORDER BY iteration_number""", (run_id,))
+
+    claims = db.fetchall(
+        "SELECT * FROM experimental_claims WHERE run_id=?", (run_id,))
+
+    return jsonify({
+        "run": dict(run),
+        "iterations": iterations,
+        "claims": claims,
+    })
+
+
+@app.route("/api/experiments/forge", methods=["POST"])
+def api_forge_experiment():
+    """Forge an experiment from a deep insight (scaffold + codebase)."""
+    from agents.experiment_forge import forge_experiment
+    insight_id = request.json.get("insight_id") if request.is_json else None
+    if not insight_id:
+        return jsonify({"error": "insight_id required"}), 400
+
+    def do_forge():
+        log_event("sciforge", {"step": "forge_start", "insight_id": insight_id})
+        result = forge_experiment(int(insight_id))
+        log_event("sciforge", {"step": "forge_done", **{k: v for k, v in result.items() if k != "codebase"}})
+
+    t = threading.Thread(target=do_forge, daemon=True)
+    t.start()
+    return jsonify({"status": "started", "insight_id": insight_id})
+
+
+@app.route("/api/experiments/<int:run_id>/run", methods=["POST"])
+def api_run_experiment(run_id):
+    """Launch the validation loop for a forged experiment."""
+    from agents.validation_loop import run_validation_loop
+    from agents.knowledge_loop import process_completed_run
+
+    run = db.fetchone("SELECT * FROM experiment_runs WHERE id=?", (run_id,))
+    if not run:
+        return jsonify({"error": "Run not found"}), 404
+
+    def do_run():
+        log_event("sciforge", {"step": "loop_start", "run_id": run_id})
+        try:
+            result = run_validation_loop(run_id)
+            log_event("sciforge", {"step": "loop_done", "run_id": run_id,
+                                   "verdict": result.get("verdict", "?")})
+            process_completed_run(run_id)
+            log_event("sciforge", {"step": "knowledge_loop_done", "run_id": run_id})
+        except Exception as e:
+            db.execute(
+                "UPDATE experiment_runs SET status='failed', error_message=? WHERE id=?",
+                (str(e), run_id))
+            db.commit()
+            log_event("error", {"step": "validation_loop", "run_id": run_id, "error": str(e)})
+            print(f"[SCIFORGE] Validation loop failed: {e}\n{traceback.format_exc()}", flush=True)
+
+    t = threading.Thread(target=do_run, daemon=True)
+    t.start()
+    return jsonify({"status": "started", "run_id": run_id})
+
+
+@app.route("/api/experiments/run_full", methods=["POST"])
+def api_run_full_experiment():
+    """Full pipeline: forge + validation loop + knowledge loop for a deep insight."""
+    from agents.experiment_forge import forge_experiment
+    from agents.validation_loop import run_validation_loop
+    from agents.knowledge_loop import process_completed_run
+
+    insight_id = request.json.get("insight_id") if request.is_json else None
+    if not insight_id:
+        return jsonify({"error": "insight_id required"}), 400
+
+    def do_full():
+        log_event("sciforge", {"step": "full_start", "insight_id": insight_id})
+        try:
+            forge_result = forge_experiment(int(insight_id))
+            if "error" in forge_result:
+                log_event("error", {"step": "forge", "error": forge_result["error"]})
+                return
+            run_id = forge_result["run_id"]
+            log_event("sciforge", {"step": "forge_done", "run_id": run_id})
+
+            loop_result = run_validation_loop(run_id)
+            log_event("sciforge", {"step": "loop_done", "run_id": run_id,
+                                   "verdict": loop_result.get("verdict", "?")})
+
+            process_completed_run(run_id)
+            log_event("sciforge", {"step": "full_done", "run_id": run_id,
+                                   "verdict": loop_result.get("verdict", "?")})
+        except Exception as e:
+            log_event("error", {"step": "full_experiment", "insight_id": insight_id, "error": str(e)})
+            print(f"[SCIFORGE] Full experiment failed: {e}\n{traceback.format_exc()}", flush=True)
+
+    t = threading.Thread(target=do_full, daemon=True)
+    t.start()
+    return jsonify({"status": "started", "insight_id": insight_id})
+
+
+@app.route("/api/meta_report")
+def api_meta_report():
+    """Get the meta-learning report on hypothesis quality."""
+    from agents.meta_learner import get_full_meta_report
+    try:
+        return jsonify(get_full_meta_report())
+    except Exception as exc:
+        return _api_failure("meta_report", exc)
+
+
+# ── Auto Research ────────────────────────────────────────────────────
+
+@app.route("/api/auto_research/status")
+def api_auto_research_status():
+    from orchestrator.auto_research import get_status
+    return jsonify(get_status())
+
+
+@app.route("/api/auto_research/jobs")
+def api_auto_research_jobs():
+    from orchestrator.auto_research import list_jobs
+    limit = request.args.get("limit", 50, type=int)
+    return jsonify(list_jobs(limit=limit))
+
+
+@app.route("/api/auto_research/start", methods=["POST"])
+def api_auto_research_start():
+    from orchestrator.auto_research import start
+    return jsonify(start())
+
+
+@app.route("/api/auto_research/stop", methods=["POST"])
+def api_auto_research_stop():
+    from orchestrator.auto_research import stop
+    return jsonify(stop())
+
+
+@app.route("/api/gpu/status")
+def api_gpu_status():
+    from orchestrator.gpu_scheduler import get_status, start
+
+    start()
+    return jsonify(get_status())
+
+
+@app.route("/api/gpu/jobs")
+def api_gpu_jobs():
+    from orchestrator.gpu_scheduler import list_jobs, start
+
+    limit = request.args.get("limit", 100, type=int)
+    start()
+    return jsonify(list_jobs(limit=limit))
+
+
+@app.route("/api/manuscripts")
+def api_manuscripts():
+    from agents.manuscript_pipeline import list_manuscripts
+
+    limit = request.args.get("limit", 50, type=int)
+    return jsonify(list_manuscripts(limit=limit))
+
+
+@app.route("/api/manuscripts/<int:run_id>/bundle", methods=["POST"])
+def api_manuscript_bundle(run_id):
+    from agents.manuscript_pipeline import generate_submission_bundle
+
+    bundle_formats = None
+    if request.is_json and request.json.get("formats"):
+        bundle_formats = request.json.get("formats")
+    result = generate_submission_bundle(run_id, bundle_formats=bundle_formats)
+    status = 200 if "error" not in result else 400
+    return jsonify(result), status
+
+
+@app.route("/api/submission_bundles/<int:bundle_id>")
+def api_submission_bundle(bundle_id):
+    row = db.fetchone("SELECT * FROM submission_bundles WHERE id=?", (bundle_id,))
+    if not row:
+        return jsonify({"error": "Not found"}), 404
+    manuscript_run = db.fetchone("SELECT * FROM manuscript_runs WHERE id=?", (row["manuscript_run_id"],))
+    assets = db.fetchall(
+        "SELECT * FROM manuscript_assets WHERE manuscript_run_id=? ORDER BY id",
+        (row["manuscript_run_id"],),
+    )
+    return jsonify({"bundle": row, "manuscript_run": manuscript_run, "assets": assets})

@@ -1,0 +1,67 @@
+\section{Experiments}
+
+\subsection{Baselines}
+
+We benchmark \ourmethod{} against two pipelines (App.~\ref{appendix:baseline_selection}): (1) a \textbf{Single Agent} baseline that processes all raw materials ($\mathcal{I}, \mathcal{E}, \mathcal{T}, \mathcal{G}, \mathcal{F}$) and executes end-to-end drafting and bibliography construction in a single LLM call, validating the necessity of a multi-agent system; and (2) \textbf{AI Scientist-v2}~\citep{yamada2025aiscientistv2}, a state-of-the-art system featuring multi-round citation gathering, VLM-guided plot refinement, and iterative self-reflection. To ensure fair comparison against baselines lacking diagram generation, we standardize visual inputs by restricting allowable figures to those extracted from ground-truth papers ($\mathcal{F} = \mathcal{F}_{GT}$). Furthermore, we adopt the \textit{sparse idea} as our standard setting to simulate realistic scenarios where researchers provide preliminary notes rather than mature formulations. To prevent pre-training data memorization, all evaluated writing pipelines employ a universal anti-leakage prompt (App.~\ref{appendix:info_leakage}).
+
+\begin{figure}[tbp]
+    \centering
+    \includegraphics[width=\linewidth]{content/figures/sxs_merged_2x4_spaced.png} 
+    \caption{Automated SxS evaluation of \ourmethod{} against baselines on the CVPR and ICLR 2025 datasets under the sparse idea setting. The \textbf{Human (GT)} baseline serves as an upper-bound reference. For both \textbf{(a)} literature review and \textbf{(b)} overall paper quality, \ourmethod{} significantly outperforms the AI baselines (Single Agent and AI Scientist-v2) across both judge models.}
+    \label{fig:sxs_comparison}
+\end{figure}
+
+\input{content/tables/automatic_reviewing_systems}
+\subsection{Autoraters}
+% We evaluate the generated manuscripts using four automatic rating systems. 
+
+\paragraph{Citation F1.} To quantitatively assess citation coverage, we compare the generated reference list against the ground-truth (GT) paper. Using an LLM provided with the paper context (see App.~\ref{appendix:autorater_prompts}), we partition the GT references into two categories: (1) \textbf{P0 (Must-Cite)} comprises core citations strictly necessary for contextualizing the work, including direct experimental baselines, utilized datasets, metrics, and foundational methodologies upon which the paper directly builds; (2) \textbf{P1 (Good-to-Cite)} includes all remaining GT citations, providing valuable but non-essential background context such as orthogonal work or supplementary information. To ensure accurate matching, we extract reference lists from both the GT and generated papers and resolve them to unique entity IDs using the Semantic Scholar API. We then compute Precision, Recall, and F1 scores independently for the P0 set, the P1 set, and the combined overall reference set.
+
+\paragraph{Literature Review Quality.} To qualitatively evaluate the generated \textit{Introduction} and \textit{Related Work} sections, we employ an LLM evaluator (App.~\ref{appendix:autorater_prompts}) to score the generated text from 0--100 across six axes: coverage and completeness, relevance and focus, critical analysis and synthesis, positioning and novelty, organization, and citation rigor. To mitigate standard LLM score inflation, the evaluation is grounded against venue-specific average citation counts. The system enforces strict score caps and penalties for purely descriptive summaries, unsupported novelty claims, or citation padding, outputting an overall quality score for each paper.
+
+\paragraph{Overall Quality.} To evaluate the holistic technical quality of the generated papers, we employ two AI-based peer review frameworks simulating expert assessment: (1) the \textbf{AI Scientist-v2 Reviewer}~\citep{yamada2025aiscientistv2}, an automated module for structured manuscript evaluation; and (2) \textbf{ScholarPeer}~\citep{goyal2026scholarpeer}, a search-enabled multi-agent system mimicking expert workflows via iterative retrieval and evidence checking. Both systems yield multi-axis scores, an overall rating, and a simulated acceptance decision.
+
+\paragraph{Side-by-Side (SxS) Comparison.} To directly compare manuscripts generated from the same research idea across different pipelines, we implement two automated SxS LLM evaluators. \textbf{(1) SxS Literature Review Quality} extracts the \textit{Introduction} and \textit{Related Work} to assess problem framing, prior work coverage, organization and synthesis, contribution positioning, and readability. \textbf{(2) SxS Paper Quality} holistically compares the full manuscript (including visual layout) across six axes: scientific depth, technical execution, logical flow, writing clarity, presentation of evidence, and academic style. To mitigate LLM positional bias, we evaluate each pair of manuscripts in both orderings. The final aggregated outcome is recorded as a \textit{win} (two wins, or one win and one tie), a \textit{tie} (one win and one loss, or two ties), or a \textit{loss}.
+
+\subsection{Results}
+\paragraph{Side-by-Side Comparison.} As shown in \Cref{fig:sxs_comparison}, \ourmethod{} consistently outperforms both the Single Agent baseline and AI Scientist-v2 in SxS evaluations. In \textit{Literature Review Quality}, our framework dominates the autonomous baselines, achieving absolute win margins of \textbf{88\%--99\%}. For \textit{Overall Paper Quality}, although Human (GT) remains the upper bound, \ourmethod{} substantially surpasses all tested AI competitors. It strongly outperforms AI Scientist-v2 and the Single Agent by margins of \textbf{39\%--86\%} and \textbf{52\%--88\%}, respectively, across all settings, confirming that our multi-agent architecture significantly enhances overall manuscript quality (cost analysis in App.~\ref{appendix:cost}).
+
+\paragraph{Technical Quality.} As detailed in \Cref{tab:combined_reviewer_quality}, we evaluate holistic manuscript quality using the AI Scientist-v2 and ScholarPeer frameworks. Under ScholarPeer, \ourmethod{} achieves high simulated acceptance rates of \textbf{84\%} (CVPR) and \textbf{81\%} (ICLR), closely tracking Human (GT) baselines (\textbf{86\%} and \textbf{94\%}, respectively). It significantly outperforms existing AI pipelines, delivering absolute acceptance gains of \textbf{13\%} (CVPR) and \textbf{9\%} (ICLR) over the strongest autonomous baseline. Beyond acceptance rates, \ourmethod{} dominates across critical sub-axes (notably \textit{Clarity}, \textit{Presentation}, and \textit{Soundness}), demonstrating that our multi-agent system yields structurally coherent and technically sound manuscripts.
+
+
+\input{content/tables/citation_f1}
+\input{content/tables/literature_review_quality}
+
+\paragraph{Citation Coverage.} \Cref{tab:citation_f1} demonstrates \ourmethod{} successfully mitigates under-citation issues. While autonomous baselines achieve competitive Overall F1 scores, this is a mathematical artifact of their extremely low citation counts (averaging 9--14). They focus on fetching obvious P0 papers, which inflates their F1 scores but leaves P1 Recall near zero. In contrast, our framework generates \textbf{45.73--47.98} citations, closely mirroring Human (GT) writeups ($\sim$59). Alongside improving P0 Recall by absolute margins of \textbf{2.13\%--6.07\%}, \ourmethod{} significantly increases P1 Recall by \textbf{12.59\%--13.75\%} over the strongest baselines. This proves our method actively explores the broader academic landscape rather than relying on shallow keyword matching.
+
+\paragraph{Literature Review Quality.} Citation F1 alone cannot fully evaluate literature synthesis; a review must also identify gaps and motivate the proposed method. From \Cref{tab:lit_review_quality}, \ourmethod{} achieves absolute Overall Score gains of \textbf{32.87\%--33.25\%} (Gemini-3.1-Pro) and \textbf{9.66\%--9.85\%} (GPT-5) over the strongest AI baseline, remaining highly comparable to Human baselines. Dominating in \textit{Citation Practices} and \textit{Critical Analysis}, our framework synthesizes analytical, well-grounded narratives rather than generic LLM summaries.
+
+
+\subsection{Human Evaluation}
+
+\input{content/tables/human_eval}
+
+To validate automated SxS metrics and assess human-perceived manuscript quality, we recruited 11 AI researchers to evaluate 40 randomly sampled papers (20 per venue) from \ourdataset{}. For each paper, \ourmethod{} was compared against all baselines (Human GT, Single Agent, and AI Scientist-v2), yielding 180 paired evaluations (App.~\ref{appendix:human_eval}).
+
+Human preferences correlate strongly with our GPT-5 evaluator for Overall Quality (Pearson $r=0.6458$, Spearman $\rho=0.6355$; Figure~\ref{fig:autorater_correlation_b}). Literature review correlation is lower due to inherent LLM self-bias. Manual inspection reveals LLMs tend to act as structural graders, rewarding rigid formatting such as explicit "Problem-Gap-Solution" paragraphs or bulleted thematic groups. In contrast, human experts prioritize dense, pragmatic factuality and a nuanced, narrative-driven flow, which the autorater often mistakenly penalizes for lacking explicit formatting cues. Nevertheless, relative rankings remain strictly consistent. The stability of our automated SxS metrics is further validated by high inter-autorater agreement across different LLM judges (Figure~\ref{fig:autorater_correlation_b}). Human SxS evaluations (Figure~\ref{fig:human_sxs_a}) confirm \ourmethod{} strongly outperforms AI baselines by absolute margins of \textbf{50\%--68\%} (Literature Review) and \textbf{14\%--38\%} (Overall Quality). It also achieves a highly competitive \textbf{43\%} tie/win rate against human GT in literature synthesis. 
+
+
+\subsection{Ablation Studies}
+
+\input{content/tables/ablation_sparse_dense}
+\input{content/tables/ablation_plotting}
+
+\paragraph{Sparse vs.\ Dense Idea}
+\Cref{tab:ablation_sparse_dense} evaluates the impact of input density. For \textit{Overall Paper Quality}, the Dense idea setting dominates win rates (\textbf{43\%--56\%} vs.\ \textbf{18\%--24\%}) by facilitating more rigorous methodology generation. Meanwhile, \textit{Literature Review Quality} exhibits near-parity, with the Sparse setting securing \textbf{32\%--40\%} against Dense's \textbf{28\%--39\%}. This demonstrates the exceptional robustness of \ourmethod: our \textit{Literature Review Agent} autonomously executes targeted searches and identifies research gaps without relying heavily on the dense input drafted by human. Additional qualitative comparisons are provided in App.~\ref{appendix:paper_viz_sparse_dense}.
+
+\paragraph{Autonomous Visual Generation (PlotOff vs.\ PlotOn)}
+\Cref{tab:ablation_plotting} evaluates our \textit{Plotting Agent} by comparing papers using human-authored GT figures (\textit{PlotOff}) vs. autonomously generated visuals (\textit{PlotOn}). Although \textit{PlotOff} benefits from an inherent information advantage (GT figures often embed supplementary results absent from raw input logs), \textit{PlotOn} remains highly competitive, securing ties or wins in \textbf{51\%--66\%} of SxS matchups across all four setups. As shown in App.~\ref{appendix:paper_viz_sxs}, \ourmethod{} synthesizes coherent visuals from scratch, effectively augmenting the manuscript and reinforcing the scientific narrative.
+
+\begin{figure}[tbp]
+    \centering    \includegraphics[width=\linewidth]{content/figures/ablation_refinement.png}
+    \caption{\textbf{Impact of the Content Refinement Agent.} (a) In automated SxS paper quality evaluation, refined manuscripts dominates. (b) This improvement is reflected through absolute gains in acceptance rates simulated by AgentReview~\citep{jin2024agentreview}.}
+    \label{fig:ablation_refinement}
+\end{figure}
+
+\paragraph{Importance of the Content Refinement Agent}
+\Cref{fig:ablation_refinement} isolates the impact of our iterative evaluation-feedback loop. In automated SxS comparisons (\ref{fig:ablation_refinement}(a)), refined manuscripts (\textit{AfterRefine}) dominate unrefined drafts (\textit{BeforeRefine}) with \textbf{79\%--81\%} win rates and \textbf{0\%} losses. AgentReview metrics (\ref{fig:ablation_refinement}(b)) reflect this trend, showing substantial increases in simulated acceptance rates (\textbf{+19\%} CVPR, \textbf{+22\%} ICLR) and overall scores (\textbf{+0.88} and \textbf{+1.61}). Driven by targeted clarity and presentation corrections, these results prove our content refinement loop is critical for elevating raw drafts into rigorous, submission-ready manuscripts.

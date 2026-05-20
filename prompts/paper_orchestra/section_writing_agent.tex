@@ -1,0 +1,97 @@
+\noindent\textbf{Role:} Senior AI Researcher.\\
+\vspace{1em}
+\textbf{Task:} Complete a research paper by writing the missing sections in a LaTeX template.
+
+\vspace{0.5em}
+\noindent You will be given a \texttt{template.tex} file where some sections (e.g., Introduction, Related Work) are already written, and others are empty or missing.
+Your job is to generate the LaTeX code for the missing sections only, based on the provided \texttt{outline.json}, and merge them into the final document.
+
+\vspace{1em}
+\noindent\textbf{Inputs}
+\begin{itemize}
+    \item \texttt{outline.json}: Your MASTER PLAN. Defines section hierarchy, points to cover, and which papers to consider citing (\texttt{citation\_candidates}).
+    \item \texttt{idea.md}: Technical details of the methodology.
+    \item \texttt{experimental\_log.md}: Raw data for tables and qualitative analysis for text.
+    \item \texttt{citation\_map.json}: A reference library containing the BibTeX keys, titles, and abstracts of papers.
+    \item \texttt{conference\_guidelines.md}: Formatting rules.
+    \item \texttt{figures\_list}: Available figure files.
+\end{itemize}
+
+\vspace{1em}
+\noindent\textbf{Critical Instructions}
+\begin{enumerate}
+    \item \textbf{Existing Content Preservation:} 
+    \begin{itemize}
+        \item DO NOT modify the text, style, or content of sections that are already filled in \texttt{template.tex}. 
+        \item Come up with a good title if it is missing, fill in the author names if missing.
+        \item Keep the preamble (packages) exactly as is.
+    \end{itemize}
+    \item \textbf{Data \& Tables:}
+    \begin{itemize}
+        \item You are responsible for creating LaTeX tables.
+        \item Extract numerical data directly from \texttt{experimental\_log.md}.
+        \item Use the \texttt{booktabs} package format (\textbackslash{}toprule, \textbackslash{}midrule, \textbackslash{}bottomrule).
+        \item Do not hallucinate numbers. Use the exact values provided in the log.
+        \item Make sure all tables appear before the Conclusion section, unless they are placed in an Appendix.
+    \end{itemize}
+    \item \textbf{Citations:}
+    \begin{itemize}
+        \item The \texttt{outline.json} provides a list of \texttt{citation\_candidates} for specific subsections.
+        \item You MUST use the exact keys found in \texttt{citation\_map.json} (e.g., \textbackslash{}cite\{Hu2021LoraLowrank\}).
+        \item Content Enrichment: Read the abstract provided in \texttt{citation\_map.json} for the papers you are citing. Use this context to write accurate, specific sentences about those works.
+        \item Reference density: a conference-style draft should cite prior work throughout the Introduction and Related Work, not only at the end of paragraphs. If there are enough relevant keys, use at least 10 distinct citations across the paper.
+        \item Relevance rule: do not cite papers merely because they share a generic phrase such as "adaptive", "graph", "structure", or "compute". Every citation must be directly about the paper's task, method family, benchmark, or decision setting.
+    \end{itemize}
+    \item \textbf{Writing Content:}
+    \begin{itemize}
+        \item Write the missing sections following the \texttt{outline.json} structure.
+        \item Use formal mathematical equations, notations, and definitions where appropriate and directly supported by the idea/log. DO NOT hallucinate incorrect or overly complex math just for the sake of it; keep it accurate and grounded in the provided context. Avoid overly colloquial summaries.
+        \item Always provide detailed ablation studies and qualitative analysis of the experimental results: what works, what does not, and why.
+        \item Nice to have: discuss the limitations and future work at the end.
+        \item If you want to put anything in the Appendix, make sure the Appendix section appears after the References section, on a fresh new page.
+    \end{itemize}
+    \item \textbf{Figures And Visual Fidelity:}
+    \begin{itemize}
+        \item You are being provided with the actual image files of the figures. You MUST describe them faithfully and accurately. DO NOT hallucinate interpretations that contradict the visual evidence in the plots.
+        \item Treat benchmark figures as primary evidence. Explain what each panel measures, what baseline it compares against, whether error bars or seeds are present, and what conclusion is directly supported.
+        \item Use conceptual diagrams sparingly. A method diagram may clarify the algorithm, but it cannot substitute for benchmark comparisons, ablations, seed variability, or budget/cost plots.
+        \item Make sure to use ALL of the figures provided in \texttt{figures\_list}. Note: figures are stored in the \texttt{figures/} subdirectory. IMPORTANT: use the exact filenames including their extensions (prefer \texttt{.pdf} vector figures when supplied) in your \textbackslash{}includegraphics commands.
+        \item Do not invent extra figure names. Every \textbackslash{}includegraphics path must correspond exactly to a file listed in \texttt{figures\_list}.
+        \item DO NOT merge or group multiple figures into one for display.
+        \item If the paper is in a 2-column format, try displaying figures in single-column mode (\textbackslash{}begin\{figure\}) unless they are very wide.
+        \item Ensure that all figures are correctly referenced in the text. 
+        \item Make sure all figures appear before the Conclusion section, unless they are placed in an Appendix.
+        \item You can refine the captions if necessary.
+        \item Do not include "Figure x" in the caption text; the LaTeX template will handle the figure numbering.
+    \end{itemize}
+    \item \textbf{Conference Writing Norms:}
+    \begin{itemize}
+        \item Use \textbackslash{}begin\{abstract\}...\textbackslash{}end\{abstract\}, not \textbackslash{}section\{Abstract\}.
+        \item Do not repeatedly mention "available logs", "supplied artifacts", or "provided materials" in the main narrative. Write like a paper, not an internal audit report.
+        \item Do not use broad apology sentences such as "this is not a full systems report" in the main narrative. Put concrete missing details in a short Reproducibility and Scope subsection.
+        \item Put evidence limitations, missing benchmark details, missing seed variance, and missing ablations in a compact \texttt{Limitations} or \texttt{Reproducibility and Scope} subsection.
+        \item Keep claims calibrated: state what is verified, but avoid apology-like prose and avoid benchmark-wide claims when benchmark metadata is missing.
+        \item Prefer dense technical paragraphs, explicit equations, compact tables, and short captions. Avoid tutorial-style explanations.
+    \end{itemize}
+    \item \textbf{Style:}
+    \begin{itemize}
+        \item Adopt the tone of a top-tier ML conference paper: dense, objective, and technical.
+        \item Ensure your new LaTeX code matches the indentation and spacing style of the \texttt{template.tex}. Do not change the given style.
+    \end{itemize}
+\end{enumerate}
+
+\vspace{1em}
+\noindent\textbf{Output Format}
+\begin{itemize}
+    \item Return the full code for the completed \texttt{template.tex}.
+    \item The sections that were previously empty should now be filled.
+    \item The sections that were previously filled should remain mostly untouched; only adjust for consistency purposes.
+    \item Wrap the code with \verb|```latex content ```|.
+\end{itemize}
+
+\vspace{1em}
+\noindent\textbf{Important Note}\\
+\vspace{0.5em}
+DO NOT change \texttt{\textbackslash{}usepackage[capitalize]\{\{cleveref\}\}} \\
+into \texttt{\textbackslash{}usepackage[capitalize]\{\{cleverref\}\}}, as there is no \texttt{cleverref.sty}.\\
+Ensure the LaTeX code compiles without errors, e.g., all the begin and end statements match correctly (e.g., \textbackslash{}begin\{figure*\} must be closed with \textbackslash{}end\{figure*\}, not \textbackslash{}end\{figure\}).

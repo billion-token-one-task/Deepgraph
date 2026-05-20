@@ -1,0 +1,26 @@
+\begin{table}[tbp]
+    \centering
+    \resizebox{\linewidth}{!}{%
+    \setlength{\tabcolsep}{4pt}
+    \begin{tabular}{@{} l c c c c c @{}}
+        \toprule
+        \textbf{Method} & 
+        \textbf{\begin{tabular}{@{}c@{}}E2E \mylatex \\ Manuscript Gen.\end{tabular}} & 
+        \textbf{\begin{tabular}{@{}c@{}}Decoupled \\ Standalone Writer\end{tabular}} & 
+        \textbf{\begin{tabular}{@{}c@{}}Robust to \\ Unstructured Input\end{tabular}} & 
+        \textbf{\begin{tabular}{@{}c@{}}Targeted Lit \\ Review Gen.\end{tabular}} & 
+        \textbf{\begin{tabular}{@{}c@{}}Conceptual \\ Diagram Gen.\end{tabular}} \\
+        \midrule
+        PaperRobot \citep{wang2019paperrobot}            & \xmark & \xmark & \xmark & \xmark & \xmark \\
+         data-to-paper \citep{technion2024datatopaper}    & \xmark & \cmark & \cmark & \xmark & \xmark \\
+        % XtraGPT \citep{chen2025xtragpt}                  & \xmark & \cmark & \cmark & \xmark & \xmark \\
+        AI-Researcher \citep{tang2025ai}                 & \cmark & \xmark & \xmark & \cmark & \xmark \\
+        Cycle Researcher \citep{weng2024cycleresearcher} & \cmark & \xmark & \xmark & \xmark & \xmark \\
+        AI Scientist-v2 \citep{yamada2025aiscientistv2}  & \cmark & \xmark & \cmark & \cmark & \xmark \\
+        \ourmethod\ \textbf{(Ours)}                      & \cmark & \cmark & \cmark & \cmark & \cmark \\
+        \bottomrule
+    \end{tabular}
+    }
+    \caption{Comparison of \ourmethod{} against existing AI writing systems.}
+    \label{tab:comparison}
+\end{table}

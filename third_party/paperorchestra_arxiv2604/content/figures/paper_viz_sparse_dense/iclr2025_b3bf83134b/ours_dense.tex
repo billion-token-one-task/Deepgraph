@@ -1,0 +1,70 @@
+\noindent We formulate the solution to multi-task combinatorial optimization as a constructive sequential decision-making process. The multi-task environment is defined as a disjoint union of Bisimulation Quotient Markov Decision Processes (BQ-MDPs), where states correspond to problem instances and actions correspond to construction steps (e.g., sequential node selections). To process highly variable environments within a single framework, GOAL decouples task-specific feature mapping from a shared reasoning backbone.
+
+\vspace{1em}
+\noindent\textbf{Task Representation and Input Adapters}
+\vspace{0.5em}
+
+\noindent For any given task $t$, we define an instance formally as a tuple $(x, \bar{x})$. Here, $x \in \mathbb{R}^{N \times F_t}$ represents the feature vectors of $N$ nodes with task-specific dimension $F_t$, and $\bar{x} \in \mathbb{R}^{N \times N \times \bar{F}_t}$ represents the feature vectors of edges with dimension $\bar{F}_t$. 
+
+\vspace{0.5em}
+\noindent Because different problems exhibit varying initial feature dimensions, we map these variables to a shared backbone embedding dimension $D$ using Task-Specific Adapters combined with a Shared Linear Projection. To prevent isolated subspace specialization, we enforce low-rank projections:
+
+\vspace{0.5em}
+\noindent 1. \textbf{Input Adapter:} A task-specific linear layer maps the raw inputs down to a low-dimensional space $\ell \ll D$.
+
+\vspace{0.5em}
+\noindent 2. \textbf{Shared Linear Projection:} A universally learnable matrix of size $\ell \times D$ projects this compressed representation into the shared backbone space. (Note: this component is labeled as a `codebook' in figures for visual brevity, though it acts purely as a continuous linear projection and not a discrete quantization dictionary).
+
+\vspace{1em}
+\noindent\textbf{Multi-Head Mixed-Attention Mechanism}
+\vspace{0.5em}
+
+\noindent The core reasoning engine of GOAL is a Transformer stack utilizing a Multi-Head Mixed-Attention mechanism. Unlike standard transformers that rely solely on node features, our mechanism natively ingests edge features $\bar{x}$ directly into the attention score computation. 
+
+\vspace{0.5em}
+\noindent For a given attention head $h$, let $M$ be the number of query nodes and $N$ be the number of key/value nodes. The standard projections for node queries ($Q$), keys ($K$), and values ($V$) are defined as:
+\[
+Q_n^{(h)} = Q_n \mathbf{W}_Q^{(h)}, \quad K_m^{(h)} = K_m \mathbf{W}_K^{(h)}, \quad V_m^{(h)} = V_m \mathbf{W}_V^{(h)}
+\]
+Simultaneously, we define projections for the edge features $E_{mn}$ (derived from $\bar{x}$) into the query and key spaces:
+\[
+Q_{mn}^{\prime (h)} = E_{mn} \mathbf{W}_Q^{\prime (h)}, \quad K_{mn}^{\prime (h)} = E_{mn} \mathbf{W}_K^{\prime (h)}
+\]
+The attention scores $S_{mn}^{(h)}$ are then computed by adding the edge-derived vectors to the node-derived vectors \textit{before} the scalar product:
+\[
+S_{mn}^{(h)} = \langle K_m^{(h)} + K_{mn}^{\prime (h)} \mid Q_n^{(h)} + Q_{mn}^{\prime (h)} \rangle
+\]
+This formulation structurally integrates relational data without incurring computational overhead when such features are absent, as the edge terms simply evaluate to zero. 
+
+\vspace{0.5em}
+\noindent While our mechanism shares mathematical foundations with relative positional encodings and other edge-augmented models, it fundamentally differs in application. Instead of learning 1D scalar biases based on graph distance, our Mixed-Attention dynamically projects dense, multi-dimensional asymmetric edge features (such as explicit transition costs or capacity constraints) directly into the high-dimensional query and key vector spaces before the scalar product. 
+
+\vspace{1em}
+\noindent\textbf{Multi-Type Transformer Architecture}
+\vspace{0.5em}
+
+\noindent To handle combinatorial problems defined on heterogeneous graphs (e.g., bipartite connections mapping ``Jobs'' to ``Machines'' in scheduling tasks), we extend the backbone into a Multi-Type Architecture. Rather than padding disparate types into a single homogeneous tensor, we dynamically compose layer operations based on the inherent task structure.
+
+\vspace{0.5em}
+\noindent We instantiate separate self-attention blocks for each distinct node type, and cross-attention blocks for valid type pairings. Crucially, to maintain the generalist nature of the model, all attention blocks within a specific layer share the \textit{exact same parameters} ($\mathbf{W}_Q, \mathbf{W}_K, \mathbf{W}_V$, etc.), regardless of whether they are performing self-attention or cross-attention. This forces disparate graph typologies to map into a unified algorithmic reasoning space.
+
+\vspace{0.5em}
+\noindent One might consider an alternative approach: concatenating all nodes into a single sequence and utilizing a block-sparse attention mask. However, standard transformers with sparse masks often still allocate memory-intensive full-sequence tensors ($N \times N$) before applying the mask. Our Multi-Type architecture avoids this by explicitly instantiating structured attention blocks \textit{only} for valid topological pairings, bypassing the quadratic computational waste associated with invalid interactions. 
+
+\vspace{1em}
+\noindent\textbf{Training Protocol and Decoding}
+\vspace{0.5em}
+
+\noindent GOAL is trained in a multi-task setting via Imitation Learning. To train the model, we require step-by-step constructive trajectories derived from optimal or highly optimized heuristic oracles. 
+
+\vspace{0.5em}
+\noindent \textbf{Trajectory Canonicalization:} For sequential routing tasks with bidirectional symmetries (e.g., the TSP, where a forward and backward tour represent the same cycle), we canonicalize the expert trajectories to prevent conflicting teaching signals. We enforce a fixed traversal direction by always starting at the depot and breaking initial directional ties by visiting the lowest-indexed node first.
+
+\vspace{0.5em}
+\noindent For unordered tasks such as the Knapsack Problem (KP) and Minimum Vertex Cover (MVC), expert solvers output static sets of selected items. To convert these into sequential trajectories without masking optimal items, we take the exact optimal subset $S^*$ provided by the oracle, and strictly order \textit{only} the elements within $S^*$ by a defined heuristic (e.g., value-to-weight ratio for KP, residual degree for MVC). This translates the unordered solution into a deterministic, valid trajectory that the policy can effectively imitate.
+
+\vspace{0.5em}
+\noindent We minimize the cross-entropy loss between the model's predicted action probabilities and these optimal trajectories. A task-specific linear projection maps the final backbone output to a score matrix representing the log-logits for valid node selection. A softmax operation is then applied over the dynamically updated valid action mask to yield the final policy distribution.
+
+\vspace{0.5em}
+\noindent \textbf{Autoregressive Decoding and Efficiency:} To maintain fast inference times scaling up to 1000-node instances, GOAL does \textit{not} re-evaluate the entire Transformer backbone at every autoregressive step. Instead, the heavy 9-layer backbone processes the static graph features (e.g., node coordinates, distance matrices) exactly once, caching the high-dimensional node and edge embeddings. At each constructive step, a lightweight Output Adapter takes the cached embeddings along with the rapidly changing dynamic state features (e.g., current location, remaining vehicle capacity) to compute the next valid action. This cached decoding strategy prevents quadratic recalculations at each step.

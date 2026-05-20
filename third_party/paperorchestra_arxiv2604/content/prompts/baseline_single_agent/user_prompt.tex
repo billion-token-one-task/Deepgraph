@@ -1,0 +1,70 @@
+\noindent Your task is to generate a complete research paper using the materials below. You must produce:
+\begin{enumerate}
+    \item A BibTeX bibliography file (\texttt{references.bib})
+    \item The full LaTeX paper (\texttt{template.tex})
+\end{enumerate}
+
+\vspace{1em}
+\noindent\textbf{Instructions}
+\begin{itemize}
+    \item Use the research idea and experimental logs to construct a coherent, rigorous ML paper.
+    \item For related work and baselines:
+    \begin{itemize}
+        \item Search for and include influential papers published up until \texttt{\{cutoff\_date\}}.
+        \item Incorporate relevant literature and add the corresponding BibTeX entries to \texttt{references.bib}.
+        \item Do NOT hallucinate papers or reference keys; all citation entries must be real.
+    \end{itemize}
+    \item In the LaTeX paper, cite papers using \textbackslash{}cite\{\} with keys that match exactly with your entries in \texttt{references.bib}.
+    \item Do not fabricate experimental results or make claims unsupported by the logs.
+\end{itemize}
+
+\vspace{1em}
+\noindent\textbf{Materials}\\
+\vspace{0.5em}
+Here are all the raw research materials to assist with the writing process:
+
+\vspace{0.5em}
+\noindent [RESEARCH IDEA]\\
+\texttt{\{idea\_text\}}
+
+\vspace{0.5em}
+\noindent [EXPERIMENTAL LOGS]\\
+\texttt{\{experimental\_log\_text\}}
+
+\vspace{0.5em}
+\noindent [AVAILABLE FIGURES]\\
+\texttt{\{figures\_prompt\_text\}}\\
+Figures are located in the \texttt{figures/} directory and should be referenced appropriately in the paper using standard \textbackslash{}includegraphics commands.
+
+\vspace{0.5em}
+\noindent [LATEX TEMPLATE]\\
+\texttt{\{template\_text\}}
+
+\vspace{1em}
+\noindent\textbf{Response Format}\\
+\vspace{0.5em}
+Return EXACTLY TWO fenced code blocks.
+
+\begin{enumerate}
+    \item \textbf{First code block: the BibTeX file:}
+\begin{verbatim}
+```bibtex
+@article{example2023,
+  title={Example Title},
+  author={Author, First},
+  journal={Example Journal},
+  year={2023}
+}
+```
+\end{verbatim}
+
+\item \textbf{Second code block: the generated LaTeX paper:}
+\begin{verbatim}
+```latex
+% The complete LaTeX paper here
+```
+\end{verbatim}
+\end{enumerate}
+
+\vspace{1em}
+\noindent The final paper must be coherent, highly polished, and scientifically accurate.

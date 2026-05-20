@@ -1,0 +1,135 @@
+\section{Prompts}
+\label{appendix:prompts}
+
+% % % % % % % % % % % % % % % % % % % % % % % % % % % % % %
+% % % % % % % % % % % % % % % % % % % % % % % % % % % % % %
+% % % % % % % % % % % % % % % % % % % % % % % % % % % % % %
+
+\subsection{Paper Writing}
+\label{appendix:paper_writing_prompts}
+In this section, we detail the prompts used for each agent involved in the paper writing pipeline.
+
+% ---------------------------------------------------------
+% ---------------------------------------------------------
+
+\begin{paperpromptbox}[Outline Agent]
+\input{content/prompts/agents/outline_agent}
+\end{paperpromptbox}
+
+% ---------------------------------------------------------
+% ---------------------------------------------------------
+
+For the plotting agent, we utilize the original prompts from PaperBanana~\citep{zhu2026paperbanana}, appending only a single caption regeneration step at the end:
+
+\begin{paperpromptbox}[Plotting Agent (Caption Generation)]
+\input{content/prompts/agents/plotting_agent}
+\end{paperpromptbox}
+
+% ---------------------------------------------------------
+% ---------------------------------------------------------
+
+\begin{paperpromptbox}[Literature Review Agent]
+\input{content/prompts/agents/literature_review_agent}
+\end{paperpromptbox}
+
+% ---------------------------------------------------------
+% ---------------------------------------------------------
+\begin{paperpromptbox}[Section Writing Agent]
+\input{content/prompts/agents/section_writing_agent}
+\end{paperpromptbox}
+
+% ---------------------------------------------------------
+% ---------------------------------------------------------
+
+\begin{paperpromptbox}[Content Refinement Agent]
+\input{content/prompts/agents/content_refinement_agent}
+\end{paperpromptbox}
+
+We explicitly instruct the \textit{Content Refinement Agent} to ignore reviewer requests for additional experiments. This constraint is crucial to prevent the agent from generating fabricated results or making false promises within the paper to conduct future experiments, as the agent functions exclusively as a manuscript synthesizer and lacks the capability to execute experimental code. Furthermore, the directive to ``never explicitly state a limitation'' prevents reward hacking. During early testing, the agent exploited the automated reviewer's scoring function by superficially listing missing baselines as limitations to artificially inflate acceptance scores. Banning this behavior from the refinement loop forces the agent to genuinely improve the manuscript's presentation and clarity rather than gamifying the evaluation metric.
+
+% ---------------------------------------------------------
+% ---------------------------------------------------------
+
+Below are the prompts we used for the Single Agent baseline:
+
+\begin{paperpromptbox}[Single Agent System Prompt]
+\input{content/prompts/baseline_single_agent/system_prompt}
+\end{paperpromptbox}
+
+\begin{paperpromptbox}[Single Agent User Prompt]
+\input{content/prompts/baseline_single_agent/user_prompt}
+\end{paperpromptbox}
+
+% % % % % % % % % % % % % % % % % % % % % % % % % % % % % %
+% % % % % % % % % % % % % % % % % % % % % % % % % % % % % %
+% % % % % % % % % % % % % % % % % % % % % % % % % % % % % %
+
+\subsection{Raw Material Generation}
+\label{appendix:material_gen_prompts}
+In this section, we detail the prompts used to generate the raw materials for \ourdataset.
+
+% ---------------------------------------------------------
+% ---------------------------------------------------------
+
+\begin{extractpromptbox}[Sparse Idea Generation]
+\input{content/prompts/material_extraction/sparse_idea_gen}
+\end{extractpromptbox}
+
+% ---------------------------------------------------------
+% ---------------------------------------------------------
+
+\begin{extractpromptbox}[Dense Idea Generation]
+\input{content/prompts/material_extraction/dense_idea_gen}
+\end{extractpromptbox}
+
+% ---------------------------------------------------------
+% ---------------------------------------------------------
+
+\begin{extractpromptbox}[Experimental Log Generation]
+\input{content/prompts/material_extraction/experimental_log_gen}
+\end{extractpromptbox}
+
+
+
+% % % % % % % % % % % % % % % % % % % % % % % % % % % % % %
+% % % % % % % % % % % % % % % % % % % % % % % % % % % % % %
+% % % % % % % % % % % % % % % % % % % % % % % % % % % % % %
+
+\subsection{Autoraters}
+\label{appendix:autorater_prompts}
+In this section, we provide the prompts used for the automated evaluators.
+
+% ---------------------------------------------------------
+% ---------------------------------------------------------
+
+\begin{raterpromptbox}[Citation F1 - P0 / P1 Partition]
+\input{content/prompts/autoraters/citation_p0_p1_partition}
+\end{raterpromptbox}
+
+% ---------------------------------------------------------
+% ---------------------------------------------------------
+
+\begin{raterpromptbox}[Literature Review Quality Autorater]
+\input{content/prompts/autoraters/lit_review_quality_autorater}
+\end{raterpromptbox}
+
+% ---------------------------------------------------------
+% ---------------------------------------------------------
+
+\begin{raterpromptbox}[SxS Overall Paper Quality]
+\input{content/prompts/autoraters/sxs_paper_quality_autorater}
+\end{raterpromptbox}
+
+% ---------------------------------------------------------
+% ---------------------------------------------------------
+
+\begin{raterpromptbox}[SxS Literature Review Quality]
+\input{content/prompts/autoraters/sxs_lit_review_autorater}
+\end{raterpromptbox}
+
+% ---------------------------------------------------------
+% ---------------------------------------------------------
+
+
+
+
