@@ -18,7 +18,6 @@ from datetime import datetime
 from pathlib import Path
 
 from agents.discovery_metadata import infer_experimentability, infer_resource_class
-from agents.experiment_forge import forge_experiment
 from agents.insight_validation import (
     INSIGHT_INPUT_MISSING_ERROR_CODE,
     get_evosci_input_issue,
@@ -53,7 +52,7 @@ from orchestrator.benchmark_completion import (
     BENCHMARK_COMPLETION_STAGE,
     schedule_benchmark_completion,
 )
-from orchestrator import gpu_scheduler
+from orchestrator import forge_runner, gpu_scheduler
 from orchestrator import manuscript_watchdog
 from orchestrator.pipeline import log_event
 
@@ -65,6 +64,7 @@ AUTO_RESEARCH_CONSUMER = "auto_research"
 VERIFY_STALE_SECONDS = 60 * 60
 RESEARCH_STALE_SECONDS = 6 * 60 * 60
 REVIEW_PENDING_STALE_SECONDS = 15 * 60
+SCAFFOLD_STALE_SECONDS = 5 * 60
 MAX_PARALLEL_VERIFICATIONS = 2
 MANUAL_REFORGE_STAGES = {
     "manual_reforge_unfinished",
@@ -228,6 +228,23 @@ def _job_age_seconds(job: dict) -> float:
         return 0.0
     now = datetime.now(ts.tzinfo) if ts.tzinfo else datetime.now()
     return max(0.0, (now - ts).total_seconds())
+
+
+def _run_age_seconds(run: dict) -> float:
+    ts = _coerce_datetime(run.get("updated_at") or run.get("created_at"))
+    if ts is None:
+        return 0.0
+    now = datetime.now(ts.tzinfo) if ts.tzinfo else datetime.now()
+    return max(0.0, (now - ts).total_seconds())
+
+
+def _scaffold_stuck(run: dict | None) -> bool:
+    if not run or str(run.get("status") or "") != "scaffolding":
+        return False
+    if _run_scaffold_ready(run):
+        return False
+    phase = str(run.get("phase") or "")
+    return phase in {"setup", "workspace_ready", "review_decision_ready"} and not (run.get("program_md") or "").strip()
 
 
 def _supersede_stale_scaffold_run(run_id: int, reason: str) -> None:
@@ -754,6 +771,46 @@ def _refresh_running_jobs() -> None:
             run = None
             if job.get("experiment_run_id"):
                 run = db.fetchone("SELECT * FROM experiment_runs WHERE id=?", (job["experiment_run_id"],))
+            if not run:
+                latest = db.fetchone(
+                    "SELECT * FROM experiment_runs WHERE deep_insight_id=? ORDER BY id DESC LIMIT 1",
+                    (insight_id,),
+                )
+                if latest:
+                    run = latest
+                    _upsert_job(
+                        insight_id,
+                        experiment_run_id=int(latest["id"]),
+                        last_note=f"Linked orphaned experiment run {latest['id']} to review job.",
+                    )
+            if (
+                run
+                and _scaffold_stuck(run)
+                and _run_age_seconds(run) >= SCAFFOLD_STALE_SECONDS
+                and not forge_runner.is_forge_active(insight_id)
+                and forge_runner.has_forge_capacity()
+            ):
+                resource_class = job.get("resource_class") or assess_experiment_route(
+                    db.fetchone("SELECT * FROM deep_insights WHERE id=?", (insight_id,)) or {}
+                )[0]
+                _supersede_stale_scaffold_run(
+                    int(run["id"]),
+                    "Superseded stale workspace_ready scaffold; restarting async forge.",
+                )
+                _upsert_job(
+                    insight_id,
+                    status="review_pending",
+                    stage="scaffold_restart",
+                    experiment_run_id=None,
+                    last_note=f"Restarting stale forge for insight {insight_id}.",
+                    last_error=None,
+                )
+                forge_runner.start_forge_async(insight_id=insight_id, resource_class=resource_class)
+                log_event(
+                    "auto_research",
+                    {"step": "scaffold_restart_dispatched", "insight_id": insight_id, "superseded_run_id": run["id"]},
+                )
+                continue
             if run and _run_scaffold_ready(run):
                 _upsert_job(
                     insight_id,
@@ -884,6 +941,85 @@ def _launch_candidates_to_capacity() -> dict:
         "execution_active": _execution_active_job_count(),
         "verifying_active": _verification_job_count(),
     }
+
+
+def handle_forge_failed(insight_id: int, error: str) -> None:
+    _upsert_job(
+        insight_id,
+        status="failed",
+        stage="forge_failed",
+        last_error=error,
+        last_note="Async experiment forge failed.",
+    )
+    log_event("error", {"step": "forge_failed", "insight_id": insight_id, "error": error})
+
+
+def handle_forge_completed(insight_id: int, forged: dict, resource_class: str) -> None:
+    if "error" in forged:
+        route = forged.get("route")
+        if route == "blocked":
+            _upsert_job(
+                insight_id,
+                status="blocked",
+                stage="experiment_review_blocked",
+                last_error=forged["error"],
+                last_note=(forged.get("judgement") or {}).get("summary")
+                if isinstance(forged.get("judgement"), dict)
+                else forged["error"],
+            )
+            return
+        _upsert_job(insight_id, status="failed", stage="forge_failed", last_error=forged["error"])
+        set_outcome(
+            "deep_insights",
+            insight_id,
+            OUTCOME_EXPERIMENT_FAILED_SETUP,
+            reason=str(forged.get("error", "")),
+            triggered_by="experiment",
+        )
+        return
+
+    existing_run = db.fetchone("SELECT * FROM experiment_runs WHERE id=?", (forged["run_id"],))
+    if not existing_run:
+        handle_forge_failed(insight_id, f"Forged run {forged.get('run_id')} missing from database.")
+        return
+
+    if forged.get("smoke_test_only") or not forged.get("formal_experiment"):
+        _upsert_job(
+            insight_id,
+            status="smoke_only",
+            stage="experiment_review_smoke_only",
+            experiment_run_id=forged["run_id"],
+            resource_class=resource_class,
+            last_note=(forged.get("judgement") or {}).get(
+                "summary",
+                "Experiment is smoke-test only; continuing with compute validation (formal manuscript path remains blocked).",
+            ),
+        )
+    else:
+        _upsert_job(
+            insight_id,
+            status="eligible",
+            stage="formal_ready",
+            experiment_run_id=forged["run_id"],
+            resource_class=resource_class,
+            last_note="Structured review passed and experiment was forged.",
+        )
+    db.execute(
+        "UPDATE experiment_runs SET resource_class=? WHERE id=?",
+        (resource_class, forged["run_id"]),
+    )
+    db.commit()
+    log_event("auto_research", {"step": "forge_completed_async", "insight_id": insight_id, "run_id": forged["run_id"]})
+
+    if forged.get("formal_experiment") and not forged.get("smoke_test_only"):
+        try:
+            _dispatch_experiment_execution(
+                insight_id=insight_id,
+                existing_run=existing_run,
+                resource_class=resource_class,
+            )
+        except Exception as exc:
+            log_event("error", {"step": "post_forge_dispatch_failed", "insight_id": insight_id, "error": str(exc)})
 
 
 def _process_candidate(insight: dict) -> None:
@@ -1211,57 +1347,35 @@ def _process_candidate(insight: dict) -> None:
             insight_id,
             status="review_pending",
             stage="experiment_review",
-            last_note=background_research_note or "Running structured experiment review before forge.",
+            last_note=background_research_note or "Dispatching async experiment forge.",
         )
-        forged = forge_experiment(insight_id)
-        if "error" in forged:
-            route = forged.get("route")
-            if route == "blocked":
-                _upsert_job(
-                    insight_id,
-                    status="blocked",
-                    stage="experiment_review_blocked",
-                    last_error=forged["error"],
-                    last_note=(forged.get("judgement") or {}).get("summary") if isinstance(forged.get("judgement"), dict) else forged["error"],
-                )
-                return
-            _upsert_job(insight_id, status="failed", stage="forge_failed", last_error=forged["error"])
-            set_outcome(
-                "deep_insights",
-                insight_id,
-                OUTCOME_EXPERIMENT_FAILED_SETUP,
-                reason=str(forged.get("error", "")),
-                triggered_by="experiment",
-            )
+        if forge_runner.start_forge_async(insight_id=insight_id, resource_class=resource_class):
             return
-        existing_run = db.fetchone("SELECT * FROM experiment_runs WHERE id=?", (forged["run_id"],))
-        if forged.get("smoke_test_only") or not forged.get("formal_experiment"):
-            _upsert_job(
-                insight_id,
-                status="smoke_only",
-                stage="experiment_review_smoke_only",
-                experiment_run_id=forged["run_id"],
-                resource_class=resource_class,
-                last_note=(forged.get("judgement") or {}).get(
-                    "summary",
-                    "Experiment is smoke-test only; continuing with compute validation (formal manuscript path remains blocked).",
-                ),
-            )
-        else:
-            _upsert_job(
-                insight_id,
-                status="eligible",
-                stage="formal_ready",
-                experiment_run_id=forged["run_id"],
-                resource_class=resource_class,
-                last_note="Structured review passed and experiment was forged.",
-            )
-        db.execute(
-            "UPDATE experiment_runs SET resource_class=? WHERE id=?",
-            (resource_class, forged["run_id"]),
+        _upsert_job(
+            insight_id,
+            last_note="Forge lane at capacity; will retry on next scheduler cycle.",
         )
-        db.commit()
+        return
     elif not _run_scaffold_ready(existing_run) and existing_run.get("status") in {"scaffolding"}:
+        if (
+            _scaffold_stuck(existing_run)
+            and _run_age_seconds(existing_run) >= SCAFFOLD_STALE_SECONDS
+            and not forge_runner.is_forge_active(insight_id)
+        ):
+            _supersede_stale_scaffold_run(
+                int(existing_run["id"]),
+                "Superseded incomplete scaffold; restarting async forge.",
+            )
+            _upsert_job(
+                insight_id,
+                status="review_pending",
+                stage="scaffold_restart",
+                experiment_run_id=None,
+                last_note="Restarting stale incomplete forge.",
+                last_error=None,
+            )
+            if forge_runner.start_forge_async(insight_id=insight_id, resource_class=resource_class):
+                return
         _upsert_job(
             insight_id,
             status="review_pending",
@@ -1271,6 +1385,10 @@ def _process_candidate(insight: dict) -> None:
             last_note="Experiment forge is still preparing workspace, review, or scaffold metadata.",
             last_error=None,
         )
+        if forge_runner.is_forge_active(insight_id):
+            return
+        if _scaffold_stuck(existing_run) and forge_runner.has_forge_capacity():
+            forge_runner.start_forge_async(insight_id=insight_id, resource_class=resource_class)
         return
     elif not _run_is_formal(existing_run):
         _upsert_job(

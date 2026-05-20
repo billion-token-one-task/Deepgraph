@@ -4043,6 +4043,15 @@ def forge_experiment(insight_id: int) -> dict:
             "metric",
         ),
     )
+    db.execute(
+        """
+        UPDATE auto_research_jobs
+        SET experiment_run_id=?, last_note=?, updated_at=CURRENT_TIMESTAMP
+        WHERE deep_insight_id=?
+          AND status IN ('review_pending', 'queued', 'eligible', 'pending', 'running_experiment')
+        """,
+        (run_id, f"Forge in progress for experiment run {run_id}.", insight_id),
+    )
     db.commit()
 
     # Step 2: Setup workspace

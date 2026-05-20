@@ -334,8 +334,12 @@ class ExperimentJudgement(ContractRecord):
 
     def validate(self) -> None:
         super().validate()
-        if self.recommended_route not in {"formal", "smoke_test", "blocked"}:
-            raise ContractValidationError("ExperimentJudgement route must be formal/smoke_test/blocked")
+        if self.recommended_route not in {"formal", "smoke_test", "blocked", "full_paper"}:
+            raise ContractValidationError(
+                "ExperimentJudgement route must be formal/smoke_test/blocked/full_paper"
+            )
+        if self.recommended_route == "full_paper" and not self.formal_experiment:
+            raise ContractValidationError("ExperimentJudgement full_paper route requires formal_experiment")
         if self.formal_experiment and self.smoke_test_only:
             raise ContractValidationError("ExperimentJudgement cannot be formal and smoke_test_only simultaneously")
 
