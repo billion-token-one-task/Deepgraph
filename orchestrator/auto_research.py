@@ -30,7 +30,7 @@ from agents.novelty_verifier import (
 )
 from agents.research_bridge import active_research_session, get_research_status
 from orchestrator import experiment_runner
-from orchestrator.compute_routing import apply_route_gpu, resolve_execution_lane
+from orchestrator.compute_routing import resolve_execution_lane
 from compat.filelock import FileLock
 from agents.evosci_requirements import (
     evosci_binary_path,
