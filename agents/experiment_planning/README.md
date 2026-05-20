@@ -6,6 +6,10 @@ Primary legacy modules:
 
 - `agents.experiment_forge`
 - `agents.experiment_supervisor`
+- `agents.experiment_progress_monitor` — live progress from artifacts/processes
+- `agents.experiment_feasibility_agent` — viability verdict before/during runs
+- `agents.experiment_tuning_agent` — scale/time/retry/finalize decisions
+- `agents.experiment_watchdog` — coordinates the three agents in production
 - `agents.experiment_review`
 - `agents.benchmark_audit`
 - `agents.result_interpreter`

@@ -51,9 +51,10 @@ from agents.experiment_executor import (
 )
 from agents.metric_parser import (
     _FLOAT_RE,
+    benchmark_scores,
+    build_benchmark_summary_from_predictions,
     parse_benchmark_summary_from_log,
     parse_metric_from_log,
-    benchmark_scores,
 )
 
 
@@ -520,6 +521,33 @@ def _run_experiment(
             )
         except OSError:
             pass
+        partial_summary = build_benchmark_summary_from_predictions(
+            workdir / "results",
+            metric_name=metric_name,
+            min_lines=50,
+        )
+        if partial_summary:
+            summary_path = workdir / "results" / "benchmark_summary.json"
+            try:
+                summary_path.write_text(json.dumps(partial_summary, indent=2), encoding="utf-8")
+            except OSError:
+                pass
+            _metric_name, _method, candidate_value, baseline_value, _n = benchmark_scores(partial_summary)
+            if candidate_value is not None:
+                return {
+                    "status": "ok",
+                    "metric": candidate_value,
+                    "duration": duration,
+                    "error": "timeout_recovered_partial",
+                    "failure_type": "timeout_partial",
+                    "final_results_present": True,
+                    "benchmark_summary": partial_summary,
+                    "benchmark_baseline_metric": baseline_value,
+                    "command_tokens": command_tokens,
+                    "log_path": str(log_path),
+                    "benchmark_env": benchmark_env,
+                    "partial_recovery": True,
+                }
         return {
             "status": "crash",
             "duration": duration,
@@ -1923,6 +1951,12 @@ def run_validation_loop(run_id: int, execution_context: dict | None = None) -> d
             )
             last_repro_result = result
             metric = result.get("metric")
+            if result.get("partial_recovery"):
+                print(
+                    f"[LOOP] Reproduction {i + 1}/{repro_iters}: partial metric={metric} "
+                    f"(recovered after timeout)",
+                    flush=True,
+                )
             iter_key = repair_round * max(repro_iters, 3) + i + 1
             packet = ExperimentIterationPacket(
                 run_id=run_id,

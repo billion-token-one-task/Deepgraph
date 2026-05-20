@@ -156,3 +156,88 @@ def benchmark_scores(summary: dict) -> tuple[str, str | None, float | None, floa
     seed_results = summary.get("seed_results") if isinstance(summary.get("seed_results"), list) else []
     num_seeds = int(summary.get("num_seeds") or len(seed_results) or 0)
     return metric_name, candidate_method, candidate_value, best_other, num_seeds
+
+
+def build_benchmark_summary_from_predictions(
+    results_dir: Path,
+    *,
+    candidate_method: str | None = None,
+    metric_name: str = "primary_score",
+    min_lines: int = 50,
+) -> dict:
+    """Aggregate partial benchmark metrics from raw_predictions.jsonl."""
+    pred_path = results_dir / "raw_predictions.jsonl"
+    if not pred_path.exists():
+        return {}
+    per_method: dict[str, dict[str, float]] = {}
+    datasets: set[str] = set()
+    seeds: set[int] = set()
+    line_count = 0
+    try:
+        with pred_path.open(encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                line_count += 1
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                method = str(row.get("method") or "unknown")
+                score = row.get("primary_score", row.get("exact"))
+                try:
+                    value = float(score)
+                except (TypeError, ValueError):
+                    continue
+                bucket = per_method.setdefault(method, {"_n": 0, "_sum": 0.0})
+                bucket["_n"] = int(bucket.get("_n", 0)) + 1
+                bucket["_sum"] = float(bucket.get("_sum", 0.0)) + value
+                if row.get("dataset"):
+                    datasets.add(str(row["dataset"]))
+                if row.get("seed") is not None:
+                    try:
+                        seeds.add(int(row["seed"]))
+                    except (TypeError, ValueError):
+                        pass
+    except OSError:
+        return {}
+
+    if line_count < min_lines:
+        return {}
+
+    normalized: dict[str, dict[str, float]] = {}
+    for method_name, bucket in per_method.items():
+        count = int(bucket.pop("_n", 0))
+        total = float(bucket.pop("_sum", 0.0))
+        if count > 0:
+            normalized[method_name] = {metric_name: total / count}
+    per_method = normalized
+
+    if not per_method:
+        return {}
+
+    resolved_candidate = candidate_method
+    if not resolved_candidate:
+        for name in per_method:
+            if "cggr" in name.lower() or "cpg" in name.lower() or "candidate" in name.lower():
+                resolved_candidate = name
+                break
+        if not resolved_candidate:
+            resolved_candidate = next(iter(per_method))
+
+    candidate_value = None
+    if resolved_candidate in per_method:
+        candidate_value = per_method[resolved_candidate].get(metric_name)
+
+    return {
+        "primary_metric": metric_name,
+        "metric_name": metric_name,
+        "candidate_method": resolved_candidate,
+        "per_method": per_method,
+        "datasets": sorted(datasets),
+        "num_seeds": len(seeds) or 1,
+        "full_benchmark_completed": False,
+        "partial_from_predictions": True,
+        "prediction_lines": line_count,
+    }

@@ -263,6 +263,8 @@ EXPERIMENT_REAL_BENCHMARK_DATASET_CONFIG = _env_str("DEEPGRAPH_REAL_BENCHMARK_DA
 EXPERIMENT_REAL_BENCHMARK_MAX_EXAMPLES = _env_int("DEEPGRAPH_REAL_BENCHMARK_MAX_EXAMPLES", 64, "experiment.real_benchmark_max_examples")
 EXPERIMENT_REAL_BENCHMARK_SEEDS = _env_int("DEEPGRAPH_REAL_BENCHMARK_SEEDS", 3, "experiment.real_benchmark_seeds")
 EXPERIMENT_REAL_BENCHMARK_TIME_BUDGET = _env_int("DEEPGRAPH_REAL_BENCHMARK_TIME_BUDGET", 3600, "experiment.real_benchmark_time_budget_seconds")
+EXPERIMENT_WATCHDOG_ENABLED = _env_bool("DEEPGRAPH_EXPERIMENT_WATCHDOG_ENABLED", True, "experiment.watchdog_enabled")
+EXPERIMENT_WATCHDOG_USE_LLM = _env_bool("DEEPGRAPH_EXPERIMENT_WATCHDOG_USE_LLM", False, "experiment.watchdog_use_llm")
 # Closed-loop validation should prove the real runner and compare methods on a
 # bounded real-data slice. Full publication evidence is scheduled separately and
 # must opt in with DEEPGRAPH_BENCHMARK_FULL_RUN=1.

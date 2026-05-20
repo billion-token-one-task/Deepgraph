@@ -85,6 +85,10 @@ AGENT_BOUNDARIES: tuple[AgentBoundary, ...] = (
         modules=(
             "agents.experiment_forge",
             "agents.experiment_supervisor",
+            "agents.experiment_progress_monitor",
+            "agents.experiment_feasibility_agent",
+            "agents.experiment_tuning_agent",
+            "agents.experiment_watchdog",
             "agents.experiment_review",
             "agents.benchmark_audit",
             "agents.result_interpreter",

@@ -23,15 +23,14 @@ from agents.insight_validation import (
     INSIGHT_INPUT_MISSING_ERROR_CODE,
     get_evosci_input_issue,
 )
-from agents.knowledge_loop import process_completed_run
-from agents.manuscript_pipeline import generate_submission_bundle
 from agents.novelty_verifier import (
     check_verification_result,
     launch_full_research,
     launch_verification,
 )
 from agents.research_bridge import active_research_session, get_research_status
-from agents.validation_loop import run_validation_loop
+from orchestrator import experiment_runner
+from orchestrator.compute_routing import apply_route_gpu, resolve_execution_lane
 from compat.filelock import FileLock
 from agents.evosci_requirements import (
     evosci_binary_path,
@@ -319,6 +318,92 @@ def assess_experiment_route(insight: dict) -> tuple[str, str]:
     return resource_class, f"Experimentability={experimentability}; routed to {resource_class}."
 
 
+def _dispatch_experiment_execution(
+    *,
+    insight_id: int,
+    existing_run: dict,
+    resource_class: str,
+) -> None:
+    """Queue GPU or async CPU validation; returns immediately (no validation_loop join)."""
+    run_id = int(existing_run["id"])
+    if experiment_runner.is_run_active(run_id):
+        _upsert_job(
+            insight_id,
+            status="running_cpu",
+            stage="validation_loop",
+            experiment_run_id=run_id,
+            resource_class=resource_class,
+            last_note="Async CPU validation already in progress.",
+            last_error=None,
+        )
+        return
+
+    resource_class, lane, lane_note = resolve_execution_lane(resource_class=resource_class, run=existing_run)
+    if lane_note:
+        db.execute(
+            "UPDATE experiment_runs SET resource_class=? WHERE id=?",
+            (resource_class, run_id),
+        )
+        db.execute(
+            """UPDATE deep_insights
+               SET resource_class=?, updated_at=CURRENT_TIMESTAMP
+               WHERE id=?""",
+            (resource_class, insight_id),
+        )
+        db.commit()
+
+    if lane == "gpu":
+        gpu_scheduler.start()
+        queued_job = db.fetchone(
+            """
+            SELECT * FROM gpu_jobs
+            WHERE experiment_run_id=? AND status IN ('queued', 'running')
+            ORDER BY id DESC LIMIT 1
+            """,
+            (run_id,),
+        )
+        if not queued_job:
+            gpu_job_id = gpu_scheduler.queue_run(
+                insight_id=insight_id,
+                run_id=run_id,
+                resource_class=resource_class,
+                priority=2 if resource_class == "gpu_large" else 1,
+                vram_required_gb=40 if resource_class == "gpu_large" else 16,
+            )
+            note = f"Queued on GPU scheduler as job {gpu_job_id}."
+        else:
+            note = f"GPU job {queued_job['id']} already {queued_job['status']}."
+        if lane_note:
+            note = f"{note} {lane_note}"
+        _upsert_job(
+            insight_id,
+            status="queued_gpu",
+            stage="gpu_scheduler",
+            experiment_run_id=run_id,
+            resource_class=resource_class,
+            last_note=note,
+            last_error=None,
+        )
+        log_event("auto_research", {"step": "gpu_job_queued", "insight_id": insight_id, "run_id": run_id})
+        return
+
+    _upsert_job(
+        insight_id,
+        status="running_cpu",
+        stage="validation_loop",
+        experiment_run_id=run_id,
+        resource_class=resource_class,
+        last_note="Dispatched async SciForge validation loop (non-blocking).",
+        last_error=None,
+    )
+    log_event("auto_research", {"step": "experiment_started_async", "insight_id": insight_id, "run_id": run_id})
+    experiment_runner.start_validation_loop_async(
+        insight_id=insight_id,
+        run_id=run_id,
+        resource_class=resource_class,
+    )
+
+
 def _research_report_ready(workdir: str | None) -> bool:
     if not workdir:
         return False
@@ -410,7 +495,10 @@ def _execution_active_job_count() -> int:
            FROM auto_research_jobs
            WHERE status IN ('running_experiment', 'running_gpu', 'running_cpu', 'queued_gpu')"""
     )
-    return row["c"] if row else 0
+    db_count = row["c"] if row else 0
+    # Include in-flight async lanes not yet reflected in ARJ status.
+    thread_active = experiment_runner.active_execution_count()
+    return max(db_count, thread_active)
 
 
 def _research_job_count() -> int:
@@ -446,7 +534,7 @@ def _candidate_pool() -> list[dict]:
            WHERE COALESCE(di.status, 'candidate') NOT IN ('exists')
              AND (
                arj.status IS NULL
-               OR arj.status IN ('queued', 'eligible', 'queued_cpu', 'queued_gpu')
+               OR arj.status IN ('queued', 'eligible', 'queued_cpu', 'queued_gpu', 'pending')
                OR (
                     arj.status='failed'
                     AND arj.stage IN (
@@ -573,6 +661,22 @@ def _next_candidate() -> dict | None:
 
 
 def _refresh_running_jobs() -> None:
+    try:
+        from agents.experiment_watchdog import promote_pending_jobs, run_watchdog_for_active_runs
+
+        promote_pending_jobs()
+        for report in run_watchdog_for_active_runs(limit=5):
+            run_id = report.get("run_id")
+            tuning = report.get("tuning") or {}
+            if run_id and tuning.get("action") == "abort":
+                db.execute(
+                    "UPDATE experiment_runs SET status='failed', error_message=? WHERE id=?",
+                    ("Aborted by experiment watchdog.", run_id),
+                )
+                db.commit()
+    except Exception as exc:  # pragma: no cover - watchdog must not break scheduler
+        log_event("warning", {"step": "experiment_watchdog_failed", "error": str(exc)})
+
     jobs = db.fetchall(
         """SELECT arj.*, di.novelty_status
            FROM auto_research_jobs arj
@@ -772,7 +876,7 @@ def _launch_candidates_to_capacity() -> dict:
         except Exception as exc:  # pragma: no cover - defensive background guard
             _upsert_job(candidate_id, status="failed", stage="exception", last_error=str(exc))
             log_event("error", {"step": "auto_research", "insight_id": candidate_id, "error": str(exc)})
-            break
+            continue
 
     return {
         "scheduled": scheduled,
@@ -1220,77 +1324,11 @@ def _process_candidate(insight: dict) -> None:
         )
         return
 
-    if resource_class != "cpu":
-        gpu_scheduler.start()
-        queued_job = db.fetchone(
-            """
-            SELECT * FROM gpu_jobs
-            WHERE experiment_run_id=? AND status IN ('queued', 'running')
-            ORDER BY id DESC LIMIT 1
-            """,
-            (existing_run["id"],),
-        )
-        if not queued_job:
-            gpu_job_id = gpu_scheduler.queue_run(
-                insight_id=insight_id,
-                run_id=existing_run["id"],
-                resource_class=resource_class,
-                priority=2 if resource_class == "gpu_large" else 1,
-                vram_required_gb=40 if resource_class == "gpu_large" else 16,
-            )
-            note = f"Queued on GPU scheduler as job {gpu_job_id}."
-        else:
-            note = f"GPU job {queued_job['id']} already {queued_job['status']}."
-        _upsert_job(
-            insight_id,
-            status="queued_gpu",
-            stage="gpu_scheduler",
-            experiment_run_id=existing_run["id"],
-            resource_class=resource_class,
-            last_note=note,
-            last_error=None,
-        )
-        log_event("auto_research", {"step": "gpu_job_queued", "insight_id": insight_id, "run_id": existing_run["id"]})
-        return
-
-    _upsert_job(
-        insight_id,
-        status="running_cpu",
-        stage="validation_loop",
-        experiment_run_id=existing_run["id"],
+    _dispatch_experiment_execution(
+        insight_id=insight_id,
+        existing_run=existing_run,
         resource_class=resource_class,
-        last_note="Starting SciForge validation loop.",
-        last_error=None,
     )
-    log_event("auto_research", {"step": "experiment_started", "insight_id": insight_id, "run_id": existing_run["id"]})
-    result = run_validation_loop(existing_run["id"])
-    process_completed_run(existing_run["id"])
-    bundle = generate_submission_bundle(existing_run["id"])
-    if schedule_benchmark_completion(
-        insight_id,
-        existing_run["id"],
-        bundle,
-        source="auto_research_cpu",
-        resource_class=resource_class,
-    ):
-        log_event(
-            "auto_research",
-            {
-                "step": "benchmark_completion_queued",
-                "insight_id": insight_id,
-                "run_id": existing_run["id"],
-            },
-        )
-        return
-    _upsert_job(
-        insight_id,
-        status="bundle_ready" if "error" not in bundle else "completed",
-        stage="writing_submission" if "error" not in bundle else "closed_loop_complete",
-        experiment_run_id=existing_run["id"],
-        artifact_bundle_id=(bundle.get("bundle_ids") or [None])[-1],
-        last_note=f"Completed with verdict={result.get('verdict', 'unknown')}. Submission bundle status={'ok' if 'error' not in bundle else 'failed'}.",
-    )
-    log_event("auto_research", {"step": "experiment_completed", "insight_id": insight_id, "run_id": existing_run["id"], "verdict": result.get("verdict")})
 
 
 def consume_pipeline_events_once(limit: int = 50) -> dict:
