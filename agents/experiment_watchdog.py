@@ -13,6 +13,7 @@ from agents.experiment_tuning_agent import recommend_tuning
 from agents.metric_parser import (
     benchmark_scores,
     build_benchmark_summary_from_predictions,
+    persist_main_results_table,
 )
 from config import EXPERIMENT_WATCHDOG_ENABLED
 from db import database as db
@@ -55,6 +56,7 @@ def _finalize_partial_metrics(run_id: int, workdir: Path, summary: dict[str, Any
     results_dir = workdir / "results"
     summary_path = results_dir / "benchmark_summary.json"
     summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    persist_main_results_table(results_dir, summary)
     metric_name, _candidate_method, candidate_value, _baseline, _n = benchmark_scores(summary)
     if candidate_value is not None:
         db.execute(

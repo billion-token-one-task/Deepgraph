@@ -64,6 +64,16 @@ Your job is to generate the LaTeX code for the missing sections only, based on t
         \item You can refine the captions if necessary.
         \item Do not include "Figure x" in the caption text; the LaTeX template will handle the figure numbering.
     \end{itemize}
+    \item \textbf{Evidence--Narrative Alignment (mandatory):}
+    \begin{itemize}
+        \item Read \texttt{experimental\_log.md}, \texttt{claim\_evidence\_matrix.json}, and \texttt{quality\_gates.json} before writing. Numbers and dataset names must match exactly.
+        \item The paper's stated task (title, abstract hook, Introduction) must match the datasets and modality in the log. Do not write a video temporal-grounding paper if the log only contains text QA/math benchmarks (and vice versa).
+        \item If \texttt{hypothesis\_verdict} is \texttt{inconclusive} or \texttt{refuted}, or \texttt{p\_value}$\geq$0.05, the abstract must NOT claim significant improvement, validation, outperforming, or SOTA. Use preliminary/directional wording and state the verdict in Limitations.
+        \item If ablations show the full method loses to a variant with the core component removed, rewrite Method contributions to match the ablation winner. Do not headline a mechanism the ablation table refutes.
+        \item Honor \texttt{can\_appear\_in\_abstract: false} in the claim matrix: those claims cannot appear in the abstract.
+        \item Never duplicate paragraphs (especially in Introduction). Scan for repeated \textbackslash{}paragraph\{...\} blocks before finishing.
+        \item Do not add unrelated Related Work subsections (e.g., generic routing/gating surveys) unless routing is a primary variable in \texttt{experimental\_log.md}.
+    \end{itemize}
     \item \textbf{Conference Writing Norms:}
     \begin{itemize}
         \item Use \textbackslash{}begin\{abstract\}...\textbackslash{}end\{abstract\}, not \textbackslash{}section\{Abstract\}.

@@ -37,6 +37,9 @@
     \begin{itemize}
         \item \textbf{Ground Truth:} All numerical claims (accuracy, parameter count, training hours, latency) MUST be verified against \texttt{experimental\_log.md}.
         \item \textbf{Missing Data:} If the reviewer asks for new experiments, ablations, or baselines that are NOT in \texttt{experimental\_log.md}, simply ignore those specific requests. Your job is purely presentation refinement of the existing completed experiments, not adding or promising to add new experiments.
+        \item \textbf{Coherence pass:} Remove duplicate Introduction paragraphs; fix title/abstract/intro task mismatch with logged datasets; demote unsupported superlatives when \texttt{p\_value}$\geq$0.05 or verdict is inconclusive/refuted.
+        \item \textbf{Ablation pass:} If full method $<$ ablated variant on the primary metric, rewrite contributions and abstract so the surviving component is the story, not the refuted one.
+        \item \textbf{Claim matrix pass:} Delete or move any sentence violating \texttt{claim\_evidence\_matrix.json} (especially abstract lines for claims marked not allowed).
     \end{itemize}
 
     \item \textbf{Writing Style \& Tone}

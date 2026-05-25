@@ -19,6 +19,7 @@ from agents.paper_completeness import (
     audit_citation_registry,
     audit_evidence_completeness,
     latex_sanity_check,
+    strip_irrelevant_registry_citations,
 )
 from agents.reference_corpus_audit import audit_against_reference_corpus
 from agents.manuscript_pipeline import (
@@ -29,6 +30,8 @@ from agents.manuscript_pipeline import (
     build_manuscript_input_state,
 )
 from agents.workspace_layout import get_idea_workspace, paper_bundle_root, write_latest_status, write_plan_files
+from agents.manuscript_templates.style_guides import load_venue_style_guide
+from agents.paper_orchestra_prompts import build_conference_guidelines
 from config import ICLR2026_TEMPLATE_DIR, ICLR2026_TEMPLATE_FILES, REFERENCE_PDF_CORPUS_DIR, SUBMISSION_BUNDLE_FORMATS
 from db import database as db
 from db.insight_outcomes import OUTCOME_BECAME_MANUSCRIPT, set_outcome
@@ -99,6 +102,58 @@ def _latex_escape(text: str) -> str:
     )
 
 
+def _contributions_latex_block(state: dict) -> str:
+    """Render Introduction contribution bullets from canonical state."""
+    contribs: list[str] = []
+    for raw in state.get("contributions") or []:
+        s = str(raw).strip()
+        if s:
+            contribs.append(s)
+    if not contribs:
+        paper_intent = state.get("paper_intent") if isinstance(state.get("paper_intent"), dict) else {}
+        for raw in paper_intent.get("contributions") or paper_intent.get("claimed_contributions") or []:
+            s = str(raw).strip()
+            if s:
+                contribs.append(s)
+    if not contribs:
+        return ""
+    items = "\n".join(f"  \\item {_latex_escape(c)}" for c in contribs[:5])
+    return (
+        r"\paragraph{Contributions.}" "\n"
+        "This paper makes the following contributions:" "\n"
+        r"\begin{itemize}" "\n"
+        f"{items}\n"
+        r"\end{itemize}"
+    )
+
+
+def _resolve_manuscript_template_id(
+    state: dict,
+    *,
+    explicit_template_id: str | None = None,
+) -> str:
+    """Pick venue template for PaperOrchestra writing (router → config → ICLR)."""
+    if explicit_template_id and str(explicit_template_id).strip():
+        return str(explicit_template_id).strip()
+    selection_id = int(state.get("deep_insight_id") or state.get("selection_id") or 0)
+    if selection_id:
+        try:
+            from agents.venue_router import get_routing, route_and_persist
+
+            prior = get_routing(selection_id)
+            if prior and prior.get("chosen_template_id"):
+                return str(prior["chosen_template_id"])
+            routed = route_and_persist(selection_id, state)
+            chosen = routed.get("chosen_template_id")
+            if chosen:
+                return str(chosen)
+        except Exception:
+            pass
+    from config import MANUSCRIPT_LATEX_TEMPLATE
+
+    return (MANUSCRIPT_LATEX_TEMPLATE or "iclr2026").strip()
+
+
 def _figure_assets(orchestrated: dict) -> list[dict]:
     plotting = orchestrated.get("plotting") or {}
     executor = plotting.get("plotting_executor") if isinstance(plotting, dict) else {}
@@ -107,6 +162,215 @@ def _figure_assets(orchestrated: dict) -> list[dict]:
     if isinstance(plotting, dict) and isinstance(plotting.get("assets"), list):
         return plotting["assets"]
     return []
+
+
+_SUBMISSION_FIGURE_BLOCKLIST = (
+    "claim_evidence",
+    "iteration_trajectory",
+    "metric_trajectory",
+    "search_dynamics",
+    "seed_variance",
+    "per_dataset",
+    "ablation_study",
+    "ablation_",
+    "benchmark_method_panel",
+    "utility_comparison",
+    "keep_discard",
+    "framework_diagram",
+    "constraint_diagram",
+    "gain_threshold",
+    "null_effect",
+    "falsification_auc",
+    "cost_utility",
+    "component_ablation",
+    "component_necessity",
+)
+
+
+def _figure_asset_text(asset: dict) -> str:
+    return " ".join(
+        str(asset.get(key) or "")
+        for key in ("figure_id", "title", "objective", "notes", "renderer", "stage", "kind")
+    ).lower()
+
+
+def _is_blocklisted_submission_figure(asset: dict) -> bool:
+    text = _figure_asset_text(asset)
+    return any(token in text for token in _SUBMISSION_FIGURE_BLOCKLIST)
+
+
+def _outline_plotting_plan(orchestrated: dict) -> list[dict]:
+    outline = orchestrated.get("outline") if isinstance(orchestrated.get("outline"), dict) else {}
+    plotting = orchestrated.get("plotting") if isinstance(orchestrated.get("plotting"), dict) else {}
+    for source in (
+        plotting.get("plotting_plan"),
+        plotting.get("plotting_plan_used"),
+        outline.get("plotting_plan"),
+    ):
+        if isinstance(source, list) and source:
+            return [dict(row) for row in source if isinstance(row, dict)]
+    return []
+
+
+def _outline_main_result_figure_ids(orchestrated: dict) -> set[str]:
+    ids: set[str] = set()
+    for fig in _outline_plotting_plan(orchestrated):
+        fid = str(fig.get("figure_id") or "").strip()
+        if not fid:
+            continue
+        role = str(fig.get("role") or fig.get("figure_role") or "").strip().lower()
+        if role in {"main_result", "main_results", "primary", "primary_result", "main"}:
+            ids.add(fid)
+            continue
+        if fig.get("primary_figure") or fig.get("main_figure"):
+            ids.add(fid)
+            continue
+        text = " ".join(str(fig.get(k) or "") for k in ("figure_id", "title", "objective")).lower()
+        if any(token in text for token in ("main_result", "main results", "primary result", "refutation")):
+            if str(fig.get("plot_type") or "plot").lower() != "diagram":
+                ids.add(fid)
+    if not ids:
+        ids.add("fig_main_results")
+        ids.add("fig_main_results_refutation")
+    return ids
+
+
+def _is_main_result_submission_figure(asset: dict, main_ids: set[str]) -> bool:
+    fid = str(asset.get("figure_id") or Path(str(asset.get("path") or "")).stem)
+    if fid in main_ids:
+        return True
+    text = _figure_asset_text(asset)
+    if _is_blocklisted_submission_figure(asset):
+        return False
+    if str(asset.get("kind") or "").lower() == "diagram":
+        return False
+    return any(token in text for token in ("main_result", "main results", "primary result", "refutation"))
+
+
+def _is_motivation_overview_diagram(asset: dict) -> bool:
+    if _is_blocklisted_submission_figure(asset):
+        return False
+    text = _figure_asset_text(asset)
+    return any(token in text for token in ("motivation", "overview", "problem_method", "problem-method", "teaser", "spine"))
+
+
+def _select_submission_figure_assets(orchestrated: dict) -> list[dict]:
+    from agents.manuscript_submission_style import (
+        _is_plot_asset,
+        select_motivation_overview_diagram_assets,
+    )
+
+    main_ids = _outline_main_result_figure_ids(orchestrated)
+    plots: list[dict] = []
+    diagrams: list[dict] = []
+    for asset in _figure_assets(orchestrated):
+        if not isinstance(asset, dict) or not (asset.get("path") or asset.get("svg_path") or asset.get("pdf_path")):
+            continue
+        if _is_blocklisted_submission_figure(asset):
+            continue
+        if _is_plot_asset(asset):
+            if _is_main_result_submission_figure(asset, main_ids):
+                plots.append(asset)
+            continue
+        if _is_motivation_overview_diagram(asset):
+            diagrams.append(asset)
+            continue
+        if _is_main_result_submission_figure(asset, main_ids):
+            plots.append(asset)
+    selected: list[dict] = []
+    if plots:
+        selected.append(plots[0])
+    mot, ovw = select_motivation_overview_diagram_assets(orchestrated, None)
+    for asset in (mot, ovw):
+        if asset and asset not in selected:
+            selected.append(asset)
+    for asset in diagrams:
+        if asset not in selected and not _is_plot_asset(asset):
+            selected.append(asset)
+        if len([a for a in selected if _is_motivation_overview_diagram(a)]) >= 2:
+            break
+    return selected[:3]
+
+
+def build_main_results_table_tex(state: dict) -> str:
+    """Deterministic main-results table from benchmark artifacts."""
+    summary = state.get("benchmark_summary") if isinstance(state.get("benchmark_summary"), dict) else {}
+    if not summary:
+        packet = state.get("result_packet") if isinstance(state.get("result_packet"), dict) else {}
+        summary = packet.get("benchmark_summary") if isinstance(packet.get("benchmark_summary"), dict) else {}
+    per_method = summary.get("per_method") if isinstance(summary, dict) else {}
+    if not isinstance(per_method, dict) or not per_method:
+        return ""
+    metric_name = str(summary.get("metric_name") or summary.get("primary_metric") or state.get("baseline_metric_name") or "primary_score")
+    rows: list[tuple[str, float]] = []
+    for method_name, row in sorted(per_method.items(), key=lambda item: str(item[0])):
+        value = None
+        if isinstance(row, dict):
+            for key in (metric_name, "metric_value", "primary_score"):
+                if key in row:
+                    value = row.get(key)
+                    break
+            if value is None and len(row) == 1:
+                value = next(iter(row.values()))
+        else:
+            value = row
+        try:
+            rows.append((str(method_name), float(value)))
+        except (TypeError, ValueError):
+            continue
+    if not rows:
+        return ""
+    metric_tex = _latex_escape(metric_name)
+    lines = [
+        r"\begin{table}[t]",
+        r"\centering",
+        r"\caption{Main benchmark comparison (\texttt{" + metric_tex + r"}).}",
+        r"\label{tab:main_results}",
+        r"\begin{tabular}{@{}lr@{}}",
+        r"\toprule",
+        r"Method & " + metric_tex + r" \\",
+        r"\midrule",
+    ]
+    for method_name, value in rows:
+        lines.append(f"{_latex_escape(method_name)} & {value:.6f} \\\\")
+    lines.extend([r"\bottomrule", r"\end{tabular}", r"\end{table}"])
+    return "\n".join(lines)
+
+
+def _strip_markdown_latex_fence(text: str) -> str:
+    raw = (text or "").strip()
+    if raw.startswith("```"):
+        lines = raw.splitlines()
+        if lines and lines[0].strip().startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        raw = "\n".join(lines).strip()
+    return raw.replace("```latex", "").replace("```tex", "").replace("```", "").strip()
+
+
+def _orchestrated_full_latex(orchestrated: dict) -> str | None:
+    from agents.manuscript_submission_enrichment import (
+        repair_main_tex_structure,
+        strip_llm_wrapper_markup,
+    )
+
+    raw = strip_llm_wrapper_markup(_strip_markdown_latex_fence(str(orchestrated.get("refinement_full_text") or "")))
+    refined, repair_notes = repair_main_tex_structure(raw) if raw else ("", {})
+    if repair_notes:
+        orchestrated.setdefault("submission_enrichment", {}).setdefault("latex_repair", {})[
+            "refinement_full_text"
+        ] = repair_notes
+    if refined and "\\documentclass" in refined[:4000] and not refined.lstrip().startswith("{"):
+        return refined
+    for key in ("sections_raw",):
+        candidate = _strip_markdown_latex_fence(str(orchestrated.get(key) or ""))
+        candidate, cand_notes = repair_main_tex_structure(candidate) if candidate else ("", {})
+        if cand_notes:
+            orchestrated.setdefault("submission_enrichment", {}).setdefault("latex_repair", {})[key] = cand_notes
+        if candidate and "\\documentclass" in candidate[:4000]:
+            return candidate
+    return None
 
 
 def _figure_caption_map(orchestrated: dict) -> dict[str, str]:
@@ -124,15 +388,15 @@ def _figure_caption_map(orchestrated: dict) -> dict[str, str]:
 def _figure_latex_blocks(orchestrated: dict) -> str:
     captions = _figure_caption_map(orchestrated)
     blocks: list[str] = []
-    for asset in _figure_assets(orchestrated):
-        if not isinstance(asset, dict):
-            continue
-        path = asset.get("path") or asset.get("svg_path") or ""
+    for asset in _select_submission_figure_assets(orchestrated):
+        path = asset.get("pdf_path") or asset.get("path") or asset.get("svg_path") or ""
         if not path:
             continue
         name = Path(path).name
         figure_id = str(asset.get("figure_id") or Path(path).stem)
-        caption = captions.get(figure_id) or asset.get("objective") or asset.get("title") or figure_id
+        caption = _latex_escape(
+            captions.get(figure_id) or asset.get("objective") or asset.get("title") or figure_id
+        )
         blocks.append(
             "\n".join(
                 [
@@ -203,7 +467,11 @@ def assemble_main_tex(
     exp = refined.get("experiments") or ""
     dis = refined.get("discussion") or ""
     related = _fallback_related_work(state, orchestrated)
+    results_table = build_main_results_table_tex(state)
     figures = _figure_latex_blocks(orchestrated)
+    exp_body = exp
+    if results_table:
+        exp_body = (exp_body + "\n\n" + results_table).strip() if exp_body else results_table
     results_line = (
         f"Baseline {state['baseline_metric_name']}: {state.get('baseline_metric_value')}; "
         f"best: {state.get('best_metric_value')}; effect \\%: {state.get('effect_pct')}; "
@@ -218,11 +486,15 @@ def assemble_main_tex(
             r"\paragraph{Result.} " + _latex_escape(problem_awareness.get("result_claim") or results_line),
         ]
     )
+    contrib_block = _contributions_latex_block(state)
+    intro_body = intro
+    if contrib_block and "Contributions" not in intro and r"\begin{itemize}" not in intro[-800:]:
+        intro_body = f"{intro}\n\n{contrib_block}".strip()
     if "\\section{" in related:
         intro_related = related
     else:
         intro_related = rf"""\section{{Introduction}}
-{intro}
+{intro_body}
 {problem_spine}
 \section{{Related Work}}
 {related}"""
@@ -246,7 +518,7 @@ def assemble_main_tex(
 \section{{Method}}
 {meth}
 \section{{Experiments}}
-{exp}
+{exp_body}
 {figures}
 \section{{Results}}
 {results_line}
@@ -272,7 +544,7 @@ def assemble_main_tex(
 \section{{Method}}
 {meth}
 \section{{Experiments}}
-{exp}
+{exp_body}
 {figures}
 \section{{Results}}
 {results_line}
@@ -344,10 +616,10 @@ def pick_main_tex(
     (e.g. ``"neurips2024"``, ``"acl_arr"``) are dispatched through the
     adapter registry.
     """
-    full = (orchestrated.get("refinement_full_text") or "").strip()
     if template_id is None:
         template_id = "iclr2026" if bundle_format == "conference" else "arxiv_plain"
-    if full and "\\documentclass" in full[:2000]:
+    full = _orchestrated_full_latex(orchestrated)
+    if full:
         return normalize_latex_source(
             full, template_id=template_id, submission_mode=submission_mode
         )
@@ -362,6 +634,28 @@ def _compile_main_pdf(bundle_dir: Path) -> dict:
     main_tex = bundle_dir / "main.tex"
     if not main_tex.exists():
         return {"ok": False, "error": "main.tex missing"}
+    # Defensive last-mile repair: if any upstream stage wrote a corrupt tex
+    # (leaked think-blocks, double documentclass, etc), salvage it before
+    # invoking pdflatex. This is the single chokepoint every compile passes
+    # through, so it's the right place for the safety net.
+    try:
+        from agents.manuscript_submission_enrichment import sanitize_main_tex_for_compile
+
+        raw_source = main_tex.read_text(encoding="utf-8", errors="replace")
+        repaired, repair_notes = sanitize_main_tex_for_compile(raw_source)
+        if repair_notes and repaired != raw_source:
+            backup_path = bundle_dir / "main.tex.precompile_repaired"
+            backup_path.write_text(raw_source, encoding="utf-8")
+            main_tex.write_text(repaired, encoding="utf-8")
+            (bundle_dir / "latex_precompile_repair.json").write_text(
+                json.dumps(repair_notes, indent=2, ensure_ascii=False, default=str),
+                encoding="utf-8",
+            )
+    except Exception:
+        pass
+    # Stale aux/bbl from a prior template (e.g. numeric → ICLR author-year) breaks natbib.
+    for stale in ("main.aux", "main.bbl", "main.blg", "main.out", "main.fls", "main.fdb_latexmk"):
+        (bundle_dir / stale).unlink(missing_ok=True)
     latexmk = shutil.which("latexmk")
     pdflatex = shutil.which("pdflatex")
     bibtex = shutil.which("bibtex")
@@ -621,6 +915,9 @@ def _paper_quality_report(
     compile_result: dict,
     removed_cite_keys: list[str],
     template_files: list[str] | None = None,
+    venue_gate_report: dict | None = None,
+    page_budget_report: dict | None = None,
+    page_budget_warning: str | None = None,
 ) -> dict:
     entries = _bib_entries_by_key(bibtex)
     cited = _cited_keys(main_tex)
@@ -653,6 +950,10 @@ def _paper_quality_report(
     sections = re.findall(r"\\section\*?\{([^}]+)\}", main_tex or "")
     subsection_count = len(re.findall(r"\\subsection\*?\{", main_tex or ""))
     page_count = _page_count_from_log(bundle_dir)
+    main_body_pages = None
+    if page_budget_report:
+        final_pb = page_budget_report.get("final") or page_budget_report.get("best_effort") or {}
+        main_body_pages = final_pb.get("page_count") or final_pb.get("main_body_pages")
     issues: list[dict[str, str]] = []
     if not compile_result.get("ok"):
         issues.append({"severity": "high", "issue": "PDF compile did not pass."})
@@ -666,8 +967,9 @@ def _paper_quality_report(
         issues.append({"severity": "medium", "issue": "Citation density is below a conference-paper target."})
     if len(includes) < 3:
         issues.append({"severity": "medium", "issue": "The paper has too few figures for a benchmark-oriented submission."})
-    if "iclr2026_conference" not in main_tex:
-        issues.append({"severity": "high", "issue": "Conference bundle is not using the ICLR 2026 template."})
+    if venue_gate_report and (venue_gate_report.get("final") or {}).get("template_id") == "iclr2026":
+        if "iclr2026_conference" not in main_tex:
+            issues.append({"severity": "high", "issue": "Conference bundle is not using the ICLR 2026 template."})
     if internal_audit_hits:
         issues.append({"severity": "medium", "issue": "Internal-audit wording remains in the main body."})
     if page_count is not None and page_count < 8:
@@ -682,15 +984,34 @@ def _paper_quality_report(
     for issue in reference_corpus_audit.get("issues") or []:
         if isinstance(issue, dict) and issue not in issues:
             issues.append(issue)
+    final_venue = (venue_gate_report or {}).get("final") or {}
+    if final_venue and not final_venue.get("pass"):
+        for failure in final_venue.get("failures") or []:
+            issues.append(
+                {
+                    "severity": "high",
+                    "issue": f"Venue section gate: {failure}",
+                }
+            )
+    if page_budget_report and not page_budget_report.get("pass"):
+        from agents.manuscript_page_budget import page_budget_blockers
+
+        for blocker in page_budget_blockers(page_budget_report):
+            issues.append({"severity": "critical", "issue": blocker})
+    elif page_budget_warning:
+        issues.append({"severity": "critical", "issue": page_budget_warning})
 
     return {
         "reference_corpus_dir": str(REFERENCE_PDF_CORPUS_DIR),
         "reference_exemplar": str(REFERENCE_PDF_CORPUS_DIR / "2604.14206.pdf"),
         "reference_corpus_audit": reference_corpus_audit,
+        "venue_section_gate": venue_gate_report or {},
+        "page_budget_gate": page_budget_report or {},
         "venue_template": "iclr2026_conference",
         "template_files": template_files or [],
         "compile_ok": bool(compile_result.get("ok")),
         "page_count": page_count,
+        "main_body_pages": main_body_pages,
         "section_count": len(sections),
         "subsection_count": subsection_count,
         "citation_count": len(cited),
@@ -723,6 +1044,15 @@ def _paper_quality_report(
     }
 
 
+def _negative_partial_benchmark_ok(packet: dict) -> bool:
+    try:
+        from agents.paper_completeness import _completeness_relaxed_for_negative
+
+        return _completeness_relaxed_for_negative(packet)
+    except Exception:
+        return False
+
+
 def _submission_blockers_from_state(state: dict, error: str = "") -> list[str]:
     blockers: list[str] = []
     if error:
@@ -735,10 +1065,11 @@ def _submission_blockers_from_state(state: dict, error: str = "") -> list[str]:
     if not packet:
         blockers.append("ExperimentResultPacket is missing.")
         return _dedupe_strings(blockers)
-    if packet.get("blocks_manuscript"):
+    relaxed_negative = _negative_partial_benchmark_ok(packet)
+    if packet.get("blocks_manuscript") and not relaxed_negative:
         blockers.append("Result packet currently blocks manuscript generation.")
     evidence_tier = str(packet.get("evidence_tier") or "").strip().lower()
-    if evidence_tier in {"bootstrap_probe", "sanity_real_benchmark"}:
+    if evidence_tier in {"bootstrap_probe", "sanity_real_benchmark"} and not relaxed_negative:
         blockers.append(f"Evidence tier is {evidence_tier}, not a full benchmark tier.")
     benchmark_summary = packet.get("benchmark_summary") if isinstance(packet.get("benchmark_summary"), dict) else {}
     publication_contract = (
@@ -757,10 +1088,11 @@ def _submission_blockers_from_state(state: dict, error: str = "") -> list[str]:
     artifact_paths = packet.get("artifact_paths") if isinstance(packet.get("artifact_paths"), dict) else {}
     if artifact_manifest.get("readiness_blockers"):
         blockers.extend(str(x) for x in artifact_manifest.get("readiness_blockers") or [])
-    if not (packet.get("full_benchmark_completed") or artifact_manifest.get("full_benchmark_completed")):
-        blockers.append("full_benchmark_completed is false.")
-    if not (artifact_paths.get("artifact_manifest") or artifact_manifest.get("artifacts") or artifact_manifest.get("path")):
-        blockers.append("benchmark_artifact_manifest.json is missing or not linked.")
+    if not relaxed_negative:
+        if not (packet.get("full_benchmark_completed") or artifact_manifest.get("full_benchmark_completed")):
+            blockers.append("full_benchmark_completed is false.")
+        if not (artifact_paths.get("artifact_manifest") or artifact_manifest.get("artifacts") or artifact_manifest.get("path")):
+            blockers.append("benchmark_artifact_manifest.json is missing or not linked.")
     per_method = benchmark_summary.get("per_method") if isinstance(benchmark_summary.get("per_method"), dict) else {}
     if len(per_method) < 2:
         blockers.append("Benchmark summary must include at least two methods/baselines.")
@@ -910,8 +1242,60 @@ def _dedupe_assets(assets: list[dict]) -> list[dict]:
     return out
 
 
+_CONFERENCE_TEMPLATE_IDS = frozenset(
+    {"iclr2026", "neurips2024", "icml2024", "acl_arr", "emnlp2024", "cvpr2024"}
+)
+_GEMINI_FIGURE_STEM_RE = re.compile(r"gemini", re.I)
+_MANUAL_SECTION_NUM_RE = re.compile(r"^\d+(?:\.\d+)+\s+")
+
+
+def strip_manual_section_numbers(main_tex: str) -> str:
+    """Remove LLM-prefixed numbers like ``2.2`` from ``\\subsection{2.2 Title}`` titles."""
+    out = main_tex or ""
+
+    def _repl(match: re.Match[str]) -> str:
+        cmd = match.group(1)
+        title = match.group(2).strip()
+        cleaned = _MANUAL_SECTION_NUM_RE.sub("", title)
+        if cleaned == title:
+            return match.group(0)
+        return rf"\{cmd}{{{cleaned}}}"
+
+    return re.sub(
+        r"\\(section|subsection|subsubsection)\*?\{([^}]*)\}",
+        _repl,
+        out,
+        flags=re.IGNORECASE,
+    )
+
+
+def _is_gemini_raster_stem(stem: str) -> bool:
+    return bool(_GEMINI_FIGURE_STEM_RE.search(stem))
+
+
+def _purge_stale_gemini_vector_companions(figures_dir: Path) -> list[str]:
+    """Drop outdated PDF/SVG when a newer Gemini PNG exists (prevents wrong embed)."""
+    removed: list[str] = []
+    if not figures_dir.is_dir():
+        return removed
+    for png in sorted(figures_dir.glob("*.png")):
+        if not _is_gemini_raster_stem(png.stem):
+            continue
+        png_mtime = png.stat().st_mtime
+        for ext in (".pdf", ".svg"):
+            companion = png.with_suffix(ext)
+            if not companion.is_file():
+                continue
+            if companion.stat().st_mtime <= png_mtime:
+                companion.unlink(missing_ok=True)
+                removed.append(companion.name)
+    return removed
+
+
 def _prefer_vector_figure_references(bundle_dir: Path, main_tex: str) -> str:
     root = bundle_dir.resolve()
+    figures_dir = bundle_dir / "figures"
+    _purge_stale_gemini_vector_companions(figures_dir)
 
     def _replace(match: re.Match[str]) -> str:
         raw = match.group(1).strip()
@@ -923,11 +1307,23 @@ def _prefer_vector_figure_references(bundle_dir: Path, main_tex: str) -> str:
                 return match.group(0)
         except OSError:
             return match.group(0)
-        pdf_path = path.with_suffix(".pdf")
-        if not pdf_path.exists():
+        stem = path.stem
+        if _is_gemini_raster_stem(stem):
+            png_path = path.with_suffix(".png")
+            if png_path.is_file():
+                rel = str(png_path.relative_to(root)).replace("\\", "/")
+                return match.group(0).replace(match.group(1), rel)
             return match.group(0)
-        rel = str(pdf_path.relative_to(root)).replace("\\", "/")
-        return match.group(0).replace(match.group(1), rel)
+        png_path = path.with_suffix(".png")
+        pdf_path = path.with_suffix(".pdf")
+        if png_path.is_file() and pdf_path.is_file():
+            if png_path.stat().st_mtime > pdf_path.stat().st_mtime:
+                rel = str(png_path.relative_to(root)).replace("\\", "/")
+                return match.group(0).replace(match.group(1), rel)
+        if pdf_path.is_file():
+            rel = str(pdf_path.relative_to(root)).replace("\\", "/")
+            return match.group(0).replace(match.group(1), rel)
+        return match.group(0)
 
     return INCLUDEGRAPHICS_RE.sub(_replace, main_tex or "")
 
@@ -1178,6 +1574,8 @@ def generate_bundle_paper_orchestra(
         )
     db.commit()
 
+    writing_template_id = _resolve_manuscript_template_id(state, explicit_template_id=template_id)
+
     try:
         orchestrated = _run_full_pipeline(
             state,
@@ -1187,6 +1585,7 @@ def generate_bundle_paper_orchestra(
             figures_dir=shared_fig,
             baseline=run.get("baseline_metric_value"),
             metric_name=run.get("baseline_metric_name") or "metric",
+            template_id=writing_template_id,
         )
     except Exception as exc:
         try:
@@ -1230,7 +1629,19 @@ def generate_bundle_paper_orchestra(
         bibtex, _bk = build_references_bib_from_papers(state.get("citation_seed_paper_ids") or paper_ids)
         orchestrated["bibtex_fallback"] = True
 
-    canonical_state_json = json.dumps({**state, "paper_orchestra": orchestrated}, default=str)
+    _write(
+        manuscript_root / f"venue_style_{writing_template_id}.md",
+        load_venue_style_guide(writing_template_id),
+    )
+    _write(
+        manuscript_root / "conference_guidelines.md",
+        build_conference_guidelines(writing_template_id),
+    )
+
+    canonical_state_json = json.dumps(
+        {**state, "paper_orchestra": orchestrated, "manuscript_template_id": writing_template_id},
+        default=str,
+    )
     _write(Path(layout["paper_manifests_root"]) / "canonical_state.json", canonical_state_json)
     write_plan_files(
         int(run["deep_insight_id"]),
@@ -1259,8 +1670,13 @@ def generate_bundle_paper_orchestra(
     # legacy mapping so unchanged call sites stay byte-equivalent.
     def _resolve_template_id(fmt: str) -> str:
         if template_id:
-            return template_id
-        return "iclr2026" if fmt == "conference" else "arxiv_plain"
+            return str(template_id).strip()
+        routed = str(orchestrated.get("template_id") or writing_template_id or "").strip()
+        if fmt == "conference":
+            if routed in _CONFERENCE_TEMPLATE_IDS:
+                return routed
+            return "iclr2026"
+        return routed or "arxiv_plain"
 
     preferred_bundle_dir: Path | None = None
     for bundle_format in bundle_formats:
@@ -1290,10 +1706,59 @@ def generate_bundle_paper_orchestra(
         main_tex = pick_main_tex(
             orchestrated, state, bundle_format, template_id=effective_template_id
         )
+        main_tex = strip_manual_section_numbers(main_tex)
+        from agents.manuscript_submission_enrichment import (
+            apply_venue_gates_with_retry,
+            copy_submission_figure_assets_to_bundle,
+            enrich_submission_main_tex,
+        )
+
+        from agents.manuscript_publication_tables import (
+            attach_benchmark_artifacts_to_state,
+            replace_tables_in_tex,
+        )
+        from agents.manuscript_page_budget import apply_exact_page_budget
+
+        state = attach_benchmark_artifacts_to_state(state, run_id=int(run_id))
+        copy_submission_figure_assets_to_bundle(bundle_dir, orchestrated)
+        _purge_stale_gemini_vector_companions(figures_dir)
+        from agents.manuscript_submission_style import apply_submission_style_fixes
+
+        main_tex, enrich_meta = enrich_submission_main_tex(main_tex, orchestrated, state)
+        main_tex, style_meta = apply_submission_style_fixes(
+            main_tex, state=state, bundle_dir=bundle_dir, orchestrated=orchestrated
+        )
+        enrich_meta["submission_style"] = style_meta
+        main_tex, table_meta = replace_tables_in_tex(main_tex, state)
+        enrich_meta["publication_tables"] = table_meta
+        main_tex, venue_gate_report = apply_venue_gates_with_retry(
+            main_tex,
+            template_id=effective_template_id,
+            state=state,
+            orchestrated=orchestrated,
+        )
+        main_tex, table_meta2 = replace_tables_in_tex(main_tex, state)
+        enrich_meta["publication_tables_post_expand"] = table_meta2
+        from agents.manuscript_submission_enrichment import sanitize_latex_body_unicode
+
+        orchestrated.setdefault("submission_enrichment", {})[bundle_format] = {
+            "enrich": enrich_meta,
+            "venue_gate": venue_gate_report,
+        }
+        _write(
+            bundle_dir / "venue_section_audit.json",
+            json.dumps(venue_gate_report, indent=2, ensure_ascii=False, default=str),
+        )
         bundle_bibtex = bibtex
         main_tex, bundle_bibtex, removed_cite_keys = _clean_topic_citations(main_tex, bundle_bibtex, state)
+        main_tex, bundle_bibtex, removed_irrelevant_keys = strip_irrelevant_registry_citations(
+            main_tex,
+            bundle_bibtex,
+            orchestrated.get("citation_registry") or [],
+        )
         orchestrated.setdefault("citation_cleanup", {})[bundle_format] = {
             "removed_offtopic_cite_keys": removed_cite_keys,
+            "removed_irrelevant_registry_keys": removed_irrelevant_keys,
             "template_id": effective_template_id,
             "template_files": copied_template_files,
         }
@@ -1307,6 +1772,74 @@ def generate_bundle_paper_orchestra(
             metric_name=run.get("baseline_metric_name") or "metric",
         )
         main_tex = _prefer_vector_figure_references(bundle_dir, main_tex)
+        from agents.manuscript_submission_enrichment import sanitize_main_tex_for_compile
+
+        main_tex, repair_notes_final = sanitize_main_tex_for_compile(main_tex)
+        if repair_notes_final:
+            enrich_meta["latex_repair_final"] = repair_notes_final
+        main_tex, table_meta_final = replace_tables_in_tex(main_tex, state)
+        enrich_meta["publication_tables_final"] = table_meta_final
+        main_tex, page_budget_report = apply_exact_page_budget(
+            main_tex,
+            bundle_dir,
+            template_id=effective_template_id,
+            state=state,
+        )
+        main_tex, style_meta_final = apply_submission_style_fixes(
+            main_tex, state=state, bundle_dir=bundle_dir, orchestrated=orchestrated
+        )
+        enrich_meta["submission_style_final"] = style_meta_final
+        orchestrated.setdefault("submission_enrichment", {})[bundle_format]["page_budget"] = page_budget_report
+        _write(
+            bundle_dir / "page_budget_audit.json",
+            json.dumps(page_budget_report, indent=2, ensure_ascii=False, default=str),
+        )
+        from agents.manuscript_page_budget import page_budget_blockers
+
+        page_budget_blockers_list = page_budget_blockers(page_budget_report, template_id=effective_template_id)
+        if page_budget_blockers_list:
+            db.execute(
+                """
+                UPDATE manuscript_runs
+                SET status='failed', updated_at=CURRENT_TIMESTAMP
+                WHERE id=?
+                """,
+                (manuscript_run_id,),
+            )
+            db.commit()
+            block_report = {
+                "run_id": run_id,
+                "deep_insight_id": run["deep_insight_id"],
+                "status": "manuscript_blocked",
+                "error": page_budget_blockers_list[0],
+                "page_budget_report": page_budget_report,
+                "blockers": page_budget_blockers_list,
+            }
+            _write_blocked_current_marker(layout, block_report)
+            _write(
+                bundle_dir / "page_budget_audit.json",
+                json.dumps(page_budget_report, indent=2, ensure_ascii=False, default=str),
+            )
+            write_latest_status(
+                int(run["deep_insight_id"]),
+                {
+                    "stage": "writing_submission",
+                    "status": "manuscript_blocked",
+                    "error": page_budget_blockers_list[0],
+                    "page_budget_report": page_budget_report,
+                    "paper_current_root": str(manuscript_root),
+                },
+                run_id=run_id,
+                insight=insight,
+            )
+            return {
+                "error": page_budget_blockers_list[0],
+                "submission_blockers": page_budget_blockers_list,
+                "page_budget_pass": False,
+                "workdir": str(bundle_dir),
+                "backend": "paper_orchestra",
+            }
+        page_budget_warning = None
         latex_sanity_report = latex_sanity_check(main_tex)
         _write(bundle_dir / "main.tex", main_tex)
         _write(
@@ -1552,6 +2085,9 @@ def generate_bundle_paper_orchestra(
             compile_result=compile_result,
             removed_cite_keys=removed_cite_keys,
             template_files=copied_template_files,
+            venue_gate_report=venue_gate_report,
+            page_budget_report=page_budget_report,
+            page_budget_warning=page_budget_warning,
         )
         _write(
             bundle_dir / "paper_quality_report.json",

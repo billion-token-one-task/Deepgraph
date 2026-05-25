@@ -256,6 +256,38 @@ class ManuscriptInputStateTests(unittest.TestCase):
 
         state.require_submission_ready()
 
+    def test_submission_ready_allows_refuted_real_benchmark_when_negative_results_enabled(self):
+        state = ManuscriptInputState(
+            run_id=2,
+            deep_insight_id=2,
+            formal_experiment=True,
+            smoke_test_only=False,
+            title="CPG",
+            method_name="CPG",
+            claims=[{"claim_text": "x"}],
+            citation_seed_paper_ids=["2401.1"],
+            result_packet={
+                "formal_experiment": True,
+                "verdict": "refuted",
+                "hypothesis_iterations": [{"iteration_number": 1}],
+                "evidence_tier": "bootstrap_probe",
+                "blocks_manuscript": True,
+                "quality_gates": {"requires_full_benchmark_package": True, "has_real_benchmark": True},
+                "benchmark_summary": {
+                    "primary_metric": "primary_score",
+                    "num_seeds": 3,
+                    "partial_from_predictions": True,
+                    "prediction_lines": 10181,
+                    "per_method": {
+                        "baseline": {"primary_score": 0.29},
+                        "candidate": {"primary_score": 0.27},
+                    },
+                },
+            },
+        )
+
+        state.require_submission_ready()
+
 
 if __name__ == "__main__":
     unittest.main()

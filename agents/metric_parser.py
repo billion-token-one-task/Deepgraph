@@ -230,7 +230,7 @@ def build_benchmark_summary_from_predictions(
     if resolved_candidate in per_method:
         candidate_value = per_method[resolved_candidate].get(metric_name)
 
-    return {
+    summary = {
         "primary_metric": metric_name,
         "metric_name": metric_name,
         "candidate_method": resolved_candidate,
@@ -241,3 +241,37 @@ def build_benchmark_summary_from_predictions(
         "partial_from_predictions": True,
         "prediction_lines": line_count,
     }
+    persist_main_results_table(results_dir, summary)
+    return summary
+
+
+def persist_main_results_table(results_dir: Path, summary: dict) -> Path | None:
+    """Write ``main_results_table.json`` from benchmark summary (full or partial)."""
+    per_method = summary.get("per_method") if isinstance(summary, dict) else None
+    if not isinstance(per_method, dict) or not per_method:
+        return None
+    metric_name = str(summary.get("metric_name") or summary.get("primary_metric") or "primary_score")
+    table: dict[str, dict[str, float]] = {}
+    for method_name, row in per_method.items():
+        if not method_name:
+            continue
+        if isinstance(row, dict):
+            value = row.get(metric_name)
+            if value is None:
+                value = row.get("metric_value")
+            if value is None:
+                value = row.get("primary_score")
+            if value is None and len(row) == 1:
+                value = next(iter(row.values()))
+        else:
+            value = row
+        try:
+            table[str(method_name)] = {metric_name: float(value)}
+        except (TypeError, ValueError):
+            continue
+    if not table:
+        return None
+    results_dir.mkdir(parents=True, exist_ok=True)
+    path = results_dir / "main_results_table.json"
+    path.write_text(json.dumps(table, indent=2, ensure_ascii=False), encoding="utf-8")
+    return path

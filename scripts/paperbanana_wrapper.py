@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -476,9 +477,20 @@ def _run_openai_compatible_image_generation(
             if attempt < attempts:
                 time.sleep(min(10, 2 * attempt))
     else:
-        body, error = _post_openai_image_payload_with_urllib(url=url, api_key=api_key, payload=payload)
-        if error:
-            errors.append(f"urllib:{error}")
+        for attempt in range(1, attempts + 1):
+            body, error = _post_openai_image_payload_with_urllib(url=url, api_key=api_key, payload=payload)
+            if body is not None:
+                break
+            errors.append(f"urllib_attempt_{attempt}:{error}")
+            if attempt < attempts and _is_retriable_image_error(error):
+                wait = _image_retry_sleep_seconds(attempt)
+                print(
+                    f"OpenAI-compatible image urllib retry {attempt}/{attempts} after {wait:.0f}s",
+                    file=sys.stderr,
+                )
+                time.sleep(wait)
+                continue
+            break
         if body is None:
             for attempt in range(1, attempts + 1):
                 body, error = _post_openai_image_payload_with_curl(url=url, api_key=api_key, payload=payload)
@@ -486,13 +498,74 @@ def _run_openai_compatible_image_generation(
                     break
                 errors.append(f"curl_attempt_{attempt}:{error}")
                 if attempt < attempts:
-                    time.sleep(min(10, 2 * attempt))
+                    time.sleep(_image_retry_sleep_seconds(attempt))
 
     if body is None:
         print(f"OpenAI-compatible image generation failed: {'; '.join(errors)}", file=sys.stderr)
         return 4
 
     return _write_openai_image_response(output_path=output_path, body=body)
+
+
+def _image_attempt_count() -> int:
+    raw = _env_first("DEEPGRAPH_PAPERBANANA_IMAGE_ATTEMPTS", "DEEPGRAPH_PAPERBANANA_IMAGE_RETRIES")
+    try:
+        return max(1, min(8, int(raw or "5")))
+    except ValueError:
+        return 5
+
+
+def _image_retry_sleep_seconds(attempt: int) -> float:
+    """Exponential backoff between image API attempts (403 balance / 429 rate limit)."""
+    raw = _env_first("DEEPGRAPH_PAPERBANANA_IMAGE_RETRY_BACKOFF_SECONDS")
+    try:
+        base = float(raw or "20")
+    except ValueError:
+        base = 20.0
+    return min(180.0, base * attempt)
+
+
+def _is_retriable_image_error(error: str, *, http_code: int | None = None) -> bool:
+    text = (error or "").lower()
+    if http_code in {402, 403, 408, 409, 429, 500, 502, 503, 504}:
+        return True
+    tokens = (
+        "403",
+        "429",
+        "forbidden",
+        "rate limit",
+        "too many",
+        "quota",
+        "insufficient",
+        "balance",
+        "余额",
+        "不足",
+        "billing",
+        "payment",
+        "timeout",
+        "temporarily unavailable",
+        "service unavailable",
+        "model_not_found",
+        "ssl",
+        "unexpected_eof",
+        "connection",
+        "connection reset",
+        "broken pipe",
+        "urlopen error",
+        "network",
+    )
+    return any(token in text for token in tokens)
+
+
+def _http_error_message(exc: BaseException) -> tuple[int | None, str]:
+    if isinstance(exc, urllib.error.HTTPError):
+        code = int(exc.code)
+        try:
+            body = exc.read().decode("utf-8", errors="replace")
+        except Exception:
+            body = str(exc)
+        return code, body
+    return None, str(exc)
 
 
 def _run_gemini_native_image_generation(
@@ -523,54 +596,73 @@ def _run_gemini_native_image_generation(
         },
     }
     url = f"{base_url}/v1beta/models/{model}:generateContent"
-    request = urllib.request.Request(
-        url,
-        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "x-goog-api-key": api_key,
-            "Content-Type": "application/json",
-            "User-Agent": "DeepGraph-PaperBanana-Wrapper/1.0",
-        },
-        method="POST",
+    attempts = _image_attempt_count()
+    errors: list[str] = []
+
+    for attempt in range(1, attempts + 1):
+        request = urllib.request.Request(
+            url,
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "x-goog-api-key": api_key,
+                "Content-Type": "application/json",
+                "User-Agent": "DeepGraph-PaperBanana-Wrapper/1.0",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=600) as response:
+                body = json.loads(response.read().decode("utf-8", errors="replace"))
+        except Exception as exc:
+            code, detail = _http_error_message(exc)
+            msg = f"attempt_{attempt}:HTTP{code}:{detail}" if code else f"attempt_{attempt}:{detail}"
+            errors.append(msg)
+            if attempt < attempts and _is_retriable_image_error(detail, http_code=code):
+                wait = _image_retry_sleep_seconds(attempt)
+                print(
+                    f"Gemini-native image retry {attempt}/{attempts} after {wait:.0f}s ({msg[:200]})",
+                    file=sys.stderr,
+                )
+                time.sleep(wait)
+                continue
+            print(f"Gemini-native image generation failed: {detail}", file=sys.stderr)
+            return 4
+
+        candidates = body.get("candidates") if isinstance(body, dict) else None
+        for candidate in candidates or []:
+            content = candidate.get("content") if isinstance(candidate, dict) else None
+            parts = content.get("parts") if isinstance(content, dict) else None
+            for part in parts or []:
+                if not isinstance(part, dict):
+                    continue
+                inline_data = part.get("inlineData") or part.get("inline_data")
+                if not isinstance(inline_data, dict):
+                    continue
+                data = inline_data.get("data")
+                if not data:
+                    continue
+                try:
+                    output_path.parent.mkdir(parents=True, exist_ok=True)
+                    output_path.write_bytes(base64.b64decode(str(data)))
+                    return 0
+                except Exception as exc:
+                    errors.append(f"attempt_{attempt}:decode:{exc}")
+                    break
+        errors.append(f"attempt_{attempt}:no_inline_image")
+        if attempt < attempts:
+            wait = _image_retry_sleep_seconds(attempt)
+            print(
+                f"Gemini-native empty image payload; retry {attempt}/{attempts} after {wait:.0f}s",
+                file=sys.stderr,
+            )
+            time.sleep(wait)
+
+    print(
+        "Gemini-native image generation failed after retries: " + "; ".join(errors[-3:]),
+        file=sys.stderr,
     )
-    try:
-        with urllib.request.urlopen(request, timeout=600) as response:
-            body = json.loads(response.read().decode("utf-8", errors="replace"))
-    except Exception as exc:
-        print(f"Gemini-native image generation failed: {exc}", file=sys.stderr)
-        return 4
-
-    candidates = body.get("candidates") if isinstance(body, dict) else None
-    for candidate in candidates or []:
-        content = candidate.get("content") if isinstance(candidate, dict) else None
-        parts = content.get("parts") if isinstance(content, dict) else None
-        for part in parts or []:
-            if not isinstance(part, dict):
-                continue
-            inline_data = part.get("inlineData") or part.get("inline_data")
-            if not isinstance(inline_data, dict):
-                continue
-            data = inline_data.get("data")
-            if not data:
-                continue
-            try:
-                output_path.parent.mkdir(parents=True, exist_ok=True)
-                output_path.write_bytes(base64.b64decode(str(data)))
-                return 0
-            except Exception as exc:
-                print(f"Gemini-native image base64 decode failed: {exc}", file=sys.stderr)
-                return 4
-    print("Gemini-native image generation response had no inline image data.", file=sys.stderr)
     return 4
-
-
-def _image_attempt_count() -> int:
-    raw = _env_first("DEEPGRAPH_PAPERBANANA_IMAGE_ATTEMPTS", "DEEPGRAPH_PAPERBANANA_IMAGE_RETRIES")
-    try:
-        return max(1, min(5, int(raw or "3")))
-    except ValueError:
-        return 3
 
 
 def _post_openai_image_payload_with_urllib(
@@ -733,11 +825,14 @@ def main() -> int:
         return 0
 
     if not ready:
+        proto = (_env_first("DEEPGRAPH_PAPERBANANA_IMAGE_PROTOCOL") or "openai_compatible").strip().lower()
         print(
-            "PaperBanana is installed, but no image-capable credential is configured. "
-            "Set DEEPGRAPH_PAPERBANANA_IMAGE_PROTOCOL=gemini_native plus "
-            "DEEPGRAPH_PAPERBANANA_IMAGE_API_KEY and DEEPGRAPH_PAPERBANANA_IMAGE_BASE_URL "
-            "(or OPENROUTER_API_KEY / GOOGLE_API_KEY) in /home/billion-token/Deepgraph/.env.",
+            "PaperBanana image API credentials missing. "
+            f"protocol={proto} provider={provider}. "
+            f"Create {DEEPGRAPH_ROOT / '.env'} with DEEPGRAPH_PAPERBANANA_IMAGE_API_KEY, "
+            "DEEPGRAPH_PAPERBANANA_IMAGE_BASE_URL, DEEPGRAPH_PAPERBANANA_IMAGE_PROTOCOL=gemini_native, "
+            "DEEPGRAPH_PAPERBANANA_IMAGE_MODEL=gemini-3-pro-image-preview "
+            "(not gemini-3.0-pro-image-preview).",
             file=sys.stderr,
         )
         return 3

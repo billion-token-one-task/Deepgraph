@@ -534,6 +534,39 @@ class ExperimentResultPacket(ContractRecord):
             raise ContractValidationError("ExperimentResultPacket missing claim_text")
 
 
+def _manuscript_negative_results_allowed() -> bool:
+    try:
+        from config import MANUSCRIPT_ALLOW_NEGATIVE_RESULTS
+
+        return bool(MANUSCRIPT_ALLOW_NEGATIVE_RESULTS)
+    except ImportError:
+        return False
+
+
+def _real_benchmark_summary_present(benchmark_summary: Mapping[str, Any] | None) -> bool:
+    summary = ensure_dict(benchmark_summary)
+    per_method = ensure_dict(summary.get("per_method"))
+    if len(per_method) < 2:
+        return False
+    try:
+        num_seeds = int(summary.get("num_seeds") or len(ensure_list(summary.get("seed_results"))) or 0)
+    except (TypeError, ValueError):
+        num_seeds = 0
+    if num_seeds >= 1:
+        return True
+    try:
+        return int(summary.get("prediction_lines") or 0) >= 50
+    except (TypeError, ValueError):
+        return bool(summary.get("partial_from_predictions"))
+
+
+def _allowed_submission_verdicts() -> set[str]:
+    allowed = {"confirmed", "supported"}
+    if _manuscript_negative_results_allowed():
+        allowed |= {"refuted", "inconclusive"}
+    return allowed
+
+
 @dataclass
 class ManuscriptInputState(ContractRecord):
     run_id: int | None = None
@@ -597,7 +630,16 @@ class ManuscriptInputState(ContractRecord):
         if not self.result_packet:
             raise ContractValidationError("ManuscriptInputState missing ExperimentResultPacket")
         evidence_tier = str(self.result_packet.get("evidence_tier") or "").strip().lower()
-        if self.result_packet.get("blocks_manuscript") or evidence_tier in {"bootstrap_probe", "sanity_real_benchmark"}:
+        benchmark_summary = ensure_dict(self.result_packet.get("benchmark_summary"))
+        negative_ok = _manuscript_negative_results_allowed() and _real_benchmark_summary_present(benchmark_summary)
+        stale_probe_tier = evidence_tier in {"bootstrap_probe", "sanity_real_benchmark"}
+        if stale_probe_tier and negative_ok and bool(self.formal_experiment):
+            evidence_tier = "benchmark_plan"
+        if self.result_packet.get("blocks_manuscript") and not negative_ok:
+            raise ContractValidationError(
+                "Result packet blocks manuscript generation; complete benchmark-backed experiments first"
+            )
+        if stale_probe_tier and not negative_ok:
             raise ContractValidationError(
                 "Sanity/bootstrap/probe evidence cannot enter manuscript generation; complete benchmark-backed experiments first"
             )
@@ -627,11 +669,11 @@ class ManuscriptInputState(ContractRecord):
                 )
         quality_gates = ensure_dict(self.result_packet.get("quality_gates")) or self.quality_gates
         verdict = str(self.result_packet.get("verdict") or self.verdict or "").strip().lower()
-        if verdict and verdict not in {"confirmed", "supported"}:
+        if verdict and verdict not in _allowed_submission_verdicts():
             raise ContractValidationError(
-                "Only confirmed benchmark results may generate submission bundles"
+                "Only confirmed/supported results may generate submission bundles "
+                "(enable DEEPGRAPH_MANUSCRIPT_ALLOW_NEGATIVE_RESULTS for refuted/inconclusive real benchmarks)"
             )
-        benchmark_summary = ensure_dict(self.result_packet.get("benchmark_summary"))
         artifact_paths = ensure_dict(self.result_packet.get("artifact_paths"))
         benchmark_artifact_manifest = ensure_dict(self.result_packet.get("benchmark_artifact_manifest"))
         benchmark_manifest = ensure_dict(publication_contract.get("benchmark_manifest"))
@@ -675,7 +717,16 @@ class ManuscriptInputState(ContractRecord):
             or benchmark_artifact_manifest.get("path")
         )
         has_benchmark_matrix = bool(per_method and len(per_method) >= 2 and num_seeds >= minimum_seeds)
-        if benchmark_required and not (full_done and has_artifact_manifest and has_benchmark_matrix):
+        partial_real_ok = bool(
+            negative_ok
+            and has_benchmark_matrix
+            and (
+                benchmark_summary.get("partial_from_predictions")
+                or int(benchmark_summary.get("prediction_lines") or 0) >= 50
+            )
+        )
+        package_ready = bool(full_done and has_artifact_manifest and has_benchmark_matrix)
+        if benchmark_required and not package_ready and not partial_real_ok:
             raise ContractValidationError(
                 "Full benchmark artifact package is required before manuscript generation"
             )

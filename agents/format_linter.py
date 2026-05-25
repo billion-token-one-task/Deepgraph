@@ -137,7 +137,7 @@ def _check_required_packages_present(source: str) -> CheckResult:
 def _check_page_count_within_budget(
     source: str, adapter: TemplateAdapter, page_count: int | None
 ) -> CheckResult:
-    """Soft warning when estimated page count exceeds venue budget."""
+    """Hard gate: main-body page count must equal venue max_pages exactly (References excluded upstream)."""
     budget = adapter.max_pages
     if page_count is None:
         return CheckResult(
@@ -147,22 +147,36 @@ def _check_page_count_within_budget(
             message="page_count not provided; check deferred",
             details={"budget": budget},
         )
-    over = page_count - budget
-    if over <= 0:
+    under = budget - page_count
+    if page_count == budget:
         return CheckResult(
             name="page_count_within_budget",
             severity="info",
             passed=True,
-            message=f"page_count={page_count} ≤ budget={budget}",
-            details={"budget": budget, "page_count": page_count, "over": 0},
+            message=f"page_count={page_count} equals venue budget={budget}",
+            details={"budget": budget, "page_count": page_count, "over": 0, "under": 0},
         )
-    severity = "error" if over > PAGE_BUDGET_HARD_OVERAGE else "warning"
+    if under > 0:
+        return CheckResult(
+            name="page_count_within_budget",
+            severity="error",
+            passed=False,
+            message=(
+                f"main_body_page_count={page_count} is {under} page(s) short of required "
+                f"budget={budget} (References excluded)"
+            ),
+            details={"budget": budget, "page_count": page_count, "over": 0, "under": under},
+        )
+    over = page_count - budget
     return CheckResult(
         name="page_count_within_budget",
-        severity=severity,
+        severity="error",
         passed=False,
-        message=f"page_count={page_count} exceeds budget={budget} by {over}",
-        details={"budget": budget, "page_count": page_count, "over": over},
+        message=(
+            f"main_body_page_count={page_count} exceeds required budget={budget} by {over} "
+            "(References excluded; exact match required)"
+        ),
+        details={"budget": budget, "page_count": page_count, "over": over, "under": 0},
     )
 
 

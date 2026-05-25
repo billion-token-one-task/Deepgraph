@@ -364,13 +364,24 @@ def interpret_run(run_id: int) -> dict:
         or publication_contract.get("required_real_benchmarks")
         or quality_gates.get("has_real_benchmark")
     )
+    try:
+        from config import MANUSCRIPT_ALLOW_NEGATIVE_RESULTS
+    except ImportError:
+        MANUSCRIPT_ALLOW_NEGATIVE_RESULTS = False
+    per_method = benchmark_summary.get("per_method") if isinstance(benchmark_summary.get("per_method"), dict) else {}
+    partial_real_benchmark = bool(
+        benchmark_summary.get("partial_from_predictions")
+        or int(benchmark_summary.get("prediction_lines") or 0) >= 50
+        or len(per_method) >= 2
+    )
     if benchmark_required and (verdict != "confirmed" or not full_benchmark_completed):
-        blocks_manuscript = True
-        if "Full benchmark artifact package is required before manuscript generation." not in reviewer_objections:
-            reviewer_objections.insert(
-                0,
-                "Full benchmark artifact package is required before manuscript generation.",
-            )
+        if not (MANUSCRIPT_ALLOW_NEGATIVE_RESULTS and partial_real_benchmark and verdict in ("refuted", "inconclusive", "confirmed")):
+            blocks_manuscript = True
+            if "Full benchmark artifact package is required before manuscript generation." not in reviewer_objections:
+                reviewer_objections.insert(
+                    0,
+                    "Full benchmark artifact package is required before manuscript generation.",
+                )
 
     total_iters = len(test_iters)
     crash_count = sum(1 for t in test_iters if t["status"] == "crash")

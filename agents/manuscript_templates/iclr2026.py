@@ -96,10 +96,19 @@ class ICLR2026Adapter(TemplateAdapter):
             )
         if "math_commands.tex" not in preamble:
             preamble = preamble.rstrip() + "\n" + r"\input{math_commands.tex}" + "\n"
-        for package in ("graphicx", "booktabs", "amsmath,amssymb", "hyperref", "url"):
+        for package in ("graphicx", "booktabs", "amsmath,amssymb", "url"):
             first_pkg = package.split(",", 1)[0]
             if first_pkg not in preamble:
                 preamble = preamble.rstrip() + "\n" + rf"\usepackage{{{package}}}" + "\n"
+        if "hyperref" not in preamble:
+            preamble = preamble.rstrip() + "\n" + r"\usepackage[hidelinks]{hyperref}" + "\n"
+        else:
+            preamble = re.sub(
+                r"\\usepackage(?:\[[^\]]*\])?\{hyperref\}",
+                r"\\usepackage[hidelinks]{hyperref}",
+                preamble,
+                count=1,
+            )
         if r"\author" not in preamble:
             author_block = (
                 r"\author{Anonymous authors\\Paper under double-blind review}"

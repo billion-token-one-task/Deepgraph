@@ -66,8 +66,19 @@ def iterative_refine_with_agentreview(
     for i in range(max_iters):
         ref_user = build_refinement_user(current, prev_scores)
         refined_text, _ = call_llm(content_refinement_system_tex, ref_user)
-        # Prefer full ```latex ... ``` block if present (official output format)
-        latex = _extract_latex_block(refined_text) or refined_text
+        latex = _extract_latex_block(refined_text)
+        if latex is None and _looks_like_latex_document(refined_text):
+            latex = refined_text.strip()
+        if not latex:
+            worklog.append(
+                {
+                    "iter": i + 1,
+                    "rejected": "missing_latex_block",
+                    "before_overall": prev_overall,
+                    "after_overall": prev_overall,
+                }
+            )
+            break
         new_scores = score_manuscript_latex(latex)
         new_overall = _overall(new_scores)
         new_sub = _subaxis_sum(new_scores)
@@ -102,6 +113,15 @@ def _extract_latex_block(text: str) -> str | None:
     if m:
         return m.group(1).strip()
     return None
+
+
+def _looks_like_latex_document(text: str) -> bool:
+    raw = (text or "").strip()
+    if not raw or raw.startswith("{") or raw.startswith("["):
+        return False
+    if raw.startswith("```json"):
+        return False
+    return "\\documentclass" in raw[:4000] or ("\\begin{document}" in raw and "\\section" in raw)
 
 
 def parse_refinement_dual_output(text: str) -> tuple[dict | None, str | None]:

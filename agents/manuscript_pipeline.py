@@ -6,9 +6,11 @@ import json
 from pathlib import Path
 from typing import Any
 
-from config import SUBMISSION_BUNDLE_FORMATS
+from config import MANUSCRIPT_ALLOW_NEGATIVE_RESULTS, SUBMISSION_BUNDLE_FORMATS
 from contracts import ContractValidationError, ManuscriptInputState
+from contracts.pipeline import _real_benchmark_summary_present
 from agents.benchmark_audit import best_iteration_benchmark_summary
+from agents.metric_parser import persist_main_results_table
 from agents.paper_completeness import audit_evidence_completeness
 from db import database as db
 
@@ -90,6 +92,60 @@ def _result_contribution(run: dict, result_packet: dict) -> str:
     return f"Best {metric_name}={best:.6f} ties baseline {baseline:.6f}; no positive effect has been established."
 
 
+def _apply_manuscript_packet_overrides(packet: dict[str, Any], run: dict, proxy: dict) -> dict[str, Any]:
+    """Refresh stale bootstrap_probe / blocks_manuscript flags after real benchmarks finish."""
+    summary = packet.get("benchmark_summary") if isinstance(packet.get("benchmark_summary"), dict) else {}
+    publication_contract = proxy.get("publication_evidence_contract") or {}
+    if not isinstance(publication_contract, dict):
+        publication_contract = {}
+    tier = str(
+        packet.get("evidence_tier")
+        or publication_contract.get("evidence_tier")
+        or proxy.get("evidence_tier")
+        or ""
+    ).strip().lower()
+    if tier in {"bootstrap_probe", "sanity_real_benchmark"} and _real_benchmark_summary_present(summary):
+        packet["evidence_tier"] = "benchmark_plan"
+    verdict = str(run.get("hypothesis_verdict") or packet.get("verdict") or "").strip().lower()
+    packet["verdict"] = verdict or packet.get("verdict")
+    if MANUSCRIPT_ALLOW_NEGATIVE_RESULTS and _real_benchmark_summary_present(summary) and verdict in {
+        "refuted",
+        "inconclusive",
+        "confirmed",
+        "supported",
+    }:
+        packet["blocks_manuscript"] = False
+        if bool(proxy.get("formal_experiment")):
+            packet["formal_experiment"] = True
+    proxy_claim_route = proxy.get("claim_route") if isinstance(proxy.get("claim_route"), dict) else {}
+    packet_claim_route = packet.get("claim_route") if isinstance(packet.get("claim_route"), dict) else {}
+    proxy_route_value = str(proxy_claim_route.get("route") or "").strip().lower()
+    packet_route_value = str(packet_claim_route.get("route") or "").strip().lower()
+    if proxy_route_value == "full_paper":
+        if packet_route_value in {"probe", "blocked"}:
+            # Route demotion that loses ablation/baseline gates is the
+            # silent failure mode that "30 iter null → refuted paper"
+            # exploits. Log it loudly and surface it in the packet.
+            print(
+                f"[ROUTE] WARNING: claim_route demoted from full_paper to {packet_route_value!r} "
+                "in result packet; restoring contract route. Audit gates would otherwise lapse.",
+                flush=True,
+            )
+            packet.setdefault("route_demotion_warnings", []).append(
+                {
+                    "from": "full_paper",
+                    "to": packet_route_value,
+                    "restored_from": "proxy.claim_route",
+                }
+            )
+        packet["claim_route"] = proxy_claim_route
+    elif packet_route_value in {"", "probe", "blocked"}:
+        pub_route = publication_contract.get("claim_route") if isinstance(publication_contract.get("claim_route"), dict) else {}
+        if str(pub_route.get("route") or "").strip().lower() == "full_paper":
+            packet["claim_route"] = pub_route
+    return packet
+
+
 def _load_result_packet(run: dict, claims: list[dict]) -> dict[str, Any]:
     workdir_raw = str(run.get("workdir") or "").strip()
     benchmark_summary: dict[str, Any] = {}
@@ -99,8 +155,29 @@ def _load_result_packet(run: dict, claims: list[dict]) -> dict[str, Any]:
         workdir = Path(workdir_raw)
         summary_path = workdir / "results" / "benchmark_summary.json"
         manifest_path = workdir / "results" / "benchmark_artifact_manifest.json"
+        results_dir = workdir / "results"
+        if (results_dir / "raw_predictions.jsonl").is_file():
+            from agents.benchmark_artifacts import materialize_deep_benchmark_artifacts
+
+            contract = {}
+            criteria_path = workdir / "spec" / "success_criteria.json"
+            if criteria_path.exists():
+                crit = _json_dict(criteria_path.read_text(encoding="utf-8"))
+                contract = (
+                    crit.get("publication_evidence_contract")
+                    or crit.get("publication_evidence")
+                    or {}
+                )
+            if not isinstance(contract, dict):
+                contract = {}
+            materialize_deep_benchmark_artifacts(
+                results_dir,
+                publication_contract=contract,
+                metric_name=str(run.get("baseline_metric_name") or "primary_score"),
+            )
         if summary_path.exists():
             benchmark_summary = _json_dict(summary_path.read_text(encoding="utf-8"))
+            persist_main_results_table(results_dir, benchmark_summary)
         success_hint = _json_dict(run.get("success_criteria"))
         best_summary = best_iteration_benchmark_summary(
             workdir,
@@ -121,7 +198,8 @@ def _load_result_packet(run: dict, claims: list[dict]) -> dict[str, Any]:
                 packet["benchmark_artifact_manifest"] = benchmark_artifact_manifest
             if artifact_paths:
                 packet["artifact_paths"] = {**_json_dict(packet.get("artifact_paths")), **artifact_paths}
-            return packet
+            proxy = _json_dict(run.get("proxy_config"))
+            return _apply_manuscript_packet_overrides(packet, run, proxy)
     for claim in claims:
         packet = _json_dict(_json_dict(claim.get("supporting_data")).get("result_packet"))
         if packet:
@@ -149,7 +227,11 @@ def _load_result_packet(run: dict, claims: list[dict]) -> dict[str, Any]:
     claim_route = success.get("claim_route") or publication_contract.get("claim_route") or proxy.get("claim_route") or {}
     if not isinstance(claim_route, dict):
         claim_route = {}
-    return {
+    if str(claim_route.get("route") or "").strip().lower() in {"probe", "blocked", ""}:
+        proxy_route = proxy.get("claim_route") if isinstance(proxy.get("claim_route"), dict) else {}
+        if str(proxy_route.get("route") or "").strip().lower() == "full_paper":
+            claim_route = proxy_route
+    packet = {
         "run_id": run.get("id"),
         "deep_insight_id": run.get("deep_insight_id"),
         "formal_experiment": bool(proxy.get("formal_experiment")),
@@ -176,6 +258,7 @@ def _load_result_packet(run: dict, claims: list[dict]) -> dict[str, Any]:
         "quality_gates": quality_gates,
         "reviewer_objections": success.get("reviewer_objections") or publication_contract.get("reviewer_objections") or [],
     }
+    return _apply_manuscript_packet_overrides(packet, run, proxy)
 
 
 def _publication_contract_from_inputs(result_packet: dict, plan: dict, run: dict) -> dict[str, Any]:
@@ -459,6 +542,16 @@ def build_manuscript_input_state(run: dict, insight: dict, iterations: list[dict
     source_paper_ids = [str(x) for x in _json_list(insight.get("source_paper_ids")) if x]
     source_node_ids = [str(x) for x in _json_list(insight.get("source_node_ids")) if x]
     citation_seed_paper_ids = _dedupe(supporting_papers + source_paper_ids)
+    if not citation_seed_paper_ids:
+        rows = db.fetchall(
+            """
+            SELECT id FROM papers
+            WHERE status IN ('reasoned', 'graph_written', 'text_ready', 'extracted')
+            ORDER BY updated_at DESC
+            LIMIT 8
+            """
+        )
+        citation_seed_paper_ids = [str(row["id"]) for row in rows if row.get("id")]
     evidence_packet = _json_dict(insight.get("evidence_packet"))
     evidence_summary = insight.get("evidence_summary") or insight.get("related_work_positioning") or ""
     best_iter = _best_iteration(iterations)

@@ -164,11 +164,19 @@ def _ensure_builtin_adapters_loaded() -> None:
     # imports trigger the @register side-effect
     from agents.manuscript_templates import iclr2026 as _iclr  # noqa: F401
     from agents.manuscript_templates import arxiv_plain as _arx  # noqa: F401
-    # D2 (#13): four additional top-tier venues.
-    from agents.manuscript_templates import neurips2024 as _nrps  # noqa: F401
-    from agents.manuscript_templates import icml2024 as _icml  # noqa: F401
-    from agents.manuscript_templates import acl_arr as _acl  # noqa: F401
-    from agents.manuscript_templates import cvpr2024 as _cvpr  # noqa: F401
+    # D2 (#13): four additional top-tier venues. Optional adapters are loaded
+    # best-effort: if their template constants are missing from config.py the
+    # package import would otherwise abort the whole loader and break the
+    # mandatory ICLR/arxiv path.
+    for module_name in ("neurips2024", "icml2024", "acl_arr", "cvpr2024", "emnlp2024"):
+        try:
+            __import__(f"agents.manuscript_templates.{module_name}")
+        except Exception as exc:
+            import sys as _sys
+            print(
+                f"[manuscript_templates] optional adapter {module_name!r} unavailable: {exc!r}",
+                file=_sys.stderr,
+            )
     _builtins_loaded = True
 
 

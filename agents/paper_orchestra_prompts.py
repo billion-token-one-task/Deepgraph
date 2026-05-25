@@ -11,12 +11,23 @@ from pathlib import Path
 
 from agents.evidence_planner import summarize_evidence_plan
 from agents.stage_prompts import prompt_block
-from config import PROJECT_ROOT
+from config import MANUSCRIPT_LATEX_TEMPLATE, PROJECT_ROOT
+from agents.manuscript_templates import get_adapter
+from agents.manuscript_templates.style_guides import build_venue_style_guidelines_block
 
 PROMPT_DIR = PROJECT_ROOT / "prompts" / "paper_orchestra"
+VENUE_STYLES_DIR = PROJECT_ROOT / "prompts" / "venue_styles"
 
 # Timeline rule in Song et al.; override via env if needed.
 CUTOFF_DATE = os.getenv("DEEPGRAPH_PAPERORCHESTRA_CUTOFF_DATE", "2026-04-01").strip()
+
+
+def load_manuscript_quality_gates() -> str:
+    """Shared manuscript quality rules (evidence alignment, stats, anti-patterns)."""
+    path = VENUE_STYLES_DIR / "_MANUSCRIPT_QUALITY_GATES.md"
+    if path.is_file():
+        return path.read_text(encoding="utf-8").strip()
+    return ""
 
 
 def load_prompt_tex(name: str) -> str:
@@ -148,10 +159,19 @@ def build_experimental_log_md(state: dict, iterations: list[dict]) -> str:
     return "# Experimental log\n\n```json\n" + json.dumps(body, indent=2, ensure_ascii=False)[:24000] + "\n```\n"
 
 
-def build_minimal_template_tex(state: dict) -> str:
-    """Tiny ICLR 2026 skeleton listing section commands (per outline agent requirement)."""
+def build_minimal_template_tex(state: dict, *, template_id: str | None = None) -> str:
+    """Skeleton listing section commands; ICLR assets only when ``template_id`` is iclr2026."""
     title = (state.get("title") or "Title").replace("&", r"\&")
-    return rf"""\documentclass{{article}}
+    tid = (template_id or MANUSCRIPT_LATEX_TEMPLATE or "iclr2026").strip()
+    intro_hint = (
+        r"\paragraph{Contributions.}" "\n"
+        r"This paper makes the following contributions:" "\n"
+        r"\begin{itemize}" "\n"
+        r"  \item % Outline agent: fill 3--5 contribution bullets here." "\n"
+        r"\end{itemize}"
+    )
+    if tid == "iclr2026":
+        return rf"""\documentclass{{article}}
 \usepackage{{iclr2026_conference,times}}
 \input{{math_commands.tex}}
 \usepackage{{graphicx}}
@@ -166,6 +186,7 @@ def build_minimal_template_tex(state: dict) -> str:
 \begin{{abstract}}
 \end{{abstract}}
 \section{{Introduction}}
+{intro_hint}
 \section{{Related Work}}
 \section{{Method}}
 \section{{Experiments}}
@@ -175,16 +196,66 @@ def build_minimal_template_tex(state: dict) -> str:
 \bibliography{{references}}
 \end{{document}}
 """
+    return rf"""\documentclass{{article}}
+\usepackage{{graphicx}}
+\usepackage{{booktabs}}
+\usepackage{{amsmath,amssymb}}
+\usepackage{{hyperref}}
+\usepackage{{url}}
+\title{{{title}}}
+\author{{Anonymous authors\\Paper under double-blind review}}
+\begin{{document}}
+\maketitle
+\begin{{abstract}}
+\end{{abstract}}
+\section{{Introduction}}
+{intro_hint}
+\section{{Related Work}}
+\section{{Method}}
+\section{{Experiments}}
+\section{{Discussion}}
+\section{{Conclusion}}
+\bibliographystyle{{plain}}
+\bibliography{{references}}
+\end{{document}}
+"""
 
 
-def build_conference_guidelines() -> str:
-    return """Target: ICLR 2026 main conference submission.
-Use the official ICLR 2026 LaTeX files: iclr2026_conference.sty and iclr2026_conference.bst.
-Main paper: strict 9 pages for initial submission main text, with unlimited references.
-Submission mode: double blind; do not reveal DeepGraph operators or author identities in the paper source.
-Use PDFLaTeX; embed vector figures when possible.
-Problem-awareness spine: Abstract and Introduction must make clear what problem, what motivation, what method, and what result.
-Every major claim must be tied to completed evidence in the provided result packet.
-Do not present bootstrap probes, proxy-only runs, or synthetic smoke tests as full benchmark validation.
-Explicitly address reviewer objections, baseline fairness, ablation coverage, seed variance, and statistical tests.
-Figures should be generated from benchmark artifacts first; API-generated method diagrams may be requested only after experiment results and a manuscript draft exist."""
+def build_conference_guidelines(template_id: str | None = None) -> str:
+    """Venue-specific writing rules + adapter metadata for PaperOrchestra agents."""
+    tid = (template_id or MANUSCRIPT_LATEX_TEMPLATE or "iclr2026").strip()
+    try:
+        adapter = get_adapter(tid)
+        venue_meta = (
+            f"Target venue: {adapter.venue_label} (template_id={tid}).\n"
+            f"Column layout: {adapter.column_layout}.\n"
+            f"Bibliography style: {adapter.bibstyle_name}.\n"
+            f"Soft page budget (main text): {adapter.max_pages} pages.\n"
+            "Submission mode: double blind unless arxiv_plain; do not reveal DeepGraph operators.\n"
+        )
+    except KeyError:
+        venue_meta = f"Target venue: {tid} (adapter not registered; use generic rules).\n"
+
+    quality_gates = load_manuscript_quality_gates()
+    evidence_rules = """
+Evidence and claims (all venues) — see prompts/venue_styles/_SECTION_WRITING_FRAMEWORK.md:
+- Reference corpus medians (workspace/pdfs, n~200): Abstract ~183 words; Introduction ~659 words;
+  Related Work ~540 words; Method ~862 words; Experiments ~494 words; Conclusion ~154 words.
+- HARD page budget: compiled main text (Abstract through Conclusion) MUST fill exactly the venue page
+  limit—Conclusion ends at the bottom of the last allowed page, not one line over or under.
+- HARD tables: use booktabs publication tables (tab:main_results + tab:ablations), not bare tabular dumps.
+- HARD ablations: Experiments MUST include \\subsection{Ablation Study} plus tab:ablations with one row per
+  required ablation variant; discuss which components matter and report deltas vs full model.
+- HARD experiments: multi-dataset breakdown, seed variance / CI, statistical test, compute budget—not three
+  scalar scores only.
+- Introduction MUST include \\paragraph{Contributions.} with itemize (3--4 bullets).
+- Related Work: 2--4 thematic \\subsections; Method: overview figure + mechanistic subsections.
+- Intro cites macro literature (~10--20); Related Work cites micro/SOTA (~30--50).
+- Do not present bootstrap probes or smoke tests as full benchmark validation.
+""".strip()
+
+    style_block = build_venue_style_guidelines_block(tid)
+    parts = [venue_meta, style_block, evidence_rules]
+    if quality_gates:
+        parts.append(f"\n## Manuscript quality gates (binding)\n{quality_gates}")
+    return "\n".join(parts)

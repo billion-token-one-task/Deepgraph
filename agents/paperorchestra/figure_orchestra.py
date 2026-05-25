@@ -7,6 +7,7 @@ import os
 import shlex
 import subprocess
 import textwrap
+import time
 from pathlib import Path
 from typing import Any
 
@@ -34,28 +35,16 @@ def _banana_motivation_overview_enabled() -> bool:
 def _default_plot_plan(metric_name: str) -> list[dict[str, Any]]:
     return [
         {
-            "figure_id": "fig_benchmark_method_panel",
+            "figure_id": "fig_main_results",
             "plot_type": "plot",
-            "title": "Benchmark method comparison",
-            "objective": "Show the verified benchmark comparison across methods, metrics, and budget allocation.",
-            "data_source": "experimental_log.md",
-            "aspect_ratio": "16:9",
-        },
-        {
-            "figure_id": "fig_selective_deliberation_utility_comparison",
-            "plot_type": "plot",
-            "title": f"{metric_name} baseline comparison",
-            "objective": "Compare the recorded baseline with the best verified method utility.",
+            "role": "main_result",
+            "title": "Main results",
+            "objective": (
+                f"Single bar chart comparing verified methods on {metric_name} "
+                "with seed error bars when available."
+            ),
             "data_source": "experimental_log.md",
             "aspect_ratio": "4:3",
-        },
-        {
-            "figure_id": "fig_metric_trajectory",
-            "plot_type": "plot",
-            "title": f"{metric_name} trajectory",
-            "objective": "Show the optimization trajectory across experiment iterations.",
-            "data_source": "experimental_log.md",
-            "aspect_ratio": "16:9",
         }
     ]
 
@@ -676,67 +665,66 @@ def _has_plan_topic(plan: list[dict[str, Any]], *tokens: str) -> bool:
     return False
 
 
+_SUBMISSION_PLOT_BLOCKLIST = (
+    "claim_evidence",
+    "iteration_trajectory",
+    "metric_trajectory",
+    "search_dynamics",
+    "seed_variance",
+    "per_dataset",
+    "ablation",
+    "benchmark_method_panel",
+    "utility_comparison",
+    "keep_discard",
+    "framework_diagram",
+    "constraint_diagram",
+    "gain_threshold",
+    "null_effect",
+    "falsification_auc",
+    "cost_utility",
+)
+
+
+def _plan_text(fig: dict[str, Any]) -> str:
+    return " ".join(str(fig.get(k) or "") for k in ("figure_id", "title", "objective", "plot_type")).lower()
+
+
+def _is_blocklisted_plot_figure(fig: dict[str, Any]) -> bool:
+    return any(token in _plan_text(fig) for token in _SUBMISSION_PLOT_BLOCKLIST)
+
+
 def _augment_plotting_plan(plan: list[dict[str, Any]], state: dict, iterations: list[dict], metric_name: str) -> list[dict[str, Any]]:
-    """Bias figures toward verified benchmark evidence and keep diagrams sparse."""
+    """Keep a single main-results plot; motivation/overview are post-writing Gemini only."""
     cleaned: list[dict[str, Any]] = []
-    diagram_count = 0
     for item in plan:
         if not isinstance(item, dict):
             continue
         fig = dict(item)
-        plot_type = str(fig.get("plot_type") or "plot").lower()
-        if plot_type == "diagram":
-            if diagram_count >= 1:
-                continue
-            diagram_count += 1
+        if str(fig.get("plot_type") or "plot").lower() == "diagram":
+            continue
+        if _is_blocklisted_plot_figure(fig):
+            continue
         cleaned.append(fig)
 
-    additions: list[dict[str, Any]] = []
-    if _state_benchmark_summary(state) and not _has_plan_topic(cleaned, "benchmark", "method comparison"):
-        additions.append(
-            {
-                "figure_id": "fig_benchmark_method_panel",
-                "plot_type": "plot",
-                "title": "Benchmark method comparison",
-                "objective": "Show the verified benchmark comparison across methods, metrics, and budget allocation.",
-                "data_source": "experimental_log.md",
-                "aspect_ratio": "16:9",
-            }
-        )
-    if not _has_plan_topic(cleaned, "baseline", "best", "utility comparison", "improvement"):
-        additions.append(
-            {
-                "figure_id": "fig_selective_deliberation_utility_comparison",
-                "plot_type": "plot",
-                "title": f"{metric_name} baseline comparison",
-                "objective": "Compare the recorded baseline with the best verified method utility.",
-                "data_source": "experimental_log.md",
-                "aspect_ratio": "4:3",
-            }
-        )
-    if _metric_points(iterations) and not _has_plan_topic(cleaned, "trajectory", "iteration"):
-        additions.append(
-            {
-                "figure_id": "fig_metric_trajectory",
-                "plot_type": "plot",
-                "title": f"{metric_name} trajectory",
-                "objective": "Show the optimization trajectory across experiment iterations.",
-                "data_source": "experimental_log.md",
-                "aspect_ratio": "16:9",
-            }
-        )
-    if _metric_points(iterations) and not _has_plan_topic(cleaned, "keep", "discard", "search dynamics"):
-        additions.append(
-            {
-                "figure_id": "fig_search_dynamics_keep_discard",
-                "plot_type": "plot",
-                "title": "Search dynamics",
-                "objective": "Separate kept improvements from discarded trials across experiment iterations.",
-                "data_source": "experimental_log.md",
-                "aspect_ratio": "16:9",
-            }
-        )
-    return (additions + cleaned)[:8]
+    if not cleaned and _state_benchmark_summary(state):
+        cleaned = _default_plot_plan(metric_name)
+
+    main_like: list[dict[str, Any]] = []
+    for fig in cleaned:
+        role = str(fig.get("role") or fig.get("figure_role") or "").lower()
+        text = _plan_text(fig)
+        if role in {"main_result", "main_results", "primary", "primary_result", "main"}:
+            main_like.append(fig)
+            continue
+        if fig.get("primary_figure") or fig.get("main_figure"):
+            main_like.append(fig)
+            continue
+        if any(token in text for token in ("main_result", "main results", "primary result", "refutation", "baseline")):
+            main_like.append(fig)
+
+    if main_like:
+        return [main_like[0]]
+    return cleaned[:1]
 
 
 def render_native_figure(
@@ -838,6 +826,102 @@ def _shell_quote(value: str) -> str:
     return shlex.quote(value)
 
 
+def _figure_diagram_retry_count() -> int:
+    raw = os.getenv("DEEPGRAPH_PAPERBANANA_FIGURE_RETRIES") or os.getenv(
+        "DEEPGRAPH_PAPERBANANA_IMAGE_ATTEMPTS", "4"
+    )
+    try:
+        return max(1, min(6, int(raw)))
+    except ValueError:
+        return 4
+
+
+def _figure_diagram_retry_sleep(attempt: int) -> float:
+    raw = os.getenv("DEEPGRAPH_PAPERBANANA_IMAGE_RETRY_BACKOFF_SECONDS", "20")
+    try:
+        base = float(raw)
+    except ValueError:
+        base = 20.0
+    return min(120.0, base * attempt)
+
+
+def _inter_figure_delay_seconds() -> float:
+    raw = os.getenv("DEEPGRAPH_PAPERBANANA_INTER_FIGURE_DELAY_SECONDS", "30")
+    try:
+        return max(0.0, min(120.0, float(raw)))
+    except ValueError:
+        return 30.0
+
+
+def _min_gemini_png_bytes() -> int:
+    raw = os.getenv("DEEPGRAPH_PAPERBANANA_MIN_PNG_BYTES", "500000")
+    try:
+        return max(50_000, int(raw))
+    except ValueError:
+        return 500_000
+
+
+def _is_retriable_diagram_error(detail: str) -> bool:
+    text = (detail or "").lower()
+    tokens = (
+        "403",
+        "429",
+        "forbidden",
+        "rate limit",
+        "too many",
+        "quota",
+        "insufficient",
+        "balance",
+        "余额",
+        "不足",
+        "billing",
+        "timeout",
+        "temporarily unavailable",
+        "service unavailable",
+        "ssl",
+        "unexpected_eof",
+        "connection",
+        "connection reset",
+        "broken pipe",
+        "urlopen error",
+        "network",
+    )
+    return any(token in text for token in tokens)
+
+
+def _diagram_png_ok(path: Path, *, min_bytes: int) -> bool:
+    return path.is_file() and path.stat().st_size >= min_bytes
+
+
+def _fallback_native_motivation_overview(
+    fig: dict[str, Any],
+    *,
+    figures_dir: Path,
+    state: dict,
+    reason: str,
+) -> dict[str, Any]:
+    """PNG fallback when Gemini image API is unavailable (avoids placeholder SVG gate)."""
+    fid = _safe_filename(str(fig.get("figure_id") or fig.get("title") or "diagram"))
+    out_path = figures_dir / f"{fid}.png"
+    objective = str(fig.get("objective") or fig.get("title") or "")
+    text = " ".join(str(fig.get(k) or "") for k in ("figure_id", "title", "objective")).lower()
+    if "motivation" in text:
+        _render_symbolic_motivation(fig, state, out_path)
+        renderer = "symbolic_motivation_fallback"
+    else:
+        _render_symbolic_overview(fig, state, out_path)
+        renderer = "symbolic_overview_fallback"
+    return _native_asset(
+        fid=fid,
+        fig=fig,
+        out_path=out_path,
+        kind="diagram",
+        renderer=renderer,
+        objective=objective,
+        extras={"notes": f"gemini_unavailable:{reason}", "renderer": renderer},
+    )
+
+
 def _run_external_diagram(
     fig: dict[str, Any],
     *,
@@ -849,6 +933,10 @@ def _run_external_diagram(
     out_path = figures_dir / f"{fid}.png"
     objective = str(fig.get("objective") or fig.get("title") or "")
     if not paperbanana_cmd:
+        if _is_motivation_or_overview_figure(fig):
+            return _fallback_native_motivation_overview(
+                fig, figures_dir=figures_dir, state=state, reason="paperbanana_not_configured"
+            )
         placeholder = figures_dir / f"{fid}.svg"
         _placeholder_diagram(placeholder, str(fig.get("title") or fid), objective)
         return {
@@ -892,54 +980,85 @@ def _run_external_diagram(
         output=_shell_quote(str(out_path.resolve())),
         spec=_shell_quote(spec),
     )
-    try:
-        proc = subprocess.run(
-            command,
-            shell=True,
-            cwd=str(figures_dir),
-            timeout=600,
-            check=False,
-            capture_output=True,
-            text=True,
+    retries = _figure_diagram_retry_count()
+    min_bytes = _min_gemini_png_bytes() if _is_motivation_or_overview_figure(fig) else 1
+    proc: subprocess.CompletedProcess[str] | None = None
+    last_detail = ""
+
+    for attempt in range(1, retries + 1):
+        try:
+            proc = subprocess.run(
+                command,
+                shell=True,
+                cwd=str(figures_dir),
+                timeout=600,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        except Exception as exc:
+            last_detail = str(exc)
+            if attempt < retries and _is_retriable_diagram_error(last_detail):
+                time.sleep(_figure_diagram_retry_sleep(attempt))
+                continue
+            if _is_motivation_or_overview_figure(fig):
+                return _fallback_native_motivation_overview(
+                    fig, figures_dir=figures_dir, state=state, reason=last_detail
+                )
+            placeholder = figures_dir / f"{fid}.svg"
+            _placeholder_diagram(placeholder, str(fig.get("title") or fid), objective)
+            return {
+                "figure_id": fid,
+                "title": str(fig.get("title") or fid),
+                "kind": "diagram",
+                "path": str(placeholder),
+                "svg_path": str(placeholder),
+                "pdf_path": "",
+                "code_path": "",
+                "notes": f"paperbanana_error:{exc}",
+                "objective": objective,
+            }
+
+        last_detail = _clip(((proc.stderr or "") + "\n" + (proc.stdout or "")).strip())
+        if proc.returncode == 0 and _diagram_png_ok(out_path, min_bytes=min_bytes):
+            notes = "paperbanana_ok" if attempt == 1 else f"paperbanana_ok:retry_{attempt}"
+            return {
+                "figure_id": fid,
+                "title": str(fig.get("title") or fid),
+                "kind": "diagram",
+                "path": str(out_path),
+                "svg_path": "",
+                "pdf_path": "",
+                "code_path": "",
+                "notes": notes,
+                "objective": objective,
+            }
+
+        retriable = proc.returncode != 0 and _is_retriable_diagram_error(last_detail)
+        small_output = proc.returncode == 0 and not _diagram_png_ok(out_path, min_bytes=min_bytes)
+        if attempt < retries and (retriable or small_output):
+            time.sleep(_figure_diagram_retry_sleep(attempt))
+            continue
+        break
+
+    if _is_motivation_or_overview_figure(fig):
+        return _fallback_native_motivation_overview(
+            fig,
+            figures_dir=figures_dir,
+            state=state,
+            reason=f"{proc.returncode if proc else 'unknown'}:{last_detail}",
         )
-    except Exception as exc:
-        placeholder = figures_dir / f"{fid}.svg"
-        _placeholder_diagram(placeholder, str(fig.get("title") or fid), objective)
-        return {
-            "figure_id": fid,
-            "title": str(fig.get("title") or fid),
-            "kind": "diagram",
-            "path": str(placeholder),
-            "svg_path": str(placeholder),
-            "pdf_path": "",
-            "code_path": "",
-            "notes": f"paperbanana_error:{exc}",
-            "objective": objective,
-        }
-    if proc.returncode != 0 or not out_path.exists() or out_path.stat().st_size <= 0:
-        placeholder = figures_dir / f"{fid}.svg"
-        _placeholder_diagram(placeholder, str(fig.get("title") or fid), objective)
-        detail = _clip(((proc.stderr or "") + "\n" + (proc.stdout or "")).strip())
-        return {
-            "figure_id": fid,
-            "title": str(fig.get("title") or fid),
-            "kind": "diagram",
-            "path": str(placeholder),
-            "svg_path": str(placeholder),
-            "pdf_path": "",
-            "code_path": "",
-            "notes": f"paperbanana_failed:{proc.returncode}:{detail}",
-            "objective": objective,
-        }
+    placeholder = figures_dir / f"{fid}.svg"
+    _placeholder_diagram(placeholder, str(fig.get("title") or fid), objective)
     return {
         "figure_id": fid,
         "title": str(fig.get("title") or fid),
         "kind": "diagram",
-        "path": str(out_path),
-        "svg_path": "",
+        "path": str(placeholder),
+        "svg_path": str(placeholder),
         "pdf_path": "",
         "code_path": "",
-        "notes": "paperbanana_ok",
+        "notes": f"paperbanana_failed:{proc.returncode if proc else 'unknown'}:{last_detail}",
         "objective": objective,
     }
 
@@ -968,46 +1087,24 @@ def run_figure_orchestra(
         plan = _augment_plotting_plan(plan, state, iterations, metric_name)
 
     assets: list[dict[str, Any]] = []
-    for fig in plan[:12]:
+    for fig in plan[:1]:
         if not isinstance(fig, dict):
+            continue
+        plot_type = str(fig.get("plot_type") or "plot").lower()
+        if plot_type == "diagram":
             continue
         fid = _safe_filename(str(fig.get("figure_id") or fig.get("title") or "figure"))
         title = str(fig.get("title") or fid)
         objective = str(fig.get("objective") or title)
-        plot_type = str(fig.get("plot_type") or "plot").lower()
-        if plot_type == "diagram":
-            force_banana = (
-                _banana_motivation_overview_enabled()
-                and paperbanana_cmd
-                and _is_motivation_or_overview_figure(fig)
-            )
-            prefer_ai = os.getenv("DEEPGRAPH_PAPERBANANA_PREFER_AI", "").strip().lower() in {"1", "true", "yes"}
-            if force_banana or (allow_external_diagrams and prefer_ai and paperbanana_cmd):
-                asset = _run_external_diagram(
-                    fig,
-                    figures_dir=figures_dir,
-                    state=state,
-                    paperbanana_cmd=paperbanana_cmd,
-                )
-            else:
-                asset = render_native_figure(
-                    fig,
-                    figures_dir=figures_dir,
-                    state=state,
-                    iterations=iterations,
-                    baseline=baseline,
-                    metric_name=metric_name,
-                )
-        else:
-            asset = render_native_figure(
-                fig,
-                figures_dir=figures_dir,
-                state=state,
-                iterations=iterations,
-                baseline=baseline,
-                metric_name=metric_name,
-            )
-            asset["data_source"] = fig.get("data_source") or "experimental_log.md"
+        asset = render_native_figure(
+            fig,
+            figures_dir=figures_dir,
+            state=state,
+            iterations=iterations,
+            baseline=baseline,
+            metric_name=metric_name,
+        )
+        asset["data_source"] = fig.get("data_source") or "experimental_log.md"
         assets.append(asset)
 
     manifest = {
@@ -1034,7 +1131,13 @@ def run_postwriting_api_figure_stage(
     on the completed experiment state and the written problem framing.
     """
     figures_dir.mkdir(parents=True, exist_ok=True)
-    enabled = os.getenv("DEEPGRAPH_PAPERBANANA_ENABLE_POSTWRITE", "").strip().lower() in {"1", "true", "yes"}
+    raw_enable = os.getenv("DEEPGRAPH_PAPERBANANA_ENABLE_POSTWRITE", "").strip().lower()
+    if raw_enable in {"0", "false", "no", "off"}:
+        enabled = False
+    elif raw_enable in {"1", "true", "yes", "on"}:
+        enabled = True
+    else:
+        enabled = bool(paperbanana_cmd)
     if not enabled or not paperbanana_cmd:
         manifest = {
             "stage": "postwriting_api_figures",
@@ -1049,76 +1152,61 @@ def run_postwriting_api_figure_stage(
         )
         return manifest
 
-    raw_plan = outline.get("plotting_plan") if isinstance(outline, dict) else None
-    candidate_plan = [dict(row) for row in raw_plan or [] if isinstance(row, dict)]
-    diagram_plan = [
-        row
-        for row in candidate_plan
-        if str(row.get("plot_type") or "").lower() == "diagram"
-        or any(
-            token in " ".join(str(row.get(k) or "") for k in ("figure_id", "title", "objective")).lower()
-            for token in ("framework", "overview", "method", "problem", "gating", "architecture")
-        )
-    ]
-    plan_text = " ".join(
-        " ".join(str(row.get(key) or "") for key in ("figure_id", "title", "objective")).lower()
-        for row in diagram_plan
+    title_for_figs = (state.get("title") or state.get("method_name") or "this paper").strip()
+    method_for_figs = (state.get("method_name") or state.get("method") or "the proposed method").strip()
+    problem_for_figs = (state.get("problem_statement") or state.get("problem") or "").strip()
+    weakness_for_figs = (state.get("existing_weakness") or "").strip()
+    method_summary_for_figs = (state.get("method_summary") or "").strip()
+    central_claim = ""
+    paper_intent = state.get("paper_intent") if isinstance(state.get("paper_intent"), dict) else {}
+    if paper_intent:
+        central_claim = str(paper_intent.get("central_claim") or "").strip()
+
+    motivation_objective = (
+        "Design the paper's motivation figure as a rich scientific illustration with cohesive composition. "
+        f"Convey concretely why \"{title_for_figs}\" matters: state the failure mode the work targets, "
+        f"why existing approaches fall short ({weakness_for_figs or 'their limitation'}), "
+        "and what shift in framing the method introduces. "
+        "Use a structured multi-panel framework layout (problem context, current-method failure, proposed contrast). "
+        "Short integrated labels, module names, axis annotations, and arrow legends are encouraged when they sharpen the message. "
+        "Avoid: empty abstract symbol clouds, a single giant icon centered on the canvas, generic flowchart pipelines, "
+        "title banners, or text labels that paraphrase the caption."
     )
-    if "motivation" not in plan_text:
-        diagram_plan.insert(
-            0,
+    overview_objective = (
+        f"Design the paper's method overview figure showing how {method_for_figs} produces its claim "
+        f"({central_claim or 'the central scientific contribution'}). "
+        f"Concrete content to depict: {method_summary_for_figs or 'the data flow, intermediate representations, and verification or routing step'}. "
+        "Use a structured framework layout with grouped modules: inputs, the core mechanism, evidence/verification, and output. "
+        "Short integrated labels for module names, signal flow, and the central quantity computed (e.g. the discrepancy/score) are encouraged. "
+        "It must look like a polished ICLR/NeurIPS framework figure, not a symbolic art piece. "
+        "Avoid: title banner, caption-like sentences inside the image, single-icon centerpieces, plain horizontal pipeline."
+    )
+
+    diagram_plan: list[dict[str, Any]] = [
             {
-                "figure_id": "fig_motivation_symbolic",
+                "figure_id": "fig_motivation_gemini",
                 "plot_type": "diagram",
                 "title": "Motivation",
-                "objective": (
-                    "Create a symbolic motivation figure from the manuscript draft and caption intent: "
-                    "show why the problem matters, what existing methods miss, and what selective reasoning changes. "
-                    "No in-image title, no Fig. caption, no text labels, and no flowchart."
-                ),
+                "objective": motivation_objective,
                 "caption": (
-                    "Motivation figure contrasting indiscriminate reasoning with selective, evidence-aware reasoning "
-                    "using abstract scientific symbols rather than a process diagram."
+                    f"Motivation for {method_for_figs}: "
+                    f"{problem_for_figs or 'the failure mode the work addresses'}."
                 ),
-                "data_source": "postwriting manuscript draft plus figure caption intent",
+                "data_source": "postwriting manuscript draft plus problem framing",
                 "aspect_ratio": "16:9",
             },
-        )
-    if "overview" not in plan_text and "framework" not in plan_text:
-        diagram_plan.insert(
-            1 if diagram_plan else 0,
             {
-                "figure_id": "fig_overview_symbolic",
+                "figure_id": "fig_overview_gemini",
                 "plot_type": "diagram",
                 "title": "Overview",
-                "objective": (
-                    "Create a symbolic method overview from the manuscript draft and caption intent: "
-                    "represent the central mechanism, evidence flow, and final research claim as an integrated "
-                    "scientific illustration. No in-image title, no Fig. caption, no text labels, and no flowchart."
-                ),
+                "objective": overview_objective,
                 "caption": (
-                    "Overview figure summarizing the proposed mechanism and evidence structure in an abstract "
-                    "camera-ready visual language."
+                    f"Overview of {method_for_figs}: "
+                    f"{method_summary_for_figs[:240] or 'core mechanism, evidence flow, and final claim'}."
                 ),
-                "data_source": "postwriting manuscript draft plus figure caption intent",
+                "data_source": "postwriting manuscript draft plus method description",
                 "aspect_ratio": "16:9",
             },
-        )
-    if not diagram_plan:
-        pa = state.get("problem_awareness") if isinstance(state.get("problem_awareness"), dict) else {}
-        diagram_plan = [
-            {
-                "figure_id": "fig_problem_method_result_spine",
-                "plot_type": "diagram",
-                "title": "Problem-method-result spine",
-                "objective": (
-                    "Show the paper's central question, motivation, proposed mechanism, "
-                    "and benchmark result in one ICLR-style method figure. "
-                    + str(pa.get("central_question") or state.get("problem_statement") or "")[:220]
-                ),
-                "data_source": "postwriting manuscript draft plus experiment result packet",
-                "aspect_ratio": "16:9",
-            }
         ]
 
     enriched_state = {
@@ -1126,14 +1214,20 @@ def run_postwriting_api_figure_stage(
         "paper_body_excerpt": (paper_tex or "")[:16000],
     }
     assets: list[dict[str, Any]] = []
-    for fig in diagram_plan[:2]:
+    for idx, fig in enumerate(diagram_plan[:2]):
+        if idx > 0:
+            delay = _inter_figure_delay_seconds()
+            if delay > 0:
+                time.sleep(delay)
         asset = _run_external_diagram(
             fig,
             figures_dir=figures_dir,
             state=enriched_state,
             paperbanana_cmd=paperbanana_cmd,
         )
+        asset["renderer"] = "gemini_image_api"
         asset["stage"] = "postwriting_api_figures"
+        asset["image_model"] = os.getenv("DEEPGRAPH_PAPERBANANA_IMAGE_MODEL", "").strip() or None
         assets.append(asset)
 
     manifest = {
@@ -1141,6 +1235,7 @@ def run_postwriting_api_figure_stage(
         "enabled": True,
         "generated_count": len(assets),
         "assets": assets,
+        "image_model": os.getenv("DEEPGRAPH_PAPERBANANA_IMAGE_MODEL", "").strip() or None,
         "notes": "generated_after_initial_section_writing",
     }
     (figures_dir / "postwriting_api_figure_manifest.json").write_text(

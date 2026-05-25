@@ -317,6 +317,14 @@ SUBMISSION_BUNDLE_FORMATS = _split_csv(os.getenv("DEEPGRAPH_SUBMISSION_BUNDLE_FO
 MANUSCRIPT_WORKDIR = Path(_env_str("DEEPGRAPH_MANUSCRIPT_WORKDIR", str(Path.home() / "deepgraph_manuscripts"), "paths.manuscript_workdir")).expanduser()
 # PaperOrchestra is the only supported manuscript backend.
 MANUSCRIPT_BACKEND = _env_str("DEEPGRAPH_MANUSCRIPT_BACKEND", "paper_orchestra", "manuscript.backend").lower()
+MANUSCRIPT_ALLOW_NEGATIVE_RESULTS = _env_bool(
+    "DEEPGRAPH_MANUSCRIPT_ALLOW_NEGATIVE_RESULTS", True, "manuscript.allow_negative_results"
+)
+MANUSCRIPT_RELAX_COMPLETENESS_FOR_NEGATIVE_RESULTS = _env_bool(
+    "DEEPGRAPH_MANUSCRIPT_RELAX_COMPLETENESS_FOR_NEGATIVE_RESULTS",
+    True,
+    "manuscript.relax_completeness_for_negative_results",
+)
 REFERENCE_PDF_CORPUS_DIR = Path(
     _env_str("DEEPGRAPH_REFERENCE_PDF_CORPUS_DIR", str(PROJECT_ROOT.parent.parent / "workspace" / "pdfs"), "paths.reference_pdf_corpus_dir")
 ).expanduser()

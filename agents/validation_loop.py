@@ -55,6 +55,7 @@ from agents.metric_parser import (
     build_benchmark_summary_from_predictions,
     parse_benchmark_summary_from_log,
     parse_metric_from_log,
+    persist_main_results_table,
 )
 
 
@@ -315,6 +316,24 @@ def _benchmark_readiness_blockers(summary: dict, criteria: dict, verdict: str) -
     )
     if required_ablations and not has_ablations:
         blockers.append("required ablation table is missing")
+    # Explicit ablation-completeness gate: every required ablation must be
+    # observed in the executed run, not just listed as "pending". This
+    # forces the coding agent to emit each variant as a separate evaluation
+    # row rather than silently dropping ablations.
+    ablation_table = summary.get("ablations") if isinstance(summary.get("ablations"), dict) else {}
+    if required_ablations and ablation_table:
+        executed_variants = {
+            str(name).lower()
+            for name, row in ablation_table.items()
+            if isinstance(row, dict) and row.get("executed")
+        }
+        missing_ablations = [
+            req for req in required_ablations if str(req).lower() not in executed_variants
+        ]
+        if missing_ablations:
+            blockers.append(
+                "required ablations not executed in run: " + ", ".join(missing_ablations)
+            )
 
     direction = str(criteria.get("metric_direction") or "higher")
     semantic_warnings = benchmark_semantic_warnings(
@@ -760,6 +779,7 @@ def _determine_final_verdict(
     total_kept: int,
     refute_min: int,
     benchmark_summary: dict | None = None,
+    history: list[dict] | None = None,
 ) -> str:
     """Classify the overall run outcome.
 
@@ -767,7 +787,21 @@ def _determine_final_verdict(
     scientific confirmation. Confirmation requires a positive improvement signal
     during hypothesis testing, while refutation requires exhausting at least the
     minimum refutation budget.
+
+    Importantly, a run where the coding agent failed to produce ANY candidate
+    diff cannot be classified as ``refuted`` — there is nothing to refute. Such
+    runs are tagged ``coding_agent_failure`` so downstream gates do not turn the
+    null into a "negative result paper" by mistake.
     """
+    if history is not None and total_iters > 0:
+        no_diff_count = sum(
+            1
+            for h in history
+            if (h.get("anomaly_type") == "no_candidate_diff")
+            or (h.get("status") == "discard" and not h.get("metric"))
+        )
+        if no_diff_count == total_iters:
+            return "coding_agent_failure"
     effect = best_value - baseline if direction == "higher" else baseline - best_value
     effect_pct = (effect / abs(baseline) * 100) if baseline != 0 else 0
     is_improvement = effect > 0
@@ -1358,53 +1392,87 @@ def _launch_coding_agent(workdir: Path, code_dir: Path, iteration: int,
         Output the COMPLETE modified file. Make one focused change to implement or improve the method.""")
 
     try:
-        new_code, _ = call_llm(system, prompt, max_tokens=16000)
-        new_code = new_code.strip()
+        legacy_attempts = int(os.getenv("DEEPGRAPH_LEGACY_LLM_RETRIES", "3"))
+    except ValueError:
+        legacy_attempts = 3
 
-        # Strip <think>...</think> blocks (reasoning models)
-        new_code = re.sub(r'<think>[\s\S]*?</think>', '', new_code).strip()
-
-        # Extract code from markdown code blocks (LLM often wraps in ```)
-        code_blocks = re.findall(r'```(?:python)?\s*\n(.*?)```', new_code, re.DOTALL)
+    new_code = ""
+    last_error: str = ""
+    for attempt in range(1, max(1, legacy_attempts) + 1):
+        try:
+            raw, _ = call_llm(system, prompt, max_tokens=16000)
+        except Exception as exc:
+            last_error = f"attempt_{attempt}:{exc}"
+            time.sleep(min(60.0, 5.0 * attempt))
+            continue
+        candidate = (raw or "").strip()
+        candidate = re.sub(r'<think>[\s\S]*?</think>', '', candidate).strip()
+        code_blocks = re.findall(r'```(?:python)?\s*\n(.*?)```', candidate, re.DOTALL)
         if code_blocks:
-            # Use the longest code block (likely the full file)
-            new_code = max(code_blocks, key=len).strip()
-        elif new_code.startswith("```"):
-            lines = new_code.split("\n")
+            candidate = max(code_blocks, key=len).strip()
+        elif candidate.startswith("```"):
+            lines = candidate.split("\n")
             end = len(lines)
             for i in range(len(lines) - 1, 0, -1):
                 if lines[i].strip() == "```":
                     end = i
                     break
-            new_code = "\n".join(lines[1:end])
+            candidate = "\n".join(lines[1:end])
+        has_python = bool(
+            re.search(r'^(import |from |def |class |[a-zA-Z_]\w*\s*=)', candidate, re.MULTILINE)
+        )
+        if has_python and len(candidate) > 50:
+            new_code = candidate
+            break
+        last_error = f"attempt_{attempt}:invalid_python_output"
+        time.sleep(min(30.0, 3.0 * attempt))
 
-        # Validate it looks like Python (must have def/import/class or assignment)
-        has_python = bool(re.search(r'^(import |from |def |class |[a-zA-Z_]\w*\s*=)', new_code, re.MULTILINE))
-        if not has_python:
-            return {
-                "description": f"LLM output not valid Python (iter {iteration})",
-                "artifact_paths": {},
-                "executor": "legacy_llm",
-            }
-
-        if train_file and len(new_code) > 50:
+    if new_code and train_file:
+        try:
             train_file.write_text(new_code, encoding="utf-8")
             return {
                 "description": f"Modified {train_file.name} (iter {iteration})",
                 "artifact_paths": {},
                 "executor": "legacy_llm",
             }
-    except Exception as e:
-        return {
-            "description": f"LLM code generation failed: {e}",
-            "artifact_paths": {},
-            "executor": "legacy_llm",
-        }
+        except OSError as exc:
+            last_error = f"write_failure:{exc}"
+
+    # Legacy LLM exhausted its retry budget; try codex one more time even
+    # when it had previously been skipped (e.g. spec or env not yet ready).
+    if codex_executor.codex_available() and spec is not None:
+        print(
+            f"[LOOP] legacy_llm exhausted after {legacy_attempts} attempts at iter {iteration}; "
+            f"falling back to codex (last_error={last_error[:160]})",
+            flush=True,
+        )
+        codex_fallback = codex_executor.run_codex_iteration(
+            workdir=workdir,
+            code_dir=code_dir,
+            iteration=iteration,
+            method_desc=method_desc,
+            best_so_far=best_so_far,
+            baseline=baseline,
+            history=history,
+            proxy=proxy,
+            success_criteria=success_criteria,
+            experimental_plan=spec.experimental_plan,
+            evidence_plan=spec.evidence_plan,
+            supervisor_plan=supervisor_plan,
+        )
+        if codex_fallback.get("ok"):
+            return {
+                "description": str(codex_fallback.get("summary") or "Codex fallback after legacy_llm failure")[:500],
+                "artifact_paths": codex_fallback.get("artifact_paths", {}),
+                "executor": "codex_fallback",
+            }
+        last_error = f"codex_fallback_failed:{codex_fallback.get('error') or codex_fallback.get('returncode') or 'unknown'}"
 
     return {
-        "description": f"No modification applied (iter {iteration})",
+        "description": f"LLM code generation failed after {legacy_attempts} attempts ({last_error[:200]})",
         "artifact_paths": {},
         "executor": "legacy_llm",
+        "code_generation_failed": True,
     }
 
 
@@ -1591,6 +1659,7 @@ def run_full_benchmark_completion(run_id: int, execution_context: dict | None = 
     results_dir.mkdir(parents=True, exist_ok=True)
     if benchmark_summary:
         (results_dir / "benchmark_summary.json").write_text(json.dumps(benchmark_summary, indent=2), encoding="utf-8")
+        persist_main_results_table(results_dir, benchmark_summary)
 
     next_iter = 1
     row = db.fetchone("SELECT MAX(iteration_number) AS n FROM experiment_iterations WHERE run_id=?", (run_id,))
@@ -2112,6 +2181,27 @@ def run_validation_loop(run_id: int, execution_context: dict | None = None) -> d
 
     for i in range(completed_hypothesis_count, max_iters):
         iter_num = repro_iters + i + 1
+        # Early-stop guard: if the coding agent has produced ZERO usable diffs
+        # for many consecutive iterations, hammering the GPU another N times
+        # cannot recover. This catches the "30/30 no_candidate_diff" failure
+        # mode where the run silently completes with verdict=refuted while
+        # the method was never actually implemented.
+        try:
+            no_diff_streak_limit = int(os.getenv("DEEPGRAPH_NO_DIFF_STREAK_LIMIT", "6"))
+        except ValueError:
+            no_diff_streak_limit = 6
+        if no_diff_streak_limit > 0 and len(history) >= no_diff_streak_limit:
+            tail = history[-no_diff_streak_limit:]
+            if all(
+                (h.get("anomaly_type") == "no_candidate_diff")
+                or (h.get("status") == "discard" and not h.get("metric"))
+                for h in tail
+            ):
+                stop_reason = (
+                    f"coding_agent_failure: {no_diff_streak_limit} consecutive iterations produced no candidate diff"
+                )
+                print(f"[LOOP] HARD STOP at iter {i+1}: {stop_reason}", flush=True)
+                break
         judge_plan = _judge_iteration_plan(
             spec,
             iteration=i + 1,
@@ -2374,7 +2464,13 @@ def run_validation_loop(run_id: int, execution_context: dict | None = None) -> d
         total_kept=total_kept,
         refute_min=refute_min,
         benchmark_summary=final_benchmark_summary if benchmark_mode else None,
+        history=history,
     )
+    if verdict == "coding_agent_failure":
+        stop_reason = (
+            stop_reason
+            or "coding_agent_failure: no candidate diff ever produced; verdict not 'refuted' (nothing was implemented)."
+        )
     effect = best_value - baseline if direction == "higher" else baseline - best_value
     effect_pct = (effect / abs(baseline) * 100) if baseline != 0 else 0
 

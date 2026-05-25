@@ -100,7 +100,7 @@ class FormatLinterTests(unittest.TestCase):
         self.assertEqual(bib_check["details"]["found"], "plain")
         self.assertEqual(bib_check["details"]["expected"], "iclr2026_conference")
 
-    def test_page_count_overage_warning_vs_error(self):
+    def test_page_count_must_match_budget_exactly(self):
         from agents.manuscript_templates import get_adapter
         from agents.format_linter import lint_manuscript
         adapter = get_adapter("iclr2026")  # max_pages=9
@@ -108,16 +108,17 @@ class FormatLinterTests(unittest.TestCase):
             r"\documentclass{article}\usepackage{graphicx}\usepackage{amsmath}"
             r"\usepackage{hyperref}\begin{document}body\end{document}"
         )
-        # 10 pages → over by 1 → warning (not error)
-        warn = lint_manuscript(source, adapter, page_count=10)
-        warn_check = next(c for c in warn["checks"] if c["name"] == "page_count_within_budget")
-        self.assertEqual(warn_check["severity"], "warning")
-        self.assertFalse(warn_check["passed"])
-        # 15 pages → over by 6 → error
-        err = lint_manuscript(source, adapter, page_count=15)
-        err_check = next(c for c in err["checks"] if c["name"] == "page_count_within_budget")
-        self.assertEqual(err_check["severity"], "error")
-        self.assertFalse(err["pass"])
+        ok = lint_manuscript(source, adapter, page_count=9)
+        ok_check = next(c for c in ok["checks"] if c["name"] == "page_count_within_budget")
+        self.assertTrue(ok_check["passed"])
+        short = lint_manuscript(source, adapter, page_count=4)
+        short_check = next(c for c in short["checks"] if c["name"] == "page_count_within_budget")
+        self.assertEqual(short_check["severity"], "error")
+        self.assertFalse(short["pass"])
+        over = lint_manuscript(source, adapter, page_count=10)
+        over_check = next(c for c in over["checks"] if c["name"] == "page_count_within_budget")
+        self.assertEqual(over_check["severity"], "error")
+        self.assertFalse(over["pass"])
 
     # ------------------------------------------------------------------
     # Column-layout checks (D1 user feedback consumed here)

@@ -33,6 +33,15 @@
 - If `claim_values.json` reports `top_venue_general_superiority_decision` as blocked, every SOTA, first-method, and broad adaptive-reasoning superiority statement must be removed or rewritten as a scoped locked-baseline claim.
 - Include `failure_analysis.md` only after materialization; summarize failure rows by method/dataset/stage and keep generation/scoring failures visible if audit admits them as non-blocking warnings.
 
+## 叙事与证据对齐（新增，硬性）
+
+- 标题、摘要、Introduction 的问题域必须与 `aggregate_results.csv` / `experimental_log` 中的**真实数据集与模态**一致；禁止「视频时间推理」叙事配「纯文本 QA」实验。
+- 贡献列表必须与消融表一致：若完整方法劣于「去掉核心组件」的变体，不得把被否定的组件写成首要贡献。
+- `p_value >= 0.05` 或 verdict 为 inconclusive/refuted 时，摘要禁止使用「显著」「超越」「验证」「SOTA」；须写 preliminary / inconclusive，并在 Limitations 写明检验结果。
+- 禁止重复段落（尤其 Introduction 中相同的 `\paragraph{...}` 块）。
+- 禁止为凑篇幅加入与实验无关的 Related Work 子节（如本文不做 routing 实验却写大段 routing 综述）。
+- 图注若指标未在 artifact 中计算，必须标注未计算，禁止编造 calibration / significance。
+
 ## Forbidden
 
 - 不得写 unsupported claim。
@@ -40,6 +49,8 @@
 - 不得把 smoke/sanity result 写成 benchmark result。
 - 不得隐藏 negative result、missing cell、parse failure、budget regression 或 oracle limitation。
 - 不得声称 state-of-the-art，除非 contract 中包含对应 SOTA baseline 且 audit 支持。
+- 不得在摘要主句强调相对提升百分比而隐瞒 p 值或 inconclusive verdict。
+- 不得让 Method 主张与 Ablation 表结论相反仍保持原叙事。
 
 ## Output Artifacts
 

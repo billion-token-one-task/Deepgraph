@@ -104,6 +104,28 @@ venues:
       page_count_max: 11
     max_pages: 9
 
+  - template_id: emnlp2024
+    schema_version: 1
+    triggers:
+      claim_types: ["empirical", "benchmark", "survey"]
+      domains: ["nlp"]
+      keywords:
+        - "emnlp"
+        - "multilingual"
+        - "morphology"
+        - "semantic parsing"
+        - "discourse"
+        - "information extraction"
+        - "named entity"
+        - "sentiment"
+        - "summarization"
+        - "question answering"
+      requires_real_data: true
+    rejects:
+      claim_types: ["position"]
+      page_count_max: 11
+    max_pages: 8
+
   - template_id: cvpr2024
     schema_version: 1
     triggers:

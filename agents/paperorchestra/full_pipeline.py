@@ -18,6 +18,7 @@ from agents.paper_orchestra_prompts import (
     build_experimental_log_md,
     build_idea_md,
     build_minimal_template_tex,
+    load_manuscript_quality_gates,
     load_prompt_tex,
 )
 from agents.paperorchestra.literature_discovery import run_literature_discovery
@@ -32,7 +33,7 @@ from config import (
 
 CITE_PATTERN = re.compile(r"\\cite[a-zA-Z*]*\{([^}]*)\}")
 
-DEEPGRAPH_WRITING_GUARD = """DeepGraph writing constraints:
+_DEEPGRAPH_WRITING_GUARD_CORE = """DeepGraph writing constraints:
 - Treat paper_intent.json as the thesis and narrative spine.
 - Treat problem_awareness.json as a binding problem-motivation-method-result contract.
 - The abstract and first two Introduction paragraphs must answer: what problem, why now, what method, what result, and what limitation.
@@ -46,7 +47,17 @@ DEEPGRAPH_WRITING_GUARD = """DeepGraph writing constraints:
 - Prefer data figures and tables over conceptual diagrams. Never include prompt text, TODOs, placeholders, or artifact-audit wording in the paper body or captions.
 - API-generated conceptual figures must be requested only after a manuscript draft exists; early plotting is for artifact-backed data figures.
 - Explicitly discuss baseline fairness, required ablations, seed variance, statistical testing, and limitations once, without repeatedly self-disqualifying the contribution.
-- Bootstrap/proxy evidence may be reported as engineering validation only, never as full benchmark proof."""
+- Bootstrap/proxy evidence may be reported as engineering validation only, never as full benchmark proof.
+- Task alignment: title, abstract, and introduction must match the actual datasets/modalities/metrics in experimental_log.md. Do not frame a text-QA run as video temporal grounding (or vice versa) unless the log contains that benchmark.
+- Statistical calibration: if p_value>=0.05 or hypothesis_verdict is inconclusive/refuted, do not use significantly/outperform/SOTA/validates in the abstract; use preliminary/directional language and state the verdict explicitly in Limitations.
+- Ablation honesty: if the full method underperforms an ablation that removes the advertised core component, rewrite contributions to match what ablations support; never headline a mechanism the ablation table refutes.
+- No duplicate paragraphs: never repeat the same \\paragraph{...} block or copy-paste introduction text twice.
+- Related Work relevance: do not add unrelated survey subsections (e.g., generic routing/gating) unless routing is a primary experimental variable in the log."""
+
+_quality_gates_block = load_manuscript_quality_gates()
+DEEPGRAPH_WRITING_GUARD = _DEEPGRAPH_WRITING_GUARD_CORE.strip() + (
+    ("\n\n" + _quality_gates_block) if _quality_gates_block else ""
+)
 
 
 def _cutoff_year() -> int:
@@ -91,13 +102,15 @@ def run_paperorchestra_full(
     figures_dir: Path,
     baseline: float | None,
     metric_name: str,
+    template_id: str | None = None,
 ) -> dict[str, Any]:
     cutoff = CUTOFF_DATE
     cutoff_y = _cutoff_year()
     idea_md = build_idea_md(state, evidence_block=literature_block)
     exp_log_md = build_experimental_log_md(state, [dict(x) for x in iterations])
-    template_tex = build_minimal_template_tex(state)
-    guidelines = build_conference_guidelines()
+    effective_template_id = (template_id or "").strip() or None
+    template_tex = build_minimal_template_tex(state, template_id=effective_template_id)
+    guidelines = build_conference_guidelines(effective_template_id)
     paper_intent_json = json.dumps(state.get("paper_intent") or {}, ensure_ascii=False, default=str)[:12000]
     problem_awareness_json = json.dumps(state.get("problem_awareness") or {}, ensure_ascii=False, default=str)[:12000]
     evidence_contract_json = json.dumps(
@@ -201,7 +214,15 @@ def run_paperorchestra_full(
     bibtex = lit_out["bibtex"]
     bib_keys = lit_out["bib_keys"]
     claim_citation_map = lit_out.get("claim_citation_map") or {}
-    allowed_keys = set(bib_keys)
+    registry = collected if isinstance(collected, list) else []
+    from agents.paper_completeness import _citation_role
+
+    irrelevant_keys = {
+        str(row.get("cite_key") or "").strip()
+        for row in registry
+        if isinstance(row, dict) and _citation_role(row) == "irrelevant" and row.get("cite_key")
+    }
+    allowed_keys = {key for key in bib_keys if key not in irrelevant_keys}
     fallback_cites = _default_cite_keys(claim_citation_map, bib_keys)
     citation_registry_prompt = [
         {
@@ -453,8 +474,10 @@ def run_paperorchestra_full(
         r_frag = {}
 
     return {
+        "template_id": effective_template_id or template_id,
         "outline": o,
-        "plotting": p_meta,
+        "plotting": {**p_meta, "plotting_plan": pplan},
+        "plotting_plan": pplan,
         "literature_discovery": lit_out,
         "literature_text": lit_tex,
         "sections_raw": sec_out,
