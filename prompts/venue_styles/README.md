@@ -6,6 +6,7 @@ Pipeline 通过 `agents.manuscript_templates.style_guides.load_venue_style_guide
 2. **`_SECTION_WRITING_FRAMEWORK.md`** — 各节段落骨架、Intro/RW 分工、反模式  
 3. **`{template_id}.md`** — 会议版式与页预算差异  
 4. **`_MANUSCRIPT_QUALITY_GATES.md`** — 证据对齐、统计校准、消融一致性、反模式（`build_conference_guidelines` + `DEEPGRAPH_WRITING_GUARD` 加载）
+5. **`../experiment_table_requirements.md`** — 顶会实验表格排版（三线表、短表头、rowcolor、数据列为主）
 
 ```bash
 python scripts/profile_reference_corpus_sections.py --sample 200 --write-stats

@@ -1,4 +1,8 @@
-"""Publication-style LaTeX tables (reference-corpus aligned booktabs/tabularx)."""
+"""Publication-style LaTeX tables (reference-corpus aligned booktabs/tabularx).
+
+Layout rules: prompts/experiment_table_requirements.md
+(data-driven columns, compact headers, no vertical rules, subtle rowcolor).
+"""
 
 from __future__ import annotations
 

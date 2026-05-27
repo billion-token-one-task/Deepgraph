@@ -1,0 +1,25 @@
+{
+  "state_title": "The Hidden Stack: Measuring Inference Backend Effects in Reliable Large Language Model Evaluation",
+  "method_name": "Backend-Aware Variance Decomposition Protocol",
+  "problem_statement": "Identical LLM weights and identical prompts can produce different benchmark exact-match scores when run on different inference backends (HuggingFace Transformers, vLLM, TGI). Small reported method gains may reflect infrastructure variance, not model capability.",
+  "existing_weakness": "Papers rarely treat inference backend as an experimental factor; scores are reported as single point estimates.",
+  "method_summary": "Variance decomposition measuring backend share of benchmark variance on GSM8K, MuSiQue, StrategyQA, 2Wiki.",
+  "contributions": [
+    "Backend as measurable confounder in LLM evaluation",
+    "Variance decomposition with backend variance ratios",
+    "Empirical negative result: correction does not improve accuracy"
+  ],
+  "figure": {
+    "figure_id": "fig_motivation_gemini",
+    "plot_type": "diagram",
+    "title": "Motivation",
+    "aspect_ratio": "16:9",
+    "objective": "Create a photorealistic-quality academic framework ILLUSTRATION (rich raster scientific diagram, NOT flat vector art, NOT matplotlib, NOT SVG-style simple shapes). Match this exact layout style: three wide columns left-to-right with soft tinted rounded outer panels — light BLUE left, light ORANGE center with DASHED border, light GREEN right — subtle drop shadows, horizontal arrows between columns, small embedded region headers inside each panel top (NOT a full-width title). LEFT column header 'Fixed Inputs': top white rounded box with small server icon, label Fixed Model Block, text Qwen2.5-7B-Instruct (frozen weights); bottom white rounded box with document icon, label Fixed Prompt Box, sample Q: What is the capital of Australia? A: (same template), subtitle Standardized Input. CENTER column header 'Inference Backends' inside dashed orange panel: three stacked backend cards exactly like a polished conference figure — BLUE card HuggingFace Transformers with bullet rows FP16 precision, Dynamic batching, Default stop rules; ORANGE card vLLM with BF16 precision, Continuous batching, Optimized CUDA kernels; GREEN card TGI with FP16 precision, Tensor parallelism, Custom decoding. Show backend SOFTWARE stacks only — do NOT draw tokenize-to-decode layer pipelines, speculative decoding, or latency icons. RIGHT column header 'Benchmark Outcome': top white subpanel with bar chart titled Exact Match Accuracy, three colored bars labeled HF 92.1%, vLLM 92.4%, TGI 91.8%; below chart three small answer snippet boxes (color-matched) showing same question with slightly different phrasing, one differing word in red. Tiny corner legend bottom-right only: Blue HF, Orange vLLM, Green TGI. STRICT RULES: NO figure title at top of image; NO bottom banner or motivational sentence; NEVER use ampersand character anywhere (write 'and' instead); NO Backend A/B/C generic names; NO latency, throughput, GPU utilization, parallel-decode, or system optimization story; NO data cleaning or ML training pipeline content.",
+    "caption": "Identical model and prompt, different inference backends, divergent benchmark scores.",
+    "data_source": "introduction motivation figure for ACL two-column paper"
+  },
+  "experimental_plan": {
+    "datasets": ["GSM8K", "MuSiQue-Ans", "StrategyQA", "2WikiMultihopQA"],
+    "baselines": ["Direct answering", "Chain-style reasoning"]
+  }
+}

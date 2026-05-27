@@ -30,6 +30,14 @@ def load_manuscript_quality_gates() -> str:
     return ""
 
 
+def load_experiment_table_requirements() -> str:
+    """Top-venue experiment table layout rules (booktabs, concise headers, rowcolor)."""
+    path = PROJECT_ROOT / "prompts" / "experiment_table_requirements.md"
+    if path.is_file():
+        return path.read_text(encoding="utf-8").strip()
+    return ""
+
+
 def load_prompt_tex(name: str) -> str:
     """Load ``{name}.tex`` (e.g. ``outline_agent``)."""
     path = PROMPT_DIR / f"{name}.tex"
@@ -237,6 +245,7 @@ def build_conference_guidelines(template_id: str | None = None) -> str:
         venue_meta = f"Target venue: {tid} (adapter not registered; use generic rules).\n"
 
     quality_gates = load_manuscript_quality_gates()
+    table_requirements = load_experiment_table_requirements()
     evidence_rules = """
 Evidence and claims (all venues) — see prompts/venue_styles/_SECTION_WRITING_FRAMEWORK.md:
 - Reference corpus medians (workspace/pdfs, n~200): Abstract ~183 words; Introduction ~659 words;
@@ -244,6 +253,8 @@ Evidence and claims (all venues) — see prompts/venue_styles/_SECTION_WRITING_F
 - HARD page budget: compiled main text (Abstract through Conclusion) MUST fill exactly the venue page
   limit—Conclusion ends at the bottom of the last allowed page, not one line over or under.
 - HARD tables: use booktabs publication tables (tab:main_results + tab:ablations), not bare tabular dumps.
+  See prompts/experiment_table_requirements.md: data-driven columns (CI, Delta, Rel.), compact headers,
+  no vertical rules, subtle rowcolor (not blanket bold-best), tabularx fill-width, demote config tables to prose.
 - HARD ablations: Experiments MUST include \\subsection{Ablation Study} plus tab:ablations with one row per
   required ablation variant; discuss which components matter and report deltas vs full model.
 - HARD experiments: multi-dataset breakdown, seed variance / CI, statistical test, compute budget—not three
@@ -256,6 +267,8 @@ Evidence and claims (all venues) — see prompts/venue_styles/_SECTION_WRITING_F
 
     style_block = build_venue_style_guidelines_block(tid)
     parts = [venue_meta, style_block, evidence_rules]
+    if table_requirements:
+        parts.append(f"\n## Experiment table requirements (binding)\n{table_requirements}")
     if quality_gates:
         parts.append(f"\n## Manuscript quality gates (binding)\n{quality_gates}")
     return "\n".join(parts)

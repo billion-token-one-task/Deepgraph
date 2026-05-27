@@ -35,6 +35,7 @@
 
 - Main Results 表中的数据集名必须与 `experimental_log.md` / `result_packet` 完全一致。
 - 至少一张 **booktabs** 主结果表；数字只来自日志，禁止手填「好看」的数字。
+- 表格排版遵循 **`prompts/experiment_table_requirements.md`**：数据列为主、无长句解释列、三线表无竖线、短表头与符号化、克制 rowcolor（非全表加粗 best）、配置表降级为 Setup 正文。
 - 若只有 sanity / proxy / `data_fraction < 1` 运行，全文必须标明 **preliminary**，不得写 full benchmark validation。
 - 负结果与 refutation 必须写入 Results 或 Limitations，不得只写正面叙事。
 

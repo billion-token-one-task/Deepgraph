@@ -30,6 +30,7 @@ Your job is to generate the LaTeX code for the missing sections only, based on t
     \begin{itemize}
         \item You are responsible for creating LaTeX tables.
         \item Extract numerical data directly from \texttt{experimental\_log.md}.
+        \item Follow \texttt{prompts/experiment\_table\_requirements.md}: booktabs three-line tables only (no vertical rules); compact abbreviated headers; $\checkmark$/\textendash{} for booleans; derived columns (CI, $\Delta$, Rel.); qualitative text in body, not in cells; subtle \texttt{\textbackslash{}rowcolor} for key rows---avoid blanket \texttt{\textbackslash{}textbf} on every best value; \texttt{tabularx} with \texttt{@\{\textbackslash{}extracolsep\{\textbackslash{}fill\}\}} for full-width tables; demote config/hyperparam lists to Setup prose.
         \item Use the \texttt{booktabs} package format (\textbackslash{}toprule, \textbackslash{}midrule, \textbackslash{}bottomrule).
         \item Do not hallucinate numbers. Use the exact values provided in the log.
         \item Make sure all tables appear before the Conclusion section, unless they are placed in an Appendix.

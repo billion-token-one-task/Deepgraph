@@ -193,6 +193,20 @@ def get_idea_workspace(insight_id: int, insight: dict | None = None, *, create: 
     return layout
 
 
+def ensure_manuscript_run_workspace(
+    insight_id: int,
+    run_id: int | None = None,
+    insight: dict | None = None,
+) -> dict[str, Any]:
+    """Ensure paper/manuscript directories exist for an insight (legacy import alias)."""
+    layout = get_idea_workspace(insight_id, insight=insight, create=True, sync_db=True)
+    for key in ("paper_root", "paper_current_root", "paper_bundles_root", "paper_manifests_root"):
+        _ensure_dir_or_current_link(Path(layout[key]))
+    if run_id is not None:
+        ensure_run_workspace(insight_id, int(run_id), insight=insight)
+    return layout
+
+
 def ensure_run_workspace(
     insight_id: int,
     run_id: int,

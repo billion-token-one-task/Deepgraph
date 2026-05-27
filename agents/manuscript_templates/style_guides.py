@@ -14,6 +14,7 @@ from pathlib import Path
 from config import PROJECT_ROOT
 
 VENUE_STYLES_DIR = PROJECT_ROOT / "prompts" / "venue_styles"
+EXPERIMENT_TABLE_REQUIREMENTS = PROJECT_ROOT / "prompts" / "experiment_table_requirements.md"
 
 # Fallback when a venue has no dedicated file yet.
 _GENERIC_ML_GUIDE = VENUE_STYLES_DIR / "_generic_ml_conference.md"
@@ -39,6 +40,11 @@ def load_venue_style_guide(template_id: str) -> str:
         body = _read_guide_part(name)
         if body:
             parts.append(body)
+    table_req = ""
+    if EXPERIMENT_TABLE_REQUIREMENTS.is_file():
+        table_req = EXPERIMENT_TABLE_REQUIREMENTS.read_text(encoding="utf-8").strip()
+    if table_req:
+        parts.append(table_req)
     if parts:
         return "\n\n---\n\n".join(parts)
     if _GENERIC_ML_GUIDE.is_file():

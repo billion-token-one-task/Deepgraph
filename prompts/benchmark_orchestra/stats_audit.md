@@ -46,6 +46,7 @@ Return Markdown containing:
 - `reproducibility_audit.md`
 - `claim_evidence_map.md`
 - `results_section_snippet.tex` and `limitations_snippet.tex` only after full audit passes
+- LaTeX tables in snippets MUST follow `prompts/experiment_table_requirements.md` (CI/$\Delta$ columns, booktabs, no prose cells)
 - `completion_audit.md` with uncovered, weakly verified, blocked, or rejected requirements
 - `failure_analysis.md`
 - `claim_support_decision`: supported, downgraded, or rejected for each claim

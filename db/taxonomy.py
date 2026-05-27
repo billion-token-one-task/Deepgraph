@@ -5,6 +5,7 @@ from collections import Counter, defaultdict
 from config import PAPER_CLUSTER_MIN_PAPERS, ROOT_NODE_ID
 from db import database as db
 from db import evidence_graph as graph
+from db.text_signals import flatten_text_items
 
 # ── Predefined taxonomy ────────────────────────────────────────────
 # Format: (id, name, parent_id, depth, description, sort_order)
@@ -313,6 +314,10 @@ def _loads_list(value: str | None) -> list:
     except json.JSONDecodeError:
         return []
     return parsed if isinstance(parsed, list) else []
+
+
+def _flatten_text_items(values: list | None) -> list[str]:
+    return flatten_text_items(values)
 
 
 def _count_subtree_papers(node_id: str) -> int:
@@ -843,10 +848,10 @@ def get_node_signal_snapshot(node_id: str, paper_limit: int = 15) -> dict:
     limitations = Counter()
     open_questions = Counter()
     for paper in papers:
-        for item in paper.get("limitations", []):
-            limitations[item.strip()] += 1
-        for item in paper.get("open_questions", []):
-            open_questions[item.strip()] += 1
+        for item in _flatten_text_items(paper.get("limitations")):
+            limitations[item] += 1
+        for item in _flatten_text_items(paper.get("open_questions")):
+            open_questions[item] += 1
 
     return {
         "paper_count": _count_subtree_papers(node_id),

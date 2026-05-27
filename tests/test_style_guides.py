@@ -39,6 +39,15 @@ class StyleGuideTests(unittest.TestCase):
         self.assertIn("Related Work", g)
         self.assertIn("140", g)
         self.assertIn("183", g)
+        self.assertIn("Experiment table requirements", g)
+        self.assertIn("booktabs", g)
+
+    def test_merged_guide_includes_experiment_table_requirements(self):
+        from agents.manuscript_templates.style_guides import load_venue_style_guide
+
+        g = load_venue_style_guide("iclr2026")
+        self.assertIn("Data-Driven", g)
+        self.assertIn("\\toprule", g)
 
     def test_emnlp_adapter_registered(self):
         from agents.manuscript_templates import get_adapter

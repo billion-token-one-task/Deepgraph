@@ -193,7 +193,8 @@ This paper makes the following contributions:
    - 写清 seeds、算力、超参来源（可附录）  
 
 2. **Main Results**（**必须有 Table 1**）  
-   - 多数据集 × 多方法；**粗体最佳**；±std 若有多 seed  
+   - 多数据集 × 多方法；±std / 95% CI / $\Delta$ 若有多 seed  
+   - **排版**：见 `prompts/experiment_table_requirements.md`（三线表、短表头、$\checkmark$/--、rowcolor 高亮主方法行、禁止竖线与 Interpretation 列）  
    - 正文 **先引表再解释**；图仅补充趋势/案例  
 
 3. **Analysis / Ablations**  

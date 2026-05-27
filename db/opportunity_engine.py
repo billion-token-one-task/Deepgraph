@@ -6,6 +6,7 @@ from collections import Counter, defaultdict
 
 from db import database as db
 from db import evidence_graph as graph
+from db.text_signals import flatten_text_items
 
 
 def _clamp_score(value: float) -> float:
@@ -56,8 +57,8 @@ def _fetch_paper_signals(node_id: str) -> list[dict]:
 def _count_text_clusters(rows: list[dict], field: str) -> dict[str, dict]:
     buckets: dict[str, dict] = {}
     for row in rows:
-        for text in db._load_json(row.get(field), []):
-            cleaned = (text or "").strip()
+        for text in flatten_text_items(db._load_json(row.get(field), [])):
+            cleaned = text.strip()
             if not cleaned:
                 continue
             bucket = buckets.setdefault(cleaned, {"count": 0, "paper_ids": []})
