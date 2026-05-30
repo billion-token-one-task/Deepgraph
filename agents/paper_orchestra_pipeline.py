@@ -101,12 +101,41 @@ def _latex_escape(text: str) -> str:
 
 def _figure_assets(orchestrated: dict) -> list[dict]:
     plotting = orchestrated.get("plotting") or {}
+    assets: list[dict] = []
     executor = plotting.get("plotting_executor") if isinstance(plotting, dict) else {}
     if isinstance(executor, dict) and isinstance(executor.get("assets"), list):
-        return executor["assets"]
+        assets.extend(row for row in executor["assets"] if isinstance(row, dict))
     if isinstance(plotting, dict) and isinstance(plotting.get("assets"), list):
-        return plotting["assets"]
-    return []
+        assets.extend(row for row in plotting["assets"] if isinstance(row, dict))
+    post = plotting.get("postwriting_api_figure_stage") if isinstance(plotting, dict) else {}
+    if isinstance(post, dict) and isinstance(post.get("assets"), list):
+        assets.extend(row for row in post["assets"] if isinstance(row, dict))
+
+    deduped: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for asset in assets:
+        key = (str(asset.get("figure_id") or ""), str(asset.get("path") or asset.get("pdf_path") or asset.get("svg_path") or ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(asset)
+    return deduped
+
+
+def _default_figure_caption(figure_id: str, fallback: str) -> str:
+    if figure_id == "fig_motivation_symbolic":
+        return (
+            "Motivation for diversity-preserving aggregation: majority voting can erase useful "
+            "high-confidence dissent, whereas retaining every candidate increases token cost; DPC "
+            "targets conditional retention under meaningful disagreement."
+        )
+    if figure_id == "fig_overview_symbolic":
+        return (
+            "Overview of Diversity-Preserving Consensus. Candidate answers are grouped with "
+            "confidence and cost evidence, consensus margin identifies stable cases, and "
+            "confidence-weighted dissent scoring decides which minority answers remain under budget."
+        )
+    return fallback
 
 
 def _figure_caption_map(orchestrated: dict) -> dict[str, str]:
@@ -124,6 +153,12 @@ def _figure_caption_map(orchestrated: dict) -> dict[str, str]:
 def _figure_latex_blocks(orchestrated: dict) -> str:
     captions = _figure_caption_map(orchestrated)
     blocks: list[str] = []
+    blocklisted = {
+        "fig_metric_trajectory",
+        "fig_search_dynamics_keep_discard",
+        "fig_benchmark_method_panel",
+        "fig_selective_deliberation_utility_comparison",
+    }
     for asset in _figure_assets(orchestrated):
         if not isinstance(asset, dict):
             continue
@@ -132,16 +167,68 @@ def _figure_latex_blocks(orchestrated: dict) -> str:
             continue
         name = Path(path).name
         figure_id = str(asset.get("figure_id") or Path(path).stem)
-        caption = captions.get(figure_id) or asset.get("objective") or asset.get("title") or figure_id
+        if figure_id in blocklisted:
+            continue
+        if asset.get("kind") == "fallback":
+            continue
+        if asset.get("kind") == "diagram" and asset.get("stage") != "postwriting_api_figures":
+            continue
+        caption = _default_figure_caption(
+            figure_id,
+            captions.get(figure_id) or asset.get("objective") or asset.get("title") or figure_id,
+        )
+        is_wide = (
+            str(asset.get("placement") or "").lower() in {"double", "double_column", "figure*"}
+            or str(asset.get("layout") or "") in {"1x3", "1x4"}
+            or figure_id == "fig_backend_rank_lines_1x4"
+            or str(asset.get("aspect_ratio") or "") == "4:1"
+        )
+        env = "figure*" if is_wide else "figure"
+        width = r"\textwidth" if is_wide else r"\linewidth"
+        is_experiment_plot = asset.get("kind") not in {"diagram", "fallback", "blocked"}
+        include_lines = [rf"\includegraphics[width={width}]{{figures/{name}}}"]
+        if is_experiment_plot:
+            include_lines.append(r"\vspace{-0.45em}")
         blocks.append(
             "\n".join(
                 [
-                    r"\begin{figure}[t]",
+                    rf"\begin{{{env}}}[t]",
                     r"\centering",
-                    rf"\includegraphics[width=0.88\linewidth]{{figures/{name}}}",
+                    *include_lines,
                     rf"\caption{{{caption}}}",
                     rf"\label{{fig:{figure_id}}}",
-                    r"\end{figure}",
+                    rf"\end{{{env}}}",
+                ]
+            )
+        )
+    return "\n\n".join(blocks)
+
+
+def _concept_figure_blocks(orchestrated: dict, wanted: set[str]) -> str:
+    """Return required post-writing concept figures for deterministic placement."""
+    captions = _figure_caption_map(orchestrated)
+    blocks: list[str] = []
+    for asset in _figure_assets(orchestrated):
+        figure_id = str(asset.get("figure_id") or "")
+        if figure_id not in wanted:
+            continue
+        path = asset.get("path") or asset.get("svg_path") or ""
+        if not path:
+            continue
+        name = Path(path).name
+        caption = _default_figure_caption(
+            figure_id,
+            captions.get(figure_id) or asset.get("objective") or asset.get("title") or figure_id,
+        )
+        blocks.append(
+            "\n".join(
+                [
+                    r"\begin{figure*}[t]",
+                    r"\centering",
+                    rf"\includegraphics[width=\textwidth]{{figures/{name}}}",
+                    rf"\caption{{{caption}}}",
+                    rf"\label{{fig:{figure_id}}}",
+                    r"\end{figure*}",
                 ]
             )
         )
@@ -165,16 +252,94 @@ def _fallback_related_work(state: dict, orchestrated: dict) -> str:
     return "\n\n".join(snippets) or _latex_escape(str(state.get("evidence_summary") or "Verified prior work is listed in references.bib."))
 
 
+def _strip_latex_document_shell(fragment: str) -> str:
+    """Remove accidental full-document wrappers from section fragments."""
+    text = str(fragment or "").strip()
+    if not text:
+        return ""
+    if "\\begin{document}" in text:
+        text = text.split("\\begin{document}", 1)[1]
+    text = re.sub(r"\\documentclass(?:\[[^\]]*\])?\{[^}]*\}", "", text)
+    text = re.sub(r"\\usepackage(?:\[[^\]]*\])?\{[^}]*\}", "", text)
+    text = re.sub(r"\\input\{[^}]*\}", "", text)
+    text = re.sub(r"\\title\{[^}]*\}", "", text)
+    text = re.sub(r"\\author\{[^}]*\}", "", text)
+    text = text.replace(r"\maketitle", "")
+    text = re.sub(r"\\bibliographystyle\{[^}]*\}", "", text)
+    text = re.sub(r"\\bibliography\{[^}]*\}", "", text)
+    text = text.replace(r"\end{document}", "")
+    text = re.sub(r"\\begin\{abstract\}\s*\\end\{abstract\}", "", text, flags=re.DOTALL)
+    return text.strip()
+
+
+def _strip_abstract_citations(source: str) -> str:
+    """Remove citation commands inside the abstract environment.
+
+    Most venues expect the abstract to be self-contained and citation-free.
+    This is a hard post-processing guard because refinement models sometimes
+    introduce citations even when prompted not to.
+    """
+    cite_cmd = re.compile(r"\\cite[a-zA-Z*]*(?:\[[^\]]*\]){0,2}\{[^}]*\}")
+
+    def _clean(match: re.Match[str]) -> str:
+        body = cite_cmd.sub("", match.group(1))
+        body = re.sub(r"\s+([,.;:])", r"\1", body)
+        body = re.sub(r"[ \t]{2,}", " ", body)
+        return "\\begin{abstract}\n" + body.strip() + "\n\\end{abstract}"
+
+    return re.sub(
+        r"\\begin\{abstract\}(.*?)\\end\{abstract\}",
+        _clean,
+        source,
+        count=1,
+        flags=re.DOTALL,
+    )
+
+
+def _trim_intro_related_sections(fragment: str) -> str:
+    """Keep only Introduction/Related Work material from a literature fragment."""
+    text = _strip_latex_document_shell(fragment)
+    if not text:
+        return ""
+    allowed = {"introduction", "related work", "related works", "background"}
+    sections = list(re.finditer(r"\\section\*?\{([^}]+)\}", text))
+    for match in sections:
+        title = re.sub(r"\s+", " ", match.group(1).strip().lower())
+        if title not in allowed:
+            text = text[: match.start()].rstrip()
+            break
+    return text.strip()
+
+
+def _inject_problem_spine(intro_related: str, problem_spine: str) -> str:
+    """Add the explicit problem/motivation/method/result spine after the Introduction heading."""
+    if not problem_spine.strip():
+        return intro_related
+    if r"\paragraph{Question.}" in intro_related:
+        return intro_related
+    related_match = re.search(r"\\section\*?\{Related Work[s]?\}", intro_related, flags=re.IGNORECASE)
+    if related_match:
+        return intro_related[: related_match.start()].rstrip() + "\n\n" + problem_spine + "\n\n" + intro_related[related_match.start():].lstrip()
+    return intro_related.rstrip() + "\n\n" + problem_spine
+
+
 def assemble_main_tex(state: dict, orchestrated: dict, bundle_format: str) -> str:
     venue = "Conference submission draft" if bundle_format == "conference" else "Journal draft"
     refined = orchestrated.get("refined") if isinstance(orchestrated.get("refined"), dict) else {}
-    abs_tex = refined.get("abstract") or "See experiments section for quantitative results."
-    intro = refined.get("introduction") or state.get("problem_statement", "")
-    meth = refined.get("method") or state.get("method_summary", "")
-    exp = refined.get("experiments") or ""
-    dis = refined.get("discussion") or ""
-    related = _fallback_related_work(state, orchestrated)
-    figures = _figure_latex_blocks(orchestrated)
+    abs_tex = _strip_latex_document_shell(refined.get("abstract") or "See experiments section for quantitative results.")
+    intro = _strip_latex_document_shell(refined.get("introduction") or state.get("problem_statement", ""))
+    meth = _strip_latex_document_shell(refined.get("method") or state.get("method_summary", ""))
+    exp = _strip_latex_document_shell(refined.get("experiments") or "")
+    dis = _strip_latex_document_shell(refined.get("discussion") or "")
+    related = _trim_intro_related_sections(_fallback_related_work(state, orchestrated))
+    all_figures = _figure_latex_blocks(orchestrated)
+    motivation_figures = _concept_figure_blocks(orchestrated, {"fig_motivation_symbolic"})
+    overview_figures = _concept_figure_blocks(orchestrated, {"fig_overview_symbolic"})
+    experiment_figures = "\n\n".join(
+        block
+        for block in all_figures.split("\n\n")
+        if "fig:fig_motivation_symbolic" not in block and "fig:fig_overview_symbolic" not in block
+    )
     results_line = (
         f"Baseline {state['baseline_metric_name']}: {state.get('baseline_metric_value')}; "
         f"best: {state.get('best_metric_value')}; effect \\%: {state.get('effect_pct')}; "
@@ -190,7 +355,7 @@ def assemble_main_tex(state: dict, orchestrated: dict, bundle_format: str) -> st
         ]
     )
     if "\\section{" in related:
-        intro_related = related
+        intro_related = _inject_problem_spine(related, problem_spine)
     else:
         intro_related = rf"""\section{{Introduction}}
 {intro}
@@ -203,9 +368,14 @@ def assemble_main_tex(state: dict, orchestrated: dict, bundle_format: str) -> st
 \input{{math_commands.tex}}
 \usepackage{{graphicx}}
 \usepackage{{booktabs}}
+\usepackage[table]{{xcolor}}
+\usepackage{{array}}
+\usepackage{{tabularx}}
 \usepackage{{amsmath,amssymb}}
 \usepackage{{hyperref}}
 \usepackage{{url}}
+\setlength{{\abovecaptionskip}}{{3pt}}
+\setlength{{\belowcaptionskip}}{{0pt}}
 \title{{{state['title']}}}
 \author{{Anonymous authors\\Paper under double-blind review}}
 \begin{{document}}
@@ -214,11 +384,13 @@ def assemble_main_tex(state: dict, orchestrated: dict, bundle_format: str) -> st
 {abs_tex}
 \end{{abstract}}
 {intro_related}
+{motivation_figures}
 \section{{Method}}
 {meth}
+{overview_figures}
 \section{{Experiments}}
 {exp}
-{figures}
+{experiment_figures}
 \section{{Results}}
 {results_line}
 \section{{Discussion}}
@@ -231,6 +403,11 @@ def assemble_main_tex(state: dict, orchestrated: dict, bundle_format: str) -> st
 \usepackage{{graphicx}}
 \usepackage{{hyperref}}
 \usepackage{{booktabs}}
+\usepackage[table]{{xcolor}}
+\usepackage{{array}}
+\usepackage{{tabularx}}
+\setlength{{\abovecaptionskip}}{{3pt}}
+\setlength{{\belowcaptionskip}}{{0pt}}
 \title{{{state['title']}}}
 \author{{DeepGraph Auto Research (PaperOrchestra pipeline)}}
 \date{{{venue}}}
@@ -240,11 +417,13 @@ def assemble_main_tex(state: dict, orchestrated: dict, bundle_format: str) -> st
 {abs_tex}
 \end{{abstract}}
 {intro_related}
+{motivation_figures}
 \section{{Method}}
 {meth}
+{overview_figures}
 \section{{Experiments}}
 {exp}
-{figures}
+{experiment_figures}
 \section{{Results}}
 {results_line}
 \section{{Discussion}}
@@ -271,10 +450,17 @@ def _ensure_iclr2026_preamble(source: str) -> str:
         )
     if "math_commands.tex" not in preamble:
         preamble = preamble.rstrip() + "\n" + r"\input{math_commands.tex}" + "\n"
-    for package in ("graphicx", "booktabs", "amsmath,amssymb", "hyperref", "url"):
+    for package in ("graphicx", "booktabs", "xcolor", "array", "tabularx", "amsmath,amssymb", "hyperref", "url"):
         first_pkg = package.split(",", 1)[0]
         if first_pkg not in preamble:
-            preamble = preamble.rstrip() + "\n" + rf"\usepackage{{{package}}}" + "\n"
+            if package == "xcolor":
+                preamble = preamble.rstrip() + "\n" + r"\usepackage[table]{xcolor}" + "\n"
+            else:
+                preamble = preamble.rstrip() + "\n" + rf"\usepackage{{{package}}}" + "\n"
+    if r"\abovecaptionskip" not in preamble:
+        preamble = preamble.rstrip() + "\n" + r"\setlength{\abovecaptionskip}{3pt}" + "\n"
+    if r"\belowcaptionskip" not in preamble:
+        preamble = preamble.rstrip() + "\n" + r"\setlength{\belowcaptionskip}{0pt}" + "\n"
     if r"\author" not in preamble:
         preamble = preamble.rstrip() + "\n" + r"\author{Anonymous authors\\Paper under double-blind review}" + "\n"
     preamble = re.sub(r"\\usepackage(?:\[[^\]]*\])?\{geometry\}\s*", "", preamble)
@@ -332,14 +518,25 @@ def normalize_latex_source(text: str, *, force_iclr2026: bool = False) -> str:
         )
     if uses_iclr:
         source = re.sub(r"\\bibliographystyle\{[^}]+\}", r"\\bibliographystyle{iclr2026_conference}", source)
+    source = _strip_abstract_citations(source)
     preamble, marker, body = source.partition(r"\begin{document}")
     if marker:
+        needs_algorithm = (
+            "\\begin{algorithm}" in body
+            and "algorithm}" not in preamble
+            and "algorithm2e" not in preamble
+        )
+        needs_algpseudocode = (
+            ("\\begin{algorithmic}" in body or "\\State" in body)
+            and "algpseudocode" not in preamble
+            and "algorithmic" not in preamble
+        )
         needs_cleveref = ("\\Cref" in body or "\\cref" in body) and "cleveref" not in preamble
         needs_ams = (
             any(cmd in body for cmd in ("\\mathbb", "\\operatorname", "\\text", "\\eqref"))
             and "amsmath" not in preamble
         )
-        if needs_ams or needs_cleveref:
+        if needs_ams or needs_cleveref or needs_algorithm or needs_algpseudocode:
             if needs_ams and "cleveref" in preamble:
                 preamble = preamble.replace(
                     r"\usepackage{cleveref}",
@@ -350,6 +547,10 @@ def normalize_latex_source(text: str, *, force_iclr2026: bool = False) -> str:
             additions = []
             if needs_ams:
                 additions.append(r"\usepackage{amsmath,amssymb}")
+            if needs_algorithm:
+                additions.append(r"\usepackage{algorithm}")
+            if needs_algpseudocode:
+                additions.append(r"\usepackage{algpseudocode}")
             if needs_cleveref:
                 additions.append(r"\usepackage{cleveref}")
             if additions:
@@ -368,13 +569,38 @@ def normalize_latex_source(text: str, *, force_iclr2026: bool = False) -> str:
     return source + ("\n" if source and not source.endswith("\n") else "")
 
 
+def _inject_after_first_section(source: str, section_name: str, block: str) -> str:
+    if not block.strip():
+        return source
+    pattern = rf"(\\section\{{{re.escape(section_name)}\}}\s*)"
+    match = re.search(pattern, source)
+    if not match:
+        return source
+    insert_at = match.end()
+    return source[:insert_at] + "\n" + block.strip() + "\n" + source[insert_at:]
+
+
+def _ensure_required_concept_figures(source: str, orchestrated: dict) -> str:
+    """Inject required post-writing concept figures even when refinement returns a full document."""
+    motivation = _concept_figure_blocks(orchestrated, {"fig_motivation_symbolic"})
+    overview = _concept_figure_blocks(orchestrated, {"fig_overview_symbolic"})
+    if motivation and "fig:fig_motivation_symbolic" not in source:
+        source = _inject_after_first_section(source, "Introduction", motivation)
+    if overview and "fig:fig_overview_symbolic" not in source:
+        source = _inject_after_first_section(source, "Method", overview)
+    return source
+
+
 def pick_main_tex(orchestrated: dict, state: dict, bundle_format: str) -> str:
     """Prefer full refined LaTeX if the model returned a complete ``\\documentclass`` document."""
     full = (orchestrated.get("refinement_full_text") or "").strip()
     force_iclr2026 = bundle_format == "conference"
-    if full and "\\documentclass" in full[:2000]:
-        return normalize_latex_source(full, force_iclr2026=force_iclr2026)
-    return normalize_latex_source(assemble_main_tex(state, orchestrated, bundle_format), force_iclr2026=force_iclr2026)
+    if full and re.match(r"^\s*(?:%[^\n]*\n\s*)*\\documentclass(?:\[[^\]]*\])?\{", full):
+        tex = normalize_latex_source(full, force_iclr2026=force_iclr2026)
+    else:
+        tex = normalize_latex_source(assemble_main_tex(state, orchestrated, bundle_format), force_iclr2026=force_iclr2026)
+    tex = _ensure_required_concept_figures(tex, orchestrated)
+    return normalize_latex_source(tex, force_iclr2026=force_iclr2026)
 
 
 def _compile_main_pdf(bundle_dir: Path) -> dict:
@@ -643,6 +869,7 @@ def _paper_quality_report(
     compile_result: dict,
     removed_cite_keys: list[str],
     template_files: list[str] | None = None,
+    manuscript_state: dict | None = None,
 ) -> dict:
     entries = _bib_entries_by_key(bibtex)
     cited = _cited_keys(main_tex)
@@ -686,14 +913,18 @@ def _paper_quality_report(
         issues.append({"severity": "medium", "issue": "Off-topic bibliography entries remain after cleanup."})
     if len(cited) < 10:
         issues.append({"severity": "medium", "issue": "Citation density is below a conference-paper target."})
-    if len(includes) < 3:
-        issues.append({"severity": "medium", "issue": "The paper has too few figures for a benchmark-oriented submission."})
+    if len(includes) < 1:
+        issues.append({"severity": "medium", "issue": "The paper has no native experiment figure."})
     if "iclr2026_conference" not in main_tex:
         issues.append({"severity": "high", "issue": "Conference bundle is not using the ICLR 2026 template."})
     if internal_audit_hits:
         issues.append({"severity": "medium", "issue": "Internal-audit wording remains in the main body."})
     if page_count is not None and page_count < 8:
         issues.append({"severity": "low", "issue": "The compiled paper is short relative to full conference papers."})
+    scientific_review = _scientific_review_gate(main_tex, manuscript_state or {})
+    for issue in scientific_review.get("issues") or []:
+        if isinstance(issue, dict) and issue not in issues:
+            issues.append(issue)
     reference_corpus_audit = audit_against_reference_corpus(
         main_tex=main_tex,
         page_count=page_count,
@@ -735,6 +966,7 @@ def _paper_quality_report(
             for asset in figure_assets
             if isinstance(asset, dict)
         ],
+        "scientific_review_gate": scientific_review,
         "internal_audit_wording_hits": internal_audit_hits,
         "issues": issues,
         "recommendations": [
@@ -742,6 +974,236 @@ def _paper_quality_report(
             "Keep related work restricted to QA reasoning, adaptive test-time compute, selective prediction, and uncertainty-based routing.",
             "Move missing implementation details into a concise reproducibility/scope subsection rather than repeating them throughout the paper.",
         ],
+    }
+
+
+def _scientific_review_gate(main_tex: str, state: dict) -> dict:
+    """Deterministic venue-aware scientific-risk audit.
+
+    This is deliberately harsher than formatting/sanity checks: a manuscript can
+    compile and still be a weak scientific submission.
+    """
+    packet = state.get("result_packet") if isinstance(state.get("result_packet"), dict) else {}
+    summary = packet.get("benchmark_summary") if isinstance(packet.get("benchmark_summary"), dict) else {}
+    if not summary and isinstance(state.get("benchmark_summary"), dict):
+        summary = state["benchmark_summary"]
+    datasets = summary.get("datasets") if isinstance(summary.get("datasets"), list) else []
+    total_examples = 0
+    for row in datasets:
+        if not isinstance(row, dict):
+            continue
+        for key in ("num_test", "num_materialized_examples", "count", "n"):
+            try:
+                value = int(row.get(key) or 0)
+            except (TypeError, ValueError):
+                value = 0
+            if value:
+                total_examples += value
+                break
+    seed_results = summary.get("seed_results") if isinstance(summary.get("seed_results"), list) else []
+    try:
+        num_seeds = int(summary.get("num_seeds") or len(seed_results) or 0)
+    except (TypeError, ValueError):
+        num_seeds = 0
+    def _as_float(value):
+        try:
+            if value is None or value == "":
+                return None
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def _metric(row: dict) -> float | None:
+        if not isinstance(row, dict):
+            return _as_float(row)
+        for key in ("metric_value", "accuracy", "exact_match", "em", "score", "utility"):
+            parsed = _as_float(row.get(key))
+            if parsed is not None:
+                return parsed
+        return None
+
+    def _tokens(row: dict) -> float | None:
+        if not isinstance(row, dict):
+            return None
+        for key in ("avg_new_tokens", "tokens", "avg_tokens", "token_cost"):
+            parsed = _as_float(row.get(key))
+            if parsed is not None:
+                return parsed
+        return None
+
+    p_value = None
+    tests = summary.get("bootstrap_ci") if isinstance(summary.get("bootstrap_ci"), dict) else {}
+    for source in (packet, tests):
+        for key in ("p_value", "paired_permutation_p"):
+            try:
+                if source.get(key) is not None:
+                    p_value = float(source.get(key))
+                    break
+            except (TypeError, ValueError):
+                    pass
+        if p_value is not None:
+            break
+    per_method = summary.get("per_method") if isinstance(summary.get("per_method"), dict) else {}
+    method_names = " ".join(per_method.keys()).lower()
+    candidate_name = str(summary.get("candidate_method") or packet.get("candidate_method") or state.get("method_name") or "")
+    if not candidate_name or candidate_name not in per_method:
+        candidate_name = next((name for name in per_method if any(token in name.lower() for token in ("ours", "dpc", "candidate", "proposed"))), "")
+    candidate_row = per_method.get(candidate_name) if candidate_name in per_method else {}
+    candidate_metric = _metric(candidate_row if isinstance(candidate_row, dict) else {})
+    candidate_tokens = _tokens(candidate_row if isinstance(candidate_row, dict) else {})
+    deployable: list[tuple[str, float, float | None]] = []
+    for name, row in per_method.items():
+        lower_name = name.lower()
+        if name == candidate_name or "oracle" in lower_name:
+            continue
+        value = _metric(row if isinstance(row, dict) else {})
+        if value is None:
+            continue
+        deployable.append((name, value, _tokens(row if isinstance(row, dict) else {})))
+    strongest_baseline = max(deployable, key=lambda item: item[1], default=("", None, None))
+    strongest_name, strongest_metric, strongest_tokens = strongest_baseline
+    strongest_gap = None
+    strongest_token_delta = None
+    if candidate_metric is not None and strongest_metric is not None:
+        strongest_gap = round(float(candidate_metric) - float(strongest_metric), 6)
+    if candidate_tokens is not None and strongest_tokens is not None:
+        strongest_token_delta = round(float(candidate_tokens) - float(strongest_tokens), 6)
+
+    pairwise_tests = summary.get("pairwise_tests") if isinstance(summary.get("pairwise_tests"), dict) else {}
+    significance = summary.get("significance") if isinstance(summary.get("significance"), dict) else {}
+    pairwise_text = json.dumps({"pairwise_tests": pairwise_tests, "significance": significance, "bootstrap_ci": tests}, ensure_ascii=False).lower()
+    strongest_key_terms = [term for term in re.split(r"[^a-z0-9]+", strongest_name.lower()) if term]
+    has_strongest_pairwise = bool(
+        strongest_name
+        and (
+            strongest_name.lower() in pairwise_text
+            or all(term in pairwise_text for term in strongest_key_terms[:2])
+        )
+        and any(token in pairwise_text for token in ("p", "p_value", "paired", "permutation", "bootstrap"))
+    )
+    routing = summary.get("routing_analysis") if isinstance(summary.get("routing_analysis"), dict) else {}
+
+    def _payload_text(*keys: str) -> str:
+        payload = {key: summary.get(key) for key in keys if summary.get(key)}
+        return json.dumps(payload, ensure_ascii=False).lower() if payload else ""
+
+    disagreement_text = _payload_text("subset_analysis", "disagreement_subset", "margin_bucket_analysis")
+    frontier_text = _payload_text("quality_cost_frontier", "frontier_analysis", "pareto_frontier")
+    live_text = _payload_text("live_sanity_check", "live_evaluation", "fresh_sampling_check")
+    analysis_text = " ".join(
+        text
+        for text in (
+            json.dumps(routing, ensure_ascii=False).lower() if routing else "",
+            disagreement_text,
+            frontier_text,
+            live_text,
+        )
+        if text
+    )
+    has_disagreement_subset = bool(disagreement_text) and any(token in disagreement_text for token in ("disagreement", "margin", "stable", "severe", "bucket"))
+    has_frontier = bool(frontier_text) and any(token in frontier_text for token in ("frontier", "pareto", "quality-cost", "quality_cost"))
+    has_live_sanity = bool(live_text) and any(token in live_text for token in ("live", "api", "fresh", "held-out", "sampling"))
+    evidence_tier = str(packet.get("evidence_tier") or summary.get("evidence_tier") or "").lower()
+    controlled_only = any(token in evidence_tier + " " + analysis_text + " " + (main_tex or "").lower() for token in ("materialized", "controlled", "offline trace"))
+    required_baselines = {
+        "self_consistency": ("self", "consistency"),
+        "confidence_weighted": ("confidence",),
+        "best_of_n_or_verifier": ("best", "verifier"),
+        "debate_or_vote": ("debate", "vote"),
+        "adaptive_compute": ("adaptive", "early", "routing"),
+    }
+    missing_baselines = [
+        label
+        for label, terms in required_baselines.items()
+        if not any(term in method_names for term in terms)
+    ]
+    unresolved = bool(re.search(r"\?\?\??|Figure\s*~?\\ref\{[^}]*\}\?\?|Table\s*~?\\ref\{[^}]*\}\?\?", main_tex or ""))
+    heuristic_terms = ("bonus", "threshold", "hand-crafted", "heuristic")
+    looks_heuristic = any(term in (main_tex or "").lower() for term in heuristic_terms)
+    issues: list[dict[str, str]] = []
+    if total_examples and total_examples < 100:
+        issues.append({"severity": "high", "issue": f"Scientific evidence is too small for a top-tier claim: only {total_examples} evaluation examples."})
+    if p_value is not None and p_value >= 0.05:
+        issues.append({"severity": "high", "issue": f"Core empirical result is not statistically significant at 0.05: p={p_value:.4g}."})
+    if num_seeds and num_seeds < 5:
+        issues.append({"severity": "medium", "issue": f"Seed coverage is thin for a top-tier empirical paper: {num_seeds} seed(s)."})
+    if len(missing_baselines) >= 2:
+        issues.append({"severity": "high", "issue": "Baseline coverage is weak for a selector/routing paper: missing " + ", ".join(missing_baselines[:5]) + "."})
+    if strongest_name and "confidence" in strongest_name.lower() and not has_strongest_pairwise:
+        issues.append({"severity": "high", "issue": f"Strongest practical baseline is {strongest_name}; missing pairwise significance/trade-off test against it."})
+    elif strongest_name and strongest_gap is not None and strongest_gap < 0.02 and not has_strongest_pairwise:
+        issues.append({"severity": "medium", "issue": f"Gain over strongest practical baseline {strongest_name} is small ({strongest_gap:+.4f}) and lacks pairwise uncertainty."})
+    if strongest_name and strongest_token_delta is not None and strongest_token_delta > 0 and not has_frontier:
+        issues.append({"severity": "medium", "issue": f"Candidate spends {strongest_token_delta:.2f} more tokens than strongest practical baseline {strongest_name}; missing quality-cost frontier evidence."})
+    if any(token in (main_tex or "").lower() for token in ("dissent", "disagreement", "consensus")) and not has_disagreement_subset:
+        issues.append({"severity": "medium", "issue": "Motivation depends on disagreement/dissent, but disagreement-bucket or margin-subset analysis is missing."})
+    if controlled_only and not has_live_sanity:
+        issues.append({"severity": "medium", "issue": "Evidence is controlled/materialized only; no live-sampling sanity check is present for broad top-venue claims."})
+    if looks_heuristic:
+        issues.append({"severity": "medium", "issue": "Method appears to be a hand-crafted heuristic; novelty/technical depth should be justified or downgraded."})
+    if unresolved:
+        issues.append({"severity": "high", "issue": "Unresolved citation or cross-reference markers remain in the manuscript."})
+    high_count = sum(1 for row in issues if row.get("severity") == "high")
+    medium_count = sum(1 for row in issues if row.get("severity") == "medium")
+    if high_count:
+        score = 3 if high_count >= 2 else 4
+    elif medium_count >= 3:
+        score = 5
+    elif medium_count:
+        score = 6
+    else:
+        score = 7
+    target_assessments = {
+        "iclr_main": {
+            "verdict": "reject" if high_count or controlled_only or not has_live_sanity else ("borderline" if medium_count else "weak_accept"),
+            "reason": "Needs live/generalization evidence and strong-baseline analysis for a main-conference claim.",
+        },
+        "acl_emnlp_main": {
+            "verdict": "reject" if high_count or controlled_only else ("borderline" if medium_count else "weak_accept"),
+            "reason": "NLP main-track claims need live or clearly external benchmark evidence, not only controlled traces.",
+        },
+        "workshop": {
+            "verdict": "promising_with_revisions" if total_examples >= 100 and num_seeds >= 5 and p_value is not None and p_value < 0.05 else "borderline",
+            "reason": "Controlled selector evidence can support a workshop paper if scope is downgraded and missing analyses are addressed.",
+        },
+        "small_conference": {
+            "verdict": "promising_with_revisions" if total_examples >= 100 and num_seeds >= 5 else "borderline",
+            "reason": "May be viable as a controlled materialized-trace selector study with honest claims.",
+        },
+        "technical_report": {
+            "verdict": "suitable" if total_examples >= 1 else "incomplete",
+            "reason": "Useful as a technical report when evidence scope is explicit.",
+        },
+    }
+    return {
+        "schema_version": "scientific_review_gate_v2",
+        "venue": "venue-aware",
+        "estimated_score": score,
+        "recommendation": "reject" if score <= 4 else "borderline" if score <= 6 else "weak_accept",
+        "target_assessments": target_assessments,
+        "total_examples": total_examples,
+        "num_seeds": num_seeds,
+        "p_value": p_value,
+        "candidate_method": candidate_name,
+        "candidate_metric": candidate_metric,
+        "candidate_tokens": candidate_tokens,
+        "strongest_practical_baseline": {
+            "name": strongest_name,
+            "metric": strongest_metric,
+            "tokens": strongest_tokens,
+            "metric_gap": strongest_gap,
+            "token_delta": strongest_token_delta,
+            "has_pairwise_test": has_strongest_pairwise,
+        },
+        "evidence_scope": "controlled_materialized" if controlled_only else "live_or_external",
+        "missing_analyses": {
+            "pairwise_vs_strongest_baseline": bool(strongest_name and not has_strongest_pairwise),
+            "disagreement_subset": not has_disagreement_subset,
+            "quality_cost_frontier": not has_frontier,
+            "live_sanity_check": not has_live_sanity,
+        },
+        "missing_baselines": missing_baselines,
+        "issues": issues,
     }
 
 
@@ -1542,6 +2004,7 @@ def generate_bundle_paper_orchestra(
             compile_result=compile_result,
             removed_cite_keys=removed_cite_keys,
             template_files=copied_template_files,
+            manuscript_state=state,
         )
         _write(
             bundle_dir / "paper_quality_report.json",

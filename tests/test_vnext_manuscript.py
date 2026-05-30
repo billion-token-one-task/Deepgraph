@@ -311,7 +311,9 @@ class ManuscriptBundleTests(unittest.TestCase):
         self.assertIn("cite_a", (bundle_path / "references.bib").read_text(encoding="utf-8"))
         main_tex = (bundle_path / "main.tex").read_text(encoding="utf-8")
         self.assertIn("iclr2026_conference", main_tex)
-        self.assertIn("fig_metric_trajectory.svg", main_tex)
+        self.assertNotIn("fig_metric_trajectory", main_tex)
+        self.assertNotIn("fig_search_dynamics_keep_discard", main_tex)
+        self.assertNotIn("fig_benchmark_method_panel", main_tex)
         self.assertTrue((self.workspace_root / "idea_1" / "paper" / "current" / "main.tex").exists())
 
     def test_generate_submission_bundle_blocks_non_formal_run(self):
@@ -397,18 +399,19 @@ class ManuscriptBundleTests(unittest.TestCase):
         self.assertTrue((current_root / "MANUSCRIPT_BLOCKED.json").exists())
         self.assertTrue((current_root / "DO_NOT_SUBMIT.md").exists())
 
-    def test_postwriting_api_figure_stage_is_deferred_without_command(self):
+    def test_postwriting_api_figure_stage_blocks_without_command(self):
         figures_dir = self.tmpdir_path / "figures"
-        with mock.patch.dict(os.environ, {"DEEPGRAPH_PAPERBANANA_ENABLE_POSTWRITE": "1"}):
-            result = run_postwriting_api_figure_stage(
-                {},
-                {"problem_awareness": {"central_question": "What is being tested?"}},
-                "\\section{Introduction}Draft paper.",
-                figures_dir,
-                paperbanana_cmd="",
-            )
+        result = run_postwriting_api_figure_stage(
+            {},
+            {"problem_awareness": {"central_question": "What is being tested?"}},
+            "\\section{Introduction}Draft paper.",
+            figures_dir,
+            paperbanana_cmd="",
+        )
         self.assertEqual(result["stage"], "postwriting_api_figures")
+        self.assertTrue(result["required"])
         self.assertEqual(result["generated_count"], 0)
+        self.assertTrue(result["blockers"])
         self.assertTrue((figures_dir / "postwriting_api_figure_manifest.json").exists())
 
 

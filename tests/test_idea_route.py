@@ -1,9 +1,22 @@
 import unittest
 
+from agents.compute_profile import ComputeProfile
 from agents.idea_route import classify_idea_route
 
 
 class IdeaRouteTests(unittest.TestCase):
+    def _gpu_profile(self) -> ComputeProfile:
+        return ComputeProfile(
+            local_gpu_available=True,
+            remote_gpu_configured=False,
+            gpu_allowed=True,
+            gpu_block_reason="",
+            accelerator="cuda",
+            device_count=1,
+            total_vram_gb=80.0,
+            device_names=("Test GPU",),
+        )
+
     def test_full_paper_route_requires_complete_benchmark_contract(self):
         route = classify_idea_route(
             {
@@ -24,7 +37,8 @@ class IdeaRouteTests(unittest.TestCase):
                     "metrics": {"primary": "accuracy"},
                     "real_benchmark_required": True,
                 },
-            }
+            },
+            compute_profile=self._gpu_profile(),
         )
 
         self.assertEqual(route["route"], "full_paper")
@@ -52,7 +66,8 @@ class IdeaRouteTests(unittest.TestCase):
                     "metrics": {"primary": "accuracy"},
                     "real_benchmark_required": True,
                 },
-            }
+            },
+            compute_profile=self._gpu_profile(),
         )
 
         self.assertEqual(route["route"], "workshop")
@@ -79,6 +94,39 @@ class IdeaRouteTests(unittest.TestCase):
         self.assertIn(route["route"], {"research_note", "probe"})
         self.assertFalse(route["paper_allowed"])
         self.assertIn("real_benchmark_dataset", route["missing"])
+
+    def test_gpu_idea_blocks_when_compute_profile_has_no_gpu_lane(self):
+        profile = ComputeProfile(
+            local_gpu_available=False,
+            remote_gpu_configured=False,
+            gpu_allowed=False,
+            gpu_block_reason="no GPU",
+        )
+
+        route = classify_idea_route(
+            {
+                "title": "Train a large multimodal adapter",
+                "novelty_status": "confirmed novel gap",
+                "problem_statement": "A new GPU-heavy training idea.",
+                "resource_class": "gpu_large",
+                "proposed_method": {"definition": "Train a large model adapter with a new objective."},
+                "experimental_plan": {
+                    "benchmark_targets": [{"name": "MMLU"}],
+                    "model_targets": [{"name": "Llama-70B"}],
+                    "baselines": [{"name": "base"}, {"name": "adapter"}],
+                    "ablations": [{"name": "no_loss"}, {"name": "no_gate"}],
+                    "minimum_seeds": 3,
+                    "metrics": {"primary": "accuracy"},
+                    "real_benchmark_required": True,
+                },
+            },
+            compute_profile=profile,
+        )
+
+        self.assertEqual(route["route"], "blocked")
+        self.assertFalse(route["experiment_allowed"])
+        self.assertIn("available_gpu_resource", route["missing"])
+        self.assertEqual(route["decision_inputs"]["gpu_block_reason"], "no GPU")
 
 
 if __name__ == "__main__":

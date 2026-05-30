@@ -168,7 +168,7 @@ APP_NAME = _env_str("DEEPGRAPH_APP_NAME", "DeepGraph", "app.name")
 APP_SUBTITLE = _env_str("DEEPGRAPH_APP_SUBTITLE", PROFILE_SETTINGS["subtitle"], "app.subtitle")
 ROOT_NODE_ID = _env_str("DEEPGRAPH_ROOT_NODE_ID", PROFILE_SETTINGS["root_node_id"], "app.root_node_id")
 
-# LLM — default: MiniMax only (OpenAI-compatible proxies off unless DEEPGRAPH_LLM_USE_TABCODE=1)
+# LLM — default to OpenAI-compatible GPT routes for all non-image stages.
 LLM_USE_TABCODE = _env_bool("DEEPGRAPH_LLM_USE_TABCODE", False, "llm.use_tabcode")
 # OpenAI-compatible gateway protocol: "responses" or "chat_completions"
 LLM_PROTOCOL = _env_str("DEEPGRAPH_LLM_PROTOCOL", "responses", "llm.protocol").strip().lower()
@@ -200,7 +200,7 @@ LLM_MAX_OUTPUT_TOKENS = _env_int("DEEPGRAPH_LLM_MAX_OUTPUT_TOKENS", 32_000, "llm
 # Provenance / feedback loop: bump when changing insight prompts for A/B analysis
 PROMPT_VERSION = _env_str("DEEPGRAPH_PROMPT_VERSION", "insight_v1", "prompts.version")
 
-# MiniMax (Chat Completions API)
+# MiniMax (legacy optional Chat Completions API; disabled unless configured).
 MINIMAX_API_KEY = _env_str("MINIMAX_API_KEY", "", "minimax.api_key")
 MINIMAX_BASE_URL = _env_str("MINIMAX_BASE_URL", "https://api.minimaxi.com/v1", "minimax.base_url")
 MINIMAX_MODEL = _env_str("MINIMAX_MODEL", "MiniMax-M2.7-highspeed", "minimax.model")
@@ -228,6 +228,21 @@ CONTRADICTION_REQUIRES_GROUNDED = _env_bool("DEEPGRAPH_CONTRADICTION_REQUIRES_GR
 BACKFILL_GRAPH_ON_START = _env_bool("DEEPGRAPH_BACKFILL_GRAPH_ON_START", True, "graph.backfill_on_start")
 REFRESH_MERGE_CANDIDATES_ON_START = _env_bool("DEEPGRAPH_REFRESH_MERGE_CANDIDATES_ON_START", True, "graph.refresh_merge_candidates_on_start")
 PAPER_CLUSTER_MIN_PAPERS = _env_int("DEEPGRAPH_PAPER_CLUSTER_MIN_PAPERS", 10, "graph.paper_cluster_min_papers")
+
+# Compute admission policy for idea routing. This is intentionally separate
+# from the GPU scheduler's declared worker settings: a local checkout may have
+# ``gpu.mode=single_host`` in config while the current machine has no usable
+# NVIDIA/CUDA device.
+COMPUTE_LOCAL_GPU_POLICY = _env_str("DEEPGRAPH_LOCAL_GPU_POLICY", "auto", "compute.local_gpu_policy").lower()
+
+# Dataset resolution happens before an idea is stored or blocked. It binds
+# vague benchmark names to executable public-data recipes when possible, mostly
+# through the Hugging Face datasets API.
+DATASET_RESOLVER_ENABLED = _env_bool("DEEPGRAPH_DATASET_RESOLVER_ENABLED", True, "dataset_resolver.enabled")
+DATASET_RESOLVER_ALLOW_NETWORK = _env_bool("DEEPGRAPH_DATASET_RESOLVER_ALLOW_NETWORK", True, "dataset_resolver.allow_network")
+DATASET_RESOLVER_HF_LIMIT = _env_int("DEEPGRAPH_DATASET_RESOLVER_HF_LIMIT", 8, "dataset_resolver.hf_limit")
+DATASET_RESOLVER_TIMEOUT_SECONDS = _env_int("DEEPGRAPH_DATASET_RESOLVER_TIMEOUT_SECONDS", 12, "dataset_resolver.timeout_seconds")
+DATASET_RESOLVER_MIN_CONFIDENCE = _env_float("DEEPGRAPH_DATASET_RESOLVER_MIN_CONFIDENCE", 0.42, "dataset_resolver.min_confidence")
 
 # Discovery (Tier 1 / Tier 2 insight generation)
 DISCOVERY_TIER1_CANDIDATES = _env_int("DEEPGRAPH_TIER1_CANDIDATES", 5, "discovery.tier1_candidates")

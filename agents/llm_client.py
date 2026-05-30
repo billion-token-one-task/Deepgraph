@@ -482,6 +482,33 @@ def _call_chat_completions(provider: dict, system_prompt: str, user_prompt: str,
     return response_text, total_tokens, cached_tokens, input_tokens
 
 
+def _extract_responses_output_text(response: dict) -> str:
+    """Best-effort text extraction from a Responses API final response object."""
+    if not isinstance(response, dict):
+        return ""
+    direct = response.get("output_text")
+    if isinstance(direct, str) and direct.strip():
+        return direct
+
+    pieces: list[str] = []
+    for item in response.get("output") or []:
+        if not isinstance(item, dict):
+            continue
+        item_text = item.get("text")
+        if isinstance(item_text, str) and item_text:
+            pieces.append(item_text)
+        for content in item.get("content") or []:
+            if not isinstance(content, dict):
+                continue
+            text = content.get("text")
+            if isinstance(text, str) and text:
+                pieces.append(text)
+            nested = content.get("content")
+            if isinstance(nested, str) and nested:
+                pieces.append(nested)
+    return "".join(pieces).strip()
+
+
 def _call_responses_api(provider: dict, system_prompt: str, user_prompt: str,
                         max_tokens: int) -> tuple[str, int, int, int]:
     """Call via OpenAI Responses API (for tabcode etc)."""
@@ -528,7 +555,10 @@ def _call_responses_api(provider: dict, system_prompt: str, user_prompt: str,
                 if event_type == "response.output_text.delta":
                     response_text += event.get("delta", "")
                 elif event_type == "response.completed":
-                    usage = event.get("response", {}).get("usage", {})
+                    response_obj = event.get("response", {})
+                    if not response_text:
+                        response_text = _extract_responses_output_text(response_obj)
+                    usage = response_obj.get("usage", {})
                     total_tokens = usage.get("total_tokens", 0)
                     input_tokens = usage.get("input_tokens", 0)
                     # OpenAI cache: usage.input_tokens_details.cached_tokens

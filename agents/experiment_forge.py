@@ -21,6 +21,7 @@ import zipfile
 from pathlib import Path
 
 from agents.discovery_metadata import infer_resource_class
+from agents.dataset_resolver import resolve_plan_datasets
 from agents.evosci_requirements import evosci_strict_gate_insight
 from agents.experiment_review import review_experiment_candidate
 from agents.idea_route import classify_idea_route
@@ -664,6 +665,18 @@ def _default_real_model_targets(parsed: dict, resource_class: str | None = None)
                 "role": "candidate_base_model",
             }
         ]
+    if str(resource_class or "").strip().lower() == "cpu":
+        return [
+            {
+                "name": "TinyLlama-1.1B CPU",
+                "hf_model": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+                "backend": "transformers",
+                "role": "candidate_base_model",
+                "load_in_4bit": False,
+                "requires_cuda": False,
+                "cpu_allowed": True,
+            }
+        ]
     return [
         {
             "name": EXPERIMENT_REAL_LLM_MODEL,
@@ -700,6 +713,7 @@ def _ensure_real_benchmark_plan(parsed: dict, method: dict, plan: dict, resource
     plan = dict(plan or {})
     if not EXPERIMENT_REQUIRE_REAL_BENCHMARK:
         return plan
+    plan = resolve_plan_datasets(plan)
     existing_targets = plan.get("benchmark_targets") if isinstance(plan.get("benchmark_targets"), list) else []
     real_targets = []
     for row in existing_targets:
@@ -1883,6 +1897,9 @@ def _real_benchmark_defaults(plan: dict) -> dict:
         "question_field": target.get("question_field") or "question",
         "answer_field": target.get("answer_field") or "answer",
         "model_id": model_id,
+        "model_requires_cuda": bool(model.get("requires_cuda")),
+        "model_cpu_allowed": bool(model.get("cpu_allowed") or not model.get("requires_cuda")),
+        "model_load_in_4bit": bool(model.get("load_in_4bit")),
         "max_examples": int(plan.get("max_eval_examples") or target.get("max_eval_examples") or EXPERIMENT_REAL_BENCHMARK_MAX_EXAMPLES),
         "seeds": int(plan.get("minimum_seeds") or EXPERIMENT_REAL_BENCHMARK_SEEDS),
         "baselines": _planned_baselines(plan),
@@ -1943,6 +1960,9 @@ def _real_llm_benchmark_train_py(*, method_name: str, metric_name: str, plan: di
         "cggr_mode": cggr_mode,
         "metric_name": metric_name,
         "model_id": defaults["model_id"],
+        "model_requires_cuda": defaults.get("model_requires_cuda", True),
+        "model_cpu_allowed": defaults.get("model_cpu_allowed", False),
+        "model_load_in_4bit": defaults.get("model_load_in_4bit", True),
         "targets": defaults["targets"],
         "max_examples": defaults["max_examples"],
         "seeds": defaults["seeds"],
@@ -1985,6 +2005,9 @@ def _real_llm_benchmark_train_py(*, method_name: str, metric_name: str, plan: di
     CGGR_MODE = bool(DEFAULTS.get("cggr_mode"))
     METRIC_NAME = DEFAULTS["metric_name"]
     DEFAULT_MODEL_ID = DEFAULTS["model_id"]
+    DEFAULT_MODEL_REQUIRES_CUDA = bool(DEFAULTS.get("model_requires_cuda", True))
+    DEFAULT_MODEL_CPU_ALLOWED = bool(DEFAULTS.get("model_cpu_allowed", False))
+    DEFAULT_MODEL_LOAD_IN_4BIT = bool(DEFAULTS.get("model_load_in_4bit", True))
     DEFAULT_MAX_EXAMPLES = int(DEFAULTS["max_examples"])
     DEFAULT_SEEDS = int(DEFAULTS["seeds"])
     DEFAULT_LOCAL_JSONL = os.path.join(os.path.dirname(__file__), "benchmark_data", "gsm8k_test.jsonl")
@@ -2588,6 +2611,35 @@ def _real_llm_benchmark_train_py(*, method_name: str, metric_name: str, plan: di
             except Exception as exc:
                 failures.append({"target": target.get("name"), "error": str(exc)})
                 _append_jsonl("failure_cases.jsonl", {"stage": "load_dataset", "target": target.get("name"), "error": str(exc)})
+        if not suites and not any(str(t.get("name") or "").lower() == "gsm8k" for t in targets):
+            fallback = {
+                "name": "GSM8K",
+                "hf_dataset": "openai/gsm8k",
+                "hf_candidates": ["openai/gsm8k"],
+                "config": "main",
+                "config_candidates": ["main", ""],
+                "split": "test",
+                "split_candidates": ["test", "train"],
+                "task_type": "math_qa",
+                "question_field": "question",
+                "answer_field": "answer",
+            }
+            try:
+                print("BENCHMARK_STAGE: materialize GSM8K fallback", flush=True)
+                rows, meta = _load_hf_rows(fallback)
+                examples = _materialize_examples(rows, fallback, meta, max_examples)
+                if not examples:
+                    raise RuntimeError("loaded fallback dataset but could not infer question/answer fields")
+                print(
+                    "BENCHMARK_STAGE: materialized GSM8K fallback examples="
+                    + str(len(examples)),
+                    flush=True,
+                )
+                suites.append({"target": fallback, "meta": meta, "examples": examples})
+                loaded_pool.extend(examples)
+            except Exception as exc:
+                failures.append({"target": "GSM8K fallback", "error": str(exc)})
+                _append_jsonl("failure_cases.jsonl", {"stage": "load_dataset", "target": "GSM8K fallback", "error": str(exc)})
         for target in targets:
             if not target.get("derive_from_loaded_benchmarks"):
                 continue
@@ -2827,8 +2879,11 @@ def _real_llm_benchmark_train_py(*, method_name: str, metric_name: str, plan: di
 
     def _load_model():
         model_id = os.getenv("DEEPGRAPH_BENCHMARK_MODEL", DEFAULT_MODEL_ID)
-        if not torch.cuda.is_available():
+        use_cuda = bool(torch.cuda.is_available())
+        if DEFAULT_MODEL_REQUIRES_CUDA and not use_cuda:
             raise RuntimeError("Real LLM benchmark requires CUDA. No synthetic or mocked fallback is allowed.")
+        if not use_cuda and not DEFAULT_MODEL_CPU_ALLOWED:
+            raise RuntimeError("Selected real benchmark model is not marked CPU-compatible.")
         model_path = model_id
         prefer_modelscope_default = "1" if "qwen" in model_id.lower() else "0"
         prefer_modelscope = os.getenv("DEEPGRAPH_PREFER_MODELSCOPE", prefer_modelscope_default).strip().lower()
@@ -2850,8 +2905,12 @@ def _real_llm_benchmark_train_py(*, method_name: str, metric_name: str, plan: di
             tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
         if tokenizer.pad_token_id is None:
             tokenizer.pad_token = tokenizer.eos_token
-        load_kwargs = {"torch_dtype": torch.float16, "device_map": "auto", "trust_remote_code": True}
-        if os.getenv("DEEPGRAPH_BENCHMARK_LOAD_IN_4BIT", "1").strip().lower() in {"1", "true", "yes", "on"}:
+        if use_cuda:
+            load_kwargs = {"torch_dtype": torch.float16, "device_map": "auto", "trust_remote_code": True}
+        else:
+            load_kwargs = {"torch_dtype": torch.float32, "trust_remote_code": True}
+        load_in_4bit_default = "1" if DEFAULT_MODEL_LOAD_IN_4BIT and use_cuda else "0"
+        if os.getenv("DEEPGRAPH_BENCHMARK_LOAD_IN_4BIT", load_in_4bit_default).strip().lower() in {"1", "true", "yes", "on"}:
             try:
                 from transformers import BitsAndBytesConfig
                 load_kwargs["quantization_config"] = BitsAndBytesConfig(
@@ -2874,6 +2933,8 @@ def _real_llm_benchmark_train_py(*, method_name: str, metric_name: str, plan: di
             if tokenizer.pad_token_id is None:
                 tokenizer.pad_token = tokenizer.eos_token
             model = AutoModelForCausalLM.from_pretrained(model_path, **load_kwargs)
+        if not use_cuda:
+            model.to("cpu")
         model.eval()
         print("BENCHMARK_STAGE: model_ready " + str(model_id), flush=True)
         return model, tokenizer, model_id

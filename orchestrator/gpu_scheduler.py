@@ -14,6 +14,7 @@ from pathlib import Path
 from agents.knowledge_loop import process_completed_run
 from agents.manuscript_pipeline import generate_submission_bundle
 from agents.validation_loop import run_full_benchmark_completion, run_validation_loop
+from agents.compute_profile import detect_compute_profile
 from compat.filelock import FileLock
 from config import (
     GPU_MODE,
@@ -355,7 +356,7 @@ def _configured_local_devices(inventory: dict[str, dict]) -> list[str]:
         return list(GPU_VISIBLE_DEVICES)
     if inventory:
         return sorted(inventory.keys(), key=lambda value: (0, int(value)) if value.isdigit() else (1, value))
-    return list(GPU_VISIBLE_DEVICES)
+    return []
 
 
 def register_default_workers() -> list[dict]:
@@ -428,6 +429,18 @@ def register_default_workers() -> list[dict]:
 
     hostname = _local_hostname()
     inventory = _local_gpu_inventory()
+    if not inventory and not os.getenv("DEEPGRAPH_GPU_VISIBLE_DEVICES"):
+        profile = detect_compute_profile()
+        db.execute(
+            """UPDATE gpu_workers
+               SET status='offline', heartbeat_at=CURRENT_TIMESTAMP
+               WHERE hostname=?
+                 AND (metadata IS NULL OR metadata NOT LIKE ?)""",
+            (hostname, '%"backend": "ssh"%'),
+        )
+        db.commit()
+        if not profile.local_gpu_available:
+            return []
     visible_devices = _configured_local_devices(inventory)
     workers = []
     active_worker_ids = []

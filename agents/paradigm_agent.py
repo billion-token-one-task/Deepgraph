@@ -6,7 +6,7 @@ and here's the mathematical structure that proves it."
 3-stage LLM pipeline:
   Call 1: Structure Detection (gpt-5.4) — find isomorphisms across fields
   Call 2: Formalization (gpt-5.4) — produce precise mathematical claims + predictions
-  Call 3: Adversarial Challenge (MiniMax) — skeptic tries to destroy the insight
+  Call 3: Adversarial Challenge — skeptic tries to destroy the insight
 """
 import json
 import time
@@ -430,7 +430,7 @@ def discover_paradigm_insights(
             print(f"[PARADIGM] Formalization failed for '{title[:50]}': {e}", flush=True)
             continue
 
-        # Stage 3: Adversarial Challenge (use MiniMax for diversity)
+        # Stage 3: Adversarial Challenge
         print(f"[PARADIGM] Call 3/3: Adversarial challenge for '{title[:50]}'...", flush=True)
         adversarial_prompt = json.dumps({
             "title": result2.get("title", title),
@@ -442,8 +442,7 @@ def discover_paradigm_insights(
         }, indent=2)
 
         try:
-            result3, tokens3 = _call_with_provider(
-                ADVERSARIAL_SYSTEM, adversarial_prompt, provider_name="minimax")
+            result3, tokens3 = call_llm_json(ADVERSARIAL_SYSTEM, adversarial_prompt)
             total_tokens += tokens3
             total_calls += 1
         except Exception as e:

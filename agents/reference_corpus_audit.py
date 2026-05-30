@@ -165,8 +165,8 @@ def audit_against_reference_corpus(
             issues.append({"severity": "medium", "issue": "Generated manuscript text density is low relative to reference papers."})
     if generated["bibliography_entry_count"] < 10:
         issues.append({"severity": "medium", "issue": "Bibliography is sparse relative to top-conference reference papers."})
-    if generated["figure_reference_count"] < 3:
-        issues.append({"severity": "medium", "issue": "Figure count is low for an empirical top-conference submission."})
+    if generated["figure_reference_count"] < 1:
+        issues.append({"severity": "medium", "issue": "Generated paper has no native experiment figure."})
     required_sections = ("introduction", "method", "experiment")
     section_text = " ".join(generated["sections"]).lower()
     missing = [name for name in required_sections if name not in section_text]

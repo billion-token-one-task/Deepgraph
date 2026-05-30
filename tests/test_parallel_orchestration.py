@@ -93,6 +93,32 @@ class AutoResearchSchedulingTests(unittest.TestCase):
         self.assertEqual(upserts[1][1]["cpu_eligible"], 0)
         self.assertIn("Field A", upserts[1][1]["last_note"])
 
+    def test_process_candidate_blocks_gpu_unavailable_route(self):
+        candidate = {"id": 15, "tier": 2, "novelty_status": "novel"}
+        upserts = []
+
+        def _capture_upsert(insight_id, **fields):
+            upserts.append((insight_id, fields))
+
+        with (
+            mock.patch.object(
+                auto_research,
+                "assess_experiment_route",
+                return_value=("gpu_unavailable", "inferred gpu_small but no GPU lane"),
+            ),
+            mock.patch.object(auto_research, "_upsert_job", side_effect=_capture_upsert),
+            mock.patch.object(auto_research, "log_event") as log_event,
+        ):
+            auto_research._process_candidate(candidate)
+
+        self.assertEqual(len(upserts), 1)
+        self.assertEqual(upserts[0][0], 15)
+        self.assertEqual(upserts[0][1]["status"], "blocked")
+        self.assertEqual(upserts[0][1]["stage"], "gpu_unavailable")
+        self.assertEqual(upserts[0][1]["cpu_eligible"], 0)
+        self.assertIn("no GPU lane", upserts[0][1]["last_error"])
+        log_event.assert_called_once()
+
     def test_next_candidate_requeues_blocked_input_missing_after_repair(self):
         repaired_candidate = {
             "id": 13,

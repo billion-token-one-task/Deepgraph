@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from agents.compute_profile import ComputeProfile, gpu_resource_allowed
+
 
 SYNTHETIC_DATASET_MARKERS = (
     "synthetic",
@@ -150,6 +152,7 @@ def classify_idea_route(
     insight: dict[str, Any],
     plan: dict[str, Any] | None = None,
     method: dict[str, Any] | None = None,
+    compute_profile: ComputeProfile | None = None,
 ) -> dict[str, Any]:
     """Classify how aggressively the pipeline may claim and benchmark an idea.
 
@@ -220,13 +223,18 @@ def classify_idea_route(
         missing.append("primary_metric")
     if plan.get("generated_runner_supported") is False:
         missing.append("executable_benchmark_recipe")
+    gpu_allowed, gpu_block_reason = gpu_resource_allowed(resource_class, compute_profile)
+    if not gpu_allowed:
+        missing.append("available_gpu_resource")
 
     novelty = _novelty_band(insight)
     experimentability = _experimentability_band(insight, plan)
     if novelty == "partial":
         missing.append("sharpen_novelty_boundary")
 
-    if experimentability == "blocked" or novelty == "rejected":
+    if not gpu_allowed:
+        route = BLOCKED_ROUTE
+    elif experimentability == "blocked" or novelty == "rejected":
         route = BLOCKED_ROUTE
     elif plan.get("generated_runner_supported") is False:
         route = BLOCKED_ROUTE
@@ -291,6 +299,8 @@ def classify_idea_route(
             "ablation_count": len(ablations),
             "minimum_seeds": seeds,
             "requires_model": requires_model,
+            "gpu_allowed": gpu_allowed,
+            "gpu_block_reason": gpu_block_reason,
             "primary_metric": metric,
         },
     }
