@@ -103,6 +103,7 @@ class LlmClientCooldownTests(unittest.TestCase):
         llm_client._rate_limiters = {}
         llm_client._provider_cooldown = {}
         llm_client.LLM_USE_TABCODE = True
+        llm_client.LLM_EXTRA_PROVIDERS_JSON = ""
         llm_client.LLM_API_KEY = "primary-key"
         llm_client.LLM_BASE_URL = "https://primary.invalid/v1"
         llm_client.LLM_MODEL = "gpt-5.4"
@@ -204,6 +205,21 @@ class LlmClientCooldownTests(unittest.TestCase):
         self.assertEqual(tokens, 17)
         self.assertEqual(call_provider.call_count, 2)
         self.assertEqual(llm_client._provider_cooldown.get("tabcode", 0), 0)
+
+    def test_extract_responses_output_text_from_completed_object(self):
+        response = {
+            "output": [
+                {
+                    "type": "message",
+                    "content": [
+                        {"type": "output_text", "text": "final "},
+                        {"type": "output_text", "text": "answer"},
+                    ],
+                }
+            ]
+        }
+
+        self.assertEqual(llm_client._extract_responses_output_text(response), "final answer")
 
 
 if __name__ == "__main__":

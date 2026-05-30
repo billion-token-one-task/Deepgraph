@@ -9,6 +9,8 @@ The bar: a senior researcher reads it and says "this is a real paper, let me imp
   Call 3: Experimental Design — complete plan with baselines, datasets, ablations
 """
 import json
+from dataclasses import asdict
+from agents.compute_profile import detect_compute_profile
 from agents.discovery_metadata import build_evidence_packet, enrich_deep_insight
 from agents.insight_validation import get_evosci_input_issue
 from agents.llm_client import call_llm_json, is_llm_auth_error, is_llm_provider_unavailable_error
@@ -245,6 +247,23 @@ Return JSON:
 def _build_problem_prompt(signals: dict) -> str:
     """Build evidence prompt for Call 1 (Problem Sharpening)."""
     sections = ["# EVIDENCE FROM 10,000+ ML PAPERS\n"]
+    compute = detect_compute_profile()
+    try:
+        compute_payload = asdict(compute)
+    except TypeError:
+        compute_payload = vars(compute)
+    sections.append("## LOCAL EXECUTION CONSTRAINTS")
+    sections.append(json.dumps(compute_payload, ensure_ascii=False, default=str))
+    if not compute.gpu_allowed:
+        sections.append(
+            "Generate paper ideas that can be executed locally without GPU training: "
+            "training-free inference, controlled materialized traces, CPU-only analysis, "
+            "evaluation protocols, lightweight ablations, or small public-data studies. "
+            "Do not require fine-tuning, embedding model training, large ASR/vision training, "
+            "or multi-GPU experiments. Prefer ideas whose evidence can be executed from "
+            "existing local artifacts or concrete public datasets with standard loaders. "
+            "Do not invent benchmark names or require unavailable datasets."
+        )
 
     # Contradiction clusters
     if signals["contradiction_clusters"]:
@@ -341,6 +360,20 @@ def _build_problem_prompt(signals: dict) -> str:
 
 def _build_method_prompt(problem: dict) -> str:
     """Build prompt for Call 2 (Method Invention)."""
+    compute = detect_compute_profile()
+    compute_constraint = ""
+    if not compute.gpu_allowed:
+        compute_constraint = """
+## Local Execution Constraint
+This machine has no usable local NVIDIA GPU and no configured remote GPU worker.
+Design a method that can be validated without GPU training: training-free inference,
+deterministic selection, CPU-only statistical analysis, materialized trace evaluation,
+or lightweight public-data experiments. Avoid methods whose core contribution requires
+fine-tuning, representation learning, large speech/vision training, or GPU-heavy sweeps.
+The validation path must use existing local artifacts or concrete public datasets; do not
+depend on a new benchmark recipe that is not already available.
+"""
+
     return f"""# RESEARCH PROBLEM
 
 ## Title: {problem['title']}
@@ -361,6 +394,7 @@ def _build_method_prompt(problem: dict) -> str:
 {problem['impact_scope']}
 
 ## Related Areas: {', '.join(problem.get('related_node_ids', []))}
+{compute_constraint}
 
 Design a NEW method that addresses this specific failure mode.
 The method must be technically novel — not "apply [existing technique] to [this domain]"."""
@@ -368,6 +402,20 @@ The method must be technically novel — not "apply [existing technique] to [thi
 
 def _build_experiment_prompt(problem: dict, method: dict) -> str:
     """Build prompt for Call 3 (Experimental Design)."""
+    compute = detect_compute_profile()
+    compute_constraint = ""
+    if not compute.gpu_allowed:
+        compute_constraint = """
+## Local Execution Constraint
+The experimental plan must be runnable without GPU training. Use CPU-only or API-free
+materialized artifacts, small public benchmark subsets, deterministic simulations,
+statistical tests, and native matplotlib figures. If a GPU-trained model would be a
+future extension, put it in limitations rather than the main validation plan.
+Use only concrete executable datasets or local artifacts. Do not name a new benchmark
+unless the plan also provides an executable local artifact recipe; otherwise choose a
+controlled materialized-trace study or a standard public benchmark with a loader.
+"""
+
     return f"""# PROPOSED RESEARCH
 
 ## Problem
@@ -383,9 +431,50 @@ Properties: {json.dumps(method.get('key_properties', []))}
 Limitations: {method.get('limitations', '')}
 
 ## Related Areas: {', '.join(problem.get('related_node_ids', []))}
+{compute_constraint}
 
 Design a complete experimental plan for validating this method.
 Be specific: exact model names, dataset names, metric names, compute estimates."""
+
+
+def _extract_method_payload(result: dict) -> dict:
+    """Accept common JSON shapes from method-invention models."""
+    if not isinstance(result, dict):
+        return {}
+    candidates = [
+        result.get("method"),
+        result.get("proposed_method"),
+        result.get("method_definition"),
+        result.get("algorithm"),
+        result,
+    ]
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        normalized = dict(candidate)
+        if not normalized.get("name"):
+            normalized["name"] = (
+                normalized.get("method_name")
+                or normalized.get("title")
+                or normalized.get("algorithm_name")
+            )
+        if not normalized.get("one_line"):
+            normalized["one_line"] = (
+                normalized.get("summary")
+                or normalized.get("description")
+                or normalized.get("abstract")
+                or ""
+            )
+        if not normalized.get("why_novel"):
+            normalized["why_novel"] = (
+                normalized.get("novelty")
+                or normalized.get("novelty_argument")
+                or normalized.get("difference_from_prior_work")
+                or ""
+            )
+        if normalized.get("name"):
+            return normalized
+    return {}
 
 
 def _llm_temporarily_unavailable(exc: Exception) -> bool:
@@ -480,7 +569,7 @@ def discover_paper_ideas(
             print(f"[PAPER_IDEA] Method invention failed for '{title[:50]}': {e}", flush=True)
             continue
 
-        method = result2.get("method", {})
+        method = _extract_method_payload(result2)
         if not method.get("name"):
             print(f"[PAPER_IDEA] No method produced for '{title[:50]}'", flush=True)
             continue

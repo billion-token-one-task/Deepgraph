@@ -18,6 +18,8 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from agents.paper_idea_agent import discover_paper_ideas
 from agents.paradigm_agent import store_deep_insight
+from agents.compute_profile import detect_compute_profile, gpu_resource_allowed
+from agents.dataset_resolver import resolve_plan_datasets
 from db import database as db
 from orchestrator import auto_research
 from orchestrator.discovery_scheduler import harvest_signals
@@ -51,6 +53,39 @@ def _is_cggr_related(insight: dict) -> bool:
         insight.get("evidence_summary"),
     ]
     return any(_contains_cggr(str(field)) for field in fields if field)
+
+
+def _load_json(value):
+    if isinstance(value, (dict, list)):
+        return value
+    try:
+        return json.loads(value or "{}")
+    except (TypeError, json.JSONDecodeError):
+        return {}
+
+
+def _execution_blocker(idea: dict) -> str | None:
+    plan = _load_json(idea.get("experimental_plan"))
+    route = plan.get("claim_route") if isinstance(plan.get("claim_route"), dict) else {}
+    gates = plan.get("quality_gates") if isinstance(plan.get("quality_gates"), dict) else {}
+    contract = plan.get("publication_evidence_contract") if isinstance(plan.get("publication_evidence_contract"), dict) else {}
+    if route.get("route") == "blocked" or route.get("experiment_allowed") is False:
+        missing = ", ".join(route.get("missing") or [])
+        return f"claim_route_blocked:{missing or route.get('reason') or 'unknown'}"
+    if plan.get("generated_runner_supported") is False:
+        return "no_executable_benchmark_recipe"
+    if gates.get("manuscript_allowed") is False or contract.get("blocks_manuscript") is True:
+        return "manuscript_evidence_blocked"
+    return None
+
+
+def _resolve_idea_datasets(idea: dict) -> dict:
+    updated = dict(idea)
+    plan = _load_json(updated.get("experimental_plan"))
+    if isinstance(plan, dict) and plan:
+        resolved = resolve_plan_datasets(plan)
+        updated["experimental_plan"] = resolved
+    return updated
 
 
 def _job_summary(insight_ids: list[int]) -> list[dict]:
@@ -111,9 +146,26 @@ def main() -> int:
 
     stored: list[int] = []
     skipped: list[dict] = []
+    compute_profile = detect_compute_profile()
     for idea in ideas:
+        idea = _resolve_idea_datasets(idea)
         if _is_cggr_related(idea):
             skipped.append({"title": idea.get("title"), "reason": "cggr_related"})
+            continue
+        allowed, block_reason = gpu_resource_allowed(idea.get("resource_class"), compute_profile)
+        if not allowed:
+            skipped.append(
+                {
+                    "title": idea.get("title"),
+                    "reason": "gpu_unavailable",
+                    "resource_class": idea.get("resource_class"),
+                    "detail": block_reason,
+                }
+            )
+            continue
+        execution_blocker = _execution_blocker(idea)
+        if execution_blocker:
+            skipped.append({"title": idea.get("title"), "reason": execution_blocker})
             continue
         insight_id = store_deep_insight(idea)
         if insight_id:

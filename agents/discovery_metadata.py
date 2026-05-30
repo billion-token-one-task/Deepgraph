@@ -9,8 +9,17 @@ from contracts import DeepInsightSpec, normalize_deep_insight_storage
 
 
 GPU_HINT_KEYWORDS = {
-    "llm", "gpt", "llama", "mistral", "multimodal", "vision-language",
-    "diffusion", "7b", "13b", "70b", "pretrain", "gpu",
+    "a100", "h100", "h20", "cuda", "multi-gpu", "finetune", "fine-tune",
+    "fine tuning", "fine-tuning", "pretrain", "pre-train", "backprop",
+    "diffusion training", "vision-language training", "7b training",
+    "13b training", "70b training",
+}
+
+CPU_COMPATIBLE_HINTS = {
+    "0-gpu", "zero-gpu", "no gpu", "without gpu", "cpu-only", "cpu only",
+    "training-free", "without training", "no training", "no fine-tuning",
+    "no finetuning", "inference-only", "materialized trace", "deterministic",
+    "api-free", "statistical analysis", "controlled trace",
 }
 
 
@@ -74,9 +83,13 @@ def infer_resource_class(insight: dict | DeepInsightSpec) -> str:
             method.get("definition"),
             json.dumps(plan.get("datasets", [])),
             json.dumps(plan.get("baselines", [])),
+            json.dumps(plan.get("compute_budget", {})),
         ]
     ).lower()
 
+    if any(keyword in corpus for keyword in CPU_COMPATIBLE_HINTS):
+        if gpu_hours is None or gpu_hours <= 0.5:
+            return "cpu"
     if gpu_hours is not None and gpu_hours >= 40:
         return "gpu_large"
     if gpu_hours is not None and gpu_hours > 0.5:

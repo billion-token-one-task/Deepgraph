@@ -12,18 +12,24 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
 
 
 DEEPGRAPH_ROOT = Path(__file__).resolve().parents[1]
+if str(DEEPGRAPH_ROOT) not in sys.path:
+    sys.path.insert(0, str(DEEPGRAPH_ROOT))
+
+from agents.paperorchestra.figure_standard import CONCEPT_FIGURE_RULES, FIGURE_STANDARD_VERSION
+
 PAPERBANANA_ROOT = Path.home() / "PaperBanana"
 PAPERBANANA_PYTHON = PAPERBANANA_ROOT / ".venv" / "bin" / "python"
 PAPERBANANA_ENTRY = PAPERBANANA_ROOT / "skill" / "run.py"
 PAPERBANANA_CONFIG = PAPERBANANA_ROOT / "configs" / "model_config.yaml"
 
-SUPPORTED_RATIOS = ("21:9", "16:9", "3:2")
+SUPPORTED_RATIOS = ("21:9", "16:9", "3:2", "3:4")
 
 
 def _load_dotenv(path: Path) -> None:
@@ -327,6 +333,9 @@ def _check_credentials() -> tuple[bool, str]:
 
 def _image_prompt(spec: dict[str, Any], *, caption: str, content: str) -> str:
     fig = spec.get("figure") or {}
+    prompt_override = str(spec.get("image_prompt_override") or fig.get("image_prompt_override") or "").strip()
+    if prompt_override:
+        return prompt_override
     if _is_motivation_overview_spec(spec):
         fig_text = " ".join(str(fig.get(key) or "") for key in ("figure_id", "title", "objective")).lower()
         figure_role = "motivation" if "motivation" in fig_text else "overview"
@@ -345,57 +354,53 @@ def _image_prompt(spec: dict[str, Any], *, caption: str, content: str) -> str:
         if contributions:
             context_lines.extend(["Key contributions:", _list_block(contributions, limit=6)])
         cleaned_context = "\n".join(line for line in context_lines if line.strip())
+        style_rules = CONCEPT_FIGURE_RULES.get("style", {})
+        role_rules = (CONCEPT_FIGURE_RULES.get("role_contract") or {}).get(figure_role, {})
         if figure_role == "motivation":
             schema = (
                 "This figure should function as the paper's motivation figure. "
-                "It should look like a publication framework figure with clear regions, concise labels, and a visible scientific contrast. "
-                "The reader should immediately understand what the problem is, why it matters, what is insufficient in the current setting, and what key contrast motivates the proposed direction."
+                "It must show a paper-specific failure mechanism, not empty current-practice/limitation/motivation boxes. "
+                "Show majority voting, lost useful dissent, keep-all token waste, and the need for conditional retention using concrete visual evidence."
             )
         else:
             schema = (
                 "This figure should function as the paper's overview figure. "
-                "It should summarize the main mechanism or conceptual structure of the method in one unified framework diagram. "
-                "Use a structured multi-region layout with grouped modules, concise labels, arrows, and a clear semantic flow. "
-                "The reader should understand the core idea at a glance."
+                "It must be mechanism-rich, not an empty input-gate-output pipeline. "
+                "Show candidate answers with confidence/cost, answer groups, margin evidence, confidence-weighted dissent scoring, retained/discarded candidates, and budget-aware selected output."
             )
         return "\n".join(
             [
                 "You are an experienced scientific figure designer preparing a camera-ready figure for a machine learning paper.",
+                f"Follow DeepGraph figure standard {FIGURE_STANDARD_VERSION}: motivation, overview, and mechanism diagrams must be generated through Gemini/PaperBanana only, never through local SVG/Pillow/manual drawing and never for quantitative experiment/result plots.",
+                "Do not draw bar charts, line plots, heatmaps, 3D plots, tables of metrics, fake axes, fake numeric values, or any experimental result visualization.",
+                "Do not invent modules, baselines, datasets, tools, retrieval systems, verifiers, memory, training steps, or external resources that are not explicitly present in the provided method summary or figure-specific intent.",
                 "Carefully read the paper context and the figure intent, fully understand the research content, and produce a figure suitable for academic publication.",
                 schema,
-                "The figure should be understandable at a glance, even before the reader studies the full paper.",
-                "Prefer a wide publication-style framework layout with 3 to 5 clearly separated functional regions across the canvas. Each region should have an obvious role in the scientific story.",
-                "Do not make it a plain left-to-right pipeline or a generic flowchart. Create a denser scientific composition with local substructures, internal comparisons, and grouped modules.",
-                "Avoid three equally sized vertical slabs with a single arrow passing through them. Prefer one dominant dense working area plus one or two supporting grouped regions, or an asymmetric multi-cluster arrangement.",
-                "Take inspiration from strong editorial scientific figures: use asymmetric layout, a clear focal region, supporting side clusters, fan-in or fan-out connectors, and local density variation rather than uniform columns.",
-                "A good pattern is: one contextual cluster, one bridge or interface cluster, and one dense main analytical cluster, with a small integrated legend or semantic key in a corner if needed.",
-                "Do not center the figure around one giant symbolic object. The main structure should come from grouped panels, modules, and connections rather than a single metaphor shape.",
+                f"Role contract: {json.dumps(role_rules, ensure_ascii=False)}",
+                f"Style contract: {json.dumps(style_rules, ensure_ascii=False)}",
+                "Hard ban: do not make an empty flowchart, weak-information flowchart, generic pipeline, module chain, swimlane workflow, business process chart, or algorithm box-and-arrow diagram.",
+                "Hard ban: do not use large whitespace around a few sparse rectangles and arrows. Do not let arrows carry the logic while module interiors are empty.",
+                "Hard ban: do not depict the overview as only input -> grouping -> gate -> branch -> final answer. If a method relation is shown, each region must contain concrete semantic elements.",
+                "Minimum information density: main content should occupy at least 70 percent of the useful canvas; each main region must contain at least 2-3 concrete semantic elements such as candidate cards, confidence numbers, cost tags, margin bars, score chips, retained/discarded marks, or selected-answer evidence.",
+                "Overview must show at least three of these: input structure (agents/answers/confidence/cost), intermediate representation (groups/candidate sets/scores), core mechanism (margin gate or confidence-weighted scoring), branch basis (stable/unstable or majority/dissent), information selection (retained/discarded/reweighted), output semantics.",
+                "Motivation must show: existing strategy, failure mechanism, failure consequence, and paper-specific motivation. Avoid abstract labels only.",
+                "Positive standard: concise but not empty, low-saturation colors with a clear focal area, few arrows but explicit mechanism, short text but paper-specific semantics, whitespace but not loose spacing.",
+                "Style target: a flat PPT-built hand-drawn academic schematic, not a rendered cartoon illustration. Use crisp alignment, thick clean outlines, dashed containers, simple flat icons, and tiny hand-drawn wobble only on borders.",
+                "Background must be a pure white canvas. Only local modules may use very pale tints. Hard ban: no warm yellow/cream full-canvas wash, no vignette, no gradient, no grid paper, graph paper, notebook lines, worksheet lines, ruled paper, or tiled background.",
+                "For multi-agent papers, visible agent/robot/avatar icons must be semantically central as trace sources; show agents producing answer bubbles or trace rows. Do not hide agents as tiny decoration.",
+                "Hard ban: no glossy objects, no cast shadows, no 3D depth, no painterly lighting, no scenic background, no poster-like composition, no large cute illustration objects, no unrelated envelope/tray metaphors as main result objects.",
+                "Use a mechanism-rich academic composition: dense conceptual contrast, central mechanism with concrete local evidence, or before/after juxtaposition with visible failure cases.",
+                "Use no more than 3 to 4 semantic colors. Keep fills pale; use blue-gray for main flow, pale red only for limitations, pale green for desired output, and neutral gray for support.",
+                "Arrows cannot be the main content. Use only necessary connectors, and make the mechanism visible inside the regions.",
+                "Use short in-image text: module titles should be 1 to 4 words; small explanations should be one line, two lines maximum.",
+                "Keep containers shallow but information-rich. Avoid empty boxes; every main box/region must contain mechanism-specific objects or states.",
+                "The figure should be readable when scaled to single-column or double-column paper width.",
                 "Do not place a large title at the top of the image.",
                 "Never add a standalone figure heading such as Figure 1, Motivation, Overview, System Overview, Framework, or any caption-like sentence anywhere in the image.",
-                "Do not create giant comparison banners such as Traditional X vs Proposed Y across the top. If a comparison is necessary, express it with local grouped modules and small embedded labels only.",
-                "Do not add a detached bottom takeaway box, key insight box, or summary strip outside the main composition.",
                 "Do not place a bottom caption, footnote, or explanatory paragraph inside the image.",
-                "Short in-figure labels are allowed and encouraged when they improve scientific clarity. Use concise framework-style labels, module names, arrow labels, and compact legends when necessary.",
-                "Use a disciplined text hierarchy: small integrated panel headers, short module labels inside boxes, and very short arrow labels. Avoid giant all-caps banner text spanning the full canvas.",
-                "If region names are needed, embed them inside the relevant panel and keep them secondary. Do not place oversized text floating above large regions.",
-                "All visible text should use Times New Roman or a very close academic serif font. Avoid sans-serif, poster-like display fonts, handwritten styles, or playful typography.",
-                "Design it like a strong conference framework figure: organized blocks, grouped regions, rounded rectangles when useful, arrows or connectors where they clarify logic, and a composition that feels authored rather than templated.",
-                "Do not over-expand low-level implementation detail. Keep the abstraction at the right level for a publication figure.",
-                "Do not let generic background context occupy too much of the canvas. Large low-information background panels are discouraged. Reserve most visual emphasis for the method logic and the main scientific contrast.",
-                "Use semantic consistency: similar roles should share consistent color, shape, visual weight, iconography, and placement logic. Assign a small palette of 3 to 4 semantic colors and reuse them consistently.",
-                "Each region should contain meaningful internal structure: nested boxes, grouped items, small comparisons, aligned rows, or compact examples. Avoid large empty washes with only one object inside.",
-                "Use a few necessary concrete icons or data thumbnails when they improve comprehension, such as document, message, cache, embedding, user, model, dataset, or output icons. They should be clean, intentional, and tied to real modules rather than decorative.",
-                "When reusing visual elements, introduce controlled differences so repeated modules are not mechanically identical. Avoid long stacks of near-duplicate cards or repeated clipart blocks.",
-                "Allow multiple meaningful visual elements if the figure needs them, but every element must have a clear role in the scientific explanation.",
-                "Avoid decorative concept art, giant symbolic brains, clouds, funnels, waves, logo walls, random icon piles, or visually flashy but semantically empty motifs.",
-                "Avoid collage-like card stacking. The figure should feel like an engineered layout, not a pile of decorative tiles.",
-                "Avoid generic stock shapes that scream AI-generated infographic, such as oversized trapezoid encoders, giant ribbon arrows, or repeated empty neural-network clipart unless grounded in a precise scientific role.",
-                "Do not turn the figure into a toy infographic. It should read like a polished framework figure from a top ML paper.",
-                "Use whitespace well, but do not oversimplify the figure into a vague sparse composition. A richer multi-block framework figure is acceptable if it improves clarity.",
-                "Create visual texture through meaningful structure: nested containers, aligned micro-elements, varied line weights, subtle shadows, and local detail. Do not rely on huge gradients or oversized empty background areas for style.",
-                "A compact legend strip or semantic key is allowed when useful. If used, make it small, integrated, and tucked into a corner or margin. Never let the legend become a bottom-wide banner.",
-                "Favor non-uniform occupancy: let important regions be denser and larger, and let supporting regions be smaller and more compact. Avoid evenly distributing empty space across the canvas.",
-                "The visual style should resemble a modern academic framework diagram template: white background, restrained local tinting, grouped panels, rounded modules, controlled outlines, balanced spacing, moderate line weights, arrows with clear direction, and clean readable labels.",
+                "All visible text should use rounded hand-written or marker-like academic sans lettering, similar to the provided reference figures. Do not use Times New Roman, manuscript serif, formal book typography, or caption-like serif text.",
+                "Use rounded rectangles, small cards, light region containers, and simple geometric marks only when semantically needed. Avoid diamond branch gates, 3D icons, strong gradients, heavy shadows, rendered cartoon style, and decorative icon piles.",
+                "The figure may look like a carefully assembled academic PPT schematic. Do not make it look like a product marketing graphic, complex business workflow diagram, rendered illustration, or process flowchart.",
                 "The output should look like a serious NeurIPS/ICLR/ICML figure prepared for publication.",
                 f"Figure-specific intent: {_clip(fig.get('objective') or caption, 700)}",
                 f"Figure caption context from the paper: {cleaned_caption}",
@@ -415,6 +420,7 @@ def _image_prompt(spec: dict[str, Any], *, caption: str, content: str) -> str:
     return "\n".join(
         [
             "Create one clean publication-quality scientific diagram for a machine learning paper.",
+            f"Follow DeepGraph figure standard {FIGURE_STANDARD_VERSION}: this renderer is only for conceptual diagrams, not quantitative experiment/result figures.",
             "Use a restrained academic vector style: white background, crisp boxes, thin arrows, high contrast.",
             "Do not create fake numeric charts or unsupported values.",
             "Prefer 3 to 5 labeled blocks connected by arrows; keep labels large and readable.",
@@ -500,6 +506,7 @@ def _run_gemini_native_image_generation(
     output_path: Path,
     prompt: str,
     aspect_ratio: str,
+    spec: dict[str, Any],
 ) -> int:
     api_key = _env_first("DEEPGRAPH_PAPERBANANA_IMAGE_API_KEY", "GEMINI_NATIVE_API_KEY")
     base_url = _normalize_gemini_native_base_url(
@@ -510,11 +517,27 @@ def _run_gemini_native_image_generation(
         print("Gemini-native image generation is missing API key or base URL.", file=sys.stderr)
         return 3
 
+    parts: list[dict[str, Any]] = [{"text": prompt}]
+    for image_path in _reference_image_paths(spec):
+        try:
+            data = base64.b64encode(image_path.read_bytes()).decode("ascii")
+        except Exception as exc:
+            print(f"Skipping unreadable reference image {image_path}: {exc}", file=sys.stderr)
+            continue
+        parts.append(
+            {
+                "inlineData": {
+                    "mimeType": _mime_type_for_image(image_path),
+                    "data": data,
+                }
+            }
+        )
+
     payload = {
         "contents": [
             {
                 "role": "user",
-                "parts": [{"text": prompt}],
+                "parts": parts,
             }
         ],
         "generationConfig": {
@@ -534,11 +557,30 @@ def _run_gemini_native_image_generation(
         },
         method="POST",
     )
-    try:
-        with urllib.request.urlopen(request, timeout=600) as response:
-            body = json.loads(response.read().decode("utf-8", errors="replace"))
-    except Exception as exc:
-        print(f"Gemini-native image generation failed: {exc}", file=sys.stderr)
+    body: dict[str, Any] | None = None
+    errors: list[str] = []
+    attempts = _image_attempt_count()
+    for attempt in range(1, attempts + 1):
+        try:
+            with urllib.request.urlopen(request, timeout=600) as response:
+                body = json.loads(response.read().decode("utf-8", errors="replace"))
+            break
+        except urllib.error.HTTPError as exc:
+            detail = ""
+            try:
+                detail = exc.read().decode("utf-8", errors="replace")
+            except Exception:
+                detail = ""
+            preview = f"; body={_clip(detail, 700)}" if detail else ""
+            errors.append(f"attempt_{attempt}:HTTP Error {exc.code}: {exc.reason}{preview}")
+            if attempt < attempts:
+                time.sleep(min(10, 2 * attempt))
+        except Exception as exc:
+            errors.append(f"attempt_{attempt}:{exc}")
+            if attempt < attempts:
+                time.sleep(min(10, 2 * attempt))
+    if body is None:
+        print(f"Gemini-native image generation failed: {'; '.join(errors)}", file=sys.stderr)
         return 4
 
     candidates = body.get("candidates") if isinstance(body, dict) else None
@@ -563,6 +605,41 @@ def _run_gemini_native_image_generation(
                 return 4
     print("Gemini-native image generation response had no inline image data.", file=sys.stderr)
     return 4
+
+
+def _reference_image_paths(spec: dict[str, Any]) -> list[Path]:
+    raw_values: list[Any] = []
+    for key in ("reference_images", "reference_image_paths", "style_reference_images"):
+        value = spec.get(key)
+        if isinstance(value, list):
+            raw_values.extend(value)
+        elif value:
+            raw_values.append(value)
+    fig = spec.get("figure") or {}
+    for key in ("reference_images", "reference_image_paths", "style_reference_images"):
+        value = fig.get(key)
+        if isinstance(value, list):
+            raw_values.extend(value)
+        elif value:
+            raw_values.append(value)
+
+    paths: list[Path] = []
+    for raw in raw_values:
+        path = Path(str(raw)).expanduser()
+        if not path.is_absolute():
+            path = DEEPGRAPH_ROOT / path
+        if path.exists() and path.is_file():
+            paths.append(path)
+    return paths
+
+
+def _mime_type_for_image(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix in {".jpg", ".jpeg"}:
+        return "image/jpeg"
+    if suffix == ".webp":
+        return "image/webp"
+    return "image/png"
 
 
 def _image_attempt_count() -> int:
@@ -751,6 +828,7 @@ def main() -> int:
                 output_path=output_path,
                 prompt=_image_prompt(spec, caption=caption, content=content),
                 aspect_ratio=aspect_ratio,
+                spec=spec,
             )
         if provider in {"openai", "openrouter", "openai_compatible_image"}:
             return _run_openai_compatible_image_generation(

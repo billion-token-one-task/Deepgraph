@@ -105,7 +105,7 @@ class EvidencePlannerTests(unittest.TestCase):
             self.assertEqual(asset["notes"], "paperbanana_ok")
             self.assertTrue(Path(asset["path"]).exists())
 
-    def test_motivation_overview_diagram_can_opt_out_to_native(self):
+    def test_motivation_overview_diagram_cannot_opt_out_to_native(self):
         outline = {
             "plotting_plan": [
                 {
@@ -133,8 +133,156 @@ class EvidencePlannerTests(unittest.TestCase):
                 row for row in manifest["assets"]
                 if row.get("figure_id") == "fig_motivation_overview"
             )
-            self.assertEqual(asset["notes"], "native_symbolic_motivation")
+            self.assertEqual(asset["notes"], "paperbanana_ok")
             self.assertTrue(Path(asset["path"]).exists())
+
+    def test_motivation_overview_diagram_blocks_without_banana(self):
+        outline = {
+            "plotting_plan": [
+                {
+                    "figure_id": "fig_motivation_overview",
+                    "plot_type": "diagram",
+                    "title": "Motivation overview",
+                    "objective": "Motivation and overview for selective reasoning.",
+                }
+            ]
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest = run_figure_orchestra(
+                outline=outline,
+                state={"title": "Selective reasoning"},
+                iterations=[],
+                figures_dir=Path(tmpdir),
+                baseline=None,
+                metric_name="accuracy",
+                paperbanana_cmd=None,
+            )
+            asset = next(
+                row for row in manifest["assets"]
+                if row.get("figure_id") == "fig_motivation_overview"
+            )
+            self.assertEqual(asset["kind"], "blocked")
+            self.assertIn("Gemini/PaperBanana", asset["blocker"])
+            self.assertTrue(manifest["blockers"])
+
+    def test_non_backend_benchmark_uses_only_main_results_plot(self):
+        outline = {
+            "plotting_plan": [
+                {"figure_id": "fig_metric_trajectory", "plot_type": "plot"},
+                {"figure_id": "fig_search_dynamics_keep_discard", "plot_type": "plot"},
+                {"figure_id": "fig_benchmark_method_panel", "plot_type": "plot"},
+            ]
+        }
+        state = {
+            "title": "Training-free selector",
+            "result_packet": {
+                "benchmark_summary": {
+                    "primary_metric": "accuracy",
+                    "per_method": {
+                        "Direct": {"accuracy": 0.6, "std": 0.02},
+                        "DPC": {"accuracy": 0.72, "std": 0.01},
+                    },
+                }
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest = run_figure_orchestra(
+                outline=outline,
+                state=state,
+                iterations=[{"iteration_number": 1, "metric_value": 0.72}],
+                figures_dir=Path(tmpdir),
+                baseline=0.6,
+                metric_name="accuracy",
+                paperbanana_cmd=None,
+            )
+
+            self.assertEqual([asset["figure_id"] for asset in manifest["assets"]], ["fig_main_results"])
+            asset = manifest["assets"][0]
+            self.assertEqual(asset["notes"], "native_main_results_bar")
+            self.assertEqual(asset.get("aspect_ratio"), "4:3")
+            self.assertTrue(Path(asset["path"]).exists())
+            self.assertTrue(Path(asset["pdf_path"]).exists())
+
+    def test_main_results_stays_standard_bar_when_token_cost_exists(self):
+        state = {
+            "title": "Training-free selector",
+            "result_packet": {
+                "benchmark_summary": {
+                    "primary_metric": "accuracy",
+                    "per_method": {
+                        "Direct": {"accuracy": 0.6, "std": 0.02, "avg_new_tokens": 40, "avg_latency_seconds": 0.5, "route_rate": 0.0},
+                        "DPC": {"accuracy": 0.72, "std": 0.01, "avg_new_tokens": 100, "avg_latency_seconds": 1.2, "route_rate": 0.7},
+                    },
+                }
+            },
+            "evidence_plan": {"visualization": {"enabled": True, "priority": "required"}},
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest = run_figure_orchestra(
+                outline={},
+                state=state,
+                iterations=[],
+                figures_dir=Path(tmpdir),
+                baseline=0.6,
+                metric_name="accuracy",
+                paperbanana_cmd=None,
+            )
+
+            asset = manifest["assets"][0]
+            self.assertEqual(asset["figure_id"], "fig_main_results")
+            self.assertEqual(asset.get("aspect_ratio"), "4:3")
+            self.assertEqual(asset["notes"], "native_main_results_bar")
+
+    def test_backend_matrix_uses_three_standard_backend_figures(self):
+        matrix = {
+            "Direct": {
+                "HF": {"accuracy": 0.60, "std": 0.02},
+                "vLLM": {"accuracy": 0.58, "std": 0.03},
+            },
+            "DPC": {
+                "HF": {"accuracy": 0.72, "std": 0.01},
+                "vLLM": {"accuracy": 0.70, "std": 0.02},
+            },
+        }
+        state = {
+            "title": "Backend-aware selector",
+            "result_packet": {
+                "benchmark_summary": {
+                    "primary_metric": "accuracy",
+                    "per_method_backend": matrix,
+                    "per_dataset_backend": {
+                        "GSM8K": matrix,
+                        "MATH": matrix,
+                        "BBH": matrix,
+                        "MMLU": matrix,
+                    },
+                    "backends": ["HF", "vLLM"],
+                    "methods": ["Direct", "DPC"],
+                }
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest = run_figure_orchestra(
+                outline={"plotting_plan": []},
+                state=state,
+                iterations=[],
+                figures_dir=Path(tmpdir),
+                baseline=0.6,
+                metric_name="accuracy",
+                paperbanana_cmd=None,
+            )
+
+            self.assertEqual(
+                [asset["figure_id"] for asset in manifest["assets"]],
+                ["fig_backend_grouped_bars", "fig_backend_heatmap_single", "fig_backend_rank_lines_1x4"],
+            )
+            self.assertEqual(
+                [asset["notes"] for asset in manifest["assets"]],
+                ["native_backend_grouped_bars", "native_backend_heatmap_single", "native_backend_rank_lines_1x4"],
+            )
+            for asset in manifest["assets"]:
+                self.assertTrue(Path(asset["path"]).exists())
+                self.assertTrue(Path(asset["pdf_path"]).exists())
 
 
 if __name__ == "__main__":

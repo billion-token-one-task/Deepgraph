@@ -91,6 +91,22 @@ backfill_on_start = true
 refresh_merge_candidates_on_start = true
 paper_cluster_min_papers = 10
 
+[compute]
+# auto: GPU ideas are admitted only if a local NVIDIA GPU is detected or an SSH
+# GPU worker is configured. Use force_cpu for CPU-only idea selection, require
+# to hard-fail GPU routes when no GPU exists, or ignore to bypass this guard.
+local_gpu_policy = "auto"
+
+[dataset_resolver]
+# Resolve named benchmarks to executable public-data recipes before storing an
+# idea. The resolver queries Hugging Face metadata when local registry entries
+# are not enough; experiment runners download data later via datasets.load_dataset.
+enabled = true
+allow_network = true
+hf_limit = 8
+timeout_seconds = 12
+min_confidence = 0.42
+
 [discovery]
 tier1_candidates = 5
 tier2_problems = 8

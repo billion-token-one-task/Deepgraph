@@ -18,6 +18,7 @@ from datetime import datetime
 from pathlib import Path
 
 from agents.discovery_metadata import infer_experimentability, infer_resource_class
+from agents.compute_profile import detect_compute_profile, gpu_resource_allowed
 from agents.experiment_forge import forge_experiment
 from agents.insight_validation import (
     INSIGHT_INPUT_MISSING_ERROR_CODE,
@@ -316,6 +317,18 @@ def assess_experiment_route(insight: dict) -> tuple[str, str]:
     """Route insights into cpu / gpu_small / gpu_large lanes."""
     resource_class = infer_resource_class(insight)
     experimentability = infer_experimentability(insight)
+    allowed, block_reason = gpu_resource_allowed(resource_class)
+    if not allowed:
+        profile = detect_compute_profile()
+        return (
+            "gpu_unavailable",
+            (
+                f"Experimentability={experimentability}; inferred {resource_class}, "
+                f"but GPU lane is unavailable ({block_reason}). "
+                f"accelerator={profile.accelerator}; local_gpu={profile.local_gpu_available}; "
+                f"remote_gpu={profile.remote_gpu_configured}."
+            ),
+        )
     return resource_class, f"Experimentability={experimentability}; routed to {resource_class}."
 
 
@@ -484,6 +497,8 @@ def _resource_experimentability(resource_class: str) -> str:
         return "easy"
     if resource_class == "gpu_small":
         return "medium"
+    if resource_class == "gpu_unavailable":
+        return "blocked"
     return "hard"
 
 
@@ -787,6 +802,25 @@ def _process_candidate(insight: dict) -> None:
     tier = insight.get("tier")
 
     resource_class, reason = assess_experiment_route(insight)
+    if resource_class == "gpu_unavailable":
+        _upsert_job(
+            insight_id,
+            status="blocked",
+            stage="gpu_unavailable",
+            cpu_eligible=0,
+            cpu_reason=reason,
+            resource_class=resource_class,
+            scheduler_priority=0,
+            last_error=reason,
+            last_note=(
+                "Idea requires GPU resources, but this runtime has no usable local GPU "
+                "and no configured SSH GPU worker. Set [compute].local_gpu_policy='force_cpu' "
+                "to prefer CPU-only ideas, configure [gpu.remote], or set the policy to 'ignore' "
+                "if you intentionally want to queue GPU work."
+            ),
+        )
+        log_event("auto_research", {"step": "gpu_unavailable_block", "insight_id": insight_id, "reason": reason})
+        return
     _upsert_job(
         insight_id,
         cpu_eligible=1,

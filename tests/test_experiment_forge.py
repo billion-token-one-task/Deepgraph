@@ -104,18 +104,18 @@ class GenerateScaffoldTests(unittest.TestCase):
         self.assertFalse(target["generated_runner_supported"])
         self.assertIn("no concrete Hugging Face dataset id", target["generated_runner_blocker"])
 
-    def test_unsupported_benchmark_targets_block_generated_runner(self):
+    def test_restricted_benchmark_targets_block_generated_runner(self):
         plan = experiment_forge._ensure_real_benchmark_plan(
             {
-                "title": "CGGR",
-                "problem_statement": "Selective deliberation needs fair QA benchmarks.",
+                "title": "FOIA privilege selector",
+                "problem_statement": "Privilege review needs a legal benchmark.",
             },
             {
-                "name": "CGGR",
-                "definition": "Estimate counterfactual reasoning gain before spending extra inference budget.",
+                "name": "PrivilegeSelector",
+                "definition": "Select releasable documents under privilege constraints.",
             },
             {
-                "datasets": [{"name": "Spider"}, {"name": "SAMSum"}],
+                "datasets": [{"name": "TREC 2010 Legal Track - Privilege Task"}, {"name": "FOIA-Ex5-Privilege"}],
                 "baselines": [{"name": "Direct"}, {"name": "Always-CoT"}],
                 "metrics": {"primary": "cost_adjusted_accuracy"},
             },
@@ -123,8 +123,8 @@ class GenerateScaffoldTests(unittest.TestCase):
         )
 
         self.assertFalse(plan["generated_runner_supported"])
-        self.assertEqual(plan["deferred_benchmark_targets"], ["Spider", "SAMSum"])
-        self.assertEqual([row["name"] for row in plan["benchmark_recipe_blockers"]], ["Spider", "SAMSum"])
+        self.assertEqual(plan["deferred_benchmark_targets"], ["TREC 2010 Legal Track - Privilege Task", "FOIA-Ex5-Privilege"])
+        self.assertEqual([row["name"] for row in plan["benchmark_recipe_blockers"]], ["TREC 2010 Legal Track - Privilege Task", "FOIA-Ex5-Privilege"])
         with self.assertRaisesRegex(ValueError, "executable recipes"):
             experiment_forge._real_benchmark_defaults(plan)
 

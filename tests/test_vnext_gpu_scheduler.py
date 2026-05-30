@@ -1,4 +1,5 @@
 import tempfile
+import os
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -23,6 +24,8 @@ class GpuSchedulerTests(unittest.TestCase):
         self.old_gpu_remote_python = gpu_scheduler.GPU_REMOTE_PYTHON
         self.old_gpu_stale_recovery_poll_seconds = gpu_scheduler.GPU_STALE_RECOVERY_POLL_SECONDS
         self.old_last_recovery_check = gpu_scheduler._last_recovery_check
+        self.old_env_visible_devices = os.environ.get("DEEPGRAPH_GPU_VISIBLE_DEVICES")
+        os.environ["DEEPGRAPH_GPU_VISIBLE_DEVICES"] = "0"
         if hasattr(database._local, "conn"):
             try:
                 database._local.conn.close()
@@ -71,6 +74,10 @@ class GpuSchedulerTests(unittest.TestCase):
         gpu_scheduler.GPU_REMOTE_PYTHON = self.old_gpu_remote_python
         gpu_scheduler.GPU_STALE_RECOVERY_POLL_SECONDS = self.old_gpu_stale_recovery_poll_seconds
         gpu_scheduler._last_recovery_check = self.old_last_recovery_check
+        if self.old_env_visible_devices is None:
+            os.environ.pop("DEEPGRAPH_GPU_VISIBLE_DEVICES", None)
+        else:
+            os.environ["DEEPGRAPH_GPU_VISIBLE_DEVICES"] = self.old_env_visible_devices
         database.DB_PATH = self.old_db_path
         self.tmpdir.cleanup()
 
@@ -87,6 +94,15 @@ class GpuSchedulerTests(unittest.TestCase):
         self.assertIsNotNone(job)
         self.assertTrue(workers)
         self.assertEqual(job["resource_class"], "gpu_small")
+
+    def test_register_default_workers_does_not_fabricate_local_gpu_without_inventory_or_visible_devices(self):
+        os.environ.pop("DEEPGRAPH_GPU_VISIBLE_DEVICES", None)
+        gpu_scheduler.GPU_VISIBLE_DEVICES = ["0"]
+
+        with mock.patch.object(gpu_scheduler, "_local_gpu_inventory", return_value={}):
+            workers = gpu_scheduler.register_default_workers()
+
+        self.assertEqual(workers, [])
 
     def test_next_job_fails_recipe_blocked_run_without_launching(self):
         database.execute(

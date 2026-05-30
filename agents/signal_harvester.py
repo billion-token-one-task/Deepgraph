@@ -824,6 +824,69 @@ def get_tier2_signals(
                 """
             )
 
+    literature_seed_insights: list[dict] = []
+    if not high_insights:
+        literature_seed_rows = db.fetchall(
+            """
+            SELECT pi.paper_id AS id,
+                   p.title AS title,
+                   'literature_seed' AS mechanism_type,
+                   pi.problem_statement AS evidence_summary,
+                   pi.plain_summary AS plain_summary,
+                   pi.approach_summary AS approach_summary,
+                   pi.key_findings AS key_findings,
+                   pi.limitations AS limitations,
+                   pi.open_questions AS open_questions,
+                   GROUP_CONCAT(pt.node_id) AS related_node_ids
+            FROM paper_insights pi
+            JOIN papers p ON p.id = pi.paper_id
+            LEFT JOIN paper_taxonomy pt ON pt.paper_id = pi.paper_id
+            WHERE COALESCE(pi.problem_statement, '') != ''
+               OR COALESCE(pi.plain_summary, '') != ''
+               OR COALESCE(pi.approach_summary, '') != ''
+               OR COALESCE(pi.key_findings, '') NOT IN ('', '[]')
+               OR COALESCE(pi.limitations, '') NOT IN ('', '[]')
+               OR COALESCE(pi.open_questions, '') NOT IN ('', '[]')
+            GROUP BY pi.paper_id, p.title, pi.problem_statement, pi.plain_summary,
+                     pi.approach_summary, pi.key_findings, pi.limitations, pi.open_questions
+            ORDER BY p.updated_at DESC
+            LIMIT 10
+            """
+        )
+        literature_seed_insights = [dict(row) for row in literature_seed_rows]
+        high_insights = [
+            {
+                "id": row["id"],
+                "title": row["title"],
+                "mechanism_type": row["mechanism_type"],
+                "evidence_summary": row.get("evidence_summary") or row.get("plain_summary") or "",
+                "evidence_packet": json.dumps(
+                    {
+                        "non_numeric_evidence": (
+                            _norm_text_list(row.get("key_findings"))
+                            + _norm_text_list(row.get("limitations"))
+                            + _norm_text_list(row.get("open_questions"))
+                        ),
+                        "structural_evidence": [
+                            text
+                            for text in [
+                                row.get("evidence_summary"),
+                                row.get("plain_summary"),
+                                row.get("approach_summary"),
+                            ]
+                            if text
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                "experimental_plan": "{}",
+                "signal_mix": json.dumps(["literature_seed"], ensure_ascii=False),
+                "resource_class": "cpu",
+                "related_node_ids": row.get("related_node_ids") or "",
+            }
+            for row in literature_seed_insights
+        ]
+
     payload = {
         "contradiction_clusters": clusters,
         "performance_plateaus": plateaus,
@@ -844,5 +907,6 @@ def get_tier2_signals(
             "plateau_count": len(plateaus),
             "limitation_cluster_count": len(limitation_clusters),
             "high_potential_insight_count": len(high_insights),
+            "literature_seed_count": len(literature_seed_insights),
         },
     )
