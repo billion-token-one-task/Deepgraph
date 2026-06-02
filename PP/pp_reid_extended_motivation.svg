@@ -1,0 +1,336 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="942" height="1148" viewBox="0 0 942 1148">
+  <defs>
+    <pattern id="blueHatch" patternUnits="userSpaceOnUse" width="11" height="11" patternTransform="rotate(18)">
+      <line x1="0" y1="0" x2="0" y2="11" stroke="#b8cbe7" stroke-width="1.1" opacity="0.65"/>
+    </pattern>
+    <pattern id="goldHatch" patternUnits="userSpaceOnUse" width="11" height="11" patternTransform="rotate(18)">
+      <line x1="0" y1="0" x2="0" y2="11" stroke="#eadb9f" stroke-width="1.1" opacity="0.72"/>
+    </pattern>
+    <pattern id="greenHatch" patternUnits="userSpaceOnUse" width="11" height="11" patternTransform="rotate(18)">
+      <line x1="0" y1="0" x2="0" y2="11" stroke="#b6d9c0" stroke-width="1.1" opacity="0.62"/>
+    </pattern>
+    <linearGradient id="blueArrow" x1="0" x2="1">
+      <stop offset="0" stop-color="#f7fbff"/>
+      <stop offset="1" stop-color="#4d7ec4"/>
+    </linearGradient>
+    <linearGradient id="goldArrow" x1="0" x2="1">
+      <stop offset="0" stop-color="#fffdf2"/>
+      <stop offset="1" stop-color="#e3be4b"/>
+    </linearGradient>
+    <linearGradient id="greenArrow" x1="0" x2="1">
+      <stop offset="0" stop-color="#f6fff7"/>
+      <stop offset="1" stop-color="#5bb56d"/>
+    </linearGradient>
+    <filter id="softShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="2.5" dy="2.5" stdDeviation="2" flood-color="#000000" flood-opacity="0.20"/>
+    </filter>
+    <marker id="arrowBlue" markerWidth="12" markerHeight="9" refX="11" refY="4.5" orient="auto">
+      <path d="M0,0 L12,4.5 L0,9 Z" fill="#4d7ec4"/>
+    </marker>
+    <marker id="arrowGold" markerWidth="12" markerHeight="9" refX="11" refY="4.5" orient="auto">
+      <path d="M0,0 L12,4.5 L0,9 Z" fill="#d8ad31"/>
+    </marker>
+    <marker id="arrowRed" markerWidth="12" markerHeight="9" refX="11" refY="4.5" orient="auto">
+      <path d="M0,0 L12,4.5 L0,9 Z" fill="#ed2d2d"/>
+    </marker>
+    <marker id="arrowGreen" markerWidth="12" markerHeight="9" refX="11" refY="4.5" orient="auto">
+      <path d="M0,0 L12,4.5 L0,9 Z" fill="#5bb56d"/>
+    </marker>
+    <style>
+      .serif { font-family: "Times New Roman", Times, serif; font-weight: 700; fill: #000; }
+      .sans { font-family: Arial, Helvetica, sans-serif; fill: #000; }
+      .small { font-size: 18px; }
+      .med { font-size: 24px; }
+      .big { font-size: 30px; }
+      .red { fill: #f31616; }
+      .blue { fill: #315f9f; }
+      .green { fill: #22a23a; }
+      .whiteCard { fill: #ffffff; stroke: #c8c8c8; stroke-width: 2; }
+      .dashCard { fill: #ffffff; fill-opacity: 0.76; stroke: #a7a7a7; stroke-width: 3; stroke-dasharray: 9 6; }
+      .handBlue { fill: none; stroke: #5e81b9; stroke-width: 3; stroke-linejoin: round; }
+      .handGold { fill: none; stroke: #d9bd63; stroke-width: 3; stroke-linejoin: round; }
+      .handGreen { fill: none; stroke: #69a976; stroke-width: 3; stroke-linejoin: round; }
+    </style>
+    <g id="lockIcon">
+      <rect x="-13" y="-2" width="26" height="23" rx="4" fill="#f4be19" stroke="#916d00" stroke-width="2"/>
+      <path d="M-8,-2 v-10 c0,-8 16,-8 16,0 v10" fill="none" stroke="#52616d" stroke-width="5" stroke-linecap="round"/>
+      <circle cx="0" cy="8" r="3" fill="#35556b"/>
+      <path d="M0,10 v6" stroke="#35556b" stroke-width="2" stroke-linecap="round"/>
+    </g>
+    <g id="shieldIcon">
+      <path d="M0,-18 C10,-14 18,-14 27,-18 v20 c0,20 -18,29 -27,34 c-9,-5 -27,-14 -27,-34 v-20 c9,4 17,4 27,0z" fill="#1597d4" stroke="#07577e" stroke-width="2"/>
+      <path d="M-11,4 l8,8 l16,-19" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+    <g id="checkIcon">
+      <circle cx="0" cy="0" r="21" fill="#55d85f"/>
+      <path d="M-10,1 l7,8 l15,-18" fill="none" stroke="#fff" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+    <g id="crossIcon">
+      <path d="M-15,-15 L15,15 M15,-15 L-15,15" stroke="#ff3535" stroke-width="8" stroke-linecap="round"/>
+    </g>
+    <g id="personIcon">
+      <circle cx="0" cy="-24" r="15" fill="#f4c09b" stroke="#8f5f42" stroke-width="2"/>
+      <path d="M-20,-6 C-14,-20 14,-20 20,-6 L25,35 L-25,35 Z" fill="#5aa3d6" stroke="#356b8f" stroke-width="2"/>
+      <path d="M-12,-31 C-4,-41 14,-36 16,-24 C9,-29 3,-22 -6,-27 C-9,-28 -10,-30 -12,-31z" fill="#8a532e"/>
+      <circle cx="-6" cy="-24" r="2" fill="#222"/>
+      <circle cx="7" cy="-24" r="2" fill="#222"/>
+      <path d="M-5,-16 Q1,-13 8,-16" fill="none" stroke="#a54d4d" stroke-width="2" stroke-linecap="round"/>
+    </g>
+    <g id="runnerIcon">
+      <circle cx="0" cy="-28" r="9" fill="#fff" stroke="#111" stroke-width="3"/>
+      <path d="M0,-17 L-10,8 L9,8 Z" fill="none" stroke="#111" stroke-width="4" stroke-linejoin="round"/>
+      <path d="M-8,-5 L-27,4 M8,-5 L28,-12 M-6,8 L-25,32 M8,8 L22,32" fill="none" stroke="#111" stroke-width="4" stroke-linecap="round"/>
+    </g>
+    <g id="featureStack">
+      <rect x="-22" y="18" width="28" height="24" fill="#ecd04b" stroke="#1d1d1d" stroke-width="2"/>
+      <rect x="-13" y="9" width="28" height="24" fill="#d6bc34" stroke="#1d1d1d" stroke-width="2"/>
+      <rect x="-4" y="0" width="28" height="24" fill="#c5a821" stroke="#1d1d1d" stroke-width="2"/>
+    </g>
+    <g id="mosaicFigure">
+      <rect x="-45" y="-58" width="90" height="116" fill="#d9d9d9" stroke="#aaa" stroke-width="2"/>
+      <rect x="-36" y="-48" width="72" height="96" fill="#7c7c7c"/>
+      <rect x="-36" y="-48" width="18" height="24" fill="#695a46"/>
+      <rect x="-18" y="-48" width="18" height="24" fill="#a99243"/>
+      <rect x="0" y="-48" width="18" height="24" fill="#826b30"/>
+      <rect x="18" y="-48" width="18" height="24" fill="#c2b06b"/>
+      <rect x="-36" y="-24" width="18" height="24" fill="#4f4f4f"/>
+      <rect x="-18" y="-24" width="18" height="24" fill="#6d641d"/>
+      <rect x="0" y="-24" width="18" height="24" fill="#9f852e"/>
+      <rect x="18" y="-24" width="18" height="24" fill="#777"/>
+      <rect x="-36" y="0" width="18" height="24" fill="#4a4a4a"/>
+      <rect x="-18" y="0" width="18" height="24" fill="#746117"/>
+      <rect x="0" y="0" width="18" height="24" fill="#5e5120"/>
+      <rect x="18" y="0" width="18" height="24" fill="#666"/>
+      <rect x="-36" y="24" width="18" height="24" fill="#424242"/>
+      <rect x="-18" y="24" width="18" height="24" fill="#222"/>
+      <rect x="0" y="24" width="18" height="24" fill="#343434"/>
+      <rect x="18" y="24" width="18" height="24" fill="#999"/>
+      <path d="M-25,-42 C-5,-58 22,-48 28,-22 M-27,-10 C-35,8 -29,30 -12,42 M25,-10 C31,10 23,34 6,42" fill="none" stroke="#fff" stroke-width="3" stroke-dasharray="7 5"/>
+    </g>
+    <g id="visibleFigure">
+      <rect x="-42" y="-56" width="84" height="112" fill="#cfcfcf" stroke="#9f9f9f" stroke-width="2"/>
+      <rect x="-32" y="-46" width="64" height="92" fill="#e9e9e9"/>
+      <ellipse cx="0" cy="-28" rx="12" ry="13" fill="#d79b71"/>
+      <path d="M-16,-12 H16 L24,28 H-24 Z" fill="#d8c22d"/>
+      <path d="M-24,-6 L-35,20 M24,-6 L35,20" stroke="#d79b71" stroke-width="7" stroke-linecap="round"/>
+      <path d="M-10,28 L-16,46 M10,28 L19,46" stroke="#34546f" stroke-width="10" stroke-linecap="round"/>
+      <rect x="-32" y="36" width="64" height="10" fill="#7b8896" opacity="0.5"/>
+    </g>
+    <g id="infraFigure">
+      <rect x="-42" y="-56" width="84" height="112" fill="#a9a9a9" stroke="#8a8a8a" stroke-width="2"/>
+      <rect x="-32" y="-46" width="64" height="92" fill="#222"/>
+      <ellipse cx="0" cy="-28" rx="12" ry="13" fill="#f3f3f3"/>
+      <path d="M-16,-12 H16 L24,30 H-24 Z" fill="#f0f0f0"/>
+      <path d="M-24,-6 L-35,20 M24,-6 L35,20" stroke="#eeeeee" stroke-width="7" stroke-linecap="round"/>
+      <path d="M-10,30 L-16,47 M10,30 L19,47" stroke="#dddddd" stroke-width="10" stroke-linecap="round"/>
+    </g>
+    <g id="blueArrowShape">
+      <path d="M0,0 H118 L118,-18 L170,18 L118,54 L118,36 H0 Z" fill="url(#blueArrow)" stroke="#98a5b6" stroke-width="2"/>
+    </g>
+    <g id="goldArrowShape">
+      <path d="M0,0 H118 L118,-18 L170,18 L118,54 L118,36 H0 Z" fill="url(#goldArrow)" stroke="#b4ac88" stroke-width="2"/>
+    </g>
+    <g id="greenArrowShape">
+      <path d="M0,0 H118 L118,-18 L170,18 L118,54 L118,36 H0 Z" fill="url(#greenArrow)" stroke="#8ca98d" stroke-width="2"/>
+    </g>
+  </defs>
+
+  <rect width="942" height="1148" fill="#ffffff"/>
+
+  <!-- Panel A -->
+  <g transform="translate(0,0)">
+    <rect x="27" y="25" width="888" height="348" fill="#fbfdff" stroke="#5e81b9" stroke-width="2.5"/>
+    <rect x="30" y="28" width="882" height="342" fill="url(#blueHatch)" opacity="0.42"/>
+    <path class="handBlue" d="M28,28 C200,20 720,23 913,27"/>
+    <path class="handBlue" d="M26,29 C20,112 24,265 28,371"/>
+    <path class="handBlue" d="M28,372 C252,366 686,372 914,370"/>
+    <path class="handBlue" d="M914,27 C921,118 916,264 914,371"/>
+    <text x="47" y="66" class="serif big">(a)</text>
+    <text x="106" y="60" class="serif med">Precise and Cross-Modal Consistent Anonymisation</text>
+
+    <g transform="translate(90,140)" filter="url(#softShadow)">
+      <use href="#visibleFigure"/>
+    </g>
+    <g transform="translate(90,265)" filter="url(#softShadow)">
+      <use href="#infraFigure"/>
+    </g>
+    <text x="53" y="335" class="serif med">RGB / IR Input</text>
+
+    <g transform="translate(205,155)">
+      <use href="#blueArrowShape"/>
+      <text x="18" y="21" class="serif small red">Coarse</text>
+      <text x="13" y="43" class="serif small red">perturbation</text>
+    </g>
+    <g transform="translate(290,96)">
+      <use href="#lockIcon"/>
+    </g>
+
+    <g transform="translate(410,203)" filter="url(#softShadow)">
+      <use href="#mosaicFigure"/>
+    </g>
+    <text x="352" y="315" class="serif med">Anonymous Pair</text>
+
+    <g transform="translate(520,92)">
+      <rect x="0" y="0" width="166" height="88" rx="4" class="dashCard"/>
+      <use href="#personIcon" transform="translate(132,43) scale(0.78)"/>
+      <text x="16" y="35" class="serif small red">Sensitive</text>
+      <text x="16" y="61" class="serif small red">appearance</text>
+      <use href="#checkIcon" transform="translate(151,17) scale(0.65)"/>
+    </g>
+    <line x1="466" y1="160" x2="518" y2="135" stroke="#88a968" stroke-width="3" marker-end="url(#arrowGreen)"/>
+
+    <g transform="translate(520,205)">
+      <rect x="0" y="0" width="166" height="90" rx="4" class="dashCard"/>
+      <use href="#runnerIcon" transform="translate(42,50) scale(0.78)"/>
+      <path d="M92,62 C105,48 118,78 133,55 C145,35 151,69 158,45" fill="none" stroke="#4aa042" stroke-width="4" stroke-linecap="round"/>
+      <text x="70" y="35" class="serif small green">Shared</text>
+      <text x="70" y="61" class="serif small green">structure</text>
+      <use href="#checkIcon" transform="translate(151,73) scale(0.65)"/>
+    </g>
+    <line x1="467" y1="244" x2="518" y2="247" stroke="#88a968" stroke-width="3" marker-end="url(#arrowGreen)"/>
+
+    <path d="M711,116 C755,115 784,142 801,176" fill="none" stroke="#ed2d2d" stroke-width="4" stroke-dasharray="9 7" marker-end="url(#arrowRed)"/>
+    <path d="M712,282 C758,285 787,258 804,224" fill="none" stroke="#ed2d2d" stroke-width="4" stroke-dasharray="9 7" marker-end="url(#arrowRed)"/>
+    <text x="726" y="198" class="serif big red">Mixed Gap</text>
+    <use href="#crossIcon" transform="translate(842,194)"/>
+    <text x="733" y="256" class="serif med">inconsistent impact</text>
+
+    <line x1="760" y1="100" x2="862" y2="100" stroke="#5bb56d" stroke-width="4" marker-end="url(#arrowGreen)"/>
+    <line x1="760" y1="308" x2="862" y2="308" stroke="#5bb56d" stroke-width="4" marker-end="url(#arrowGreen)"/>
+    <text x="704" y="83" class="serif small">Preserve useful cues</text>
+    <text x="694" y="341" class="serif small">Align cross-modal structures</text>
+  </g>
+
+  <!-- Panel B -->
+  <g transform="translate(0,0)">
+    <rect x="27" y="400" width="888" height="348" fill="#fffefa" stroke="#d9bd63" stroke-width="2.5"/>
+    <rect x="30" y="403" width="882" height="342" fill="url(#goldHatch)" opacity="0.45"/>
+    <path class="handGold" d="M29,403 C246,395 683,399 914,402"/>
+    <path class="handGold" d="M27,402 C22,514 23,652 27,747"/>
+    <path class="handGold" d="M28,747 C270,744 660,750 914,746"/>
+    <path class="handGold" d="M913,402 C920,507 918,644 914,746"/>
+    <text x="47" y="441" class="serif big">(b)</text>
+    <text x="106" y="436" class="serif med">Anonymous Image is not Equal to Secure Representation</text>
+
+    <g transform="translate(112,542)" filter="url(#softShadow)">
+      <use href="#mosaicFigure"/>
+    </g>
+    <text x="58" y="646" class="serif med">Static</text>
+    <text x="58" y="674" class="serif med">anonymous image</text>
+    <text x="239" y="565" class="serif big">= / =</text>
+    <g transform="translate(340,542)">
+      <use href="#shieldIcon" transform="scale(1.08)"/>
+      <use href="#lockIcon" transform="translate(0,30) scale(0.82)"/>
+    </g>
+    <text x="288" y="646" class="serif med red">truly safe</text>
+    <text x="280" y="674" class="serif med red">representation</text>
+
+    <g transform="translate(440,522)">
+      <use href="#goldArrowShape"/>
+      <text x="31" y="18" class="serif small">Key-controlled</text>
+      <text x="32" y="42" class="serif small">privacy gate</text>
+    </g>
+    <use href="#lockIcon" transform="translate(520,481)"/>
+    <text x="454" y="481" class="serif small">secret key</text>
+
+    <g transform="translate(705,474)">
+      <rect x="-62" y="-34" width="216" height="84" rx="6" fill="#fff" stroke="#bbb" stroke-width="2"/>
+      <text x="-45" y="-5" class="serif small red">Unauthorized</text>
+      <text x="-45" y="22" class="serif small">direct use</text>
+      <use href="#crossIcon" transform="translate(124,8) scale(0.82)"/>
+      <path d="M20,46 C48,63 88,64 118,45" fill="none" stroke="#ed2d2d" stroke-width="3" stroke-dasharray="7 6"/>
+    </g>
+    <g transform="translate(705,616)">
+      <rect x="-62" y="-34" width="216" height="92" rx="6" fill="#fff" stroke="#bbb" stroke-width="2"/>
+      <text x="-45" y="-5" class="serif small green">Authorized</text>
+      <text x="-45" y="22" class="serif small">recover to</text>
+      <text x="-45" y="49" class="serif small">retrieval domain</text>
+      <use href="#checkIcon" transform="translate(124,14) scale(0.72)"/>
+    </g>
+    <path d="M632,536 C653,512 657,489 642,466" fill="none" stroke="#d8ad31" stroke-width="4" marker-end="url(#arrowGold)"/>
+    <path d="M632,562 C654,592 655,621 641,648" fill="none" stroke="#5bb56d" stroke-width="4" marker-end="url(#arrowGreen)"/>
+
+    <line x1="56" y1="706" x2="884" y2="706" stroke="#d9b53d" stroke-width="3" stroke-dasharray="18 15"/>
+    <g transform="translate(115,724)">
+      <text x="0" y="0" class="serif small">Controllable</text>
+      <rect x="-8" y="10" width="132" height="28" rx="4" fill="#fff4ce" stroke="#d8ad31" stroke-width="2" stroke-dasharray="7 5"/>
+    </g>
+    <g transform="translate(378,724)">
+      <text x="0" y="0" class="serif small">Authorized</text>
+      <rect x="-8" y="10" width="120" height="28" rx="4" fill="#fff4ce" stroke="#d8ad31" stroke-width="2" stroke-dasharray="7 5"/>
+    </g>
+    <g transform="translate(635,724)">
+      <text x="0" y="0" class="serif small">Verifiable</text>
+      <rect x="-8" y="10" width="112" height="28" rx="4" fill="#fff4ce" stroke="#d8ad31" stroke-width="2" stroke-dasharray="7 5"/>
+    </g>
+  </g>
+
+  <!-- Panel C -->
+  <g transform="translate(0,0)">
+    <rect x="27" y="775" width="888" height="348" fill="#fbfffc" stroke="#69a976" stroke-width="2.5"/>
+    <rect x="30" y="778" width="882" height="342" fill="url(#greenHatch)" opacity="0.42"/>
+    <path class="handGreen" d="M29,778 C252,769 676,775 914,778"/>
+    <path class="handGreen" d="M27,778 C23,875 23,1036 28,1122"/>
+    <path class="handGreen" d="M28,1123 C270,1118 674,1123 914,1121"/>
+    <path class="handGreen" d="M914,778 C920,876 917,1036 914,1122"/>
+    <text x="47" y="816" class="serif big">(c)</text>
+    <text x="106" y="811" class="serif med">Avoid Discriminability Collapse after Key Protection</text>
+
+    <g transform="translate(105,910)" filter="url(#softShadow)">
+      <use href="#mosaicFigure"/>
+    </g>
+    <g transform="translate(202,882)">
+      <use href="#lockIcon" transform="scale(0.9)"/>
+      <use href="#featureStack" transform="translate(28,28)"/>
+    </g>
+    <text x="58" y="1012" class="serif med">Protected</text>
+    <text x="56" y="1040" class="serif med">branch</text>
+
+    <path d="M285,908 C335,846 422,845 473,906" fill="none" stroke="#777" stroke-width="14" opacity="0.24"/>
+    <path d="M285,964 C335,1028 424,1029 475,966" fill="none" stroke="#777" stroke-width="14" opacity="0.24"/>
+    <text x="321" y="905" class="serif med red">feature</text>
+    <text x="308" y="933" class="serif med red">entanglement</text>
+    <path d="M362,956 C385,930 403,1000 430,962" fill="none" stroke="#ed2d2d" stroke-width="4" stroke-dasharray="8 7"/>
+    <path d="M361,1013 C385,984 404,1055 432,1015" fill="none" stroke="#ed2d2d" stroke-width="4" stroke-dasharray="8 7"/>
+    <use href="#crossIcon" transform="translate(454,915) scale(0.78)"/>
+    <text x="298" y="1076" class="serif small red">identity cues and security cues are mixed</text>
+
+    <g transform="translate(512,923)">
+      <use href="#greenArrowShape"/>
+      <text x="27" y="18" class="serif small">Explicit</text>
+      <text x="28" y="43" class="serif small">disentangle</text>
+    </g>
+
+    <g transform="translate(735,870)">
+      <rect x="-70" y="-34" width="170" height="78" rx="5" fill="#fff" stroke="#bcbcbc" stroke-width="2"/>
+      <path d="M-44,7 C-24,-18 4,30 24,0 C42,-24 61,17 80,-8" fill="none" stroke="#3aa34c" stroke-width="4" stroke-linecap="round"/>
+      <text x="-55" y="-8" class="serif small green">Utility</text>
+      <text x="-55" y="19" class="serif small">identity feature</text>
+      <use href="#checkIcon" transform="translate(86,-18) scale(0.55)"/>
+    </g>
+    <g transform="translate(735,1006)">
+      <rect x="-70" y="-34" width="170" height="78" rx="5" fill="#fff" stroke="#bcbcbc" stroke-width="2"/>
+      <use href="#lockIcon" transform="translate(-36,2) scale(0.75)"/>
+      <path d="M7,-10 H62 M7,9 H62 M7,28 H62" stroke="#d8ad31" stroke-width="5" stroke-linecap="round"/>
+      <text x="-55" y="-8" class="serif small blue">Security</text>
+      <text x="-55" y="19" class="serif small">key feature</text>
+      <use href="#shieldIcon" transform="translate(88,4) scale(0.55)"/>
+    </g>
+    <line x1="681" y1="920" x2="662" y2="877" stroke="#5bb56d" stroke-width="4" marker-end="url(#arrowGreen)"/>
+    <line x1="681" y1="952" x2="662" y2="1001" stroke="#d8ad31" stroke-width="4" marker-end="url(#arrowGold)"/>
+
+    <g transform="translate(832,936)">
+      <rect x="-36" y="-82" width="80" height="164" rx="4" fill="#fff" stroke="#aaa" stroke-width="2"/>
+      <rect x="-24" y="-66" width="56" height="32" fill="#5bb56d" opacity="0.78"/>
+      <rect x="-24" y="-22" width="56" height="32" fill="#f0d65a" opacity="0.88"/>
+      <rect x="-24" y="22" width="56" height="32" fill="#5f8ed1" opacity="0.70"/>
+      <text x="-86" y="106" class="serif med">Stable retrieval</text>
+    </g>
+    <path d="M796,875 C822,890 836,914 840,950" fill="none" stroke="#5bb56d" stroke-width="4" marker-end="url(#arrowGreen)"/>
+    <path d="M793,1007 C823,994 838,975 840,950" fill="none" stroke="#d8ad31" stroke-width="4" marker-end="url(#arrowGold)"/>
+
+    <line x1="56" y1="840" x2="884" y2="840" stroke="#6cac79" stroke-width="3" stroke-dasharray="18 15"/>
+    <text x="80" y="862" class="serif small">Key protection improves security, but may disturb protected features.</text>
+    <text x="80" y="1098" class="serif med green">Goal: preserve retrieval discriminability while strengthening privacy control.</text>
+  </g>
+</svg>

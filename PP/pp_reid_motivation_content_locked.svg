@@ -1,0 +1,248 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="942" height="1148" viewBox="0 0 942 1148">
+  <defs>
+    <pattern id="hatchBlue" width="10" height="10" patternUnits="userSpaceOnUse" patternTransform="rotate(18)">
+      <line x1="0" y1="0" x2="0" y2="10" stroke="#bed1ee" stroke-width="1" opacity=".65"/>
+    </pattern>
+    <pattern id="hatchGold" width="10" height="10" patternUnits="userSpaceOnUse" patternTransform="rotate(18)">
+      <line x1="0" y1="0" x2="0" y2="10" stroke="#eadba6" stroke-width="1" opacity=".75"/>
+    </pattern>
+    <pattern id="hatchGreen" width="10" height="10" patternUnits="userSpaceOnUse" patternTransform="rotate(18)">
+      <line x1="0" y1="0" x2="0" y2="10" stroke="#bedfc3" stroke-width="1" opacity=".7"/>
+    </pattern>
+    <linearGradient id="blueArrow" x1="0" x2="1">
+      <stop offset="0" stop-color="#f8fbff"/>
+      <stop offset="1" stop-color="#4d7ec4"/>
+    </linearGradient>
+    <linearGradient id="goldArrow" x1="0" x2="1">
+      <stop offset="0" stop-color="#fffdf2"/>
+      <stop offset="1" stop-color="#d9b44b"/>
+    </linearGradient>
+    <linearGradient id="greenArrow" x1="0" x2="1">
+      <stop offset="0" stop-color="#f7fff8"/>
+      <stop offset="1" stop-color="#58aa64"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="2" dy="2" stdDeviation="1.5" flood-color="#000" flood-opacity=".2"/>
+    </filter>
+    <marker id="arrowB" markerWidth="12" markerHeight="9" refX="11" refY="4.5" orient="auto">
+      <path d="M0,0 L12,4.5 L0,9 Z" fill="#4d7ec4"/>
+    </marker>
+    <marker id="arrowG" markerWidth="12" markerHeight="9" refX="11" refY="4.5" orient="auto">
+      <path d="M0,0 L12,4.5 L0,9 Z" fill="#58aa64"/>
+    </marker>
+    <marker id="arrowY" markerWidth="12" markerHeight="9" refX="11" refY="4.5" orient="auto">
+      <path d="M0,0 L12,4.5 L0,9 Z" fill="#d9b44b"/>
+    </marker>
+    <marker id="arrowR" markerWidth="12" markerHeight="9" refX="11" refY="4.5" orient="auto">
+      <path d="M0,0 L12,4.5 L0,9 Z" fill="#e62c2c"/>
+    </marker>
+    <style>
+      .serif{font-family:"Times New Roman",Times,serif;font-weight:700;fill:#000}
+      .small{font-size:16px}.mid{font-size:22px}.big{font-size:28px}
+      .red{fill:#e71313}.green{fill:#228b32}.blue{fill:#245b96}.gold{fill:#9a7416}
+      .panelText{font-size:24px}
+      .box{fill:#fff;stroke:#a7a7a7;stroke-width:2}
+      .dashBox{fill:#fff;fill-opacity:.78;stroke:#999;stroke-width:2.5;stroke-dasharray:8 6}
+    </style>
+    <g id="check">
+      <circle cx="0" cy="0" r="19" fill="#5bd267"/>
+      <path d="M-9,0 l7,8 l14,-17" fill="none" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+    <g id="cross">
+      <path d="M-14,-14 L14,14 M14,-14 L-14,14" stroke="#f03434" stroke-width="7" stroke-linecap="round"/>
+    </g>
+    <g id="lock">
+      <rect x="-13" y="-2" width="26" height="23" rx="4" fill="#f4be19" stroke="#835f00" stroke-width="2"/>
+      <path d="M-8,-2 v-10 c0,-8 16,-8 16,0 v10" fill="none" stroke="#566572" stroke-width="5" stroke-linecap="round"/>
+      <circle cx="0" cy="8" r="3" fill="#34516a"/>
+    </g>
+    <g id="shield">
+      <path d="M0,-18 C11,-13 19,-14 27,-18 v19 c0,19 -17,29 -27,34 c-10,-5 -27,-15 -27,-34 v-19 c8,4 16,5 27,0z" fill="#1594d1" stroke="#0b5279" stroke-width="2"/>
+      <path d="M-10,4 l7,8 l16,-19" fill="none" stroke="#fff" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+    <g id="personRgb">
+      <rect x="-38" y="-56" width="76" height="112" fill="#d7d7d7" stroke="#999" stroke-width="2"/>
+      <rect x="-30" y="-48" width="60" height="96" fill="#e8e8e8"/>
+      <ellipse cx="0" cy="-29" rx="11" ry="12" fill="#d09670"/>
+      <path d="M-15,-12 H15 L23,28 H-23 Z" fill="#d9c628"/>
+      <path d="M-10,28 L-16,46 M10,28 L18,46" stroke="#304f6f" stroke-width="9" stroke-linecap="round"/>
+      <path d="M-23,-4 L-34,21 M23,-4 L34,21" stroke="#d09670" stroke-width="7" stroke-linecap="round"/>
+    </g>
+    <g id="personIr">
+      <rect x="-38" y="-56" width="76" height="112" fill="#aaa" stroke="#888" stroke-width="2"/>
+      <rect x="-30" y="-48" width="60" height="96" fill="#222"/>
+      <ellipse cx="0" cy="-29" rx="11" ry="12" fill="#eee"/>
+      <path d="M-15,-12 H15 L23,28 H-23 Z" fill="#f2f2f2"/>
+      <path d="M-10,28 L-16,46 M10,28 L18,46" stroke="#ddd" stroke-width="9" stroke-linecap="round"/>
+      <path d="M-23,-4 L-34,21 M23,-4 L34,21" stroke="#eee" stroke-width="7" stroke-linecap="round"/>
+    </g>
+    <g id="mosaic">
+      <rect x="-45" y="-58" width="90" height="116" fill="#d9d9d9" stroke="#aaa" stroke-width="2"/>
+      <g>
+        <rect x="-35" y="-48" width="18" height="24" fill="#75684b"/><rect x="-17" y="-48" width="18" height="24" fill="#b49d42"/><rect x="1" y="-48" width="18" height="24" fill="#796a2d"/><rect x="19" y="-48" width="18" height="24" fill="#999"/>
+        <rect x="-35" y="-24" width="18" height="24" fill="#555"/><rect x="-17" y="-24" width="18" height="24" fill="#8b7b19"/><rect x="1" y="-24" width="18" height="24" fill="#9d8429"/><rect x="19" y="-24" width="18" height="24" fill="#777"/>
+        <rect x="-35" y="0" width="18" height="24" fill="#444"/><rect x="-17" y="0" width="18" height="24" fill="#715f17"/><rect x="1" y="0" width="18" height="24" fill="#554a1b"/><rect x="19" y="0" width="18" height="24" fill="#666"/>
+        <rect x="-35" y="24" width="18" height="24" fill="#383838"/><rect x="-17" y="24" width="18" height="24" fill="#222"/><rect x="1" y="24" width="18" height="24" fill="#333"/><rect x="19" y="24" width="18" height="24" fill="#888"/>
+      </g>
+      <path d="M-25,-42 C-6,-56 24,-47 29,-22 M-27,-10 C-34,8 -28,31 -12,42 M26,-10 C32,10 24,34 7,42" fill="none" stroke="#fff" stroke-width="3" stroke-dasharray="7 5"/>
+    </g>
+    <g id="features">
+      <rect x="-24" y="18" width="30" height="24" fill="#e7c640" stroke="#111" stroke-width="2"/>
+      <rect x="-13" y="7" width="30" height="24" fill="#cfae2d" stroke="#111" stroke-width="2"/>
+      <rect x="-2" y="-4" width="30" height="24" fill="#b79824" stroke="#111" stroke-width="2"/>
+    </g>
+    <g id="greenFeatures">
+      <rect x="-24" y="18" width="30" height="24" fill="#70bc72" stroke="#111" stroke-width="2"/>
+      <rect x="-13" y="7" width="30" height="24" fill="#5aa963" stroke="#111" stroke-width="2"/>
+      <rect x="-2" y="-4" width="30" height="24" fill="#429a51" stroke="#111" stroke-width="2"/>
+    </g>
+    <g id="arrowShapeB">
+      <path d="M0,0 H90 L90,-14 L132,18 L90,50 L90,36 H0 Z" fill="url(#blueArrow)" stroke="#8e9caf" stroke-width="2"/>
+    </g>
+    <g id="arrowShapeG">
+      <path d="M0,0 H90 L90,-14 L132,18 L90,50 L90,36 H0 Z" fill="url(#greenArrow)" stroke="#7e9e80" stroke-width="2"/>
+    </g>
+    <g id="arrowShapeY">
+      <path d="M0,0 H90 L90,-14 L132,18 L90,50 L90,36 H0 Z" fill="url(#goldArrow)" stroke="#aa9d78" stroke-width="2"/>
+    </g>
+  </defs>
+  <rect width="942" height="1148" fill="#fff"/>
+
+  <!-- Panel A -->
+  <g>
+    <rect x="25" y="24" width="892" height="372" fill="#fbfdff" stroke="#5e81b9" stroke-width="2.5"/>
+    <rect x="29" y="28" width="884" height="364" fill="url(#hatchBlue)" opacity=".42"/>
+    <path d="M27,28 C204,20 733,22 915,27 M26,27 C20,120 23,286 27,394 M27,394 C255,388 696,394 915,393 M915,27 C922,118 918,280 915,394" fill="none" stroke="#5e81b9" stroke-width="3"/>
+    <text x="45" y="65" class="serif big">(a)</text>
+    <text x="92" y="65" class="serif big">Precise &amp; Consistent Anonymization</text>
+    <use href="#personRgb" transform="translate(95,151)" filter="url(#shadow)"/>
+    <use href="#personIr" transform="translate(95,289)" filter="url(#shadow)"/>
+    <text x="51" y="353" class="serif mid">RGB / IR input</text>
+    <use href="#arrowShapeB" transform="translate(180,160)"/>
+    <use href="#lock" transform="translate(244,126)"/>
+    <text x="196" y="220" class="serif mid red">coarse</text>
+    <text x="189" y="246" class="serif mid red">perturbation</text>
+    <use href="#mosaic" transform="translate(374,210)" filter="url(#shadow)"/>
+    <text x="316" y="332" class="serif mid">Anonymous pair</text>
+
+    <g transform="translate(502,90)">
+      <rect x="0" y="0" width="156" height="80" rx="4" class="dashBox"/>
+      <text x="16" y="32" class="serif small red">Sensitive info</text>
+      <text x="16" y="57" class="serif small red">hidden</text>
+      <use href="#check" transform="translate(132,38) scale(.75)"/>
+    </g>
+    <line x1="420" y1="168" x2="500" y2="128" stroke="#75a55b" stroke-width="4" marker-end="url(#arrowG)"/>
+    <g transform="translate(502,198)">
+      <rect x="0" y="0" width="156" height="84" rx="4" class="dashBox"/>
+      <text x="14" y="31" class="serif small green">Shared structure</text>
+      <text x="14" y="56" class="serif small green">should stay</text>
+      <use href="#check" transform="translate(132,62) scale(.72)"/>
+    </g>
+    <line x1="421" y1="238" x2="500" y2="240" stroke="#75a55b" stroke-width="4" marker-end="url(#arrowG)"/>
+
+    <g transform="translate(694,100)">
+      <rect x="0" y="-22" width="192" height="62" rx="6" fill="#fff" fill-opacity=".72" stroke="#d9a0a0" stroke-width="2"/>
+      <text x="14" y="4" class="serif small red">Broken contours</text>
+      <use href="#cross" transform="translate(170,0) scale(.75)"/>
+      <rect x="0" y="58" width="192" height="74" rx="6" fill="#fff" fill-opacity=".72" stroke="#d9a0a0" stroke-width="2"/>
+      <text x="14" y="84" class="serif small red">Broken fine-grained</text>
+      <text x="14" y="110" class="serif small red">identity cues</text>
+      <use href="#cross" transform="translate(170,92) scale(.75)"/>
+      <rect x="0" y="150" width="192" height="62" rx="6" fill="#fff" fill-opacity=".72" stroke="#d9a0a0" stroke-width="2"/>
+      <text x="14" y="176" class="serif small red">Shared structure</text>
+      <text x="14" y="200" class="serif small red">damaged</text>
+      <use href="#cross" transform="translate(170,180) scale(.75)"/>
+    </g>
+    <g transform="translate(684,312)">
+      <use href="#features" transform="translate(0,0)"/>
+      <use href="#features" transform="translate(105,0)"/>
+      <path d="M45,16 C66,-25 89,57 111,15" fill="none" stroke="#e62c2c" stroke-width="5" stroke-dasharray="8 6" marker-end="url(#arrowR)"/>
+      <text x="-8" y="61" class="serif mid red">Mixed Gap</text>
+      <text x="-36" y="84" class="serif small red">inconsistent RGB / IR impact</text>
+    </g>
+    <text x="500" y="372" class="serif small green">Motivation: suppress sensitive identity, preserve shared retrieval structure</text>
+  </g>
+
+  <!-- Panel B -->
+  <g>
+    <rect x="25" y="417" width="892" height="320" fill="#fffefa" stroke="#d9bd63" stroke-width="2.5"/>
+    <rect x="29" y="421" width="884" height="312" fill="url(#hatchGold)" opacity=".48"/>
+    <path d="M27,421 C220,414 720,417 916,421 M26,421 C21,510 23,650 27,736 M27,736 C245,732 708,738 916,735 M916,421 C922,514 918,650 916,736" fill="none" stroke="#d0b153" stroke-width="3"/>
+    <text x="45" y="458" class="serif big">(b)</text>
+    <text x="92" y="458" class="serif big">Anonymous Image ≠ Secure Representation</text>
+    <use href="#mosaic" transform="translate(118,562)" filter="url(#shadow)"/>
+    <text x="62" y="665" class="serif mid">Anonymous image</text>
+    <text x="67" y="692" class="serif small red">static transformed sample</text>
+    <path d="M202,560 C242,520 286,512 325,545" fill="none" stroke="#e62c2c" stroke-width="4" stroke-dasharray="8 6" marker-end="url(#arrowR)"/>
+    <rect x="270" y="505" width="165" height="72" rx="6" fill="#fff4f4" stroke="#e68a8a" stroke-width="2"/>
+    <text x="287" y="532" class="serif small red">Unauthorized use</text>
+    <text x="287" y="557" class="serif small red">identity leakage risk</text>
+    <use href="#cross" transform="translate(416,538) scale(.75)"/>
+
+    <use href="#arrowShapeY" transform="translate(451,542)"/>
+    <rect x="585" y="495" width="145" height="114" rx="8" fill="#fff" stroke="#cba442" stroke-width="3" filter="url(#shadow)"/>
+    <use href="#lock" transform="translate(658,520) scale(1.15)"/>
+    <text x="604" y="566" class="serif mid gold">Key-controlled</text>
+    <text x="635" y="593" class="serif mid gold">gate</text>
+    <path d="M730,553 C772,530 810,522 846,545" fill="none" stroke="#58aa64" stroke-width="4" marker-end="url(#arrowG)"/>
+    <use href="#personRgb" transform="translate(815,610) scale(.62)" filter="url(#shadow)"/>
+    <use href="#shield" transform="translate(876,603) scale(.8)"/>
+    <text x="742" y="674" class="serif mid green">Authorized</text>
+    <text x="746" y="701" class="serif mid green">recovery</text>
+    <text x="743" y="724" class="serif small">retrieval representation</text>
+    <use href="#check" transform="translate(887,532)"/>
+    <text x="312" y="716" class="serif small gold">Controllable</text>
+    <text x="463" y="716" class="serif small gold">Authorized</text>
+    <text x="606" y="716" class="serif small gold">Verifiable</text>
+  </g>
+
+  <!-- Panel C -->
+  <g>
+    <rect x="25" y="761" width="892" height="362" fill="#fbfffc" stroke="#69a976" stroke-width="2.5"/>
+    <rect x="29" y="765" width="884" height="354" fill="url(#hatchGreen)" opacity=".47"/>
+    <path d="M27,765 C216,756 718,761 916,764 M26,764 C21,860 23,1025 27,1122 M27,1122 C250,1118 708,1124 916,1121 M916,764 C922,870 918,1022 916,1122" fill="none" stroke="#5d9b68" stroke-width="3"/>
+    <text x="45" y="802" class="serif big">(c)</text>
+    <text x="92" y="802" class="serif big">Disentangle Utility and Security</text>
+    <use href="#features" transform="translate(91,920) scale(1.15)"/>
+    <use href="#greenFeatures" transform="translate(150,948) scale(1.05)"/>
+    <use href="#lock" transform="translate(138,875)"/>
+    <text x="59" y="1018" class="serif mid">Key-protected</text>
+    <text x="74" y="1045" class="serif mid">features</text>
+
+    <g transform="translate(256,856)">
+      <rect x="0" y="0" width="208" height="150" rx="10" fill="#fff" stroke="#cf7777" stroke-width="2.5"/>
+      <text x="26" y="34" class="serif small red">Identity cues</text>
+      <text x="38" y="62" class="serif small red">+</text>
+      <text x="20" y="90" class="serif small red">key/security cues</text>
+      <path d="M48,116 C80,75 102,148 132,106 C153,76 171,128 190,96" fill="none" stroke="#e62c2c" stroke-width="5" stroke-dasharray="8 6"/>
+      <use href="#cross" transform="translate(185,28) scale(.7)"/>
+    </g>
+    <line x1="186" y1="932" x2="254" y2="932" stroke="#58aa64" stroke-width="5" marker-end="url(#arrowG)"/>
+    <text x="266" y="1034" class="serif small red">Feature entanglement</text>
+    <text x="260" y="1060" class="serif small red">Discriminability collapse</text>
+
+    <rect x="520" y="810" width="178" height="80" rx="8" fill="#f8fff8" stroke="#63a86e" stroke-width="3" stroke-dasharray="8 6"/>
+    <text x="544" y="842" class="serif small green">Utility identity</text>
+    <text x="570" y="868" class="serif small green">feature</text>
+    <use href="#check" transform="translate(681,830) scale(.65)"/>
+    <rect x="520" y="963" width="178" height="80" rx="8" fill="#f8fbff" stroke="#5e81b9" stroke-width="3" stroke-dasharray="8 6"/>
+    <text x="550" y="995" class="serif small blue">Security key</text>
+    <text x="570" y="1021" class="serif small blue">feature</text>
+    <use href="#shield" transform="translate(681,1000) scale(.55)"/>
+    <path d="M464,909 C490,864 498,842 519,842" fill="none" stroke="#58aa64" stroke-width="4" marker-end="url(#arrowG)"/>
+    <path d="M464,956 C493,996 499,1005 519,1005" fill="none" stroke="#4d7ec4" stroke-width="4" marker-end="url(#arrowB)"/>
+    <text x="465" y="941" class="serif mid green">disentangle</text>
+
+    <line x1="701" y1="850" x2="762" y2="850" stroke="#58aa64" stroke-width="4" marker-end="url(#arrowG)"/>
+    <rect x="765" y="813" width="124" height="74" rx="7" fill="#fff" stroke="#8fb58f" stroke-width="2"/>
+    <text x="782" y="842" class="serif small green">Stable</text>
+    <text x="780" y="868" class="serif small green">VI-ReID</text>
+    <use href="#check" transform="translate(890,824) scale(.8)"/>
+    <line x1="701" y1="1003" x2="762" y2="1003" stroke="#4d7ec4" stroke-width="4" marker-end="url(#arrowB)"/>
+    <rect x="765" y="966" width="124" height="74" rx="7" fill="#fff" stroke="#89a8cc" stroke-width="2"/>
+    <text x="781" y="995" class="serif small blue">Secure</text>
+    <text x="775" y="1021" class="serif small blue">authorization</text>
+    <use href="#shield" transform="translate(890,978) scale(.65)"/>
+    <text x="526" y="1100" class="serif mid green">Motivation: strengthen privacy without sacrificing retrieval discriminability</text>
+  </g>
+</svg>

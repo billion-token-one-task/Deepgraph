@@ -188,7 +188,7 @@ def _figure_latex_blocks(orchestrated: dict) -> str:
         is_experiment_plot = asset.get("kind") not in {"diagram", "fallback", "blocked"}
         include_lines = [rf"\includegraphics[width={width}]{{figures/{name}}}"]
         if is_experiment_plot:
-            include_lines.append(r"\vspace{-0.45em}")
+            include_lines.append(r"\vspace{-0.2em}")
         blocks.append(
             "\n".join(
                 [
@@ -374,8 +374,10 @@ def assemble_main_tex(state: dict, orchestrated: dict, bundle_format: str) -> st
 \usepackage{{amsmath,amssymb}}
 \usepackage{{hyperref}}
 \usepackage{{url}}
-\setlength{{\abovecaptionskip}}{{3pt}}
-\setlength{{\belowcaptionskip}}{{0pt}}
+\usepackage[font=normalsize,labelfont=bf]{{caption}}
+\captionsetup[figure]{{font=normalsize,labelfont=bf,skip=4pt}}
+\setlength{{\abovecaptionskip}}{{4pt}}
+\setlength{{\belowcaptionskip}}{{2pt}}
 \title{{{state['title']}}}
 \author{{Anonymous authors\\Paper under double-blind review}}
 \begin{{document}}
@@ -406,8 +408,10 @@ def assemble_main_tex(state: dict, orchestrated: dict, bundle_format: str) -> st
 \usepackage[table]{{xcolor}}
 \usepackage{{array}}
 \usepackage{{tabularx}}
-\setlength{{\abovecaptionskip}}{{3pt}}
-\setlength{{\belowcaptionskip}}{{0pt}}
+\usepackage[font=normalsize,labelfont=bf]{{caption}}
+\captionsetup[figure]{{font=normalsize,labelfont=bf,skip=4pt}}
+\setlength{{\abovecaptionskip}}{{4pt}}
+\setlength{{\belowcaptionskip}}{{2pt}}
 \title{{{state['title']}}}
 \author{{DeepGraph Auto Research (PaperOrchestra pipeline)}}
 \date{{{venue}}}
@@ -457,10 +461,14 @@ def _ensure_iclr2026_preamble(source: str) -> str:
                 preamble = preamble.rstrip() + "\n" + r"\usepackage[table]{xcolor}" + "\n"
             else:
                 preamble = preamble.rstrip() + "\n" + rf"\usepackage{{{package}}}" + "\n"
+    if r"\usepackage[font=normalsize,labelfont=bf]{caption}" not in preamble and r"\usepackage{caption}" not in preamble:
+        preamble = preamble.rstrip() + "\n" + r"\usepackage[font=normalsize,labelfont=bf]{caption}" + "\n"
+    if r"\captionsetup[figure]" not in preamble:
+        preamble = preamble.rstrip() + "\n" + r"\captionsetup[figure]{font=normalsize,labelfont=bf,skip=4pt}" + "\n"
     if r"\abovecaptionskip" not in preamble:
-        preamble = preamble.rstrip() + "\n" + r"\setlength{\abovecaptionskip}{3pt}" + "\n"
+        preamble = preamble.rstrip() + "\n" + r"\setlength{\abovecaptionskip}{4pt}" + "\n"
     if r"\belowcaptionskip" not in preamble:
-        preamble = preamble.rstrip() + "\n" + r"\setlength{\belowcaptionskip}{0pt}" + "\n"
+        preamble = preamble.rstrip() + "\n" + r"\setlength{\belowcaptionskip}{2pt}" + "\n"
     if r"\author" not in preamble:
         preamble = preamble.rstrip() + "\n" + r"\author{Anonymous authors\\Paper under double-blind review}" + "\n"
     preamble = re.sub(r"\\usepackage(?:\[[^\]]*\])?\{geometry\}\s*", "", preamble)

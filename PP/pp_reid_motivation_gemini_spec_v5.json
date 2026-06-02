@@ -1,0 +1,27 @@
+{
+  "state_title": "PP-VI-ReID Motivation Figure in Original PPA Style",
+  "method_name": "Key-Controlled PP-VI-ReID Extension",
+  "reference_images": [
+    "PP/reference_assets/ppa_motivation_style_ref_1200.png"
+  ],
+  "problem_statement": "The previous version looked too much like a generic flowchart. Redraw it as a true motivation figure in the same visual rhetoric as the original PPA motivation figure: problem-driven, diagnostic, comparative, with local callouts, red failure marks, green preservation marks, dashed dividers, and a hand-drawn academic style.",
+  "existing_weakness": "In PP-VI-ReID, coarse anonymization may hide appearance but breaks contours and fine-grained retrieval cues; RGB and IR are affected differently, creating a Mixed Gap. Static anonymous images are not truly secure representations because unauthorized use and leakage remain possible. Adding key control improves security but may entangle identity utility features and key/security features, harming retrieval discriminability.",
+  "method_summary": "Use the attached original PPA motivation figure as the strongest style guide. Do NOT draw a generic left-to-right pipeline. Make it look like a publication motivation panel with visual diagnosis. Use portrait 3:4 canvas. White background with subtle diagonal hatch. Two or three large hand-drawn bordered regions separated by dashed horizontal lines. Use serif Times-like bold labels, red crosses, green checks, locks, shields, person silhouettes, body contour icons, feature cubes, zoom/magnifier callouts, and short labels. Preserve the feel of the original: the top region shows what anonymization breaks; a middle region shows why anonymous image is still unsafe; the bottom region shows why key protection needs disentanglement. Make the composition asymmetrical and annotated, not a clean process chain. Use local arrows and callout lines rather than a single straight pipeline. Panel/region (a): show an RGB/IR pair and an over-anonymized mosaic image; annotate 'Sensitive info hidden' with green check, but 'Broken contours' and 'Broken fine-grained cues' with red crosses. Also show 'Mixed Gap' from inconsistent RGB/IR anonymization using red bidirectional gap arrows between feature stacks. Panel/region (b): show an anonymous image with a warning or leakage mark; show lock/key authorization as a small gate, not a big process module; contrast 'Unauthorized use' red cross versus 'Authorized recovery' green check; label 'Not secure by appearance alone'. Panel/region (c): show key-protected features as two tangled feature streams; annotate red 'feature conflict' or 'discriminability collapse'; then a small disentanglement cue splitting into 'Utility identity cue' and 'Security key cue', with green checks for 'Stable VI-ReID' and 'Secure protection'. Keep the bottom region green-themed so it differs from the gold middle region. No global title. No centered module chain. No huge title boxes. No duplicate panels. No text/document/NLP concepts.",
+  "contributions": [
+    {"name": "Anonymization should be precise and cross-modal consistent"},
+    {"name": "Anonymous image should become key-controlled secure representation"},
+    {"name": "Key-protected features need utility-security disentanglement"}
+  ],
+  "figure": {
+    "figure_id": "fig_pp_reid_motivation_v5",
+    "plot_type": "motivation diagram",
+    "title": "Motivation",
+    "objective": "Redraw as a true motivation figure, not a flowchart. Strongly imitate the attached PPA motivation style: portrait academic panel, diagonal hatching, hand-drawn borders, dashed separators, diagnostic red crosses and green checks, local callouts, Mixed Gap arrows, lock/shield/person/feature icons. Use three visually distinct motivation regions: (a) anonymization breaks useful cues and creates Mixed Gap; (b) anonymous image is not secure without key-controlled authorization and verifiability; (c) key protection requires utility-security disentanglement to avoid discriminability collapse. Bottom region must be green-themed, middle region gold-themed. No global title or caption.",
+    "data_source": "Original PPA motivation image style reference and user-provided extension motivations",
+    "aspect_ratio": "3:4",
+    "reference_images": [
+      "PP/reference_assets/ppa_motivation_style_ref_1200.png"
+    ]
+  },
+  "evidence_summary": "Conceptual motivation figure, intentionally styled like the original PPA motivation rather than a flowchart."
+}

@@ -303,16 +303,16 @@ def _short_method_label(method: str) -> str:
 
 def _method_palette(methods: list[str]) -> dict[str, str]:
     palette = [
-        "#5b6472",
-        "#6f8fc9",
-        "#65a88f",
-        "#c9934a",
-        "#9a83c7",
-        "#c86d68",
-        "#5fa7b8",
-        "#b9798d",
-        "#8fac63",
-        "#9b83b6",
+        "#f6c28b",
+        "#f4a3a3",
+        "#d9a6d8",
+        "#8fbce6",
+        "#b7d7a8",
+        "#c5b4e3",
+        "#9fd3c7",
+        "#f0d084",
+        "#b8c0cc",
+        "#e7b7c8",
     ]
     return {method: palette[idx % len(palette)] for idx, method in enumerate(methods)}
 
@@ -756,7 +756,11 @@ def _render_main_results_bar(fig: dict[str, Any], state: dict, baseline: float |
 
     colors = _method_palette(methods)
     bar_colors = [colors[method] for method in methods]
-    hatches = ["//" if _method_is_oracle(method) else "" for method in methods]
+    hatch_cycle = ["//", "--", "xx", "\\\\", "..", "++", "oo", "///", "\\\\\\"]
+    hatches = [
+        "///" if _method_is_oracle(method) else hatch_cycle[idx % len(hatch_cycle)]
+        for idx, method in enumerate(methods)
+    ]
     x = np.arange(len(methods))
     labels = [_short_method_label(method) for method in methods]
     wide = str(fig.get("aspect_ratio") or "") == "4:1" or str(fig.get("chart_type") or "").endswith("1x4")
@@ -769,7 +773,7 @@ def _render_main_results_bar(fig: dict[str, Any], state: dict, baseline: float |
             ("avg_latency_seconds", "Latency", [float(_as_float((per_method.get(m) or {}).get("avg_latency_seconds")) or 0.0) for m in methods], [0.0] * len(methods), "{:.2f}"),
             ("route_rate", "Route", [float(_as_float((per_method.get(m) or {}).get("route_rate")) or 0.0) for m in methods], [0.0] * len(methods), "{:.2f}"),
         ]
-        fig_obj, axes_raw = plt.subplots(1, 4, figsize=_figure_size({"aspect_ratio": "4:1"}), sharex=False)
+        fig_obj, axes_raw = plt.subplots(1, 4, figsize=(9.8, 2.45), sharex=False)
         axes = list(axes_raw)
     else:
         metric_specs = [(metric, _metric_label(metric), values, errors, "{:.3f}")]
@@ -789,25 +793,25 @@ def _render_main_results_bar(fig: dict[str, Any], state: dict, baseline: float |
             x,
             vals,
             yerr=errs,
-            capsize=2.0,
-            width=0.62,
+            capsize=2.4,
+            width=0.64,
             color=bar_colors,
             edgecolor="#1f2937",
-            linewidth=0.42,
-            error_kw={"elinewidth": 0.75, "capthick": 0.75},
+            linewidth=0.72,
+            error_kw={"elinewidth": 0.8, "capthick": 0.8},
         )
         for bar, hatch in zip(bars, hatches):
             bar.set_hatch(hatch)
         if wide:
-            ax.set_title(ylabel, fontweight="bold", pad=3)
+            ax.set_title(ylabel, fontweight="bold", pad=4, fontsize=9.2)
         else:
             ax.set_ylabel(ylabel)
         if wide:
-            ax.set_xticks(x, labels, rotation=18, ha="right")
+            ax.set_xticks([])
             ax.tick_params(axis="x", length=0, pad=1)
         else:
             ax.set_xticks(x, labels, rotation=0, ha="center")
-        ax.grid(axis="y", color="#e5e7eb", linewidth=0.65)
+        ax.grid(axis="both", color="#d1d5db", linewidth=0.55, alpha=0.52)
         ax.set_axisbelow(True)
         top = max([v + e for v, e in zip(vals, errs)] + [0.01])
         if ylabel in {"Accuracy", "Route"}:
@@ -815,7 +819,10 @@ def _render_main_results_bar(fig: dict[str, Any], state: dict, baseline: float |
         else:
             ax.set_ylim(0, top * 1.18 if top > 0 else 1.0)
         for idx, (bar, value) in enumerate(zip(bars, vals)):
-            if idx not in annotate_indices:
+            show_label = idx in annotate_indices
+            if wide and len(vals) <= 7:
+                show_label = True
+            if not show_label:
                 continue
             ax.text(
                 bar.get_x() + bar.get_width() / 2,
@@ -823,13 +830,30 @@ def _render_main_results_bar(fig: dict[str, Any], state: dict, baseline: float |
                 fmt.format(value),
                 ha="center",
                 va="bottom",
-                fontsize=6.2 if wide else 7.0,
+                fontsize=7.2 if wide else 7.2,
                 rotation=0,
             )
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
     if wide:
-        fig_obj.tight_layout(pad=0.45, w_pad=0.55)
+        from matplotlib.patches import Patch
+
+        handles = [
+            Patch(facecolor=bar_colors[idx], edgecolor="#1f2937", hatch=hatches[idx], label=labels[idx])
+            for idx in range(len(methods))
+        ]
+        fig_obj.legend(
+            handles=handles,
+            loc="lower center",
+            ncol=min(len(methods), 7),
+            frameon=True,
+            edgecolor="#d1d5db",
+            fontsize=7.8,
+            handlelength=1.35,
+            columnspacing=0.95,
+            bbox_to_anchor=(0.5, 0.015),
+        )
+        fig_obj.subplots_adjust(left=0.055, right=0.995, top=0.84, bottom=0.18, wspace=0.22)
     else:
         fig_obj.tight_layout(pad=0.45)
     _save_native_matplotlib_figure(fig_obj, out_path)

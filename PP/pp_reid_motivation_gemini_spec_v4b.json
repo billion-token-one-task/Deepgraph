@@ -1,0 +1,27 @@
+{
+  "state_title": "PP-VI-ReID Motivation Layout Optimization",
+  "method_name": "Key-Controlled PP-VI-ReID Extension",
+  "reference_images": [
+    "PP/reference_assets/ppa_motivation_style_ref_1200.png"
+  ],
+  "problem_statement": "Redraw a camera-ready motivation figure for privacy-preserving visible-infrared person re-identification. Fix layout crowding and make the bottom two panels use different colors.",
+  "existing_weakness": "Coarse anonymization creates Mixed Gap; anonymous image is not secure representation; key protection can entangle utility identity cues and security key cues.",
+  "method_summary": "Use the attached PPA motivation image as style reference. Produce exactly three stacked horizontal panels with no global title and no bottom caption. Use compact serif labels and keep all text inside panels. Panel (a) is BLUE: RGB/IR images -> inconsistent/coarse anonymization -> Mixed Gap, broken contours, broken fine-grained cues; target is precise and cross-modal consistent anonymization preserving shared structure. Panel (b) is GOLD: anonymous image is not secure; red privacy leakage / unauthorized use; key-controlled gate; authorized recovery; verifiable secure representation. Panel (c) is GREEN, clearly different from panel (b): key-protected features -> feature disentanglement -> Utility Identity Features and Security Key Features -> stable VI-ReID retrieval / secure protection. Use diagonal hatch backgrounds, hand-drawn borders, dashed separators, red crosses, green checks, lock/shield/person/feature icons. Avoid duplicate panels, oversized centered headings, cropped text, and any text/document/NLP concepts.",
+  "contributions": [
+    {"name": "Precise cross-modal anonymization"},
+    {"name": "Key-controlled secure representation"},
+    {"name": "Utility-security disentanglement"}
+  ],
+  "figure": {
+    "figure_id": "fig_pp_reid_motivation_v4b",
+    "plot_type": "motivation diagram",
+    "title": "Motivation",
+    "objective": "Layout-optimized redraw. Three stacked panels only: (a) blue anonymization consistency, (b) gold key-controlled security, (c) green utility-security disentanglement. The lower two panels must not share the same color theme. Keep text short, balanced, inside boundaries, and close to the original PPA motivation style.",
+    "data_source": "User request and style reference",
+    "aspect_ratio": "3:2",
+    "reference_images": [
+      "PP/reference_assets/ppa_motivation_style_ref_1200.png"
+    ]
+  },
+  "evidence_summary": "Conceptual PP-VI-ReID motivation figure."
+}

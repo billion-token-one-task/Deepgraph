@@ -1,0 +1,38 @@
+{
+  "state_title": "Privacy-Preserving Visible-Infrared Person Re-Identification Motivation",
+  "method_name": "Key-Controlled PP-VI-ReID Extension",
+  "reference_images": [
+    "PP/7b091364cf932a1acd7c55b40620f4c5.png"
+  ],
+  "problem_statement": "Use the attached reference image only as a style reference. The new figure must explain the expanded motivation for PP-VI-ReID: (1) precise cross-modal consistent anonymization, (2) anonymous image is not a secure representation without key-controlled authorization and verifiability, and (3) key protection may collapse ReID discriminability unless utility identity features and security key features are disentangled.",
+  "existing_weakness": "Coarse PPA-style anonymization suppresses appearance but can destroy body contours, fine-grained identity cues, and shared RGB/IR structure. Its effects differ between visible and infrared images, creating a Mixed Gap. Static anonymous images are not controllable, authorized, or verifiably secure. Key protection improves security but may entangle identity and key/security features, reducing ReID retrieval utility.",
+  "method_summary": "Follow the reference figure style closely: portrait-oriented academic motivation figure, white background with subtle diagonal hatch, hand-drawn blue/gold borders, dashed horizontal separators, Times New Roman-like bold serif labels, red crosses and red problem labels, green checks, lock/shield/person/body-contour icons, thick arrows, and compact schematic thumbnails. Do not copy the exact content; redraw the new three-motivation story. Required content: Panel (a), blue: RGB and IR person images pass through coarse mosaic/blur/noise anonymization. Show sensitive appearance hidden with a green check, but broken contours/fine-grained cues and cross-modal inconsistency with red crosses. Put a red 'Mixed Gap' between RGB and IR anonymous features. End with target label 'Precise & Consistent Anonymization'. Panel (b), gold: show 'Anonymous image' as a static transformed sample, with red risks 'privacy leakage' and 'unauthorized use'. Then a key-controlled gate with lock/key and shield. Show unauthorized path blocked with red cross, authorized recovery path with green check, and secure representation labeled 'controllable / authorized / verifiable'. Panel (c), green or blue-gold: show key-protected feature space. Put a red tangled bundle labeled 'identity cues + key/security cues' and 'discriminability collapse'. Then split with a disentanglement module into 'utility identity feature' and 'security key feature'. Finish with 'Stable VI-ReID retrieval' and a green check. Exactly three panels, labels (a)(b)(c), no global title, no bottom caption, no duplicate panel, no generic ML downstream task, no text/document/NLP concepts.",
+  "contributions": [
+    {
+      "name": "Precise and cross-modal consistent anonymization"
+    },
+    {
+      "name": "Key-controlled secure representation beyond anonymous image"
+    },
+    {
+      "name": "Utility-security disentanglement under key protection"
+    }
+  ],
+  "figure": {
+    "figure_id": "fig_pp_reid_motivation_v3",
+    "plot_type": "motivation diagram",
+    "title": "Motivation",
+    "objective": "Use the attached reference image as the visual style anchor and redraw a new PP-VI-ReID extension motivation figure. Exactly three horizontal panels stacked vertically. Panel (a): precise and cross-modal consistent anonymization, showing Mixed Gap from inconsistent RGB/IR anonymization and preservation of shared structure. Panel (b): anonymous image is not secure representation, requiring key-controlled gate, authorization, recovery, and verifiability. Panel (c): after key protection, disentangle utility identity features from security key features to avoid ReID discriminability collapse. No global title, no caption, no repeated panel, no unrelated text/document/NLP elements.",
+    "data_source": "User-provided PP-VI-ReID extension motivation and attached original PPA motivation figure",
+    "aspect_ratio": "3:2",
+    "reference_images": [
+      "PP/7b091364cf932a1acd7c55b40620f4c5.png"
+    ]
+  },
+  "evidence_summary": "Conceptual motivation figure using the original PPA motivation image as style reference.",
+  "baseline_metric_name": null,
+  "baseline_metric_value": null,
+  "best_metric_value": null,
+  "effect_pct": null,
+  "verdict": null
+}

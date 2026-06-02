@@ -1,0 +1,38 @@
+{
+  "state_title": "Privacy-Preserving Visible-Infrared Person Re-Identification Motivation",
+  "method_name": "Key-Controlled PP-VI-ReID Extension",
+  "reference_images": [
+    "PP/7b091364cf932a1acd7c55b40620f4c5.png"
+  ],
+  "problem_statement": "Redraw and improve the PP-VI-ReID motivation figure. The previous generated layout had oversized labels, crowded lower regions, and the bottom two panels used similar colors. The new figure must keep the original PPA-style visual language while making the layout camera-ready and balanced.",
+  "existing_weakness": "Coarse anonymization creates inconsistent RGB/IR perturbations and Mixed Gap. Static anonymous images are not secure representations. Key protection can entangle identity and security cues, causing ReID discriminability collapse unless features are disentangled.",
+  "method_summary": "Use the attached reference image only as style reference. Create exactly three horizontal panels stacked vertically, with clear equal-height allocation and consistent margins. The canvas must not crop any text or object. Use compact Times-like serif labels, avoid oversized headers, avoid long sentences, and leave enough whitespace between arrows, icons, and labels. Panel (a) should use a blue border and light blue diagonal hatch. Panel (b) should use a gold border and light gold diagonal hatch. Panel (c) must use a clearly different green border and light green diagonal hatch, not gold/yellow. Do not use the same dominant color for panels (b) and (c). Keep the panel captions inside the upper-left of each panel, not as huge centered titles. Required content: (a) 'Precise & Consistent Anonymization': RGB/IR images, coarse or inconsistent anonymization, red 'Mixed Gap', red crosses for broken contours/fine-grained cues, green checks for preserved clothing texture / pose structure / shared structure. (b) 'Key-Controlled Security': anonymous image is not secure, red cross for unauthorized use/privacy leakage, key-controlled gate with lock/key, authorized recovery, verifiable secure representation with shield and green check. (c) 'Utility-Security Disentanglement': key-protected features enter a disentanglement block, split into 'Utility Identity Features' and 'Security Key Features', avoid red feature conflict, output stable VI-ReID retrieval and secure protection. Make panel (c) visually green-themed and distinct from panel (b). No global title, no bottom caption, no duplicate panels, no generic downstream task, no text/document/NLP elements.",
+  "contributions": [
+    {
+      "name": "Precise and cross-modal consistent anonymization"
+    },
+    {
+      "name": "Key-controlled secure representation beyond anonymous image"
+    },
+    {
+      "name": "Utility-security disentanglement under key protection"
+    }
+  ],
+  "figure": {
+    "figure_id": "fig_pp_reid_motivation_v4",
+    "plot_type": "motivation diagram",
+    "title": "Motivation",
+    "objective": "Optimize the layout of the PP-VI-ReID motivation figure. Exactly three stacked panels, each with balanced internal spacing and no cropped or overflowing text. Panel (a) blue: precise and cross-modal consistent anonymization, Mixed Gap, broken contours/fine-grained cues, preserved shared structure. Panel (b) gold: anonymous image is not secure representation, key-controlled authorization and verifiability. Panel (c) green: utility-security feature disentanglement after key protection; do not color panel (c) like panel (b). Use the original PPA motivation figure style: diagonal hatch background, hand-drawn borders, dashed separators, Times serif labels, red problem labels, green checks, lock/shield/person/feature icons. No global title or caption.",
+    "data_source": "User layout optimization request and attached original PPA motivation figure",
+    "aspect_ratio": "3:2",
+    "reference_images": [
+      "PP/7b091364cf932a1acd7c55b40620f4c5.png"
+    ]
+  },
+  "evidence_summary": "Conceptual motivation figure, layout-optimized with distinct color themes for panels (b) and (c).",
+  "baseline_metric_name": null,
+  "baseline_metric_value": null,
+  "best_metric_value": null,
+  "effect_pct": null,
+  "verdict": null
+}

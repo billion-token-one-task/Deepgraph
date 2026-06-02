@@ -61,7 +61,7 @@
                 </button>
                 <button class="nav-item" data-tab="explore">
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="7.5" stroke="currentColor" stroke-width="1.5"/><circle cx="10" cy="10" r="3" stroke="currentColor" stroke-width="1.5"/><path d="M10 2.5V5M10 15v2.5M2.5 10H5M15 10h2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-                    <span>Explore</span>
+                    <span>Explore Map</span>
                 </button>
                 <button class="nav-item" data-tab="evidence">
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="6" cy="5" r="1" fill="currentColor"/><circle cx="10" cy="10" r="1" fill="currentColor"/><circle cx="14" cy="15" r="1" fill="currentColor"/></svg>
@@ -73,30 +73,18 @@
                 </button>
                 <button class="nav-item" data-tab="discoveries">
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M10 1L12.5 6.5 18.5 7.5 14 11.5 15 17.5 10 14.5 5 17.5 6 11.5 1.5 7.5 7.5 6.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
-                    <span>Discoveries</span>
-                </button>
-                <button class="nav-item" data-tab="experiments">
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M10 2v6M7 5l3 3 3-3M4 10h12v7H4z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M7 13h6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-                    <span>Experiments</span>
-                </button>
-                <button class="nav-item" data-tab="insights">
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M10 2a5 5 0 014.5 7.1L14 12H6l-.5-2.9A5 5 0 0110 2z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M7 14h6M8 16h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-                    <span>Insights</span>
-                </button>
-                <button class="nav-item" data-tab="feed">
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M3 4h14M3 8h10M3 12h12M3 16h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-                    <span>Feed</span>
+                    <span>Paper Ideas</span>
                 </button>
                 <button class="nav-item" data-tab="providers">
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><rect x="2" y="3" width="16" height="5" rx="1.5" stroke="currentColor" stroke-width="1.5"/><rect x="2" y="12" width="16" height="5" rx="1.5" stroke="currentColor" stroke-width="1.5"/><circle cx="5" cy="5.5" r="1" fill="currentColor"/><circle cx="5" cy="14.5" r="1" fill="currentColor"/></svg>
-                    <span>Providers</span>
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><rect x="5" y="6" width="10" height="9" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M8 3h4M10 3v3M7.5 10h.01M12.5 10h.01M8 13h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M3 10h2M15 10h2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                    <span>Runtime</span>
                 </button>
             </div>
 
             <div class="sidebar-footer">
                 <div class="pipeline-controls" style="font-size:0.72rem;color:var(--text-dim);line-height:1.5;">
                     Fixed-flow mode:
-                    pipeline, discovery, experiments, and manuscript generation run automatically.
+                    pipeline, discovery, validation, and manuscript generation run automatically.
                 </div>
             </div>
         </nav>
@@ -156,7 +144,7 @@
                                 <svg width="22" height="22" viewBox="0 0 20 20" fill="none"><path d="M10 2v6M7 5l3 3 3-3M4 10h12v7H4z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M7 13h6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
                             </div>
                             <div class="stat-number" id="statExperiments">0</div>
-                            <div class="stat-label">Experiments</div>
+                            <div class="stat-label">Validation Runs</div>
                         </div>
                         <div class="stat-card" title="深度发现条目数（含各 Tier）">
                             <div class="stat-icon stat-icon-gold">
@@ -194,17 +182,6 @@
                             <p class="empty-msg">Run the pipeline to discover gaps, contradictions, and opportunities.</p>
                         </div>
                     </div>
-
-                    <!-- Taxonomy tree preview -->
-                    <div class="card card-graph-preview">
-                        <div class="card-header">
-                            <h3>Taxonomy Map</h3>
-                            <button class="btn-link" id="btnJumpExplore">Open in Explore</button>
-                        </div>
-                        <div class="graph-preview-wrap">
-                            <svg id="overviewGraphSvg" width="100%" height="320"></svg>
-                        </div>
-                    </div>
                 </div>
             </section>
 
@@ -216,7 +193,7 @@
                         <div class="card-header">
                             <h3 id="exploreTitle">Research Area Explorer</h3>
                         </div>
-                        <svg id="exploreGraphSvg" width="100%" height="520"></svg>
+                        <svg id="exploreGraphSvg" width="100%" height="600"></svg>
                     </div>
                     <div class="card" id="exploreSummaryCard" style="display:none;">
                         <div class="card-header">
@@ -261,22 +238,38 @@
             <!-- ── Papers Tab ───────────────────────────────────── -->
             <section class="tab-panel" id="tab-papers">
                 <div class="tab-scroll">
-                    <div class="card">
-                        <div class="card-header">
-                            <h3>Paper Database</h3>
+                    <div class="card paper-library-card">
+                        <div class="card-header paper-library-header">
+                            <div>
+                                <h3>Paper Library</h3>
+                                <div class="paper-library-subtitle">Notebook-style reading desk for DeepGraph-generated manuscripts.</div>
+                            </div>
                             <div class="papers-controls">
                                 <input type="text" id="papersSearch" class="search-input-sm" placeholder="Filter papers...">
                                 <select id="papersStatus" class="select-input-sm">
                                     <option value="">All statuses</option>
-                                    <option value="extracted">Extracted</option>
-                                    <option value="reasoned">Reasoned</option>
-                                    <option value="processing">Processing</option>
-                                    <option value="fetched">Fetched</option>
-                                    <option value="error">Error</option>
+                                    <option value="bundle_ready">Bundle ready</option>
+                                    <option value="drafting">Drafting</option>
+                                    <option value="failed">Failed</option>
+                                    <option value="not_started">Not started</option>
                                 </select>
                             </div>
                         </div>
-                        <div class="papers-list" id="papersList"></div>
+                        <div class="paper-library-shell">
+                            <aside class="paper-notes-pane">
+                                <div class="paper-notes-heading">
+                                    <span>Manuscripts</span>
+                                    <span id="papersCountBadge">0 papers</span>
+                                </div>
+                                <div class="papers-list" id="papersList"></div>
+                            </aside>
+                            <article class="paper-reader-pane" id="paperDetail">
+                                <div class="paper-reader-empty">
+                                    <div class="paper-reader-empty-title">Select a paper</div>
+                                    <p>Choose a generated manuscript from the notebook list to open a submission-style reading page.</p>
+                                </div>
+                            </article>
+                        </div>
                     </div>
                 </div>
             </section>
@@ -286,7 +279,7 @@
                 <div class="tab-scroll">
                     <div class="card">
                         <div class="card-header">
-                            <h3>Deep Discoveries</h3>
+                            <h3>Generated Paper Ideas</h3>
                             <div class="opp-controls">
                                 <select id="discoveryTierFilter" class="select-input-sm">
                                     <option value="">All Tiers</option>
@@ -355,56 +348,15 @@
                 </div>
             </section>
 
-            <!-- ── Opportunities Tab ────────────────────────────── -->
-            <section class="tab-panel" id="tab-insights">
-                <div class="tab-scroll">
-                    <div class="card">
-                        <div class="card-header">
-                            <h3>Research Insights</h3>
-                            <div class="opp-controls">
-                                <select id="insightTypeFilter" class="select-input-sm">
-                                    <option value="">All types</option>
-                                    <option value="contradiction_analysis">Contradiction Analysis</option>
-                                    <option value="method_transfer">Method Transfer</option>
-                                    <option value="assumption_challenge">Assumption Challenge</option>
-                                    <option value="ignored_limitation">Ignored Limitation</option>
-                                    <option value="paradigm_exhaustion">Paradigm Exhaustion</option>
-                                </select>
-                                <select id="insightSortFilter" class="select-input-sm">
-                                    <option value="paradigm">Paradigm-Breaking</option>
-                                    <option value="score">By N+F Score</option>
-                                    <option value="novelty">By Novelty</option>
-                                    <option value="feasibility">By Feasibility</option>
-                                    <option value="recent">Most Recent</option>
-                                </select>
-                            </div>
-                        </div>
-                        <div class="insights-list" id="insightsList"></div>
-                    </div>
-                </div>
-            </section>
-
-            <!-- ── Feed Tab ─────────────────────────────────────── -->
-            <section class="tab-panel" id="tab-feed">
-                <div class="tab-scroll">
-                    <div class="card card-feed">
-                        <div class="card-header">
-                            <h3>Pipeline Event Feed</h3>
-                            <span class="badge badge-dim" id="feedCount">0 events</span>
-                        </div>
-                        <div class="event-feed" id="eventFeed"></div>
-                    </div>
-                </div>
-            </section>
-
             <!-- ── Providers Tab ────────────────────────────────── -->
             <section class="tab-panel" id="tab-providers">
                 <div class="tab-scroll">
                     <div class="card">
                         <div class="card-header">
-                            <h3>LLM Providers</h3>
+                            <h3>Model & Runtime</h3>
                             <span class="badge badge-dim" id="providerRefresh">Auto-refresh 10s</span>
                         </div>
+                        <div id="runtimeConfigPanel"></div>
                         <div class="providers-grid" id="providersList"></div>
                     </div>
                 </div>

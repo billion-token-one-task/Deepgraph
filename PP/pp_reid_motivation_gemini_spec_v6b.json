@@ -1,0 +1,22 @@
+{
+  "state_title": "PP-VI-ReID Extension Motivation",
+  "method_name": "Key-Controlled PP-VI-ReID",
+  "reference_images": ["PP/reference_assets/ppa_motivation_style_ref_1200.png"],
+  "problem_statement": "Content-locked PP-VI-ReID motivation figure. Previous outputs looked stylistically plausible but had wrong scientific content.",
+  "existing_weakness": "Coarse anonymization hides appearance but breaks useful ReID cues and creates Mixed Gap. Anonymous image is not a secure representation. Key protection can entangle identity and security features and collapse ReID discriminability.",
+  "method_summary": "Use attached image as style reference. Portrait 3:4 motivation figure, not flowchart. Three stacked diagnostic panels with dashed separators, diagonal hatch, hand-drawn borders, Times-like labels, red crosses, green checks. (a) Blue panel: 'Precise & Consistent Anonymization'. RGB and IR images -> coarse anonymization. Green: 'Sensitive info hidden'. Red: 'Broken contours', 'Broken fine-grained cues', 'Shared structure damaged'. Red bidirectional 'Mixed Gap' between RGB anonymous features and IR anonymous features; label cause 'inconsistent RGB/IR impact'. Motivation callout: 'Suppress sensitive identity, preserve shared structure'. (b) Gold panel: 'Anonymous Image != Secure Representation'. Anonymous image alone is static/unsafe. Red branch: 'Unauthorized use', 'Identity leakage risk', red cross. Key-controlled lock/shield gate. Valid key branch: 'Authorized recovery' -> 'Retrieval representation', green check. Small labels: 'Controllable', 'Authorized', 'Verifiable'. No Mixed Gap in (b). (c) Green panel: 'Disentangle Utility and Security'. Key-protected features -> tangled cloud 'Identity cues + key/security cues'. Red: 'Feature entanglement', 'Discriminability collapse'. Split into 'Utility identity feature' -> 'Stable VI-ReID retrieval' green check, and 'Security key feature' -> 'Secure authorization' shield/check. No face recognition, no generic ML pipeline, no NLP/text/document.",
+  "contributions": [
+    {"name": "Precise cross-modal anonymization"},
+    {"name": "Key-controlled secure representation"},
+    {"name": "Utility-security disentanglement"}
+  ],
+  "figure": {
+    "figure_id": "fig_pp_reid_motivation_v6b",
+    "plot_type": "motivation diagram",
+    "title": "Motivation",
+    "objective": "Strict content. Three stacked panels: (a) anonymization hides sensitive info but breaks contours/fine-grained cues/shared structure and creates Mixed Gap from inconsistent RGB/IR impact; (b) anonymous image is not secure, key gate enables authorized recovery and verifiable retrieval representation; (c) key-protected features entangle identity and security cues, disentangle to stable VI-ReID retrieval and secure authorization. Style like attached PPA motivation. No global title.",
+    "data_source": "User corrected motivation text",
+    "aspect_ratio": "3:4",
+    "reference_images": ["PP/reference_assets/ppa_motivation_style_ref_1200.png"]
+  }
+}

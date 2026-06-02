@@ -1,0 +1,32 @@
+{
+  "state_title": "Towards Cross-Modal Preservation, Consistency and Alignment for Privacy-Preserving Visible-Infrared Person Re-Identification: Extended Motivation",
+  "method_name": "Key-Controlled Privacy-Preserving Visible-Infrared ReID",
+  "problem_statement": "Privacy-preserving visible-infrared person re-identification must anonymize sensitive visual identity information while retaining cross-modal retrieval cues. Existing PP-VI-ReID anonymization such as mosaic, blur, and noise often applies coarse perturbations uniformly. This hides appearance but also destroys body contours, fine-grained local identity cues, and cross-modal shared structure. The effect is not consistent across RGB and infrared: RGB perturbation mainly changes texture and color details, whereas infrared perturbation changes contour and thermal structure. This introduces an anonymization gap coupled with the original modality gap, producing a Mixed Gap that harms feature alignment and retrieval.",
+  "existing_weakness": "The original PPA motivation focuses on anonymized images, but an anonymous image is still only a static transformed sample. It does not automatically guarantee minimized identity leakage, resistance to unauthorized direct use, or authorized recovery into the best retrieval representation domain. After adding key-controlled protection, encryption and recovery may further disturb protected-branch features. Without explicit disentanglement, identity-discriminative cues and security-control cues become entangled, so stronger privacy may cause retrieval discriminability collapse.",
+  "method_summary": "Draw a camera-ready motivation figure consistent with the visual language of the provided PPA paper motivation figure. Use a white academic background with subtle diagonal hatch texture, thin hand-drawn-looking panel borders, dashed separators, serif Times-like labels, blue and gold accents, green success cues, and red problem annotations. The figure should have three compact scientific panels labeled (a), (b), and (c), arranged as stacked regions or a dense asymmetric multi-region publication diagram. Panel (a) should show the first motivation: coarse anonymization on RGB/IR person images hides sensitive appearance but damages contour, fine-grained retrieval cues, and cross-modal shared structure; inconsistent RGB vs IR effects create a red Mixed Gap. The desired direction is precise and cross-modal consistent anonymization that suppresses sensitive identity information while preserving useful structure. Panel (b) should show the second motivation: an anonymized image is not equal to a truly secure representation. Show a static anonymous image, then a key-controlled privacy gate with lock/shield icons. Show unauthorized direct use blocked with a red cross, and authorized recovery to a retrieval domain with a green check. Include the concepts controllable, authorized, and verifiable as small embedded labels. Panel (c) should show the third motivation: after key protection, protected features can be perturbed and identity cues can entangle with security/key cues, leading to discriminability collapse. Show explicit disentanglement into utility-related identity features and security-related key features, then stable retrieval. Use concise labels only; avoid long paragraphs. Do not add a large title or caption inside the image.",
+  "contributions": [
+    {
+      "name": "More precise and cross-modal consistent anonymization for PP-ReID"
+    },
+    {
+      "name": "Anonymous images upgraded into key-controlled, authorized, verifiable secure representations"
+    },
+    {
+      "name": "Utility-security feature disentanglement to prevent retrieval discriminability collapse"
+    }
+  ],
+  "figure": {
+    "figure_id": "fig_pp_reid_extended_motivation",
+    "plot_type": "motivation diagram",
+    "title": "Motivation for extended privacy-preserving VI-ReID",
+    "objective": "Create a motivation figure for an extension of the PPA PP-VI-ReID paper. Preserve the original paper's diagram style: white background, subtle diagonal hatch lines, hand-drawn blue/gold panel borders, dashed separators, serif Times-like text, lock/shield/person icons, green check marks, red crosses, and red Mixed Gap annotations. The figure must communicate exactly three motivations: (a) precise and cross-modal consistent anonymization; (b) anonymous image does not equal secure representation, requiring key-controlled authorization and verifiability; (c) key protection can collapse discriminability unless utility identity features and security key features are disentangled. Use short English labels suitable for a machine learning paper figure. No standalone title, no bottom caption, no decorative poster style.",
+    "data_source": "User-provided PP-VI-ReID extension motivation and the original PPA motivation figure style",
+    "aspect_ratio": "3:2"
+  },
+  "evidence_summary": "The requested figure is conceptual, not numeric. It should visually motivate the extension from static PPA-style anonymization to key-controlled secure privacy representation and utility-security disentanglement.",
+  "baseline_metric_name": null,
+  "baseline_metric_value": null,
+  "best_metric_value": null,
+  "effect_pct": null,
+  "verdict": null
+}

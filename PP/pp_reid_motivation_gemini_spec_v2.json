@@ -1,0 +1,32 @@
+{
+  "state_title": "Privacy-Preserving Visible-Infrared Person Re-Identification Motivation",
+  "method_name": "Key-Controlled PP-VI-ReID Extension",
+  "problem_statement": "The figure is for a PP-VI-ReID paper extension, not for text anonymization. The only domain is visible-infrared person re-identification. It must explain three motivations: first, coarse image anonymization damages retrieval-useful body structure and creates an inconsistent RGB/IR anonymization effect, producing a Mixed Gap; second, an anonymized image is a static transformed sample and is not automatically a secure representation unless controlled by a secret key with authorization and verifiability; third, key protection can perturb protected-branch features and entangle identity-discriminative cues with security/key cues, so explicit utility-security disentanglement is needed to preserve retrieval discriminability.",
+  "existing_weakness": "Original PPA-style anonymization can visually hide identity but is too coarse and inconsistent across RGB and infrared. Static anonymous images do not provide controllable authorization or verifiable security. Adding a key mechanism improves privacy but may collapse ReID utility unless identity and security features are disentangled.",
+  "method_summary": "Generate a clean academic motivation figure in the same style as the original PPA motivation image. Strict layout: exactly three stacked horizontal panels, labeled (a), (b), and (c) inside the upper-left corner of each panel. No global title. No extra bottom captions. No duplicate panels. Use only PP-VI-ReID image concepts; never mention text, documents, language, NLP, structured text, cameras as text anonymization, or generic downstream task. Panel (a), blue border: show RGB person image and IR person image; coarse mosaic/blur/noise anonymization; red labels 'broken contours', 'broken fine-grained cues', 'Mixed Gap'; green check labels 'sensitive appearance hidden' and 'shared structure preserved'; final label 'Precise & Consistent Anonymization'. Panel (b), gold border: show anonymous image is not equal to secure representation; static anonymous image has red privacy leakage and unauthorized use; a lock/key-controlled gate maps it to a secure representation; show 'Unauthorized blocked' with red cross, 'Authorized recovery' with green check, and small labels 'controllable', 'authorized', 'verifiable'. Panel (c), green border: show protected feature after key protection; red entangled bundle labeled 'identity cues + key/security cues'; split into two branches labeled 'Utility identity feature' and 'Security key feature'; recombine or align toward 'Stable ReID retrieval' with green check. Preserve visual style: white background with subtle diagonal hatch, hand-drawn blue/gold/green borders, dashed separators, Times New Roman serif bold labels, small icons such as lock, shield, person silhouette, feature blocks, red crosses, green checks, thick arrows. Keep text short and readable. Avoid poster design, large headings, explanatory paragraphs, and unrelated icons.",
+  "contributions": [
+    {
+      "name": "Precise and cross-modal consistent anonymization"
+    },
+    {
+      "name": "Key-controlled secure representation beyond static anonymous images"
+    },
+    {
+      "name": "Utility-security disentanglement to avoid ReID discriminability collapse"
+    }
+  ],
+  "figure": {
+    "figure_id": "fig_pp_reid_motivation_v2",
+    "plot_type": "motivation diagram",
+    "title": "Motivation",
+    "objective": "STRICT REQUIREMENTS: Draw exactly three stacked panels (a), (b), (c), matching the original PPA motivation figure style with diagonal hatch background, hand-drawn borders, dashed separators, serif labels, lock/shield/person icons, red problem labels and green check marks. No global title and no caption text inside the image. Do not duplicate panels. Do not mention text anonymization, documents, NLP, or generic downstream tasks. Panel (a): RGB/IR anonymization inconsistency creates Mixed Gap; desired precise and consistent anonymization preserves shared structure. Panel (b): anonymous image is not secure representation; key-controlled gate blocks unauthorized use and enables authorized recovery/verifiable security. Panel (c): key protection may entangle identity cues and key/security cues; explicit disentanglement yields utility identity features, security key features, and stable ReID retrieval.",
+    "data_source": "User-provided PP-VI-ReID extension motivation and original PPA motivation figure style",
+    "aspect_ratio": "3:2"
+  },
+  "evidence_summary": "Conceptual motivation figure for PP-VI-ReID expansion.",
+  "baseline_metric_name": null,
+  "baseline_metric_value": null,
+  "best_metric_value": null,
+  "effect_pct": null,
+  "verdict": null
+}

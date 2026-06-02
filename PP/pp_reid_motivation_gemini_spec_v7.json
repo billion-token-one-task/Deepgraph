@@ -1,0 +1,14 @@
+{
+  "state_title": "PP-VI-ReID Motivation",
+  "method_name": "Key-Controlled PP-VI-ReID",
+  "reference_images": ["PP/reference_assets/ppa_motivation_style_ref_1200.png"],
+  "image_prompt_override": "Use the attached image as the style reference. Generate one portrait 3:4 academic motivation figure for privacy-preserving visible-infrared person re-identification. It must look like the reference PPA motivation figure: white background, subtle diagonal hatch, hand-drawn blue/gold/green panel borders, dashed horizontal separators, bold Times-style serif labels, red crosses, green checks, lock/shield/person/body-contour/feature-stack icons, local diagnostic callouts. Do not make a clean pipeline/flowchart. No global title, no bottom caption.\n\nDraw exactly three stacked diagnostic panels:\n\n(a) Blue panel title: Precise & Consistent Anonymization. Show RGB and IR person images. Coarse anonymization hides sensitive appearance but damages useful retrieval cues. Include a green check callout: Sensitive info hidden. Include red cross callouts: Broken contours, Broken fine-grained cues, Shared structure damaged. Show RGB anonymous features and IR anonymous features separated by a red bidirectional arrow labeled Mixed Gap, caused by inconsistent RGB/IR impact. End with small green motivation note: preserve shared structure while suppressing sensitive identity.\n\n(b) Gold panel title: Anonymous Image != Secure Representation. Do NOT show Mixed Gap here. Show one anonymous image as a static transformed sample. Red attacker/no-key branch: Unauthorized use, Identity leakage risk, red cross. Then a small key-controlled gate with lock/key/shield. Valid key branch: Authorized recovery to Retrieval representation, green check. Add three small labels: Controllable, Authorized, Verifiable.\n\n(c) Green panel title: Disentangle Utility and Security. Show key-protected features entering a tangled feature cloud labeled Identity cues + key/security cues. Red warning labels: Feature entanglement, Discriminability collapse. Then split into two separate branches: Utility identity feature -> Stable VI-ReID retrieval with green check; Security key feature -> Secure authorization with shield/check. Make panel (c) clearly green-themed, not gold. Do not use face recognition, generic downstream ML task, text/document/NLP, or repeated panels. Keep all labels short and inside boundaries.",
+  "figure": {
+    "figure_id": "fig_pp_reid_motivation_v7_gemini_content_locked",
+    "plot_type": "motivation diagram",
+    "title": "Motivation",
+    "objective": "Gemini image generation with strict content and PPA style reference.",
+    "aspect_ratio": "3:4",
+    "reference_images": ["PP/reference_assets/ppa_motivation_style_ref_1200.png"]
+  }
+}

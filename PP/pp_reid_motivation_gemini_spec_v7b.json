@@ -1,0 +1,12 @@
+{
+  "state_title": "PP-VI-ReID Motivation",
+  "method_name": "Key-Controlled PP-VI-ReID",
+  "image_prompt_override": "Generate one portrait 3:4 academic motivation figure for privacy-preserving visible-infrared person re-identification. Style: like a PPA paper motivation figure, not a flowchart. White background with subtle diagonal hatch texture; hand-drawn panel borders; dashed horizontal separators; bold Times-style serif labels; red problem annotations and red crosses; green check marks; lock, shield, person, body contour, clothing texture, pose structure, feature-stack icons. Use three stacked diagnostic panels. No global title. No caption.\n\nPanel (a), blue border: title 'Precise & Consistent Anonymization'. Show RGB and IR person images. Coarse anonymization hides sensitive appearance but breaks useful ReID cues. Green check callout: 'Sensitive info hidden'. Red cross callouts: 'Broken contours', 'Broken fine-grained cues', 'Shared structure damaged'. Show RGB anonymous feature stacks and IR anonymous feature stacks with a red bidirectional arrow labeled 'Mixed Gap'. Add small cause label: 'inconsistent RGB / IR impact'.\n\nPanel (b), gold border: title 'Anonymous Image != Secure Representation'. Do not draw Mixed Gap here. Show an anonymous image as a static sample. Red branch with attacker/no-key icon: 'Unauthorized use' and 'Identity leakage risk', red cross. Show a key-controlled gate with lock/key/shield. Valid-key branch: 'Authorized recovery' to 'Retrieval representation', green check. Small labels: 'Controllable', 'Authorized', 'Verifiable'.\n\nPanel (c), green border: title 'Disentangle Utility and Security'. Show key-protected features entering a tangled cloud labeled 'Identity cues + key/security cues'. Red warning: 'Feature entanglement' and 'Discriminability collapse'. Split into two branches: 'Utility identity feature' -> 'Stable VI-ReID retrieval' with green check; 'Security key feature' -> 'Secure authorization' with shield/check. Make this panel clearly green, not gold. Avoid generic pipeline appearance, face recognition task, NLP/text/document concepts, and duplicated panels. Keep text short and inside boundaries.",
+  "figure": {
+    "figure_id": "fig_pp_reid_motivation_v7b_no_reference",
+    "plot_type": "motivation diagram",
+    "title": "Motivation",
+    "objective": "Gemini image generation with strict content, no reference image to reduce request size.",
+    "aspect_ratio": "3:4"
+  }
+}
