@@ -18,6 +18,7 @@ let events          = [];        // max 50
 let activePapers    = {};        // paper_id -> {title, step, startTime}
 let statsCache      = null;
 let allPapers       = [];
+let selectedPaperId = null;
 let allOpportunities = [];
 let taxonomyFlat    = [];        // flat list for Evidence dropdown
 let searchTimer     = null;
@@ -107,12 +108,6 @@ function onTabActivated(tab) {
             break;
         case 'experiments':
             loadExperimentsTab();
-            break;
-        case 'insights':
-            loadInsightsTab();
-            break;
-        case 'feed':
-            scrollFeedToBottom();
             break;
         case 'providers':
             if (!providersLoaded) loadProviders();
@@ -439,17 +434,6 @@ function renderRecentlyDiscovered(data, insights) {
     }).join('');
 }
 
-// ── Overview Graph Preview ───────────────────────────────────────────
-
-async function loadOverviewGraph() {
-    try {
-        const data = await api(`/api/taxonomy/${ROOT_NODE}`);
-        renderRadialGraph('overviewGraphSvg', data.node, data.children, 320, true);
-    } catch (e) {
-        console.error('Overview graph error:', e);
-    }
-}
-
 // ── Explore Tab ──────────────────────────────────────────────────────
 
 async function navigateTo(nodeId) {
@@ -473,7 +457,7 @@ async function navigateTo(nodeId) {
         el('exploreTitle').textContent = data.node.name + ' \u2014 Opportunity Map';
 
         // Graph
-        renderRadialGraph('exploreGraphSvg', data.node, data.children, 520, false);
+        renderRadialGraph('exploreGraphSvg', data.node, data.children, 600, false);
 
         // Summary card
         const sumCard = el('exploreSummaryCard');
@@ -692,122 +676,126 @@ function renderRadialGraph(svgId, parentNode, children, targetHeight, isPreview)
 
     const cx = width / 2;
     const cy = height / 2;
+    const pad = isPreview ? 22 : 30;
+    const cardW = Math.max(isPreview ? 132 : 170, Math.min(isPreview ? 172 : 220, width * (isPreview ? 0.22 : 0.20)));
+    const cardH = isPreview ? 78 : 94;
+    const rootW = Math.max(isPreview ? 180 : 230, Math.min(isPreview ? 240 : 300, width * 0.28));
+    const rootH = isPreview ? 112 : 132;
 
     if (!children || children.length === 0) {
-        svg.append('text')
-            .attr('x', cx).attr('y', cy - 8)
-            .attr('text-anchor', 'middle')
-            .attr('fill', '#9a9088').attr('font-size', '14px').attr('font-weight', '600')
-            .text('Leaf domain \u2014 see the detailed analysis below');
-        svg.append('text')
-            .attr('x', cx).attr('y', cy + 16)
-            .attr('text-anchor', 'middle')
-            .attr('fill', '#b5ada4').attr('font-size', '12px')
-            .text(trunc(parentNode.description || '', 80));
+        drawGraphBackdrop(svg, width, height, svgId);
+        const empty = svg.append('g').attr('transform', `translate(${cx - rootW / 2},${cy - rootH / 2})`);
+        empty.append('rect')
+            .attr('width', rootW).attr('height', rootH).attr('rx', 10)
+            .attr('fill', '#fffdf8').attr('stroke', '#d9cec0').attr('stroke-width', 1.4);
+        empty.append('text')
+            .attr('x', rootW / 2).attr('y', 38).attr('text-anchor', 'middle')
+            .attr('fill', '#2b2520').attr('font-size', isPreview ? '14px' : '16px').attr('font-weight', '800')
+            .text('Leaf research area');
+        empty.append('text')
+            .attr('x', rootW / 2).attr('y', 62).attr('text-anchor', 'middle')
+            .attr('fill', '#8d8074').attr('font-size', isPreview ? '11px' : '12px').attr('font-weight', '600')
+            .text(trunc(parentNode.name || '', isPreview ? 28 : 38));
+        empty.append('text')
+            .attr('x', rootW / 2).attr('y', 86).attr('text-anchor', 'middle')
+            .attr('fill', '#b5ada4').attr('font-size', '11px')
+            .text('See detailed analysis below');
         return;
     }
 
     const maxGap = Math.max(...children.map(c => c.gap_count || 0), 1);
-    const radius = Math.min(width, height) * (isPreview ? 0.32 : 0.34);
-    const angleStep = (2 * Math.PI) / children.length;
-
-    // Positions
-    const nodes = [{
+    const maxPapers = Math.max(...children.map(c => c.paper_count || 0), 1);
+    const maxMethods = Math.max(...children.map(c => c.method_count || 0), 1);
+    const root = {
         id: parentNode.id, name: parentNode.name, description: parentNode.description || '',
-        paper_count: 0, gap_count: 0, method_count: 0, isParent: true, x: cx, y: cy
-    }];
-    const links = [];
+        paper_count: children.reduce((sum, c) => sum + (c.paper_count || 0), 0),
+        gap_count: children.reduce((sum, c) => sum + (c.gap_count || 0), 0),
+        method_count: children.reduce((sum, c) => sum + (c.method_count || 0), 0),
+        x: cx - rootW / 2,
+        y: cy - rootH / 2,
+        w: rootW,
+        h: rootH,
+        isParent: true,
+    };
+    const childNodes = layoutTaxonomyCards(children, width, height, root, cardW, cardH, pad, isPreview)
+        .map((child, i) => ({
+            id: child.id,
+            name: child.name,
+            description: child.description || '',
+            paper_count: child.paper_count || 0,
+            gap_count: child.gap_count || 0,
+            method_count: child.method_count || 0,
+            x: child.x,
+            y: child.y,
+            w: cardW,
+            h: cardH,
+            rank: i,
+            isParent: false,
+        }));
 
-    children.forEach((child, i) => {
-        const angle = angleStep * i - Math.PI / 2;
-        const x = cx + Math.cos(angle) * radius;
-        const y = cy + Math.sin(angle) * radius;
-        nodes.push({
-            id: child.id, name: child.name, description: child.description || '',
-            paper_count: child.paper_count || 0, gap_count: child.gap_count || 0,
-            method_count: child.method_count || 0, isParent: false, x, y
-        });
-        links.push({ source: parentNode.id, target: child.id });
-    });
+    drawGraphBackdrop(svg, width, height, svgId);
 
-    const nodeMap = Object.fromEntries(nodes.map(n => [n.id, n]));
-
-    // Gradient for links
     const defs = svg.append('defs');
-    const grad = defs.append('linearGradient').attr('id', 'linkGrad-' + svgId)
-        .attr('gradientUnits', 'userSpaceOnUse');
-    grad.append('stop').attr('offset', '0%').attr('stop-color', 'rgba(196,112,75,0.3)');
-    grad.append('stop').attr('offset', '100%').attr('stop-color', 'rgba(196,112,75,0.06)');
+    const shadow = defs.append('filter').attr('id', 'taxonomyShadow-' + svgId).attr('x', '-20%').attr('y', '-20%').attr('width', '140%').attr('height', '140%');
+    shadow.append('feDropShadow').attr('dx', 0).attr('dy', 5).attr('stdDeviation', 7).attr('flood-color', '#4f3928').attr('flood-opacity', 0.08);
 
-    // Draw links
-    svg.append('g').selectAll('line')
-        .data(links).join('line')
-        .attr('x1', cx).attr('y1', cy)
-        .attr('x2', d => (nodeMap[d.target] || {}).x || cx)
-        .attr('y2', d => (nodeMap[d.target] || {}).y || cy)
-        .attr('stroke', `url(#linkGrad-${svgId})`)
-        .attr('stroke-width', 1.5);
+    const linkLayer = svg.append('g').attr('class', 'taxonomy-links');
+    const links = linkLayer.selectAll('path')
+        .data(childNodes).join('path')
+        .attr('d', d => curvedLink(root, d))
+        .attr('fill', 'none')
+        .attr('stroke', d => d.gap_count > 0 ? 'rgba(196,112,75,0.34)' : 'rgba(151,132,112,0.24)')
+        .attr('stroke-width', d => Math.max(1.2, Math.min(3.8, 1.2 + (d.paper_count / maxPapers) * 2.3)))
+        .attr('stroke-linecap', 'round');
 
-    // Draw nodes
-    const nodeG = svg.append('g').selectAll('g')
-        .data(nodes).join('g')
-        .attr('transform', d => `translate(${d.x},${d.y})`)
-        .attr('class', d => d.isParent ? 'graph-node-parent' : 'graph-node');
+    const rootG = svg.append('g')
+        .attr('class', 'graph-node-parent taxonomy-card taxonomy-root draggable')
+        .attr('transform', `translate(${root.x},${root.y})`);
+    drawRootCard(rootG, root, isPreview);
 
-    // Parent node
-    const parentG = nodeG.filter(d => d.isParent);
-    parentG.append('circle')
-        .attr('r', isPreview ? 28 : 34)
-        .attr('fill', '#faf5ee')
-        .attr('stroke', '#c4704b')
-        .attr('stroke-width', 2.5);
-    parentG.append('text')
-        .attr('text-anchor', 'middle').attr('dy', 4)
-        .attr('fill', '#c4704b').attr('font-size', isPreview ? '10px' : '11px').attr('font-weight', '700')
-        .text(d => trunc(d.name, isPreview ? 12 : 16));
+    const childG = svg.append('g').selectAll('g')
+        .data(childNodes).join('g')
+        .attr('class', 'graph-node taxonomy-card taxonomy-child draggable')
+        .attr('transform', d => `translate(${d.x},${d.y})`);
+    drawChildCards(childG, isPreview, maxGap, maxPapers, maxMethods);
 
-    // Child nodes
-    const childG = nodeG.filter(d => !d.isParent);
-
-    childG.append('circle')
-        .attr('r', d => {
-            const base = isPreview ? 18 : 22;
-            const max  = isPreview ? 36 : 46;
-            return Math.max(base, Math.min(max, base + (d.paper_count || 0) * 0.5));
+    let dragMoved = false;
+    const clampNode = d => {
+        d.x = Math.max(10, Math.min(width - d.w - 10, d.x));
+        d.y = Math.max(10, Math.min(height - d.h - 10, d.y));
+    };
+    const refreshLinks = () => {
+        links.attr('d', d => curvedLink(root, d));
+    };
+    const dragBehavior = d3.drag()
+        .on('start', function(event, d) {
+            dragMoved = false;
+            d._dragStartX = event.x;
+            d._dragStartY = event.y;
+            d3.select(this).classed('is-dragging', true).raise();
         })
-        .attr('fill', d => gapColor(d.gap_count, maxGap).fill)
-        .attr('stroke', d => gapColor(d.gap_count, maxGap).stroke)
-        .attr('stroke-width', d => d.gap_count > 0 ? 2 : 1.2);
-
-    // Labels
-    childG.append('text')
-        .attr('text-anchor', 'middle').attr('dy', isPreview ? -2 : -4)
-        .attr('fill', '#2b2520').attr('font-size', isPreview ? '9px' : '11px').attr('font-weight', '700')
-        .text(d => trunc(d.name, isPreview ? 14 : 20));
-
-    childG.append('text')
-        .attr('text-anchor', 'middle').attr('dy', isPreview ? 10 : 12)
-        .attr('fill', d => d.paper_count > 0 ? '#c4704b' : '#b5ada4')
-        .attr('font-size', isPreview ? '8px' : '10px').attr('font-weight', '700')
-        .text(d => d.paper_count > 0 ? d.paper_count + 'p' : 'empty');
-
-    if (!isPreview) {
-        childG.filter(d => d.gap_count > 0 || d.method_count > 0)
-            .append('text')
-            .attr('text-anchor', 'middle').attr('dy', 24)
-            .attr('font-size', '9px')
-            .attr('fill', d => d.gap_count > 0 ? '#3d8b5e' : '#9a9088')
-            .attr('font-weight', '600')
-            .text(d => {
-                const parts = [];
-                if (d.method_count > 0) parts.push(d.method_count + 'M');
-                if (d.gap_count > 0) parts.push(d.gap_count + ' gaps');
-                return parts.join(' | ');
-            });
-    }
+        .on('drag', function(event, d) {
+            if (Math.abs(event.x - d._dragStartX) + Math.abs(event.y - d._dragStartY) > 3) {
+                dragMoved = true;
+            }
+            d.x += event.dx;
+            d.y += event.dy;
+            clampNode(d);
+            d3.select(this).attr('transform', `translate(${d.x},${d.y})`);
+            refreshLinks();
+        })
+        .on('end', function(event, d) {
+            d3.select(this).classed('is-dragging', false);
+            window.setTimeout(() => { dragMoved = false; }, 80);
+            delete d._dragStartX;
+            delete d._dragStartY;
+        });
+    rootG.datum(root).call(dragBehavior);
+    childG.call(dragBehavior);
 
     // Click handler
     childG.on('click', (e, d) => {
+        if (dragMoved) return;
         if (isPreview) {
             switchTab('explore');
             navigateTo(d.id);
@@ -836,6 +824,242 @@ function renderRadialGraph(svgId, parentNode, children, targetHeight, isPreview)
         }).on('mousemove', positionTooltip)
           .on('mouseout', () => tip.classList.remove('visible'));
     }
+}
+
+function drawGraphBackdrop(svg, width, height, svgId) {
+    const defs = svg.append('defs');
+    const pattern = defs.append('pattern')
+        .attr('id', 'taxonomyDots-' + svgId)
+        .attr('width', 22).attr('height', 22)
+        .attr('patternUnits', 'userSpaceOnUse');
+    pattern.append('circle').attr('cx', 2).attr('cy', 2).attr('r', 1).attr('fill', 'rgba(196,112,75,0.10)');
+    svg.append('rect')
+        .attr('x', 0).attr('y', 0).attr('width', width).attr('height', height)
+        .attr('rx', 8).attr('fill', '#fffdf8');
+    svg.append('rect')
+        .attr('x', 10).attr('y', 10).attr('width', width - 20).attr('height', height - 20)
+        .attr('rx', 12).attr('fill', `url(#taxonomyDots-${svgId})`).attr('opacity', 0.55);
+}
+
+function layoutTaxonomyCards(children, width, height, root, cardW, cardH, pad, isPreview) {
+    const prepared = children.map(c => ({ ...c }));
+    const slots = [
+        { x: pad, y: pad + 8 },
+        { x: width - cardW - pad, y: pad + 8 },
+        { x: pad, y: height - cardH - pad },
+        { x: width - cardW - pad, y: height - cardH - pad },
+        { x: cxSlot(width, cardW, -0.27), y: pad + 4 },
+        { x: cxSlot(width, cardW, 0.27), y: height - cardH - pad + 2 },
+        { x: pad, y: height / 2 - cardH / 2 },
+        { x: width - cardW - pad, y: height / 2 - cardH / 2 },
+    ];
+    if (prepared.length <= slots.length) {
+        return prepared.map((child, idx) => ({ ...child, ...slots[idx] }));
+    }
+
+    const cols = Math.min(4, Math.max(2, Math.ceil(prepared.length / 2)));
+    const topY = pad + 8;
+    const bottomY = height - cardH - pad;
+    const availableW = width - pad * 2;
+    return prepared.map((child, idx) => {
+        const row = idx < cols ? 0 : 1;
+        const col = row === 0 ? idx : idx - cols;
+        const rowCount = row === 0 ? cols : prepared.length - cols;
+        const gap = rowCount > 1 ? (availableW - rowCount * cardW) / (rowCount - 1) : 0;
+        return {
+            ...child,
+            x: pad + col * (cardW + Math.max(10, gap)),
+            y: row === 0 ? topY : bottomY,
+        };
+    });
+}
+
+function cxSlot(width, cardW, offset) {
+    return width / 2 - cardW / 2 + width * offset;
+}
+
+function nodeCenter(d) {
+    return { x: d.x + d.w / 2, y: d.y + d.h / 2 };
+}
+
+function curvedLink(root, child) {
+    const a = nodeCenter(root);
+    const b = nodeCenter(child);
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const c1 = { x: a.x + dx * 0.42, y: a.y + dy * 0.08 };
+    const c2 = { x: b.x - dx * 0.42, y: b.y - dy * 0.08 };
+    return `M ${a.x} ${a.y} C ${c1.x} ${c1.y}, ${c2.x} ${c2.y}, ${b.x} ${b.y}`;
+}
+
+function drawRootCard(g, d, isPreview) {
+    g.append('rect')
+        .attr('width', d.w).attr('height', d.h).attr('rx', 12)
+        .attr('fill', '#fff6ed').attr('stroke', '#c4704b').attr('stroke-width', 1.8)
+        .attr('filter', `url(#taxonomyShadow-${g.node().ownerSVGElement.id})`);
+    g.append('rect')
+        .attr('x', 12).attr('y', 12).attr('width', 34).attr('height', 34).attr('rx', 8)
+        .attr('fill', '#c4704b');
+    g.append('text')
+        .attr('x', 29).attr('y', 34).attr('text-anchor', 'middle')
+        .attr('fill', '#fffdf8').attr('font-size', '17px').attr('font-weight', '900')
+        .text('DG');
+    appendFittedText(g, d.name, {
+        x: 58,
+        y: 28,
+        fill: '#2b2520',
+        'font-size': isPreview ? '14px' : '17px',
+        'font-weight': '850',
+    }, d.w - 72);
+    g.append('text')
+        .attr('x', 58).attr('y', 48)
+        .attr('fill', '#7a6d62').attr('font-size', isPreview ? '10px' : '12px').attr('font-weight', '600')
+        .text('Current research area');
+    drawMetricPills(g, [
+        [`${d.paper_count}`, 'papers', '#c4704b'],
+        [`${d.gap_count}`, 'gaps', '#3d8b5e'],
+        [`${d.method_count}`, 'methods', '#7c5cbf'],
+    ], 14, d.h - 34, d.w - 28, isPreview);
+}
+
+function drawChildCards(selection, isPreview, maxGap, maxPapers, maxMethods) {
+    selection.each(function(d) {
+        const g = d3.select(this);
+        const color = gapColor(d.gap_count, maxGap);
+        const hasPapers = d.paper_count > 0;
+        g.append('rect')
+            .attr('width', d.w).attr('height', d.h).attr('rx', 10)
+            .attr('fill', hasPapers ? '#ffffff' : '#fbfaf7')
+            .attr('stroke', hasPapers ? color.stroke : '#d9d2c7')
+            .attr('stroke-width', hasPapers ? 1.6 : 1.1)
+            .attr('filter', `url(#taxonomyShadow-${g.node().ownerSVGElement.id})`);
+        g.append('rect')
+            .attr('x', 0).attr('y', 0).attr('width', 6).attr('height', d.h).attr('rx', 3)
+            .attr('fill', hasPapers ? color.stroke : '#d9d2c7');
+        g.append('circle')
+            .attr('cx', d.w - 22).attr('cy', 22)
+            .attr('r', Math.max(8, Math.min(17, 8 + (d.paper_count / maxPapers) * 9)))
+            .attr('fill', hasPapers ? color.fill : '#f0ede6')
+            .attr('stroke', hasPapers ? color.stroke : '#d0c9bc')
+            .attr('stroke-width', 1.2);
+        g.append('text')
+            .attr('x', d.w - 22).attr('y', 26).attr('text-anchor', 'middle')
+            .attr('fill', hasPapers ? color.stroke : '#a79b90')
+            .attr('font-size', '10px').attr('font-weight', '850')
+            .text(d.paper_count || 0);
+        const words = wrapSvgLabel(d.name, isPreview ? 18 : 22, 2);
+        words.forEach((line, idx) => {
+            appendFittedText(g, line, {
+                x: 18,
+                y: 24 + idx * 15,
+                fill: '#2b2520',
+                'font-size': isPreview ? '12px' : '14px',
+                'font-weight': '800',
+            }, d.w - 70);
+        });
+        const desc = d.description || (hasPapers ? 'Evidence-bearing sub-area' : 'Awaiting evidence');
+        appendFittedText(g, desc, {
+            x: 18,
+            y: isPreview ? 52 : 58,
+            fill: '#8d8074',
+            'font-size': isPreview ? '9px' : '10.5px',
+            'font-weight': '600',
+        }, d.w - 36);
+        drawMetricPills(g, [
+            [`${d.paper_count}`, 'p', '#c4704b'],
+            [`${d.gap_count}`, 'gaps', '#3d8b5e'],
+            [`${d.method_count}`, 'm', '#7c5cbf'],
+        ], 14, d.h - 25, d.w - 28, isPreview);
+    });
+}
+
+function drawMetricPills(g, metrics, x, y, maxW, isPreview) {
+    const pillH = isPreview ? 18 : 20;
+    const gap = 6;
+    const pillW = Math.max(38, Math.min(70, (maxW - gap * (metrics.length - 1)) / metrics.length));
+    metrics.forEach(([value, label, color], idx) => {
+        const px = x + idx * (pillW + gap);
+        g.append('rect')
+            .attr('x', px).attr('y', y)
+            .attr('width', pillW).attr('height', pillH).attr('rx', 9)
+            .attr('fill', color + '14').attr('stroke', color + '44').attr('stroke-width', 1);
+        appendFittedText(g, `${value} ${label}`, {
+            x: px + pillW / 2,
+            y: y + (isPreview ? 12.5 : 14),
+            'text-anchor': 'middle',
+            fill: color,
+            'font-size': isPreview ? '8.5px' : '9.5px',
+            'font-weight': '850',
+        }, pillW - 8);
+    });
+}
+
+function appendFittedText(g, value, attrs, maxWidth) {
+    const text = g.append('text');
+    Object.entries(attrs || {}).forEach(([key, attrValue]) => text.attr(key, attrValue));
+    text.text(String(value || ''));
+    fitSvgText(text, maxWidth);
+    return text;
+}
+
+function fitSvgText(textSelection, maxWidth) {
+    const node = textSelection.node();
+    if (!node || !Number.isFinite(maxWidth) || maxWidth <= 0) {
+        if (node) node.textContent = '';
+        return;
+    }
+    const original = String(node.textContent || '').trim();
+    if (!original) return;
+    try {
+        if (node.getComputedTextLength() <= maxWidth) return;
+    } catch (e) {
+        node.textContent = trunc(original, Math.max(4, Math.floor(maxWidth / 7)));
+        return;
+    }
+    const ellipsis = '…';
+    let lo = 0;
+    let hi = original.length;
+    let best = '';
+    while (lo <= hi) {
+        const mid = Math.floor((lo + hi) / 2);
+        const candidate = original.slice(0, mid).trimEnd() + ellipsis;
+        node.textContent = candidate;
+        let fits = false;
+        try {
+            fits = node.getComputedTextLength() <= maxWidth;
+        } catch (e) {
+            fits = candidate.length * 7 <= maxWidth;
+        }
+        if (fits) {
+            best = candidate;
+            lo = mid + 1;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    node.textContent = best || ellipsis;
+}
+
+function wrapSvgLabel(text, maxChars, maxLines) {
+    const words = String(text || '').split(/\s+/).filter(Boolean);
+    const lines = [];
+    let line = '';
+    for (const word of words) {
+        const next = line ? `${line} ${word}` : word;
+        if (next.length > maxChars && line) {
+            lines.push(line);
+            line = word;
+        } else {
+            line = next;
+        }
+        if (lines.length >= maxLines) break;
+    }
+    if (lines.length < maxLines && line) lines.push(line);
+    if (!lines.length) return ['Untitled'];
+    if (lines.length === maxLines && words.join(' ').length > lines.join(' ').length) {
+        lines[lines.length - 1] = trunc(lines[lines.length - 1], maxChars - 1);
+    }
+    return lines;
 }
 
 function positionTooltip(e) {
@@ -1014,7 +1238,7 @@ function renderGaps(container, gaps) {
 async function loadPapers() {
     papersLoaded = true;
     try {
-        allPapers = await api('/api/papers?limit=200');
+        allPapers = await api('/api/generated_papers?limit=200');
         renderPapers();
     } catch (e) {
         console.error('Papers load error:', e);
@@ -1023,6 +1247,8 @@ async function loadPapers() {
 
 function renderPapers() {
     const list = el('papersList');
+    const detail = el('paperDetail');
+    const countBadge = el('papersCountBadge');
     const query = (el('papersSearch').value || '').toLowerCase();
     const status = el('papersStatus').value;
 
@@ -1030,147 +1256,149 @@ function renderPapers() {
     if (query) {
         filtered = filtered.filter(p =>
             (p.title || '').toLowerCase().includes(query) ||
-            (p.id || '').toLowerCase().includes(query)
+            (p.id || '').toLowerCase().includes(query) ||
+            (p.abstract || '').toLowerCase().includes(query) ||
+            (p.evidence_summary || '').toLowerCase().includes(query)
         );
     }
     if (status) {
         filtered = filtered.filter(p => p.status === status);
     }
+    if (countBadge) countBadge.textContent = `${filtered.length} paper${filtered.length === 1 ? '' : 's'}`;
 
     if (filtered.length === 0) {
-        list.innerHTML = '<p class="empty-msg">No papers found.</p>';
+        list.innerHTML = '<p class="empty-msg">No generated manuscripts found.</p>';
+        if (detail) {
+            detail.innerHTML = `<div class="paper-reader-empty">
+                <div class="paper-reader-empty-title">No matching manuscripts</div>
+                <p>Adjust the search text or status filter to reopen the generated-paper reader.</p>
+            </div>`;
+        }
         return;
     }
+    if (!selectedPaperId || !filtered.some(p => p.id === selectedPaperId)) {
+        selectedPaperId = filtered[0].id;
+    }
 
-    list.innerHTML = filtered.map(p => {
+    list.innerHTML = filtered.map((p, idx) => {
         const sc = p.status ? 's-' + p.status : '';
-        return `<div class="paper-row" data-paper-id="${esc(p.id)}" onclick="window._dg.togglePaper(this)">
-            <div class="paper-row-top">
-                <a class="paper-link" href="https://arxiv.org/abs/${esc(p.id)}" target="_blank" onclick="event.stopPropagation();">${esc(p.id)}</a>
-                <span class="paper-title">${esc(trunc(p.title, 100))}</span>
-                <span class="paper-date">${esc(p.created_at || '')}</span>
-                <span class="paper-status ${sc}">${esc(p.status || '')}</span>
+        const nodes = parseJsonArray(p.source_node_ids).slice(0, 3);
+        const bundleLabel = p.bundle_count ? `${p.bundle_count} bundle${p.bundle_count === 1 ? '' : 's'}` : `${p.asset_count || 0} assets`;
+        return `<div class="paper-note-card ${p.id === selectedPaperId ? 'active' : ''}" data-paper-id="${esc(p.id)}" onclick="window._dg.selectPaper('${esc(p.id)}')">
+            <div class="paper-note-kicker">
+                <span>Idea ${esc(String(p.insight_id || p.id))}</span>
+                <span class="paper-status ${sc}">${esc(p.status || 'unknown')}</span>
             </div>
-            <div class="paper-expanded-body">
-                <div class="paper-detail-loading">Loading details...</div>
-            </div>
+            <div class="paper-note-title">${esc(trunc(p.title, 92))}</div>
+            <div class="paper-note-meta">${esc(bundleLabel)}${p.updated_at ? ` · ${esc(p.updated_at.slice(0, 10))}` : ''}</div>
+            ${nodes.length ? `<div class="paper-note-tags">${nodes.map(c => `<span>${esc(c)}</span>`).join('')}</div>` : ''}
         </div>`;
     }).join('');
+    renderPaperDetail(selectedPaperId);
 }
 
-async function togglePaper(rowEl) {
-    const isExpanded = rowEl.classList.contains('expanded');
+async function selectPaper(pid) {
+    selectedPaperId = pid;
+    $$('.paper-note-card').forEach(card => card.classList.toggle('active', card.dataset.paperId === pid));
+    await renderPaperDetail(pid);
+}
 
-    // Collapse all others
-    $$('.paper-row.expanded').forEach(r => {
-        if (r !== rowEl) r.classList.remove('expanded');
-    });
-
-    if (isExpanded) {
-        rowEl.classList.remove('expanded');
-        return;
-    }
-
-    rowEl.classList.add('expanded');
-    const pid = rowEl.dataset.paperId;
-    const body = rowEl.querySelector('.paper-expanded-body');
-
+async function renderPaperDetail(pid) {
+    const detail = el('paperDetail');
+    const paper = allPapers.find(p => p.id === pid);
+    if (!detail || !paper) return;
+    detail.innerHTML = '<div class="paper-reader-loading">Loading generated manuscript...</div>';
     try {
-        const [claims, results] = await Promise.all([
-            api(`/api/claims?paper_id=${encodeURIComponent(pid)}`),
-            api(`/api/results?paper_id=${encodeURIComponent(pid)}&limit=20`)
-        ]);
+        const method = parseJsonObject(paper.proposed_method);
+        const nodes = parseJsonArray(paper.source_node_ids);
+        const assets = paper.assets || [];
+        const bundles = paper.bundles || [];
+        const assetRows = assets.slice(0, 18).map(a => {
+            const assetPath = a.path || '';
+            const url = `/papers/${encodeURIComponent(String(paper.insight_id))}/view/${encodeURI(assetPath)}`;
+            return `<tr>
+                <td><a href="${url}" target="_blank">${esc(assetPath)}</a></td>
+                <td>${esc(a.suffix || '-')}</td>
+                <td>${fmt(a.size || 0)}</td>
+            </tr>`;
+        }).join('');
+        const bundleRows = bundles.map(b => `<tr>
+            <td>${esc(b.bundle_format || 'bundle')}</td>
+            <td>${esc(b.bundle_status || b.status || 'ready')}</td>
+            <td>${esc(b.bundle_created_at || b.updated_at || '-')}</td>
+        </tr>`).join('');
 
-        let html = '';
-        if (claims.length > 0) {
-            html += '<div class="paper-claims"><strong style="color:var(--accent);font-size:0.75rem;">Claims & Insights</strong>';
-            for (const c of claims.slice(0, 8)) {
-                html += `<div class="paper-claim-item">${esc(c.claim_text || c.claim_type || '')}</div>`;
-            }
-            html += '</div>';
-        }
-        if (results.length > 0) {
-            html += '<div class="paper-claims" style="margin-top:10px;"><strong style="color:var(--gold);font-size:0.75rem;">Results</strong>';
-            for (const r of results.slice(0, 8)) {
-                const val = r.metric_value != null ? Number(r.metric_value).toFixed(2) : '';
-                html += `<div class="paper-claim-item">${esc(r.method_name || '')} on ${esc(r.dataset_name || '')}${val ? ': <b>' + val + '</b>' : ''} ${esc(r.metric_name || '')}</div>`;
-            }
-            html += '</div>';
-        }
-        if (!html) html = '<p class="empty-msg" style="padding:8px;">No claims or results extracted yet.</p>';
-        body.innerHTML = html;
+        detail.innerHTML = `
+            <div class="paper-arxiv-page">
+                <div class="paper-arxiv-topline">
+                    <span class="paper-status ${paper.status ? 's-' + paper.status : ''}">${esc(paper.status || 'unknown')}</span>
+                    <span>${esc(paper.manuscript_status || 'manuscript')}</span>
+                    <span>${fmt(paper.asset_count || 0)} assets</span>
+                    ${paper.bundle_count ? `<span>${fmt(paper.bundle_count)} bundle${paper.bundle_count === 1 ? '' : 's'}</span>` : ''}
+                </div>
+                <h1>${esc(paper.title || paper.id)}</h1>
+                <div class="paper-authors">DeepGraph generated manuscript · Idea ${esc(String(paper.insight_id))}</div>
+                <div class="paper-arxiv-meta">
+                    <span>${esc(paper.id)}</span>
+                    ${paper.updated_at ? `<span>updated ${esc(paper.updated_at)}</span>` : ''}
+                    ${paper.paper_root ? `<span>${esc(paper.paper_root)}</span>` : ''}
+                    ${nodes.map(c => `<span>${esc(c)}</span>`).join('')}
+                </div>
+                <div class="paper-actions">
+                    ${paper.preview_url ? `<a href="${esc(paper.preview_url)}" target="_blank">Preview page</a>` : ''}
+                    ${paper.pdf_url ? `<a href="${esc(paper.pdf_url)}" target="_blank">Open PDF</a>` : ''}
+                    ${paper.tex_url ? `<a href="${esc(paper.tex_url)}" target="_blank">Open TeX</a>` : ''}
+                </div>
+                <section class="paper-reader-section">
+                    <h4>Generated Abstract</h4>
+                    <p>${esc(paper.abstract || 'No generated abstract or problem framing is available yet.')}</p>
+                </section>
+                <section class="paper-reader-section">
+                    <h4>Paper Notes</h4>
+                    <ul class="paper-claim-list">
+                        ${paper.problem_statement ? `<li><strong>Problem.</strong> ${esc(paper.problem_statement)}</li>` : ''}
+                        ${method && (method.name || method.type || method.definition) ? `<li><strong>Method.</strong> ${esc([method.name, method.type, method.definition].filter(Boolean).join(' · '))}</li>` : ''}
+                        ${paper.evidence_summary ? `<li><strong>Evidence.</strong> ${esc(paper.evidence_summary)}</li>` : ''}
+                        ${paper.canonical_run_id ? `<li><strong>Canonical run.</strong> #${esc(String(paper.canonical_run_id))}</li>` : ''}
+                    </ul>
+                </section>
+                <section class="paper-reader-section">
+                    <h4>Submission Bundles</h4>
+                    ${bundleRows ? `<table class="paper-results-table"><thead><tr><th>Format</th><th>Status</th><th>Created</th></tr></thead><tbody>${bundleRows}</tbody></table>` : '<p class="empty-msg">No submission bundle has been recorded yet.</p>'}
+                </section>
+                <section class="paper-reader-section">
+                    <h4>Paper Assets</h4>
+                    ${assetRows ? `<table class="paper-results-table"><thead><tr><th>Asset</th><th>Type</th><th>Size</th></tr></thead><tbody>${assetRows}</tbody></table>` : '<p class="empty-msg">No manuscript assets found yet.</p>'}
+                </section>
+            </div>`;
     } catch (e) {
-        body.innerHTML = '<p class="empty-msg" style="padding:8px;">Failed to load details.</p>';
+        detail.innerHTML = '<p class="empty-msg" style="padding:18px;">Failed to load paper details.</p>';
+    }
+}
+
+function parseJsonArray(value) {
+    if (Array.isArray(value)) return value;
+    if (!value) return [];
+    try {
+        const parsed = JSON.parse(value);
+        return Array.isArray(parsed) ? parsed : [];
+    } catch (e) {
+        return String(value).split(',').map(x => x.trim()).filter(Boolean);
+    }
+}
+
+function parseJsonObject(value) {
+    if (value && typeof value === 'object' && !Array.isArray(value)) return value;
+    if (!value) return {};
+    try {
+        const parsed = JSON.parse(value);
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    } catch (e) {
+        return {};
     }
 }
 
 // ── Opportunities Tab ────────────────────────────────────────────────
-
-async function loadInsightsTab() {
-    const typeFilter = el('insightTypeFilter')?.value || '';
-    const sortFilter = el('insightSortFilter')?.value || 'score';
-    try {
-        let url = `/api/insights?limit=200`;
-        if (typeFilter) url += `&type=${typeFilter}`;
-        const insights = await api(url);
-
-        // Sort
-        if (sortFilter === 'paradigm') insights.sort((a, b) => (b.paradigm_score || 0) - (a.paradigm_score || 0));
-        else if (sortFilter === 'novelty') insights.sort((a, b) => b.novelty_score - a.novelty_score);
-        else if (sortFilter === 'feasibility') insights.sort((a, b) => b.feasibility_score - a.feasibility_score);
-        else if (sortFilter === 'recent') insights.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
-        // default: by combined score (already sorted by API)
-
-        const typeColors = {
-            contradiction_analysis: '#c4453a',
-            method_transfer: '#2e86ab',
-            assumption_challenge: '#a8842a',
-            ignored_limitation: '#7c5cbf',
-            paradigm_exhaustion: '#9a9088',
-            cross_domain_bridge: '#44aa88',
-        };
-
-        const list = el('insightsList');
-        if (!insights.length) {
-            list.innerHTML = '<p class="empty-msg">No insights discovered yet. Run the pipeline to analyze papers.</p>';
-            return;
-        }
-
-        list.innerHTML = insights.map(ins => {
-            const color = typeColors[ins.insight_type] || '#888';
-            let papers = [];
-            try { papers = JSON.parse(ins.supporting_papers || '[]'); } catch(e) {}
-            const paperLinks = papers.map(pid =>
-                `<a class="paper-cite" href="https://arxiv.org/abs/${esc(pid)}" target="_blank">${esc(pid)}</a>`
-            ).join(' ');
-
-            const ps = ins.paradigm_score || 0;
-            const psBadge = ps >= 7 ? `<span class="paradigm-badge high">P:${ps.toFixed(1)}</span>`
-                          : ps >= 5 ? `<span class="paradigm-badge mid">P:${ps.toFixed(1)}</span>`
-                          : ps > 0  ? `<span class="paradigm-badge low">P:${ps.toFixed(1)}</span>` : '';
-
-            return `<div class="insight-card" style="border-left: 3px solid ${color};">
-                <div class="insight-header">
-                    <span class="insight-type" style="color:${color};">${esc((ins.insight_type || '').replace(/_/g, ' '))}</span>
-                    ${psBadge}
-                    <span class="insight-scores">N:${ins.novelty_score}/5 F:${ins.feasibility_score}/5</span>
-                    <span class="insight-area" onclick="window._dg.exploreNode('${esc(ins.node_id)}')" style="cursor:pointer;color:#6a7a8a;font-size:0.68rem;">${esc(ins.node_id)}</span>
-                </div>
-                <div class="insight-title">${esc(ins.title)}</div>
-                ${ins.rank_rationale ? `<div class="insight-rationale">${esc(ins.rank_rationale)}</div>` : ''}
-                ${paperLinks ? `<div class="insight-papers">${paperLinks}</div>` : ''}
-                <div class="insight-hypothesis"><span class="insight-label">Hypothesis:</span> ${esc(ins.hypothesis)}</div>
-                <div class="insight-experiment"><span class="insight-label">Experiment:</span> ${esc(ins.experiment)}</div>
-                ${ins.impact ? `<div class="insight-impact"><span class="insight-label">Impact:</span> ${esc(ins.impact)}</div>` : ''}
-                <div class="insight-actions">
-                    <button class="btn-preview" onclick="window._dg.previewProposal(${ins.id})">Preview Proposal</button>
-                </div>
-            </div>`;
-        }).join('');
-    } catch (e) {
-        console.error('Insights tab error:', e);
-    }
-}
 
 async function loadOpportunities() {
     oppsLoaded = true;
@@ -1293,6 +1521,32 @@ function isDisplayableDiscovery(d) {
     );
 }
 
+function renderDiscoverySources(d) {
+    const sourceKinds = parseJsonArray(d.signal_mix).slice(0, 4);
+    const sourceNodes = parseJsonArray(d.source_node_ids).slice(0, 4);
+    const sourceRefs = parseJsonArray(d.source_signal_ids).slice(0, 3);
+    let sourcePapers = parseJsonArray(d.source_paper_ids);
+    if (!sourcePapers.length) sourcePapers = parseJsonArray(d.supporting_papers);
+    if (!sourcePapers.length && d.evidence_packet) {
+        try {
+            const packet = JSON.parse(d.evidence_packet);
+            sourcePapers = (packet.papers || []).map(p => p.id || p.title).filter(Boolean);
+        } catch (e) {}
+    }
+    sourcePapers = sourcePapers.slice(0, 4);
+
+    const chips = [];
+    for (const s of sourceKinds) chips.push(`<span class="chip source-kind">${esc(String(s).replace(/_/g, ' '))}</span>`);
+    for (const n of sourceNodes) chips.push(`<span class="chip" onclick="window._dg.exploreNode('${esc(n)}')">${esc(n)}</span>`);
+    for (const p of sourcePapers) chips.push(`<span class="chip source-paper">${esc(p)}</span>`);
+    for (const sid of sourceRefs) chips.push(`<span class="chip source-ref">source #${esc(sid)}</span>`);
+    if (!chips.length) return '';
+    return `<div class="insight-sources">
+        <span class="insight-label">Sources:</span>
+        <div class="chip-row">${chips.join('')}</div>
+    </div>`;
+}
+
 function renderDiscoveries(discoveries) {
     const list = el('discoveriesList');
     const visible = (discoveries || []).filter(isDisplayableDiscovery);
@@ -1317,6 +1571,7 @@ function renderDiscoveries(discoveries) {
         const scoreBadge = d.adversarial_score
             ? `<span class="insight-scores">Adversarial: ${d.adversarial_score}/10</span>`
             : '';
+        const sourcesHtml = renderDiscoverySources(d);
 
         let bodyHtml = '';
 
@@ -1398,6 +1653,7 @@ function renderDiscoveries(discoveries) {
             <div class="insight-title">${esc(d.title)}</div>
             ${bodyHtml}
             ${d.evidence_summary ? `<div class="insight-evidence"><span class="insight-label">Evidence:</span> ${esc(trunc(d.evidence_summary, 250))}</div>` : ''}
+            ${sourcesHtml}
             <div class="insight-impact"><span class="insight-label">Mode:</span> Fixed automatic pipeline</div>
         </div>`;
     }).join('');
@@ -1872,11 +2128,166 @@ function renderMetaReport(meta) {
 async function loadProviders() {
     providersLoaded = true;
     try {
-        const providers = await api('/api/providers');
+        const [providers, runtime] = await Promise.all([
+            api('/api/providers'),
+            api('/api/runtime-config')
+        ]);
+        renderRuntimeConfig(runtime);
         renderProviders(providers);
     } catch (e) {
         console.error('Providers load error:', e);
+        const panel = el('runtimeConfigPanel');
+        if (panel) panel.innerHTML = '<p class="empty-msg">Failed to load runtime configuration.</p>';
         el('providersList').innerHTML = '<p class="empty-msg">Failed to load provider data.</p>';
+    }
+}
+
+function runtimeValue(value, suffix = '') {
+    if (value === null || value === undefined || value === '') return '-';
+    return `${esc(String(value))}${suffix}`;
+}
+
+function runtimeBool(value) {
+    return value ? '<span class="runtime-pill good">On</span>' : '<span class="runtime-pill muted">Off</span>';
+}
+
+function renderRuntimeMetric(label, value, hint = '') {
+    return `<div class="runtime-metric">
+        <div class="runtime-metric-value">${value}</div>
+        <div class="runtime-metric-label">${esc(label)}</div>
+        ${hint ? `<div class="runtime-metric-hint">${esc(hint)}</div>` : ''}
+    </div>`;
+}
+
+function renderRuntimeConfig(config) {
+    const panel = el('runtimeConfigPanel');
+    if (!panel || !config) return;
+
+    const llm = config.llm || {};
+    const primary = llm.primary || {};
+    const secondary = llm.secondary || {};
+    const limits = llm.limits || {};
+    const runtime = config.runtime || {};
+    const experiment = config.experiment || {};
+    const dbInfo = runtime.database || {};
+    const workspaceDisk = runtime.workspace_disk || {};
+    const experimentDisk = experiment.experiment_disk || {};
+
+    panel.innerHTML = `
+        <div class="runtime-config-panel">
+            <div class="runtime-section-head">
+                <div>
+                    <div class="runtime-kicker">Model Source</div>
+                    <h4>LLM route, token source, and runtime environment</h4>
+                </div>
+                <div class="runtime-note">API key fields are write-only; blank keeps the current key.</div>
+            </div>
+            <div class="runtime-grid">
+                <div class="runtime-card runtime-card-model">
+                    <div class="runtime-card-head">
+                        <div class="runtime-avatar">GPT</div>
+                        <div>
+                            <div class="runtime-card-title">Primary Provider</div>
+                            <div class="runtime-card-sub">${esc(primary.api_key_configured ? `key ${primary.api_key_hint || 'configured'}` : 'no API key configured')}</div>
+                        </div>
+                    </div>
+                    <div class="runtime-provider-model">${esc(primary.model || 'No model set')}</div>
+                    <div class="runtime-provider-url">${esc(primary.base_url || 'No base URL set')}</div>
+                    <div class="runtime-inline">
+                        <span>${esc(primary.protocol || 'protocol?')}</span>
+                        <span>${runtimeValue(primary.rpm)} rpm</span>
+                        <span>${runtimeValue(limits.max_output_tokens)} max out</span>
+                    </div>
+                </div>
+                <div class="runtime-card">
+                    <div class="runtime-card-title">Experiment Runtime</div>
+                    <div class="runtime-metric-grid">
+                        ${renderRuntimeMetric('Auto Research', runtimeBool(experiment.auto_research_enabled))}
+                        ${renderRuntimeMetric('Pipeline', runtimeBool(experiment.auto_pipeline_enabled))}
+                        ${renderRuntimeMetric('GPU Mode', runtimeValue(experiment.gpu_mode), `${experiment.gpu_worker_slots || 0} slots · ${experiment.gpu_default_model || 'model?'}`)}
+                        ${renderRuntimeMetric('Real Benchmark', runtimeBool(experiment.require_real_benchmark), experiment.benchmark_dataset || '')}
+                    </div>
+                </div>
+                <div class="runtime-card">
+                    <div class="runtime-card-title">Machine Footprint</div>
+                    <div class="runtime-metric-grid">
+                        ${renderRuntimeMetric('Process RAM', runtimeValue(runtime.process_rss_mb, ' MB'))}
+                        ${renderRuntimeMetric('System RAM', runtimeValue(runtime.total_memory_mb, ' MB'))}
+                        ${renderRuntimeMetric('Workspace Free', runtimeValue(workspaceDisk.free_gb, ' GB'))}
+                        ${renderRuntimeMetric('Experiment Free', runtimeValue(experimentDisk.free_gb, ' GB'))}
+                    </div>
+                    <div class="runtime-path">${esc(dbInfo.backend || 'db')} · ${esc(dbInfo.target || '')}</div>
+                </div>
+            </div>
+            <div class="runtime-config-form">
+                <div class="runtime-form-title">Editable Model Configuration</div>
+                <div class="config-form-grid">
+                    <label>Primary model
+                        <input id="cfgPrimaryModel" class="config-input" value="${esc(primary.model || '')}">
+                    </label>
+                    <label>Primary base URL
+                        <input id="cfgPrimaryBaseUrl" class="config-input" value="${esc(primary.base_url || '')}">
+                    </label>
+                    <label>Primary protocol
+                        <select id="cfgPrimaryProtocol" class="config-input">
+                            <option value="responses" ${primary.protocol === 'responses' ? 'selected' : ''}>responses</option>
+                            <option value="chat_completions" ${primary.protocol === 'chat_completions' ? 'selected' : ''}>chat_completions</option>
+                        </select>
+                    </label>
+                    <label>Primary API key
+                        <input id="cfgPrimaryApiKey" class="config-input" type="password" placeholder="${esc(primary.api_key_configured ? 'Configured; leave blank to keep' : 'Paste API key')}">
+                    </label>
+                    <label class="config-checkbox-row">
+                        <input id="cfgSecondaryEnabled" type="checkbox" ${secondary.enabled ? 'checked' : ''}>
+                        <span>Enable secondary provider</span>
+                    </label>
+                    <label>Secondary model
+                        <input id="cfgSecondaryModel" class="config-input" value="${esc(secondary.model || '')}">
+                    </label>
+                    <label>Secondary base URL
+                        <input id="cfgSecondaryBaseUrl" class="config-input" value="${esc(secondary.base_url || '')}">
+                    </label>
+                    <label>Secondary API key
+                        <input id="cfgSecondaryApiKey" class="config-input" type="password" placeholder="${esc(secondary.api_key_configured ? 'Configured; leave blank to keep' : 'Paste API key')}">
+                    </label>
+                </div>
+                <div class="config-save-row">
+                    <span id="providerConfigStatus">Saved changes write to .env and require restart.</span>
+                    <button class="btn-preview" id="saveProviderConfig">Save provider config</button>
+                </div>
+            </div>
+        </div>`;
+
+    const btn = el('saveProviderConfig');
+    if (btn) btn.addEventListener('click', saveRuntimeConfig);
+}
+
+async function saveRuntimeConfig() {
+    const status = el('providerConfigStatus');
+    const payload = {
+        DEEPGRAPH_LLM_MODEL: el('cfgPrimaryModel')?.value || '',
+        DEEPGRAPH_LLM_BASE_URL: el('cfgPrimaryBaseUrl')?.value || '',
+        DEEPGRAPH_LLM_PROTOCOL: el('cfgPrimaryProtocol')?.value || 'responses',
+        DEEPGRAPH_LLM_API_KEY: el('cfgPrimaryApiKey')?.value || '',
+        DEEPGRAPH_LLM_SECONDARY_ENABLED: el('cfgSecondaryEnabled')?.checked ? 'true' : 'false',
+        DEEPGRAPH_LLM_SECONDARY_MODEL: el('cfgSecondaryModel')?.value || '',
+        DEEPGRAPH_LLM_SECONDARY_BASE_URL: el('cfgSecondaryBaseUrl')?.value || '',
+        DEEPGRAPH_LLM_SECONDARY_API_KEY: el('cfgSecondaryApiKey')?.value || ''
+    };
+    try {
+        if (status) status.textContent = 'Saving provider config...';
+        const res = await api('/api/runtime-config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        if (status) {
+            status.textContent = res.restart_required
+                ? `Saved ${res.updated.length} keys. Restart DeepGraph to apply.`
+                : 'No changes were written.';
+        }
+    } catch (e) {
+        if (status) status.textContent = `Save failed: ${e.message}`;
     }
 }
 
@@ -1919,8 +2330,13 @@ function renderProviderCards(providers) {
         const barPct = Math.round((calls / maxCalls) * 100);
 
         return `<div class="provider-card">
-            <div class="provider-name">${esc(p.name || p.provider || 'Unknown')}</div>
-            <div class="provider-url">${esc(p.base_url || p.url || '')}</div>
+            <div class="provider-card-head">
+                <div class="provider-avatar">GPT</div>
+                <div>
+                    <div class="provider-name">${esc(p.name || p.provider || 'Unknown')}</div>
+                    <div class="provider-url">${esc(p.base_url || p.url || '')}</div>
+                </div>
+            </div>
             <div class="provider-stats">
                 <div class="provider-stat">
                     <span class="provider-stat-val cyan">${fmt(calls)}</span>
@@ -2078,7 +2494,7 @@ window._dg = {
         switchTab('explore');
         navigateTo(nodeId);
     },
-    togglePaper,
+    selectPaper,
     updateMatrixMetric,
     searchNav,
 
@@ -2286,12 +2702,6 @@ function init() {
     // Sidebar toggle
     el('sidebarToggle').addEventListener('click', toggleSidebar);
 
-    // "Open in Explore" button
-    el('btnJumpExplore').addEventListener('click', () => {
-        switchTab('explore');
-        if (!exploreData) navigateTo(ROOT_NODE);
-    });
-
     // Discovery filters + generate button
     const dtf = el('discoveryTierFilter');
     if (dtf) dtf.addEventListener('change', loadDiscoveriesTab);
@@ -2299,12 +2709,6 @@ function init() {
     // Experiment filters
     const esf = el('experimentStatusFilter');
     if (esf) esf.addEventListener('change', loadExperimentsTab);
-
-    // Insight filters
-    const itf = el('insightTypeFilter');
-    const isf = el('insightSortFilter');
-    if (itf) itf.addEventListener('change', loadInsightsTab);
-    if (isf) isf.addEventListener('change', loadInsightsTab);
 
     // Evidence node select
     el('evidenceNodeSelect').addEventListener('change', (e) => {
@@ -2325,7 +2729,6 @@ function init() {
     // Initial data loads
     refreshStats();
     loadRecentlyDiscovered();
-    loadOverviewGraph();
     loadProcessingPapers();
     startSSE();
 

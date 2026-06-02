@@ -1,7 +1,11 @@
 """Flask web application for DeepGraph dashboard."""
 import json
 import importlib.util
+import os
+import platform
+import re
 import shutil
+import subprocess
 import threading
 import time
 import traceback
@@ -9,6 +13,7 @@ from pathlib import Path
 from typing import Any
 from flask import Flask, Response, abort, jsonify, render_template, request, send_file, url_for
 from agents.workspace_layout import get_idea_workspace, list_paper_assets, plan_file_path, resolve_paper_asset
+import config as cfg
 from config import APP_NAME, APP_SUBTITLE, PROFILE, ROOT_NODE_ID
 from db import database as db
 from db import evidence_graph as graph
@@ -58,11 +63,110 @@ def _api_failure(scope: str, exc: Exception, status: int = 500):
     return jsonify({"status": "error", "scope": scope, "error": message}), status
 
 
+def _mask_secret(value: str | None) -> str:
+    if not value:
+        return ""
+    text = str(value)
+    if len(text) <= 8:
+        return "***"
+    return f"{text[:4]}...{text[-4:]}"
+
+
+def _process_rss_mb() -> float | None:
+    try:
+        out = subprocess.check_output(
+            ["ps", "-o", "rss=", "-p", str(os.getpid())],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+        return round(int(out) / 1024, 1) if out else None
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return None
+
+
+def _total_memory_mb() -> float | None:
+    try:
+        if platform.system() == "Darwin":
+            out = subprocess.check_output(
+                ["sysctl", "-n", "hw.memsize"],
+                text=True,
+                stderr=subprocess.DEVNULL,
+            ).strip()
+            return round(int(out) / (1024 * 1024), 1)
+        pages = os.sysconf("SC_PHYS_PAGES")
+        page_size = os.sysconf("SC_PAGE_SIZE")
+        return round((pages * page_size) / (1024 * 1024), 1)
+    except (OSError, subprocess.SubprocessError, ValueError, AttributeError):
+        return None
+
+
+def _disk_snapshot(path: Path) -> dict[str, Any]:
+    try:
+        usage = shutil.disk_usage(path if path.exists() else path.parent)
+        return {
+            "total_gb": round(usage.total / (1024 ** 3), 1),
+            "used_gb": round(usage.used / (1024 ** 3), 1),
+            "free_gb": round(usage.free / (1024 ** 3), 1),
+        }
+    except OSError:
+        return {}
+
+
+def _read_dotenv_lines(path: Path) -> list[str]:
+    if not path.exists():
+        return []
+    return path.read_text(encoding="utf-8", errors="replace").splitlines()
+
+
+def _format_env_assignment(key: str, value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'{key}="{escaped}"'
+
+
+def _write_dotenv_updates(updates: dict[str, str]) -> list[str]:
+    env_path = cfg.PROJECT_ROOT / ".env"
+    lines = _read_dotenv_lines(env_path)
+    seen: set[str] = set()
+    output: list[str] = []
+
+    for raw in lines:
+        stripped = raw.strip()
+        prefix = "export " if stripped.startswith("export ") else ""
+        body = stripped[7:].strip() if prefix else stripped
+        key = body.partition("=")[0].strip() if "=" in body else ""
+        if key in updates:
+            output.append(prefix + _format_env_assignment(key, updates[key]))
+            seen.add(key)
+        else:
+            output.append(raw)
+
+    missing = [key for key in updates if key not in seen]
+    if missing and output and output[-1].strip():
+        output.append("")
+    for key in missing:
+        output.append(_format_env_assignment(key, updates[key]))
+
+    env_path.write_text("\n".join(output).rstrip() + "\n", encoding="utf-8")
+    return sorted(updates)
+
+
 _MANUAL_EXPERIMENT_POST_PATHS = {
     "/api/research/launch",
     "/api/deep_insights/generate",
     "/api/experiments/forge",
     "/api/experiments/run_full",
+}
+
+_EDITABLE_RUNTIME_ENV_KEYS = {
+    "DEEPGRAPH_LLM_MODEL",
+    "DEEPGRAPH_LLM_BASE_URL",
+    "DEEPGRAPH_LLM_API_KEY",
+    "DEEPGRAPH_LLM_PROTOCOL",
+    "DEEPGRAPH_LLM_SECONDARY_ENABLED",
+    "DEEPGRAPH_LLM_SECONDARY_MODEL",
+    "DEEPGRAPH_LLM_SECONDARY_BASE_URL",
+    "DEEPGRAPH_LLM_SECONDARY_API_KEY",
+    "DEEPGRAPH_LLM_SECONDARY_PROTOCOL",
 }
 
 
@@ -676,6 +780,99 @@ def api_providers():
     return jsonify(get_provider_stats())
 
 
+@app.route("/api/runtime-config", methods=["GET", "POST"])
+def api_runtime_config():
+    """Expose model/provider and runtime configuration for the dashboard."""
+    if request.method == "POST":
+        try:
+            payload = request.get_json(force=True, silent=True) or {}
+            updates: dict[str, str] = {}
+            for key, value in payload.items():
+                if key not in _EDITABLE_RUNTIME_ENV_KEYS:
+                    continue
+                if value is None:
+                    continue
+                text = str(value).strip()
+                if key.endswith("_API_KEY") and not text:
+                    continue
+                updates[key] = text
+            changed = _write_dotenv_updates(updates) if updates else []
+            return jsonify({
+                "status": "saved",
+                "updated": changed,
+                "restart_required": bool(changed),
+            })
+        except Exception as exc:
+            return _api_failure("runtime_config_save", exc)
+
+    try:
+        db_info = db.describe_backend()
+        workspace_disk = _disk_snapshot(cfg.WORKSPACE_DIR)
+        experiment_disk = _disk_snapshot(cfg.EXPERIMENT_WORKDIR)
+        return jsonify({
+            "llm": {
+                "primary": {
+                    "model": cfg.LLM_MODEL,
+                    "base_url": cfg.LLM_BASE_URL,
+                    "protocol": cfg.LLM_PROTOCOL,
+                    "rpm": cfg.LLM_RPM,
+                    "api_key_configured": bool(cfg.LLM_API_KEY),
+                    "api_key_hint": _mask_secret(cfg.LLM_API_KEY),
+                },
+                "secondary": {
+                    "enabled": cfg.LLM_SECONDARY_ENABLED,
+                    "model": cfg.LLM_SECONDARY_MODEL,
+                    "base_url": cfg.LLM_SECONDARY_BASE_URL,
+                    "protocol": cfg.LLM_SECONDARY_PROTOCOL,
+                    "rpm": cfg.LLM_SECONDARY_RPM,
+                    "api_key_configured": bool(cfg.LLM_SECONDARY_API_KEY),
+                    "api_key_hint": _mask_secret(cfg.LLM_SECONDARY_API_KEY),
+                },
+                "limits": {
+                    "max_input_tokens": cfg.LLM_MAX_INPUT_TOKENS,
+                    "max_output_tokens": cfg.LLM_MAX_OUTPUT_TOKENS,
+                    "request_timeout_seconds": cfg.LLM_REQUEST_TIMEOUT_SECONDS,
+                    "connect_timeout_seconds": cfg.LLM_CONNECT_TIMEOUT_SECONDS,
+                },
+                "extra_providers_configured": bool(str(cfg.LLM_EXTRA_PROVIDERS_JSON or "").strip()),
+            },
+            "runtime": {
+                "app_name": cfg.APP_NAME,
+                "profile": cfg.PROFILE,
+                "root_node_id": cfg.ROOT_NODE_ID,
+                "pid": os.getpid(),
+                "python": cfg.RUNTIME_PYTHON,
+                "platform": platform.platform(),
+                "cpu_count": os.cpu_count(),
+                "process_rss_mb": _process_rss_mb(),
+                "total_memory_mb": _total_memory_mb(),
+                "database": db_info,
+                "workspace_dir": str(cfg.WORKSPACE_DIR),
+                "workspace_disk": workspace_disk,
+            },
+            "experiment": {
+                "auto_pipeline_enabled": cfg.AUTO_PIPELINE_ENABLED,
+                "auto_research_enabled": cfg.AUTO_RESEARCH_ENABLED,
+                "pipeline_concurrency": cfg.PIPELINE_CONCURRENCY,
+                "require_real_benchmark": cfg.EXPERIMENT_REQUIRE_REAL_BENCHMARK,
+                "allow_synthetic_fallback": cfg.EXPERIMENT_ALLOW_SYNTHETIC_FALLBACK,
+                "real_llm_model": cfg.EXPERIMENT_REAL_LLM_MODEL,
+                "benchmark_dataset": cfg.EXPERIMENT_REAL_BENCHMARK_DATASET,
+                "benchmark_dataset_config": cfg.EXPERIMENT_REAL_BENCHMARK_DATASET_CONFIG,
+                "gpu_mode": cfg.GPU_MODE,
+                "gpu_worker_slots": cfg.GPU_WORKER_SLOTS,
+                "gpu_visible_devices": cfg.GPU_VISIBLE_DEVICES,
+                "gpu_default_model": cfg.GPU_DEFAULT_MODEL,
+                "gpu_default_vram_gb": cfg.GPU_DEFAULT_VRAM_GB,
+                "experiment_workdir": str(cfg.EXPERIMENT_WORKDIR),
+                "experiment_disk": experiment_disk,
+            },
+            "editable_keys": sorted(_EDITABLE_RUNTIME_ENV_KEYS),
+        })
+    except Exception as exc:
+        return _api_failure("runtime_config", exc)
+
+
 @app.route("/api/processing")
 def api_processing():
     """Get papers currently being processed + recently completed (last 15s)."""
@@ -1086,11 +1283,15 @@ def api_papers():
     status = request.args.get("status", "")
     if status:
         papers = db.fetchall(
-            "SELECT id, title, status, token_cost, created_at FROM papers WHERE status=? ORDER BY updated_at DESC LIMIT ?",
+            """SELECT id, title, authors, abstract, categories, published_date, pdf_url,
+                      status, token_cost, processing_stage, created_at, updated_at
+               FROM papers WHERE status=? ORDER BY updated_at DESC LIMIT ?""",
             (status, limit))
     else:
         papers = db.fetchall(
-            "SELECT id, title, status, token_cost, created_at FROM papers ORDER BY updated_at DESC LIMIT ?",
+            """SELECT id, title, authors, abstract, categories, published_date, pdf_url,
+                      status, token_cost, processing_stage, created_at, updated_at
+               FROM papers ORDER BY updated_at DESC LIMIT ?""",
             (limit,))
     return jsonify(papers)
 
@@ -1522,6 +1723,129 @@ def _pick_main_asset(assets: list[dict], suffix: str) -> str | None:
         if path.endswith(f"/main{suffix}") or path == f"current/main{suffix}":
             return path
     return None
+
+
+def _read_paper_asset_text(insight_id: int, asset: str | None, insight: dict) -> str:
+    if not asset:
+        return ""
+    try:
+        path = resolve_paper_asset(insight_id, asset, insight=insight)
+        if path.exists() and path.is_file():
+            return path.read_text(encoding="utf-8", errors="replace")
+    except (OSError, ValueError):
+        return ""
+    return ""
+
+
+def _strip_latex_inline(text: str) -> str:
+    text = re.sub(r"\\(?:textbf|emph|textit|method)\{([^{}]*)\}", r"\1", text)
+    text = re.sub(r"\\[a-zA-Z]+\*?(?:\[[^\]]*\])?", "", text)
+    text = text.replace("{", "").replace("}", "")
+    return " ".join(text.split())
+
+
+def _extract_latex_abstract(tex: str) -> str:
+    match = re.search(r"\\begin\{abstract\}(.*?)\\end\{abstract\}", tex, re.S)
+    return _strip_latex_inline(match.group(1)) if match else ""
+
+
+def _extract_latex_title(tex: str) -> str:
+    match = re.search(r"\\title\{(.*?)\}", tex, re.S)
+    return _strip_latex_inline(match.group(1)) if match else ""
+
+
+@app.route("/api/generated_papers")
+def api_generated_papers():
+    """List DeepGraph-generated manuscripts, not imported arXiv papers."""
+    try:
+        limit = request.args.get("limit", 100, type=int)
+        rows = db.fetchall(
+            """
+            SELECT *
+            FROM deep_insights
+            ORDER BY
+              CASE WHEN submission_status='bundle_ready' THEN 0 ELSE 1 END,
+              updated_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        papers: list[dict[str, Any]] = []
+        for raw in rows:
+            insight = dict(raw)
+            if not _deep_insight_is_displayable(insight):
+                continue
+            insight_id = int(insight["id"])
+            assets = list_paper_assets(insight_id, insight=insight)
+            main_pdf = _pick_main_asset(assets, ".pdf")
+            main_tex = _pick_main_asset(assets, ".tex")
+            has_paper_asset = bool(main_pdf or main_tex or assets)
+            if not has_paper_asset and (insight.get("submission_status") or "not_started") == "not_started":
+                continue
+
+            preview_urls = _paper_preview_urls(insight_id, assets)
+            tex_source = _read_paper_asset_text(insight_id, main_tex, insight)
+            manuscript_rows = db.fetchall(
+                """
+                SELECT mr.id, mr.status, mr.workdir, mr.created_at, mr.updated_at,
+                       sb.id AS bundle_id, sb.bundle_format, sb.status AS bundle_status,
+                       sb.bundle_path, sb.created_at AS bundle_created_at
+                FROM manuscript_runs mr
+                LEFT JOIN submission_bundles sb ON sb.manuscript_run_id=mr.id
+                WHERE mr.deep_insight_id=?
+                ORDER BY COALESCE(sb.created_at, mr.updated_at) DESC
+                """,
+                (insight_id,),
+            )
+            bundle_rows = [
+                {
+                    "bundle_id": r.get("bundle_id"),
+                    "bundle_format": r.get("bundle_format"),
+                    "bundle_status": r.get("bundle_status"),
+                    "bundle_path": r.get("bundle_path"),
+                    "bundle_created_at": r.get("bundle_created_at"),
+                    "manuscript_run_id": r.get("id"),
+                    "manuscript_status": r.get("status"),
+                    "workdir": r.get("workdir"),
+                }
+                for r in manuscript_rows
+                if r.get("bundle_id")
+            ]
+            latest_run = dict(manuscript_rows[0]) if manuscript_rows else {}
+            status = insight.get("submission_status") or latest_run.get("status") or "draft"
+            title = _extract_latex_title(tex_source) or insight.get("title") or f"Idea {insight_id}"
+            abstract = _extract_latex_abstract(tex_source) or insight.get("problem_statement") or insight.get("evidence_summary") or ""
+            papers.append(
+                {
+                    "id": f"idea_{insight_id}",
+                    "insight_id": insight_id,
+                    "title": title,
+                    "status": status,
+                    "tier": insight.get("tier"),
+                    "updated_at": insight.get("updated_at"),
+                    "created_at": insight.get("created_at"),
+                    "paper_root": insight.get("paper_root"),
+                    "preview_url": preview_urls.get("index"),
+                    "pdf_url": preview_urls.get("pdf"),
+                    "tex_url": preview_urls.get("tex"),
+                    "main_pdf": main_pdf,
+                    "main_tex": main_tex,
+                    "asset_count": len(assets),
+                    "assets": assets[:80],
+                    "bundle_count": len(bundle_rows),
+                    "bundles": bundle_rows[:8],
+                    "manuscript_status": latest_run.get("status"),
+                    "abstract": abstract,
+                    "problem_statement": insight.get("problem_statement"),
+                    "proposed_method": _json_load(insight.get("proposed_method"), {}),
+                    "evidence_summary": insight.get("evidence_summary"),
+                    "source_node_ids": _json_load(insight.get("source_node_ids"), []),
+                    "canonical_run_id": insight.get("canonical_run_id"),
+                }
+            )
+        return jsonify(papers)
+    except Exception as exc:
+        return _api_failure("generated_papers", exc)
 
 
 @app.route("/papers/<int:insight_id>")
