@@ -201,6 +201,152 @@ def _ledger_supports_significance(ledger: dict[str, Any]) -> bool:
     )
 
 
+EVIDENCE_LEDGER_REQUIRED_FIELDS = (
+    "schema_version",
+    "run_id",
+    "claim_id",
+    "metric",
+    "alpha",
+    "verdict",
+    "p_value",
+    "effect_size",
+    "confidence",
+    "repro_ci",
+    "kept_ci",
+    "per_method",
+    "seed_variance",
+    "seeds",
+    "provenance",
+)
+
+TRACEABILITY_POSITIVE_TERMS = (
+    "improves",
+    "improve",
+    "outperforms",
+    "outperform",
+    "significant",
+    "significantly",
+    "superior",
+    "beats",
+    "surpasses",
+)
+
+TRACEABILITY_NUMBER_RE = re.compile(r"-?\d+\.?\d*%?")
+
+
+def validate_evidence_ledger(ledger: dict) -> list[dict]:
+    """Return schema violations. Missing required fields are explicit."""
+    ledger = _as_dict(ledger)
+    violations: list[dict] = []
+    for field in EVIDENCE_LEDGER_REQUIRED_FIELDS:
+        if field not in ledger:
+            violations.append(
+                {
+                    "rule": "schema_error",
+                    "location": {"section": "ledger", "line": 0},
+                    "snippet": f"missing required field: {field}",
+                    "value": field,
+                }
+            )
+    return violations
+
+
+def _traceable_sections(main_tex: str) -> list[tuple[str, str, int]]:
+    sections: list[tuple[str, str, int]] = []
+    abstract = re.search(r"\\begin\{abstract\}(.*?)\\end\{abstract\}", main_tex or "", re.DOTALL | re.IGNORECASE)
+    if abstract:
+        sections.append(("abstract", abstract.group(1), abstract.start(1)))
+    section_re = re.compile(r"\\section\{([^}]*)\}", re.IGNORECASE)
+    matches = list(section_re.finditer(main_tex or ""))
+    for idx, match in enumerate(matches):
+        name = _lower(match.group(1))
+        if name not in {"conclusion", "conclusions", "discussion"}:
+            continue
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(main_tex or "")
+        section_name = "discussion" if name == "discussion" else "conclusion"
+        sections.append((section_name, (main_tex or "")[match.end():end], match.end()))
+    return sections
+
+
+def _ledger_numeric_sources(ledger: dict[str, Any]) -> list[float]:
+    sources: list[float] = []
+
+    def add(value: Any) -> None:
+        numeric = _numeric(value)
+        if numeric is not None:
+            sources.append(numeric)
+
+    add(ledger.get("p_value"))
+    add(ledger.get("effect_size"))
+    for value in _as_list(ledger.get("repro_ci")) + _as_list(ledger.get("kept_ci")):
+        add(value)
+    metric = _text(ledger.get("metric"))
+    for payload in _as_dict(ledger.get("per_method")).values():
+        row = _as_dict(payload)
+        if metric:
+            add(row.get(metric))
+    for payload in _as_dict(ledger.get("seed_variance")).values():
+        add(_as_dict(payload).get("mean"))
+    return sources
+
+
+def _traceable_number(token: str, sources: list[float]) -> bool:
+    is_percent = token.endswith("%")
+    numeric = _numeric(token[:-1] if is_percent else token)
+    if numeric is None:
+        return True
+    if is_percent:
+        numeric /= 100.0
+    return any(abs(numeric - source) <= 1e-6 for source in sources)
+
+
+def _skip_traceability_number(line: str, start: int, end: int) -> bool:
+    prefix = line[:start]
+    suffix = line[end:]
+    if re.search(r"(?:Table|Figure|Section)\s*$", prefix, re.IGNORECASE):
+        return True
+    if re.match(r"\s*seeds?\b", suffix, re.IGNORECASE):
+        return True
+    return False
+
+
+def assert_traceable(main_tex: str, ledger: dict) -> list[dict]:
+    """Return evidence traceability violations for Abstract / Conclusion only."""
+    ledger = _as_dict(ledger)
+    violations = validate_evidence_ledger(ledger)
+    sources = _ledger_numeric_sources(ledger)
+    negative_verdict = _lower(ledger.get("verdict")) in {"refuted", "inconclusive"}
+    positive_re = re.compile(r"\b(" + "|".join(re.escape(term) for term in TRACEABILITY_POSITIVE_TERMS) + r")\b", re.IGNORECASE)
+    text = main_tex or ""
+
+    for section, body, offset in _traceable_sections(text):
+        for rel_line, line in enumerate(body.splitlines(), start=1):
+            absolute_line = text.count("\n", 0, offset) + rel_line
+            if negative_verdict and positive_re.search(line):
+                violations.append(
+                    {
+                        "rule": "positive_claim_with_negative_verdict",
+                        "location": {"section": section, "line": absolute_line},
+                        "snippet": line.strip(),
+                        "value": ledger.get("verdict"),
+                    }
+                )
+            for match in TRACEABILITY_NUMBER_RE.finditer(line):
+                if _skip_traceability_number(line, match.start(), match.end()):
+                    continue
+                token = match.group(0)
+                if not _traceable_number(token, sources):
+                    violations.append(
+                        {
+                            "rule": "unsourced_number",
+                            "location": {"section": section, "line": absolute_line},
+                            "snippet": line.strip(),
+                            "value": token[:-1] if token.endswith("%") else token,
+                        }
+                    )
+    return violations
+
+
 def _infer_model_size(name: str) -> str:
     match = re.search(r"(\d+(?:\.\d+)?\s*[bB])", name or "")
     return match.group(1).replace(" ", "") if match else ""

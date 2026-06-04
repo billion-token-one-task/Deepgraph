@@ -1,0 +1,21 @@
+{
+  "schema_version": "1.0",
+  "run_id": "run-m4-missing-p",
+  "claim_id": "claim-m4-missing-p",
+  "metric": "exact_match",
+  "alpha": 0.05,
+  "verdict": "confirmed",
+  "effect_size": 0.045,
+  "confidence": 0.99,
+  "repro_ci": [0.02, 0.08],
+  "kept_ci": [0.0, 0.07],
+  "per_method": {
+    "Candidate": {"exact_match": 0.705, "n": 200},
+    "Baseline": {"exact_match": 0.655, "n": 200}
+  },
+  "seed_variance": {
+    "Candidate": {"mean": 0.705, "std": 0.012, "per_seed": {"0": 0.71, "1": 0.70, "2": 0.705}}
+  },
+  "seeds": [0, 1, 2],
+  "provenance": {"code_commit": "abc123", "dataset": "GSM8K", "command": "pytest"}
+}

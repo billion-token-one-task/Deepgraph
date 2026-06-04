@@ -1,0 +1,22 @@
+{
+  "schema_version": "1.0",
+  "run_id": "run-m4-refuted",
+  "claim_id": "claim-m4-refuted",
+  "metric": "exact_match",
+  "alpha": 0.05,
+  "verdict": "refuted",
+  "p_value": 0.0123,
+  "effect_size": -0.01,
+  "confidence": 0.9877,
+  "repro_ci": [-0.08, -0.01],
+  "kept_ci": [-0.07, 0.0],
+  "per_method": {
+    "Candidate": {"exact_match": 0.605, "n": 200},
+    "Baseline": {"exact_match": 0.655, "n": 200}
+  },
+  "seed_variance": {
+    "Candidate": {"mean": 0.605, "std": 0.012, "per_seed": {"0": 0.61, "1": 0.60, "2": 0.605}}
+  },
+  "seeds": [0, 1, 2],
+  "provenance": {"code_commit": "abc123", "dataset": "GSM8K", "command": "pytest"}
+}
