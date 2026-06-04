@@ -145,6 +145,62 @@ def _numeric(value: Any) -> float | None:
         return None
 
 
+def _significance_alpha() -> float:
+    raw = os.environ.get("DEEPGRAPH_SIGNIFICANCE_ALPHA")
+    alpha = _numeric(raw)
+    if alpha is None or alpha <= 0:
+        return 0.05
+    return alpha
+
+
+def build_evidence_ledger(
+    packet: dict,
+    benchmark_summary: dict,
+    *,
+    alpha: float,
+    provenance: dict | None = None,
+) -> dict:
+    """Build the single source of truth for presentation evidence."""
+    packet = _as_dict(packet)
+    summary = _as_dict(benchmark_summary)
+    p_value = _numeric(packet.get("p_value"))
+    effect_size = _numeric(_first_present(packet.get("effect_size"), packet.get("effect_pct")))
+    metric = _text(_first_present(packet.get("metric_name"), summary.get("primary_metric"), summary.get("metric_name")))
+    seeds = _as_list(_first_present(summary.get("seeds"), summary.get("seed_values")))
+    if not seeds:
+        seeds = _seed_list(summary)
+    confidence = round(1.0 - p_value, 10) if p_value is not None else None
+    return {
+        "schema_version": "1.0",
+        "run_id": _text(packet.get("run_id")),
+        "claim_id": _text(packet.get("claim_id")),
+        "metric": metric,
+        "alpha": alpha,
+        "verdict": _text(packet.get("verdict")),
+        "p_value": p_value,
+        "effect_size": effect_size,
+        "confidence": confidence,
+        "repro_ci": _as_list(_first_present(packet.get("repro_ci"), summary.get("repro_ci"))),
+        "kept_ci": _as_list(_first_present(packet.get("kept_ci"), summary.get("kept_ci"))),
+        "per_method": _as_dict(summary.get("per_method")),
+        "seed_variance": _as_dict(summary.get("seed_variance")),
+        "seeds": seeds,
+        "provenance": _as_dict(provenance),
+    }
+
+
+def _ledger_supports_significance(ledger: dict[str, Any]) -> bool:
+    p_value = _numeric(ledger.get("p_value"))
+    alpha = _numeric(ledger.get("alpha"))
+    verdict = _lower(ledger.get("verdict"))
+    return bool(
+        p_value is not None
+        and alpha is not None
+        and p_value < alpha
+        and verdict in {"confirmed", "reproduced"}
+    )
+
+
 def _infer_model_size(name: str) -> str:
     match = re.search(r"(\d+(?:\.\d+)?\s*[bB])", name or "")
     return match.group(1).replace(" ", "") if match else ""
@@ -586,9 +642,9 @@ def build_claim_evidence_matrix(state: dict[str, Any], manifest: dict[str, Any])
     packet, summary, _artifact_manifest, _contract = _packet_parts(state)
     per_method = _as_dict(summary.get("per_method"))
     seeds = _as_list(manifest.get("seeds"))
-    p_text = _lower(manifest.get("statistical_tests"))
     has_multi_seed = len(seeds) >= 3
-    has_significance = "p=" in p_text or "bootstrap" in p_text or "permutation" in p_text
+    ledger = build_evidence_ledger(packet, summary, alpha=_significance_alpha())
+    has_significance = _ledger_supports_significance(ledger)
     rows = [
         {
             "claim": "Improves utility",
@@ -634,8 +690,8 @@ def build_claim_evidence_matrix(state: dict[str, Any], manifest: dict[str, Any])
                 "claim": _text(packet.get("claim_text"))[:280],
                 "required_evidence": "mapped quantitative artifact in result_packet or benchmark_summary",
                 "current_evidence": "present" if len(per_method) >= 2 else "missing benchmark comparison",
-                "can_appear_in_abstract": bool(len(per_method) >= 2 and has_multi_seed),
-                "allowed_sections": ["Abstract", "Introduction", "Conclusion"] if len(per_method) >= 2 and has_multi_seed else ["Motivation", "Limitations"],
+                "can_appear_in_abstract": bool(len(per_method) >= 2 and has_multi_seed and has_significance),
+                "allowed_sections": ["Abstract", "Introduction", "Conclusion"] if len(per_method) >= 2 and has_multi_seed and has_significance else ["Motivation", "Limitations"],
             },
         )
     return rows
@@ -742,6 +798,7 @@ def build_reviewer_report(
     blockers: list[str],
 ) -> dict[str, Any]:
     packet, summary, _artifact_manifest, _contract = _packet_parts(state)
+    ledger = build_evidence_ledger(packet, summary, alpha=_significance_alpha())
     answers: list[dict[str, Any]] = []
 
     def add(question: str, yes: bool, evidence: str) -> None:
@@ -750,7 +807,11 @@ def build_reviewer_report(
     add("What is the exact dataset?", bool(_as_list(manifest.get("datasets")) and not any("dataset" in b.lower() for b in blockers[:3])), str(manifest.get("datasets") or "missing"))
     add("What is the exact model?", bool(_as_list(manifest.get("models")) and not any("model" in b.lower() for b in blockers)), str(manifest.get("models") or "missing"))
     add("What is the exact baseline?", len(_as_list(manifest.get("baselines"))) >= 2, ", ".join(_as_list(manifest.get("baselines"))))
-    add("Is the improvement statistically significant?", bool(_text(manifest.get("statistical_tests")) and not any("statistical" in b.lower() for b in blockers)), _text(manifest.get("statistical_tests")))
+    add(
+        "Is the improvement statistically significant?",
+        bool(_ledger_supports_significance(ledger) and not any("statistical" in b.lower() for b in blockers)),
+        f"p={ledger.get('p_value')}; alpha={ledger.get('alpha')}; verdict={ledger.get('verdict')}",
+    )
     add("Is there more than one benchmark?", len(_as_list(manifest.get("datasets"))) > 1, str(len(_as_list(manifest.get("datasets")))))
     add("Are compute savings actually measured?", bool(manifest.get("latency") or manifest.get("token_cost")), "latency/token payload present" if (manifest.get("latency") or manifest.get("token_cost")) else "missing")
     add("Is the proposed gate better than confidence/disagreement routing?", any("Beats confidence" in row.get("claim", "") and row.get("can_appear_in_abstract") for row in claim_matrix), "claim-evidence matrix")
