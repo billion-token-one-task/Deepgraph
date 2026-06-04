@@ -36,6 +36,9 @@ FORBIDDEN_LATEX_TERMS = (
     "outside the verified claim",
     "missing generated figure",
     "diagram placeholder",
+    "fixme",
+    "<scaffold",
+    "generate a figure that",
 )
 
 FORBIDDEN_LATEX_SYMBOLS = ("￾", "", "�")
@@ -86,6 +89,21 @@ IRRELEVANT_CITATION_TERMS = (
     "finance",
     "graph-organized neural units",
 )
+
+METHOD_TOKEN_WHITELIST = {
+    "GSM8K",
+    "MuSiQue",
+    "MMLU",
+    "BLEU",
+    "GPU",
+    "CPU",
+    "LLM",
+    "LaTeX",
+    "JSON",
+    "API",
+}
+
+BOILERPLATE_REPEAT_THRESHOLD = 3
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -1033,10 +1051,89 @@ def audit_evidence_completeness(state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def latex_sanity_check(text: str) -> dict[str, Any]:
+def _line_hit(rule: str, value: str, line_no: int, line: str, *, kind: str = "deterministic") -> dict[str, Any]:
+    return {
+        "kind": kind,
+        "rule": rule,
+        "value": value,
+        "location": {"line": line_no},
+        "snippet": line.strip(),
+    }
+
+
+def _strip_latex_code_blocks(text: str) -> str:
+    stripped = re.sub(
+        r"\\begin\{(?:verbatim|lstlisting|minted)\}.*?\\end\{(?:verbatim|lstlisting|minted)\}",
+        "",
+        text or "",
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    stripped = re.sub(r"```.*?```", "", stripped, flags=re.DOTALL)
+    return stripped
+
+
+def _deterministic_latex_hits(text: str, state: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    state = _as_dict(state)
+    scan_text = _strip_latex_code_blocks(text or "")
+    hits: list[dict[str, Any]] = []
+    for line_no, line in enumerate(scan_text.splitlines(), start=1):
+        if re.search(r"\?\?|Table\s+\?\?|Figure\s+\?\?", line):
+            hits.append(_line_hit("unresolved_reference", "??", line_no, line))
+        for match in re.finditer(r"\\(?:ref|cite[a-zA-Z*]*)\{([^}]*)\}", line):
+            key = match.group(1).strip()
+            if not key or "?" in key or _lower(key) in {"todo", "tbd", "placeholder"}:
+                hits.append(_line_hit("unresolved_reference", match.group(0), line_no, line))
+        for match in re.finditer(r"\{\{[a-z_][a-z0-9_]*\}\}", line):
+            prefix = line[: match.start()]
+            if re.search(r"\\[A-Za-z]+\s*$", prefix) or prefix.rstrip().endswith("}"):
+                continue
+            hits.append(_line_hit("template_placeholder", match.group(0), line_no, line))
+
+    method_name = _text(state.get("method_name"))
+    if method_name:
+        allowed = set(METHOD_TOKEN_WHITELIST)
+        allowed.update(re.findall(r"\b(?:[A-Z]{2,}[A-Za-z0-9]*|[A-Z][a-z]+(?:[A-Z][A-Za-z0-9]*)+)\b", method_name))
+        scoped_parts: list[tuple[str, int]] = []
+        for match in re.finditer(r"\\title\{([^}]*)\}", scan_text, re.DOTALL | re.IGNORECASE):
+            scoped_parts.append((match.group(1), scan_text.count("\n", 0, match.start(1)) + 1))
+        begin_doc = re.search(r"\\begin\{document\}", scan_text, re.IGNORECASE)
+        if begin_doc:
+            scoped_parts.append((scan_text[:begin_doc.start()], 1))
+        for match in re.finditer(r"\\caption\{([^}]*)\}", scan_text, re.DOTALL | re.IGNORECASE):
+            scoped_parts.append((match.group(1), scan_text.count("\n", 0, match.start(1)) + 1))
+        token_re = re.compile(r"\b(?:[A-Z]{2,}[A-Za-z0-9]*|[A-Z][a-z]+(?:[A-Z][A-Za-z0-9]*)+)\b")
+        for snippet, base_line in scoped_parts:
+            for token_match in token_re.finditer(snippet):
+                token = token_match.group(0)
+                if token not in allowed:
+                    hits.append(
+                        _line_hit(
+                            "cross_run_identity",
+                            token,
+                            base_line + snippet.count("\n", 0, token_match.start()),
+                            snippet.splitlines()[0] if snippet.splitlines() else snippet,
+                        )
+                    )
+
+    sentence_locations: dict[str, list[tuple[int, str]]] = {}
+    for line_no, line in enumerate(scan_text.splitlines(), start=1):
+        for sentence in re.split(r"(?<=[.!?])\s+", line.strip()):
+            normalized = re.sub(r"[^a-z0-9\s]", "", sentence.lower())
+            normalized = re.sub(r"\s+", " ", normalized).strip()
+            if len(normalized.split()) >= 8:
+                sentence_locations.setdefault(normalized, []).append((line_no, sentence))
+    for normalized, locations in sentence_locations.items():
+        if len(locations) >= BOILERPLATE_REPEAT_THRESHOLD:
+            line_no, sentence = locations[0]
+            hits.append(_line_hit("boilerplate_repetition", normalized, line_no, sentence))
+    return hits
+
+
+def latex_sanity_check(text: str, state: dict[str, Any] | None = None, ledger: dict[str, Any] | None = None) -> dict[str, Any]:
     lower = (text or "").lower()
     hits = [{"kind": "term", "value": term} for term in FORBIDDEN_LATEX_TERMS if term in lower]
     hits.extend({"kind": "symbol", "value": symbol} for symbol in FORBIDDEN_LATEX_SYMBOLS if symbol in (text or ""))
+    hits.extend(_deterministic_latex_hits(text or "", state=state))
     return {
         "schema_version": "latex_sanity_v1",
         "ok": not hits,
