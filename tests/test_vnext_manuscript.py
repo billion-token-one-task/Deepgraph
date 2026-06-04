@@ -323,6 +323,43 @@ class ManuscriptBundleTests(unittest.TestCase):
             },
         }
 
+    def _generate_bundle_offline(self, run_full, side_effect):
+        run_full.side_effect = side_effect
+        with mock.patch(
+            "agents.manuscript_submission_enrichment.apply_venue_gates_with_retry",
+            side_effect=lambda main_tex, **_: (
+                main_tex,
+                {"pass": True, "final": {"pass": True, "template_id": "iclr2026"}},
+            ),
+        ), mock.patch(
+            "agents.manuscript_page_budget.apply_exact_page_budget",
+            side_effect=lambda main_tex, *_args, **_kwargs: (
+                main_tex,
+                {"pass": True, "main_body_pages": 9, "total_pdf_pages": 10},
+            ),
+        ), mock.patch(
+            "agents.manuscript_page_budget.page_budget_blockers",
+            return_value=[],
+        ):
+            return generate_submission_bundle(1, bundle_formats=["conference"])
+
+    def _orchestra_with_full_tex(self, full_tex):
+        def _stub(state, literature_block, paper_ids, iterations, *, figures_dir, baseline, metric_name, template_id=None):
+            out = self._stub_orchestra(
+                state,
+                literature_block,
+                paper_ids,
+                iterations,
+                figures_dir=figures_dir,
+                baseline=baseline,
+                metric_name=metric_name,
+                template_id=template_id,
+            )
+            out["refinement_full_text"] = full_tex
+            return out
+
+        return _stub
+
     @mock.patch("agents.paper_orchestra_pipeline._run_full_pipeline")
     def test_generate_submission_bundle_creates_verified_bundle_files_and_db_rows(self, run_full):
         run_full.side_effect = self._stub_orchestra
@@ -369,6 +406,93 @@ class ManuscriptBundleTests(unittest.TestCase):
         self.assertIn("iclr2026_conference", main_tex)
         self.assertIn("fig_metric_trajectory.svg", main_tex)
         self.assertTrue((self.workspace_root / "idea_1" / "paper" / "current" / "main.tex").exists())
+
+    @mock.patch("agents.paper_orchestra_pipeline._run_full_pipeline")
+    def test_generate_submission_bundle_blocks_unresolved_reference_in_rendered_tex(self, run_full):
+        full_tex = (
+            "\\documentclass{article}\\begin{document}"
+            "\\begin{abstract}Clean abstract.\\end{abstract}"
+            "\\section{Results}Table ?? reports the result."
+            "\\section{Discussion}Clean discussion."
+            "\\end{document}"
+        )
+        result = self._generate_bundle_offline(run_full, self._orchestra_with_full_tex(full_tex))
+
+        self.assertIn("error", result)
+        blockers = " ".join(result.get("submission_blockers") or []).lower()
+        self.assertIn("??", blockers)
+
+    @mock.patch("agents.paper_orchestra_pipeline._run_full_pipeline")
+    def test_generate_submission_bundle_blocks_repeated_boilerplate_in_rendered_tex(self, run_full):
+        sentence = "This repeated boilerplate sentence should not appear in every generated paragraph."
+        full_tex = (
+            "\\documentclass{article}\\begin{document}"
+            "\\begin{abstract}Clean abstract.\\end{abstract}"
+            "\\section{Results}"
+            + "\n".join([sentence] * 4)
+            + "\n"
+            + "\\section{Discussion}Clean discussion."
+            "\\end{document}"
+        )
+        result = self._generate_bundle_offline(run_full, self._orchestra_with_full_tex(full_tex))
+
+        self.assertIn("error", result)
+        blockers = " ".join(result.get("submission_blockers") or []).lower()
+        self.assertIn("boilerplate", blockers)
+
+    @mock.patch("agents.paper_orchestra_pipeline._run_full_pipeline")
+    def test_generate_submission_bundle_preserves_existing_placeholder_gate(self, run_full):
+        full_tex = (
+            "\\documentclass{article}\\begin{document}"
+            "\\begin{abstract}Clean abstract.\\end{abstract}"
+            "\\section{Results}This placeholder text must not ship."
+            "\\section{Discussion}Clean discussion."
+            "\\end{document}"
+        )
+        result = self._generate_bundle_offline(run_full, self._orchestra_with_full_tex(full_tex))
+
+        self.assertIn("error", result)
+        blockers = " ".join(result.get("submission_blockers") or []).lower()
+        self.assertIn("placeholder", blockers)
+
+    @mock.patch("agents.paper_orchestra_pipeline._run_full_pipeline")
+    def test_generate_submission_bundle_reports_all_latex_sanity_hits(self, run_full):
+        full_tex = (
+            "\\documentclass{article}\\begin{document}"
+            "\\begin{abstract}Clean abstract.\\end{abstract}"
+            "\\section{Results}Table ?? appears with {{plot_cmd}}."
+            "\\section{Discussion}Clean discussion."
+            "\\end{document}"
+        )
+        result = self._generate_bundle_offline(run_full, self._orchestra_with_full_tex(full_tex))
+
+        self.assertIn("error", result)
+        blockers = " ".join(result.get("submission_blockers") or []).lower()
+        self.assertIn("??", blockers)
+        self.assertIn("plot_cmd", blockers)
+
+    @mock.patch("agents.paper_orchestra_pipeline._run_full_pipeline")
+    def test_generate_submission_bundle_blocks_cross_run_identity_in_rendered_tex(self, run_full):
+        full_tex = (
+            "\\documentclass{article}"
+            "\\title{Auto Manuscript Insight}"
+            "\\begin{document}"
+            "\\maketitle"
+            "\\begin{abstract}Clean abstract.\\end{abstract}"
+            "\\section{Introduction}Intro with \\cite{cite_a}."
+            "\\begin{figure}[t]"
+            "\\caption{OtherMethod trajectory.}"
+            "\\end{figure}"
+            "\\section{Discussion}Clean discussion."
+            "\\bibliographystyle{plain}"
+            "\\bibliography{references}"
+            "\\end{document}"
+        )
+        result = self._generate_bundle_offline(run_full, self._orchestra_with_full_tex(full_tex))
+
+        self.assertIn("error", result)
+        blockers = " ".join(result.get("submission_blockers") or []).lower()
+        self.assertIn("othermethod", blockers)
 
     def test_generate_submission_bundle_blocks_non_formal_run(self):
         database.execute(

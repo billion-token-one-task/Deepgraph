@@ -1840,7 +1840,7 @@ def generate_bundle_paper_orchestra(
                 "backend": "paper_orchestra",
             }
         page_budget_warning = None
-        latex_sanity_report = latex_sanity_check(main_tex)
+        latex_sanity_report = latex_sanity_check(main_tex, state=state)
         _write(bundle_dir / "main.tex", main_tex)
         _write(
             bundle_dir / "latex_sanity_report.json",
