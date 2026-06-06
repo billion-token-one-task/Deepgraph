@@ -26,8 +26,14 @@ let providerTimer   = null;
 let papersLoaded    = false;
 let oppsLoaded      = false;
 let providersLoaded = false;
+let taxonomyLoaded  = false;
 let paperProgressLoaded = false;
 let generatedPapersLoaded = false;
+let discoveriesLoaded = false;
+let experimentsLoaded = false;
+let insightsLoaded = false;
+let overviewGraphLoaded = false;
+let inactiveTabsPrefetched = false;
 let sidebarCollapsed = false;
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -55,6 +61,11 @@ function trunc(str, max) {
 function $(sel) { return document.querySelector(sel); }
 function $$(sel) { return document.querySelectorAll(sel); }
 function el(id) { return document.getElementById(id); }
+function tr(key, vars) { return window.t ? window.t(key, vars) : key; }
+function setText(id, value) {
+    const node = el(id);
+    if (node) node.textContent = value;
+}
 
 async function api(path, opts) {
     const r = await fetch(path, opts);
@@ -86,7 +97,7 @@ function switchTab(tab) {
     activeTab = tab;
 
     // Update nav items
-    $$('.nav-item').forEach(btn => {
+    $$('.nav-item, .advanced-nav-item').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.tab === tab);
     });
 
@@ -106,27 +117,25 @@ function onTabActivated(tab) {
             if (!exploreData) navigateTo(exploreNodeId);
             break;
         case 'evidence':
-            loadTaxonomyDropdown();
+            if (!taxonomyLoaded) loadTaxonomyDropdown();
             break;
         case 'papers':
             if (!papersLoaded) loadPapers();
             break;
         case 'paper-progress':
-            loadPaperProgressTab();
-            paperProgressLoaded = true;
+            if (!paperProgressLoaded) loadPaperProgressTab();
             break;
         case 'generated-papers':
-            loadGeneratedPapersTab();
-            generatedPapersLoaded = true;
+            if (!generatedPapersLoaded) loadGeneratedPapersTab();
             break;
         case 'discoveries':
-            loadDiscoveriesTab();
+            if (!discoveriesLoaded) loadDiscoveriesTab();
             break;
         case 'experiments':
-            loadExperimentsTab();
+            if (!experimentsLoaded) loadExperimentsTab();
             break;
         case 'insights':
-            loadInsightsTab();
+            if (!insightsLoaded) loadInsightsTab();
             break;
         case 'feed':
             scrollFeedToBottom();
@@ -152,22 +161,16 @@ async function refreshStats() {
         const s = await api('/api/stats');
         statsCache = s;
 
-        // Top bar
-        el('hdrPapers').textContent  = fmt(s.papers_processed || 0);
-        el('hdrResults').textContent = fmt(s.results_total || 0);
-        el('hdrInsights').textContent = fmt(s.insights_total || 0);
-        el('hdrTokens').textContent  = fmt(s.tokens_consumed || 0);
-
         // Overview stat cards
-        el('statPapers').textContent        = fmt(s.papers_processed || 0);
-        el('statResults').textContent       = fmt(s.results_total || 0);
-        el('statTaxonomy').textContent = fmt(s.taxonomy_nodes_total || 0);
-        el('statContradictions').textContent = fmt(s.contradictions_total || 0);
-        el('statInsights').textContent      = fmt(s.insights_total || 0);
-        el('statTokens').textContent        = fmt(s.tokens_consumed || 0);
-        el('statExperiments').textContent   = fmt(s.experiment_runs_total || 0);
-        el('statDeepDiscoveries').textContent = fmt(s.deep_insights_total || 0);
-        el('statCompletePapers').textContent = fmt(s.submission_bundles_total || 0);
+        setText('statPapers', fmt(s.papers_processed || 0));
+        setText('statResults', fmt(s.results_total || 0));
+        setText('statTaxonomy', fmt(s.taxonomy_nodes_total || 0));
+        setText('statContradictions', fmt(s.contradictions_total || 0));
+        setText('statInsights', fmt(s.insights_total || 0));
+        setText('statTokens', fmt(s.tokens_consumed || 0));
+        setText('statExperiments', fmt(s.experiment_runs_total || 0));
+        setText('statDeepDiscoveries', fmt(s.deep_insights_total || 0));
+        setText('statCompletePapers', fmt(s.submission_bundles_total || 0));
     } catch (e) {
         console.error('Stats error:', e);
     }
@@ -220,7 +223,7 @@ function updateLiveBadge(ev) {
     const badge = el('liveBadge');
     const activeCount = Object.values(activePapers).filter(p => !p.done).length;
     const running = pipelineRunning || activeCount > 0;
-    badge.textContent = running ? 'LIVE' : 'IDLE';
+    badge.textContent = running ? tr('app.live.live') : tr('app.live.idle');
     badge.classList.toggle('running', running);
 }
 
@@ -363,26 +366,38 @@ function scrollFeedToBottom() {
 
 async function loadRecentlyDiscovered() {
     try {
-        const [data, insights] = await Promise.all([
+        const [data, insights, discoveries] = await Promise.all([
             api('/api/recent_discoveries?limit=8'),
             api('/api/insights?limit=6'),
+            api('/api/deep_insights?limit=4'),
         ]);
-        renderRecentlyDiscovered(data, insights);
+        renderRecentlyDiscovered(data, insights, discoveries);
     } catch (e) {
         console.error('Recent discoveries error:', e);
     }
 }
 
-function renderRecentlyDiscovered(data, insights) {
+function renderRecentlyDiscovered(data, insights, discoveries) {
     const grid = el('recentlyGrid');
     let items = [];
 
-    // Prioritize real insights over old opportunities
+    if (discoveries && discoveries.length > 0) {
+        for (const d of discoveries.filter(isDisplayableDiscovery).slice(0, 3)) {
+            items.push({
+                type: 'discovery',
+                title: d.title || 'Discovery',
+                desc: d.problem_statement || d.formal_structure || d.evidence_summary || '',
+                meta: `Tier ${esc(d.tier || '?')} | ${esc(d.novelty_status || 'unchecked')}`,
+            });
+        }
+    }
+
+    // Prioritize research insights over older opportunity rows.
     if (insights && insights.length > 0) {
         for (const ins of insights.slice(0, 4)) {
             items.push({
-                type: ins.insight_type || 'insight',
-                title: ins.title || 'Insight',
+                type: 'research-insight',
+                title: ins.title || 'Research Insight',
                 desc: ins.hypothesis || '',
                 meta: `${esc(ins.node_id)} | N:${ins.novelty_score}/5 F:${ins.feasibility_score}/5`,
                 nodeId: ins.node_id,
@@ -433,11 +448,11 @@ function renderRecentlyDiscovered(data, insights) {
     }
 
     if (items.length === 0) {
-        grid.innerHTML = '<p class="empty-msg">Run the pipeline to discover gaps, contradictions, and opportunities.</p>';
+        grid.innerHTML = `<p class="empty-msg">${esc(tr('overview.latestEmpty'))}</p>`;
         return;
     }
 
-    const order = { opportunity: 0, gap: 1, contradiction: 2, paper: 3 };
+    const order = { discovery: 0, 'research-insight': 1, opportunity: 2, gap: 3, contradiction: 4, paper: 5 };
     items.sort((a, b) => (order[a.type] || 9) - (order[b.type] || 9));
 
     grid.innerHTML = items.slice(0, 8).map(item => {
@@ -459,10 +474,13 @@ function renderRecentlyDiscovered(data, insights) {
 // ── Overview Graph Preview ───────────────────────────────────────────
 
 async function loadOverviewGraph() {
+    if (overviewGraphLoaded) return;
+    overviewGraphLoaded = true;
     try {
         const data = await api(`/api/taxonomy/${ROOT_NODE}`);
         renderRadialGraph('overviewGraphSvg', data.node, data.children, 320, true);
     } catch (e) {
+        overviewGraphLoaded = false;
         console.error('Overview graph error:', e);
     }
 }
@@ -487,7 +505,7 @@ async function navigateTo(nodeId) {
         renderBreadcrumb(data.breadcrumb || []);
 
         // Title
-        el('exploreTitle').textContent = data.node.name + ' \u2014 Opportunity Map';
+        el('exploreTitle').textContent = data.node.name + ' \u2014 ' + tr('explore.title');
 
         // Graph
         renderRadialGraph('exploreGraphSvg', data.node, data.children, 520, false);
@@ -882,14 +900,16 @@ function gapColor(gapCount, maxGap) {
 
 async function loadTaxonomyDropdown() {
     if (taxonomyFlat.length > 0) return; // already loaded
+    taxonomyLoaded = true;
     try {
         taxonomyFlat = await api('/api/taxonomy');
         const sel = el('evidenceNodeSelect');
-        sel.innerHTML = '<option value="">-- Select a leaf node --</option>';
+        sel.innerHTML = `<option value="">${esc(tr('evidence.option'))}</option>`;
         for (const n of taxonomyFlat) {
             sel.innerHTML += `<option value="${esc(n.id)}">${esc(n.id)} \u2014 ${esc(n.name)}</option>`;
         }
     } catch (e) {
+        taxonomyLoaded = false;
         console.error('Taxonomy dropdown error:', e);
     }
 }
@@ -898,7 +918,7 @@ async function loadEvidenceForNode(nodeId) {
     if (!nodeId) {
         el('evidenceMatrixContainer').innerHTML = '';
         el('evidenceGapsCard').style.display = 'none';
-        el('evidenceHint').textContent = 'Select a leaf node to view the evidence matrix.';
+        el('evidenceHint').textContent = tr('evidence.hint');
         return;
     }
 
@@ -912,15 +932,15 @@ async function loadEvidenceForNode(nodeId) {
             renderMatrix(el('evidenceMatrixContainer'), m);
             el('evidenceHint').textContent = `${m.methods.length} methods x ${m.datasets.length} datasets`;
         } else {
-            el('evidenceMatrixContainer').innerHTML = '<p class="empty-msg">No structured evidence for this node. Try a leaf node with papers.</p>';
-            el('evidenceHint').textContent = data.is_leaf ? 'No evidence data yet.' : 'Select a leaf node.';
+            el('evidenceMatrixContainer').innerHTML = '<p class="empty-msg">No structured benchmark data for this research area. Try a leaf research area with source papers.</p>';
+            el('evidenceHint').textContent = data.is_leaf ? 'No benchmark data yet.' : tr('evidence.option').replace(/-/g, '').trim();
         }
 
         // Gaps
         const gapsCard = el('evidenceGapsCard');
         if (data.gaps && data.gaps.length > 0) {
             gapsCard.style.display = '';
-            el('evidenceGapsTitle').textContent = `Matrix Gaps (${data.gaps.length})`;
+            el('evidenceGapsTitle').textContent = `${tr('evidence.gaps')} (${data.gaps.length})`;
             renderGaps(el('evidenceGapsBody'), data.gaps);
         } else {
             gapsCard.style.display = 'none';
@@ -933,7 +953,7 @@ async function loadEvidenceForNode(nodeId) {
 
 function renderMatrix(container, matrix) {
     if (!matrix.methods.length || !matrix.datasets.length) {
-        container.innerHTML = '<p class="empty-msg">No results data yet.</p>';
+        container.innerHTML = '<p class="empty-msg">No result data yet.</p>';
         return;
     }
 
@@ -957,7 +977,7 @@ function renderMatrix(container, matrix) {
     html += '</div>';
 
     html += '<div class="matrix-scroll"><table class="matrix-table">';
-    html += '<thead><tr><th class="method-header">Method \\ Dataset</th>';
+    html += '<thead><tr><th class="method-header">Method / Dataset</th>';
     for (const ds of matrix.datasets) {
         html += `<th class="dataset-header" title="${esc(ds)}">${esc(trunc(ds, 16))}</th>`;
     }
@@ -1165,11 +1185,11 @@ function renderPaperGenerationRows(jobs, manuscripts) {
         return `
             <div class="paper-flow-item">
                 <div class="paper-flow-head">
-                    <div class="paper-flow-title">${esc(trunc(job.title || `Idea #${job.deep_insight_id}`, 120))}</div>
+                <div class="paper-flow-title">${esc(trunc(job.title || `Discovery ${job.deep_insight_id}`, 120))}</div>
                     ${statusBadge(stage, toneForPaperStage(job.stage || job.status))}
                 </div>
                 <div class="paper-flow-meta">
-                    <span>Idea #${esc(job.deep_insight_id || '-')}</span>
+                    <span>Discovery ${esc(job.deep_insight_id || '-')}</span>
                     ${job.experiment_status ? `<span>Experiment: ${esc(job.experiment_status)}</span>` : ''}
                     ${job.updated_at ? `<span>${esc(timeAgo(job.updated_at))}</span>` : ''}
                 </div>
@@ -1205,6 +1225,7 @@ function renderPaperGenerationRows(jobs, manuscripts) {
 }
 
 async function loadPaperProgressTab() {
+    paperProgressLoaded = true;
     try {
         const [automation, jobs, manuscripts] = await Promise.all([
             api('/api/automation'),
@@ -1217,7 +1238,7 @@ async function loadPaperProgressTab() {
             return status && !['stale', 'completed', 'ready'].includes(status);
         });
         renderMiniStatGrid('paperProgressStats', [
-            { label: 'Pipeline Papers', value: (current.papers || []).length },
+            { label: 'Source Papers In Progress', value: (current.papers || []).length },
             { label: 'Paper Jobs', value: (jobs || []).filter(job => !['completed', 'failed'].includes(String(job.status || '').toLowerCase())).length },
             { label: 'Active Manuscripts', value: activeManuscripts.length },
             { label: 'Blocked Jobs', value: ((automation || {}).auto_research || {}).blocked || 0 },
@@ -1225,6 +1246,7 @@ async function loadPaperProgressTab() {
         renderPaperPipelineRows(current.papers || []);
         renderPaperGenerationRows(jobs || [], manuscripts || []);
     } catch (e) {
+        paperProgressLoaded = false;
         const listA = el('paperProgressPipelineList');
         const listB = el('paperProgressGenerationList');
         if (listA) listA.innerHTML = `<p class="empty-msg">Failed to load paper progress: ${esc(e.message)}</p>`;
@@ -1247,7 +1269,7 @@ function renderGeneratedPapers(manuscripts) {
     const rows = (manuscripts || []).slice(0, 100);
     count.textContent = rows.length;
     if (!rows.length) {
-        list.innerHTML = '<p class="empty-msg">No manuscript runs have been generated yet.</p>';
+        list.innerHTML = '<p class="empty-msg">No generated manuscript runs are ready yet.</p>';
         return;
     }
     list.innerHTML = rows.map(row => {
@@ -1260,7 +1282,7 @@ function renderGeneratedPapers(manuscripts) {
                 </div>
                 <div class="paper-flow-meta">
                     <span>Manuscript #${esc(row.id || '-')}</span>
-                    ${row.experiment_run_id ? `<span>Run #${esc(row.experiment_run_id)}</span>` : ''}
+                    ${row.experiment_run_id ? `<span>Experiment Run ${esc(row.experiment_run_id)}</span>` : ''}
                     ${row.hypothesis_verdict ? `<span>Verdict: ${esc(row.hypothesis_verdict)}</span>` : ''}
                     ${row.updated_at ? `<span>${esc(timeAgo(row.updated_at))}</span>` : ''}
                 </div>
@@ -1279,6 +1301,7 @@ function renderGeneratedPapers(manuscripts) {
 }
 
 async function loadGeneratedPapersTab() {
+    generatedPapersLoaded = true;
     try {
         const manuscripts = await api('/api/manuscripts?limit=100');
         const counts = (manuscripts || []).reduce((acc, row) => {
@@ -1288,13 +1311,14 @@ async function loadGeneratedPapersTab() {
             return acc;
         }, { total: 0 });
         renderMiniStatGrid('generatedPapersStats', [
-            { label: 'Total Manuscripts', value: counts.total || 0 },
+            { label: 'Generated Manuscript', value: counts.total || 0 },
             { label: 'Ready', value: counts.ready || counts.bundle_ready || 0 },
             { label: 'Stale', value: counts.stale || 0 },
             { label: 'Drafting', value: counts.drafting || 0 },
         ]);
         renderGeneratedPapers(manuscripts || []);
     } catch (e) {
+        generatedPapersLoaded = false;
         const list = el('generatedPapersList');
         if (list) list.innerHTML = `<p class="empty-msg">Failed to load generated papers: ${esc(e.message)}</p>`;
     }
@@ -1325,7 +1349,7 @@ async function togglePaper(rowEl) {
 
         let html = '';
         if (claims.length > 0) {
-            html += '<div class="paper-claims"><strong style="color:var(--accent);font-size:0.75rem;">Claims & Insights</strong>';
+            html += '<div class="paper-claims"><strong style="color:var(--accent);font-size:0.75rem;">Claim</strong>';
             for (const c of claims.slice(0, 8)) {
                 html += `<div class="paper-claim-item">${esc(c.claim_text || c.claim_type || '')}</div>`;
             }
@@ -1349,6 +1373,7 @@ async function togglePaper(rowEl) {
 // ── Opportunities Tab ────────────────────────────────────────────────
 
 async function loadInsightsTab() {
+    insightsLoaded = true;
     const typeFilter = el('insightTypeFilter')?.value || '';
     const sortFilter = el('insightSortFilter')?.value || 'score';
     try {
@@ -1374,7 +1399,7 @@ async function loadInsightsTab() {
 
         const list = el('insightsList');
         if (!insights.length) {
-            list.innerHTML = '<p class="empty-msg">No insights discovered yet. Run the pipeline to analyze papers.</p>';
+            list.innerHTML = '<p class="empty-msg">No research insights discovered yet. Run the pipeline to analyze source papers.</p>';
             return;
         }
 
@@ -1410,6 +1435,7 @@ async function loadInsightsTab() {
             </div>`;
         }).join('');
     } catch (e) {
+        insightsLoaded = false;
         console.error('Insights tab error:', e);
     }
 }
@@ -1511,9 +1537,10 @@ function renderOpportunities() {
     }).join('');
 }
 
-// ── Discoveries Tab (Tier 1 + Tier 2 Deep Insights) ──────────────────
+// ── Discoveries Tab (Tier 1 + Tier 2) ────────────────────────────────
 
 async function loadDiscoveriesTab() {
+    discoveriesLoaded = true;
     const tierFilter = el('discoveryTierFilter')?.value || '';
     try {
         let url = '/api/deep_insights?limit=50';
@@ -1521,6 +1548,7 @@ async function loadDiscoveriesTab() {
         const insights = await api(url);
         renderDiscoveries(insights);
     } catch (e) {
+        discoveriesLoaded = false;
         const list = el('discoveriesList');
         if (list) list.innerHTML = '<p class="empty-msg">No ready discoveries yet. Automatic discovery is still filtering candidates.</p>';
     }
@@ -1546,7 +1574,7 @@ function renderDiscoveries(discoveries) {
     list.innerHTML = visible.map(d => {
         const isTier1 = d.tier === 1;
         const tierColor = isTier1 ? '#c4453a' : '#2e86ab';
-        const tierLabel = isTier1 ? 'PARADIGM' : 'PAPER IDEA';
+        const tierLabel = isTier1 ? 'PARADIGM' : 'DISCOVERY';
 
         const noveltyBadge = d.novelty_status === 'novel'
             ? '<span class="paradigm-badge high">NOVEL</span>'
@@ -1645,9 +1673,10 @@ function renderDiscoveries(discoveries) {
     }).join('');
 }
 
-// ── Experiments Tab (SciForge) ────────────────────────────────────────
+// ── Experiments Tab ───────────────────────────────────────────────────
 
 async function loadExperimentsTab() {
+    experimentsLoaded = true;
     const statusFilter = el('experimentStatusFilter')?.value || '';
     try {
         const automation = await api('/api/automation');
@@ -1665,6 +1694,7 @@ async function loadExperimentsTab() {
         const meta = await api('/api/meta_report');
         renderMetaReport(meta);
     } catch (e) {
+        experimentsLoaded = false;
         const list = el('experimentsList');
         if (list) list.innerHTML = `<p class="empty-msg">Automation status failed to load: ${esc(e.message)}</p>`;
     }
@@ -1734,7 +1764,7 @@ function renderAutomationOverview(snapshot) {
         workLane('Generating experiment plans', current.experiment_plans, item =>
             `${esc(item.status || '')} / ${esc(item.stage || '')}`, item => item.title),
         workLane('Running experiments', current.experiments, item =>
-            `Run #${esc(item.id || '')} · ${esc(item.status || '')} · ${esc(item.phase || '')}`, item => item.title),
+            `Experiment Run ${esc(item.id || '')} · ${esc(item.status || '')} · ${esc(item.phase || '')}`, item => item.title),
         workLane('Writing papers', current.manuscripts, item =>
             `Manuscript #${esc(item.id || '')} · ${esc(item.status || '')}`, item => item.title),
     ].join('');
@@ -1776,7 +1806,7 @@ function friendlyAutomationStage(status, stage) {
     const key = String(stage || status || '').toLowerCase();
     if (key.includes('verification')) return 'Checking novelty';
     if (key.includes('research')) return 'Running EvoScientist research';
-    if (key.includes('review') || key.includes('forge') || key.includes('formal')) return 'Generating experiment plan';
+    if (key.includes('review') || key.includes('formal')) return 'Generating experiment plan';
     if (key.includes('gpu')) return 'Running on GPU';
     if (key.includes('validation') || key.includes('experiment')) return 'Running experiment';
     if (key.includes('writing') || key.includes('submission') || key.includes('bundle')) return 'Writing paper';
@@ -1809,7 +1839,7 @@ function renderAutoResearchJobs(jobs) {
         const color = colors[j.status] || '#888';
         const cpu = j.cpu_eligible == null
             ? 'CPU unchecked'
-            : (j.cpu_eligible ? 'CPU OK' : 'CPU blocked');
+            : (j.cpu_eligible ? 'CPU eligible' : 'CPU blocked');
         const exp = j.experiment_status
             ? `<span class="insight-scores">Experiment: ${esc(j.experiment_status)}</span>`
             : '';
@@ -1824,7 +1854,7 @@ function renderAutoResearchJobs(jobs) {
                 ${exp}
                 ${verdict}
             </div>
-            <div class="insight-title">${esc(j.title || 'Deep Insight')}</div>
+            <div class="insight-title">${esc(j.title || 'Discovery')}</div>
             <div class="insight-impact"><span class="insight-label">Internal stage:</span> ${esc(j.stage || '')}</div>
             ${j.novelty_status ? `<div class="insight-impact"><span class="insight-label">Novelty:</span> ${esc(j.novelty_status)}</div>` : ''}
             ${j.cpu_reason ? `<div class="insight-evidence"><span class="insight-label">CPU Check:</span> ${esc(j.cpu_reason)}</div>` : ''}
@@ -1859,12 +1889,12 @@ function renderExperiments(runs) {
 
         return `<div class="insight-card" style="border-left: 3px solid ${color};">
             <div class="insight-header">
-                <span class="insight-type" style="color:${color};font-weight:700;">RUN #${r.id} [${esc(r.status)}]</span>
+                <span class="insight-type" style="color:${color};font-weight:700;">Experiment Run ${r.id} [${esc(r.status)}]</span>
                 ${verdict}
                 ${effect ? `<span class="insight-scores">Effect: ${effect}</span>` : ''}
                 <span style="color:var(--text-dim);font-size:0.68rem;">Tier ${r.insight_tier || '?'}</span>
             </div>
-            <div class="insight-title">${esc(r.insight_title || 'Experiment')}</div>
+            <div class="insight-title">${esc(r.insight_title || 'Experiment Run')}</div>
             <div style="display:flex;gap:16px;margin:6px 0;font-size:0.75rem;color:var(--text-secondary);">
                 <span>Iterations: ${r.iterations_total || 0} (${r.iterations_kept || 0} kept)</span>
                 <span>Baseline: ${r.baseline_metric_value != null ? r.baseline_metric_value.toFixed(4) : '?'}</span>
@@ -1938,7 +1968,7 @@ function renderExperimentGroupsV2(groups) {
         const progress = auto.stage
             ? friendlyAutomationStage(auto.status, auto.stage)
             : ((currentRun || {}).status || 'not_started');
-        const currentRunLabel = currentRun ? `Main run #${currentRun.id}` : 'No run created yet';
+        const currentRunLabel = currentRun ? `Experiment Run ${currentRun.id}` : 'No experiment run created yet';
         const previewUrl = (((group || {}).paper_preview_urls || {}).index) || '';
         const plan = group.plan_snapshot || {};
         const latest = plan.latest_status || {};
@@ -1951,98 +1981,44 @@ function renderExperimentGroupsV2(groups) {
         ].filter(Boolean).join(', ') || 'waiting for plan files';
         return `<div class="insight-card" style="border-left: 3px solid ${color};">
             <div class="insight-header">
-                <span class="insight-type" style="color:${color};font-weight:700;">IDEA #${insight.id}</span>
+                <span class="insight-type" style="color:${color};font-weight:700;">Discovery ${insight.id}</span>
                 <span class="insight-scores">${esc(currentRunLabel)}</span>
                 ${verdict}
                 ${effect ? `<span class="insight-scores">Effect: ${effect}</span>` : ''}
                 <span style="color:var(--text-dim);font-size:0.68rem;">Tier ${insight.tier || '?'}</span>
             </div>
-            <div class="insight-title">${esc(insight.title || 'Deep Insight')}</div>
+            <div class="insight-title">${esc(insight.title || 'Discovery')}</div>
             <div class="insight-impact"><span class="insight-label">Current work:</span> ${esc(progress)}</div>
-            ${latest.stage ? `<div class="insight-experiment"><span class="insight-label">Latest file status:</span> ${esc(latest.stage)} / ${esc(latest.status || '')}</div>` : ''}
-            ${latest.error ? `<div class="insight-impact" style="color:#c4453a;"><span class="insight-label">Latest error:</span> ${esc(trunc(latest.error, 180))}</div>` : ''}
             ${renderManuscriptBlockers(manuscriptBlockers)}
-            <div class="insight-evidence"><span class="insight-label">Plan files:</span> ${esc(planReady)}</div>
-            <div style="display:flex;gap:16px;margin:6px 0;font-size:0.75rem;color:var(--text-secondary);flex-wrap:wrap;">
-                <span>Runs: ${group.run_count || 0}</span>
-                <span>Latest run: ${esc((group.latest_run || {}).status || 'none')}</span>
-                <span>Bundle: ${esc(insight.submission_status || 'not_started')}</span>
-            </div>
-            <div style="display:flex;gap:16px;margin:6px 0;font-size:0.75rem;color:var(--text-secondary);flex-wrap:wrap;">
-                <span>Experiment: ${esc(group.experiment_root || '-')}</span>
-                <span>Plan: ${esc(group.plan_root || '-')}</span>
-                <span>Paper: ${esc(group.paper_root || '-')}</span>
-            </div>
-            <div class="chip-row" style="margin:8px 0;">${renderTrackChips(group.planned_tracks)}</div>
+            <details class="advanced-inline">
+                <summary>Advanced experiment fields</summary>
+                ${latest.stage ? `<div class="insight-experiment"><span class="insight-label">Latest file status:</span> ${esc(latest.stage)} / ${esc(latest.status || '')}</div>` : ''}
+                ${latest.error ? `<div class="insight-impact" style="color:#c4453a;"><span class="insight-label">Latest error:</span> ${esc(trunc(latest.error, 180))}</div>` : ''}
+                <div class="insight-evidence"><span class="insight-label">Plan files:</span> ${esc(planReady)}</div>
+                <div style="display:flex;gap:16px;margin:6px 0;font-size:0.75rem;color:var(--text-secondary);flex-wrap:wrap;">
+                    <span>Experiment runs: ${group.run_count || 0}</span>
+                    <span>Latest experiment run: ${esc((group.latest_run || {}).status || 'none')}</span>
+                    <span>Submission Bundle: ${esc(insight.submission_status || 'not_started')}</span>
+                </div>
+                <div style="display:flex;gap:16px;margin:6px 0;font-size:0.75rem;color:var(--text-secondary);flex-wrap:wrap;">
+                    <span>Experiment path: ${esc(group.experiment_root || '-')}</span>
+                    <span>Plan path: ${esc(group.plan_root || '-')}</span>
+                    <span>Generated manuscript path: ${esc(group.paper_root || '-')}</span>
+                </div>
+                <div class="chip-row" style="margin:8px 0;">${renderTrackChips(group.planned_tracks)}</div>
+            </details>
             ${auto.last_note ? `<div class="insight-experiment"><span class="insight-label">Latest:</span> ${esc(trunc(auto.last_note, 220))}</div>` : ''}
             ${auto.last_error ? `<div class="insight-impact" style="color:#c4453a;"><span class="insight-label">Error:</span> ${esc(trunc(auto.last_error, 220))}</div>` : ''}
             <div class="insight-actions">
                 <button class="btn-preview" onclick="window._dg.viewExperimentGroup(${insight.id})">View automation history</button>
-                ${currentRun ? `<button class="btn-preview" onclick="window._dg.viewExperiment(${currentRun.id})">View main run</button>` : ''}
-                ${previewUrl ? `<button class="btn-preview" onclick="window.open('${esc(previewUrl)}','_blank')">Open paper preview</button>` : ''}
+                ${currentRun ? `<button class="btn-preview" onclick="window._dg.viewExperiment(${currentRun.id})">View experiment run</button>` : ''}
+                ${previewUrl ? `<button class="btn-preview" onclick="window.open('${esc(previewUrl)}','_blank')">Open generated manuscript</button>` : ''}
             </div>
         </div>`;
     }).join('');
 }
 
-function renderExperimentGroups(groups) {
-    const list = el('experimentsList');
-    if (!groups || !groups.length) {
-        list.innerHTML = '<p class="empty-msg">No experiment ideas are active yet. The automatic queue will start them when ready.</p>';
-        return;
-    }
-
-    list.innerHTML = groups.map(group => {
-        const insight = group.insight || {};
-        const auto = group.auto_job || {};
-        const currentRun = group.canonical_run || group.latest_run || null;
-        const color = experimentStatusColor((currentRun || {}).status || auto.status);
-        const verdict = currentRun && currentRun.hypothesis_verdict
-            ? `<span style="color:${verdictColor(currentRun.hypothesis_verdict)};font-weight:700;text-transform:uppercase;">${esc(currentRun.hypothesis_verdict)}</span>`
-            : '';
-        const effect = currentRun && currentRun.effect_pct != null
-            ? `${currentRun.effect_pct >= 0 ? '+' : ''}${currentRun.effect_pct.toFixed(2)}%`
-            : '';
-        const progress = auto.stage
-            ? `${auto.status || 'queued'} / ${auto.stage}`
-            : ((currentRun || {}).status || 'not_started');
-        const currentRunLabel = currentRun
-            ? `主实验 Run #${currentRun.id}`
-            : '尚未创建 run';
-        const previewUrl = (((group || {}).paper_preview_urls || {}).index) || '';
-        return `<div class="insight-card" style="border-left: 3px solid ${color};">
-            <div class="insight-header">
-                <span class="insight-type" style="color:${color};font-weight:700;">IDEA #${insight.id}</span>
-                <span class="insight-scores">${esc(currentRunLabel)}</span>
-                ${verdict}
-                ${effect ? `<span class="insight-scores">Effect: ${effect}</span>` : ''}
-                <span style="color:var(--text-dim);font-size:0.68rem;">Tier ${insight.tier || '?'}</span>
-            </div>
-            <div class="insight-title">${esc(insight.title || 'Deep Insight')}</div>
-            <div class="insight-impact"><span class="insight-label">当前进度:</span> ${esc(progress)}</div>
-            <div style="display:flex;gap:16px;margin:6px 0;font-size:0.75rem;color:var(--text-secondary);flex-wrap:wrap;">
-                <span>历史 runs: ${group.run_count || 0}</span>
-                <span>最新状态: ${esc((group.latest_run || {}).status || 'none')}</span>
-                <span>Bundle: ${esc(insight.submission_status || 'not_started')}</span>
-            </div>
-            <div style="display:flex;gap:16px;margin:6px 0;font-size:0.75rem;color:var(--text-secondary);flex-wrap:wrap;">
-                <span>实验区: ${esc(group.experiment_root || '-')}</span>
-                <span>方案区: ${esc(group.plan_root || '-')}</span>
-                <span>论文区: ${esc(group.paper_root || '-')}</span>
-            </div>
-            <div class="chip-row" style="margin:8px 0;">${renderTrackChips(group.planned_tracks)}</div>
-            ${auto.last_note ? `<div class="insight-experiment"><span class="insight-label">Latest:</span> ${esc(trunc(auto.last_note, 220))}</div>` : ''}
-            ${auto.last_error ? `<div class="insight-impact" style="color:#c4453a;"><span class="insight-label">Error:</span> ${esc(trunc(auto.last_error, 220))}</div>` : ''}
-            <div class="insight-actions">
-                <button class="btn-preview" onclick="window._dg.viewExperimentGroup(${insight.id})">查看实验历史</button>
-                ${currentRun ? `<button class="btn-preview" onclick="window._dg.viewExperiment(${currentRun.id})">查看主实验详情</button>` : ''}
-                ${previewUrl ? `<button class="btn-preview" onclick="window.open('${esc(previewUrl)}','_blank')">打开论文预览</button>` : ''}
-            </div>
-        </div>`;
-    }).join('');
-}
-
-function jsonPreview(obj, emptyText = '暂无') {
+function jsonPreview(obj, emptyText = 'None') {
     if (!obj || (typeof obj === 'object' && Object.keys(obj).length === 0)) {
         return `<p class="empty-msg">${esc(emptyText)}</p>`;
     }
@@ -2051,7 +2027,7 @@ function jsonPreview(obj, emptyText = '暂无') {
 
 function renderPaperAssetLinks(insightId, assets) {
     if (!assets || !assets.length) {
-        return '<p class="empty-msg">暂无论文资产。</p>';
+        return '<p class="empty-msg">No generated manuscript assets.</p>';
     }
     return `<div style="display:flex;flex-direction:column;gap:6px;">${assets.slice(0, 20).map(asset => `
         <a href="/papers/${insightId}/view/${encodeURI(asset.path)}" target="_blank">${esc(asset.path)}</a>
@@ -2193,6 +2169,40 @@ function startProviderRefresh() {
     providerTimer = setInterval(() => {
         if (activeTab === 'providers') loadProviders();
     }, 10000);
+}
+
+// ── Progressive Loading ──────────────────────────────────────────────
+
+function runWhenIdle(fn, timeout = 700) {
+    if ('requestIdleCallback' in window) {
+        window.requestIdleCallback(fn, { timeout });
+    } else {
+        setTimeout(fn, timeout);
+    }
+}
+
+async function prefetchInactiveTabs() {
+    if (inactiveTabsPrefetched) return;
+    inactiveTabsPrefetched = true;
+
+    const tasks = [
+        () => loadTaxonomyDropdown(),
+        () => loadGeneratedPapersTab(),
+        () => loadInsightsTab(),
+        () => loadPapers(),
+        () => loadPaperProgressTab(),
+        () => loadDiscoveriesTab(),
+        () => loadExperimentsTab(),
+        () => loadProviders(),
+    ];
+
+    for (const task of tasks) {
+        try {
+            await task();
+        } catch (e) {
+            console.debug('Idle prefetch skipped:', e);
+        }
+    }
 }
 
 // ── Search ───────────────────────────────────────────────────────────
@@ -2340,12 +2350,12 @@ window._dg = {
 
             let html = `<div class="proposal-content" style="max-height:80vh;">
                 <div class="proposal-header">
-                    <h3>Idea #${insight.id}: ${esc(insight.title || '')}</h3>
-                    <span class="proposal-stats">主实验: ${esc(canonical ? `Run #${canonical.id} / ${canonical.status}` : 'not started')}</span>
+                    <h3>Discovery ${insight.id}: ${esc(insight.title || '')}</h3>
+                    <span class="proposal-stats">Experiment Run: ${esc(canonical ? `${canonical.id} / ${canonical.status}` : 'not started')}</span>
                     <button class="btn-close" onclick="this.closest('.proposal-modal').remove()">×</button>
                 </div>
                 <div class="proposal-body">
-                <h4>Idea Progress</h4>
+                <h4>Discovery Progress</h4>
                 <p>Auto Research: ${esc(auto.status || 'not_started')} ${auto.stage ? `/ ${esc(auto.stage)}` : ''}</p>
                 <p>Submission: ${esc(insight.submission_status || 'not_started')} | Run count: ${runs.length}</p>
                 <p>Workspace: ${esc(data.workspace_root || '-')}</p>
@@ -2355,31 +2365,31 @@ window._dg = {
                 ${auto.last_error ? `<p style="color:#c4453a;"><b>Error:</b> ${esc(auto.last_error)}</p>` : ''}
                 <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px;margin:16px 0;">
                     <div style="background:var(--bg-elevated);padding:12px;border-radius:10px;">
-                        <h4 style="margin-top:0;">实验区</h4>
-                        <p><b>实验根目录:</b> ${esc(data.experiment_root || '-')}</p>
+                        <h4 style="margin-top:0;">Experiment Area</h4>
+                        <p><b>Experiment path:</b> ${esc(data.experiment_root || '-')}</p>
                         <p><b>Canonical Run:</b> ${esc(data.canonical_run_id || canonical?.id || '-')}</p>
                     </div>
                     <div style="background:var(--bg-elevated);padding:12px;border-radius:10px;">
-                        <h4 style="margin-top:0;">实验方案区</h4>
-                        <p><b>方案根目录:</b> ${esc(data.plan_root || '-')}</p>
-                        ${jsonPreview(plan.latest_status, '暂无 latest_status.json')}
+                        <h4 style="margin-top:0;">Experiment Plan Area</h4>
+                        <p><b>Plan path:</b> ${esc(data.plan_root || '-')}</p>
+                        ${jsonPreview(plan.latest_status, 'No latest_status.json')}
                     </div>
                     <div style="background:var(--bg-elevated);padding:12px;border-radius:10px;">
-                        <h4 style="margin-top:0;">论文区</h4>
-                        <p><b>论文根目录:</b> ${esc(data.paper_root || '-')}</p>
+                        <h4 style="margin-top:0;">Generated Manuscript Area</h4>
+                        <p><b>Generated manuscript path:</b> ${esc(data.paper_root || '-')}</p>
                         <div class="insight-actions" style="margin:8px 0;">
-                            ${paperUrls.index ? `<button class="btn-preview" onclick="window.open('${esc(paperUrls.index)}','_blank')">打开论文页</button>` : ''}
-                            ${paperUrls.pdf ? `<button class="btn-preview" onclick="window.open('${esc(paperUrls.pdf)}','_blank')">打开 PDF</button>` : ''}
-                            ${paperUrls.tex ? `<button class="btn-preview" onclick="window.open('${esc(paperUrls.tex)}','_blank')">打开 TeX</button>` : ''}
+                            ${paperUrls.index ? `<button class="btn-preview" onclick="window.open('${esc(paperUrls.index)}','_blank')">Open manuscript page</button>` : ''}
+                            ${paperUrls.pdf ? `<button class="btn-preview" onclick="window.open('${esc(paperUrls.pdf)}','_blank')">Open PDF</button>` : ''}
+                            ${paperUrls.tex ? `<button class="btn-preview" onclick="window.open('${esc(paperUrls.tex)}','_blank')">Open TeX</button>` : ''}
                         </div>
                         ${renderPaperAssetLinks(insight.id, paperAssets)}
                     </div>
                 </div>`;
 
-            html += `<h4>方案快照</h4>
-                ${jsonPreview(plan.experiment_spec, '暂无 experiment_spec.json')}
+            html += `<h4>Plan Snapshot</h4>
+                ${jsonPreview(plan.experiment_spec, 'No experiment_spec.json')}
                 ${jsonPreview(plan.manuscript_blockers, 'No manuscript blockers')}
-                ${jsonPreview(plan.manuscript_input_state, '暂无 manuscript_input_state.json')}`;
+                ${jsonPreview(plan.manuscript_input_state, 'No manuscript_input_state.json')}`;
 
             if (runs.length) {
                 html += '<h4>Experiment History</h4>';
@@ -2391,12 +2401,12 @@ window._dg = {
                         ? `<span style="color:${verdictColor(run.hypothesis_verdict)};font-weight:700;">${esc(run.hypothesis_verdict.toUpperCase())}</span>`
                         : '';
                     const badges = [];
-                    if (canonical && canonical.id === run.id) badges.push('主实验');
-                    if (run.has_plot_artifacts) badges.push('可视化');
-                    if (run.has_bundle) badges.push('论文包');
+                    if (canonical && canonical.id === run.id) badges.push('canonical');
+                    if (run.has_plot_artifacts) badges.push('plot');
+                    if (run.has_bundle) badges.push('submission bundle');
                     html += `<div style="padding:10px;margin:8px 0;border-left:3px solid ${color};background:var(--bg-elevated);border-radius:8px;">
                         <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
-                            <strong style="color:${color};">Run #${run.id}</strong>
+                            <strong style="color:${color};">Experiment Run ${run.id}</strong>
                             <span>${esc(run.status || 'unknown')}</span>
                             ${verdict}
                             ${badges.map(label => `<span class="chip">${esc(label)}</span>`).join('')}
@@ -2523,8 +2533,19 @@ window._dg = {
 // ── Init ─────────────────────────────────────────────────────────────
 
 function init() {
+    if (window.dgI18n) {
+        window.dgI18n.applyI18n(document);
+        $$('[data-lang]').forEach(btn => {
+            btn.addEventListener('click', () => window.dgI18n.setLanguage(btn.dataset.lang));
+        });
+        document.addEventListener('deepgraph:languagechange', () => {
+            updateLiveBadge();
+            if (taxonomyLoaded) loadTaxonomyDropdown();
+        });
+    }
+
     // Nav items
-    $$('.nav-item').forEach(btn => {
+    $$('[data-tab]').forEach(btn => {
         btn.addEventListener('click', () => switchTab(btn.dataset.tab));
     });
 
@@ -2539,17 +2560,29 @@ function init() {
 
     // Discovery filters + generate button
     const dtf = el('discoveryTierFilter');
-    if (dtf) dtf.addEventListener('change', loadDiscoveriesTab);
+    if (dtf) dtf.addEventListener('change', () => {
+        discoveriesLoaded = false;
+        loadDiscoveriesTab();
+    });
 
     // Experiment filters
     const esf = el('experimentStatusFilter');
-    if (esf) esf.addEventListener('change', loadExperimentsTab);
+    if (esf) esf.addEventListener('change', () => {
+        experimentsLoaded = false;
+        loadExperimentsTab();
+    });
 
     // Insight filters
     const itf = el('insightTypeFilter');
     const isf = el('insightSortFilter');
-    if (itf) itf.addEventListener('change', loadInsightsTab);
-    if (isf) isf.addEventListener('change', loadInsightsTab);
+    if (itf) itf.addEventListener('change', () => {
+        insightsLoaded = false;
+        loadInsightsTab();
+    });
+    if (isf) isf.addEventListener('change', () => {
+        insightsLoaded = false;
+        loadInsightsTab();
+    });
 
     // Evidence node select
     el('evidenceNodeSelect').addEventListener('change', (e) => {
@@ -2570,15 +2603,21 @@ function init() {
     // Initial data loads
     refreshStats();
     loadRecentlyDiscovered();
-    loadOverviewGraph();
-    loadProcessingPapers();
     startSSE();
 
     // Stats refresh every 15s
     statsTimer = setInterval(refreshStats, 15000);
 
-    // Processing panel refresh every 3s (also fetches from API)
-    setInterval(loadProcessingPapers, 3000);
+    // Idle work after first text content renders.
+    runWhenIdle(loadOverviewGraph, 300);
+    runWhenIdle(prefetchInactiveTabs, 900);
+
+    const overviewAdvanced = el('overviewAdvanced');
+    if (overviewAdvanced) {
+        overviewAdvanced.addEventListener('toggle', () => {
+            if (overviewAdvanced.open) loadProcessingPapers();
+        });
+    }
 
     // Periodically refresh recently discovered (every 30s)
     setInterval(loadRecentlyDiscovered, 30000);
@@ -2588,6 +2627,7 @@ function init() {
         if (activeTab === 'paper-progress') loadPaperProgressTab();
         if (activeTab === 'generated-papers') loadGeneratedPapersTab();
         if (activeTab === 'discoveries') loadDiscoveriesTab();
+        if (el('overviewAdvanced')?.open) loadProcessingPapers();
     }, 10000);
 }
 

@@ -20,31 +20,17 @@
                 <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M2 4h14M2 9h14M2 14h14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
             </button>
             <span class="app-name">DeepGraph</span>
-            <span class="live-badge" id="liveBadge">IDLE</span>
-        </div>
-        <div class="topbar-stats" id="topbarStats">
-            <div class="topbar-stat">
-                <span class="topbar-stat-val" id="hdrPapers">0</span>
-                <span class="topbar-stat-lbl">Papers</span>
-            </div>
-            <div class="topbar-stat">
-                <span class="topbar-stat-val" id="hdrResults">0</span>
-                <span class="topbar-stat-lbl">Results</span>
-            </div>
-            <div class="topbar-stat">
-                <span class="topbar-stat-val" id="hdrInsights">0</span>
-                <span class="topbar-stat-lbl">Insights</span>
-            </div>
-            <div class="topbar-stat">
-                <span class="topbar-stat-val" id="hdrTokens">0</span>
-                <span class="topbar-stat-lbl">Tokens</span>
-            </div>
+            <span class="live-badge" id="liveBadge" data-i18n="app.live.idle">IDLE</span>
         </div>
         <div class="topbar-right">
             <div class="search-container">
                 <svg class="search-icon" width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="6.5" cy="6.5" r="5" stroke="currentColor" stroke-width="1.5"/><path d="M10.5 10.5L14.5 14.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-                <input type="text" id="searchInput" class="search-input" placeholder="Search papers, methods, insights..." autocomplete="off">
+                <input type="text" id="searchInput" class="search-input" placeholder="Search source papers, methods, research insights..." data-i18n-placeholder="topbar.search.placeholder" autocomplete="off">
                 <div id="searchResults" class="search-results"></div>
+            </div>
+            <div class="language-toggle" aria-label="Language">
+                <button type="button" class="lang-btn" data-lang="en" data-i18n="lang.en">EN</button>
+                <button type="button" class="lang-btn" data-lang="zh" data-i18n="lang.zh">ZH</button>
             </div>
         </div>
     </header>
@@ -57,58 +43,42 @@
             <div class="nav-items">
                 <button class="nav-item active" data-tab="overview">
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><rect x="2" y="2" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5"/><rect x="11" y="2" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5"/><rect x="2" y="11" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5"/><rect x="11" y="11" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5"/></svg>
-                    <span>Overview</span>
+                    <span data-i18n="nav.overview">Overview</span>
                 </button>
                 <button class="nav-item" data-tab="explore">
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="7.5" stroke="currentColor" stroke-width="1.5"/><circle cx="10" cy="10" r="3" stroke="currentColor" stroke-width="1.5"/><path d="M10 2.5V5M10 15v2.5M2.5 10H5M15 10h2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-                    <span>Explore</span>
+                    <span data-i18n="nav.explore">Explore</span>
                 </button>
                 <button class="nav-item" data-tab="evidence">
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="6" cy="5" r="1" fill="currentColor"/><circle cx="10" cy="10" r="1" fill="currentColor"/><circle cx="14" cy="15" r="1" fill="currentColor"/></svg>
-                    <span>Evidence</span>
-                </button>
-                <button class="nav-item" data-tab="papers">
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M4 3h8l4 4v10a1 1 0 01-1 1H4a1 1 0 01-1-1V4a1 1 0 011-1z" stroke="currentColor" stroke-width="1.5"/><path d="M12 3v4h4" stroke="currentColor" stroke-width="1.5"/><path d="M6 10h8M6 13h5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-                    <span>Paper DB</span>
-                </button>
-                <button class="nav-item" data-tab="paper-progress">
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M4 4h12v12H4z" stroke="currentColor" stroke-width="1.5"/><path d="M6.5 6.5h7M6.5 10h5.5M6.5 13.5h3.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="14.5" cy="14.5" r="2.5" stroke="currentColor" stroke-width="1.5"/></svg>
-                    <span>In Progress</span>
+                    <span data-i18n="nav.evidence">Evidence</span>
                 </button>
                 <button class="nav-item" data-tab="generated-papers">
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M4 3h8l4 4v10a1 1 0 01-1 1H4a1 1 0 01-1-1V4a1 1 0 011-1z" stroke="currentColor" stroke-width="1.5"/><path d="M12 3v4h4M7 11l2 2 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                    <span>Generated</span>
-                </button>
-                <button class="nav-item" data-tab="discoveries">
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M10 1L12.5 6.5 18.5 7.5 14 11.5 15 17.5 10 14.5 5 17.5 6 11.5 1.5 7.5 7.5 6.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
-                    <span>Discoveries</span>
-                </button>
-                <button class="nav-item" data-tab="experiments">
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M10 2v6M7 5l3 3 3-3M4 10h12v7H4z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M7 13h6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-                    <span>Experiments</span>
+                    <span data-i18n="nav.generated">Generated</span>
                 </button>
                 <button class="nav-item" data-tab="insights">
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M10 2a5 5 0 014.5 7.1L14 12H6l-.5-2.9A5 5 0 0110 2z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M7 14h6M8 16h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-                    <span>Insights</span>
+                    <span data-i18n="nav.insights">Insights</span>
                 </button>
-                <button class="nav-item" data-tab="feed">
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M3 4h14M3 8h10M3 12h12M3 16h8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-                    <span>Feed</span>
+                <button class="nav-item" data-tab="papers">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M4 3h8l4 4v10a1 1 0 01-1 1H4a1 1 0 01-1-1V4a1 1 0 011-1z" stroke="currentColor" stroke-width="1.5"/><path d="M12 3v4h4" stroke="currentColor" stroke-width="1.5"/><path d="M6 10h8M6 13h5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                    <span data-i18n="nav.papers">Papers</span>
                 </button>
-                <button class="nav-item" data-tab="providers">
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><rect x="2" y="3" width="16" height="5" rx="1.5" stroke="currentColor" stroke-width="1.5"/><rect x="2" y="12" width="16" height="5" rx="1.5" stroke="currentColor" stroke-width="1.5"/><circle cx="5" cy="5.5" r="1" fill="currentColor"/><circle cx="5" cy="14.5" r="1" fill="currentColor"/></svg>
-                    <span>Providers</span>
-                </button>
-                <button class="nav-item" data-tab="agenda">
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M4 3h12v14H4z" stroke="currentColor" stroke-width="1.5"/><path d="M7 6h6M7 9h6M7 12h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-                    <span>Agenda</span>
-                </button>
+                <details class="advanced-nav">
+                    <summary data-i18n="nav.advanced">Advanced</summary>
+                    <button class="advanced-nav-item" data-tab="paper-progress" type="button" data-i18n="nav.paperProgress">Paper Progress</button>
+                    <button class="advanced-nav-item" data-tab="discoveries" type="button" data-i18n="nav.discoveries">Discoveries</button>
+                    <button class="advanced-nav-item" data-tab="experiments" type="button" data-i18n="nav.experiments">Experiments</button>
+                    <button class="advanced-nav-item" data-tab="feed" type="button" data-i18n="nav.feed">Feed</button>
+                    <button class="advanced-nav-item" data-tab="providers" type="button" data-i18n="nav.providers">Providers</button>
+                    <button class="advanced-nav-item" data-tab="agenda" type="button" data-i18n="nav.agenda">Agenda</button>
+                </details>
             </div>
 
             <div class="sidebar-footer">
                 <div class="pipeline-controls" style="font-size:0.72rem;color:var(--text-dim);line-height:1.5;">
-                    Fixed-flow mode:
-                    pipeline, discovery, experiments, and manuscript generation run automatically.
+                    <span data-i18n="footer.fixedFlow">Fixed-flow mode: pipeline, discovery, experiment runs, and generated manuscripts run automatically.</span>
                 </div>
             </div>
         </nav>
@@ -126,97 +96,99 @@
                                 <svg width="22" height="22" viewBox="0 0 20 20" fill="none"><path d="M4 3h8l4 4v10a1 1 0 01-1 1H4a1 1 0 01-1-1V4a1 1 0 011-1z" stroke="currentColor" stroke-width="1.5"/><path d="M12 3v4h4" stroke="currentColor" stroke-width="1.5"/></svg>
                             </div>
                             <div class="stat-number" id="statPapers">0</div>
-                            <div class="stat-label">Papers</div>
+                            <div class="stat-label" data-i18n="overview.sourcePapers">Source Paper</div>
                         </div>
                         <div class="stat-card">
                             <div class="stat-icon stat-icon-cyan">
                                 <svg width="22" height="22" viewBox="0 0 20 20" fill="none"><path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
                             </div>
                             <div class="stat-number" id="statResults">0</div>
-                            <div class="stat-label">Results</div>
+                            <div class="stat-label" data-i18n="overview.results">Result</div>
                         </div>
                         <div class="stat-card">
                             <div class="stat-icon stat-icon-gold">
                                 <svg width="22" height="22" viewBox="0 0 20 20" fill="none"><path d="M10 2l2.5 5 5.5.8-4 3.9.9 5.3-4.9-2.6L5.1 17l.9-5.3-4-3.9 5.5-.8L10 2z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
                             </div>
                             <div class="stat-number" id="statTaxonomy">0</div>
-                            <div class="stat-label">Taxonomy Nodes</div>
+                            <div class="stat-label" data-i18n="overview.researchAreas">Research Area</div>
                         </div>
                         <div class="stat-card">
                             <div class="stat-icon stat-icon-red">
                                 <svg width="22" height="22" viewBox="0 0 20 20" fill="none"><path d="M10 3L2 17h16L10 3z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M10 8v4M10 14v1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
                             </div>
                             <div class="stat-number" id="statContradictions">0</div>
-                            <div class="stat-label">Contradictions</div>
+                            <div class="stat-label" data-i18n="overview.contradictions">Contradiction</div>
                         </div>
                         <div class="stat-card">
                             <div class="stat-icon stat-icon-purple">
                                 <svg width="22" height="22" viewBox="0 0 20 20" fill="none"><path d="M10 2C5.6 2 2 5.6 2 10s3.6 8 8 8 8-3.6 8-8-3.6-8-8-8zm0 3a1.5 1.5 0 110 3 1.5 1.5 0 010-3zm2 9H8v-1h1v-3H8v-1h3v4h1v1z" fill="currentColor"/></svg>
                             </div>
                             <div class="stat-number" id="statInsights">0</div>
-                            <div class="stat-label">Insights</div>
+                            <div class="stat-label" data-i18n="overview.researchInsights">Research Insight</div>
                         </div>
                         <div class="stat-card">
                             <div class="stat-icon stat-icon-purple">
                                 <svg width="22" height="22" viewBox="0 0 20 20" fill="none"><path d="M3 14l4-4 3 3 7-7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
                             </div>
                             <div class="stat-number" id="statTokens">0</div>
-                            <div class="stat-label">Tokens</div>
+                            <div class="stat-label" data-i18n="overview.tokens">Token</div>
                         </div>
-                        <div class="stat-card" title="实验运行总数">
+                        <div class="stat-card overview-secondary-stat">
                             <div class="stat-icon stat-icon-green">
                                 <svg width="22" height="22" viewBox="0 0 20 20" fill="none"><path d="M10 2v6M7 5l3 3 3-3M4 10h12v7H4z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M7 13h6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
                             </div>
                             <div class="stat-number" id="statExperiments">0</div>
-                            <div class="stat-label">Experiments</div>
+                            <div class="stat-label" data-i18n="overview.experimentRuns">Experiment Run</div>
                         </div>
-                        <div class="stat-card" title="深度发现条目数（含各 Tier）">
+                        <div class="stat-card overview-secondary-stat">
                             <div class="stat-icon stat-icon-gold">
                                 <svg width="22" height="22" viewBox="0 0 20 20" fill="none"><path d="M10 1L12.5 6.5 18.5 7.5 14 11.5 15 17.5 10 14.5 5 17.5 6 11.5 1.5 7.5 7.5 6.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
                             </div>
                             <div class="stat-number" id="statDeepDiscoveries">0</div>
-                            <div class="stat-label">Deep Discoveries</div>
+                            <div class="stat-label" data-i18n="overview.discoveries">Discovery</div>
                         </div>
-                        <div class="stat-card" title="完整论文产出：已打包的投稿包数量">
+                        <div class="stat-card overview-secondary-stat">
                             <div class="stat-icon stat-icon-blue">
                                 <svg width="22" height="22" viewBox="0 0 20 20" fill="none"><path d="M4 3h8l4 4v10a1 1 0 01-1 1H4a1 1 0 01-1-1V4a1 1 0 011-1z" stroke="currentColor" stroke-width="1.5"/><path d="M12 3v4h4M7 10l2 2 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
                             </div>
                             <div class="stat-number" id="statCompletePapers">0</div>
-                            <div class="stat-label">Complete Papers</div>
-                        </div>
-                    </div>
-
-                    <!-- Processing panel -->
-                    <div class="card card-compact" id="overviewProcessing">
-                        <div class="card-header">
-                            <h3>Currently Processing</h3>
-                            <span class="badge badge-dim" id="processingCount">0</span>
-                        </div>
-                        <div class="processing-list" id="processingList">
-                            <p class="empty-msg">Idle</p>
+                            <div class="stat-label" data-i18n="overview.submissionBundles">Submission Bundle</div>
                         </div>
                     </div>
 
                     <!-- Recently discovered -->
                     <div class="card">
                         <div class="card-header">
-                            <h3>Recently Discovered</h3>
+                            <h3 data-i18n="overview.latest">Latest Activity</h3>
                         </div>
                         <div class="recently-grid" id="recentlyGrid">
-                            <p class="empty-msg">Run the pipeline to discover gaps, contradictions, and opportunities.</p>
+                            <p class="empty-msg" data-i18n="overview.latestEmpty">Run the pipeline to discover gaps, contradictions, opportunities, and discoveries.</p>
                         </div>
                     </div>
 
                     <!-- Taxonomy tree preview -->
                     <div class="card card-graph-preview">
                         <div class="card-header">
-                            <h3>Taxonomy Map</h3>
-                            <button class="btn-link" id="btnJumpExplore">Open in Explore</button>
+                            <h3 data-i18n="overview.graph">Research Area Explorer</h3>
+                            <button class="btn-link" id="btnJumpExplore" data-i18n="overview.openExplore">Open in Explore</button>
                         </div>
                         <div class="graph-preview-wrap">
                             <svg id="overviewGraphSvg" width="100%" height="320"></svg>
                         </div>
                     </div>
+
+                    <details class="advanced-panel" id="overviewAdvanced">
+                        <summary data-i18n="overview.advanced">Advanced Process Metrics</summary>
+                        <div class="card card-compact" id="overviewProcessing">
+                            <div class="card-header">
+                                <h3 data-i18n="overview.processing">Current Processing</h3>
+                                <span class="badge badge-dim" id="processingCount">0</span>
+                            </div>
+                            <div class="processing-list" id="processingList">
+                                <p class="empty-msg" data-i18n="overview.idle">Idle</p>
+                            </div>
+                        </div>
+                    </details>
                 </div>
             </section>
 
@@ -226,19 +198,19 @@
                     <div class="breadcrumb" id="breadcrumb"></div>
                     <div class="card explore-graph-card">
                         <div class="card-header">
-                            <h3 id="exploreTitle">Research Area Explorer</h3>
+                            <h3 id="exploreTitle" data-i18n="explore.title">Research Area Explorer</h3>
                         </div>
                         <svg id="exploreGraphSvg" width="100%" height="520"></svg>
                     </div>
                     <div class="card" id="exploreSummaryCard" style="display:none;">
                         <div class="card-header">
-                            <h3 id="exploreSummaryTitle">Node Summary</h3>
+                            <h3 id="exploreSummaryTitle" data-i18n="explore.summary">Research Area Summary</h3>
                         </div>
                         <div id="exploreSummaryBody"></div>
                     </div>
                     <div class="card" id="exploreChildrenCard" style="display:none;">
                         <div class="card-header">
-                            <h3 id="exploreChildrenTitle">Sub-areas</h3>
+                            <h3 id="exploreChildrenTitle" data-i18n="explore.children">Sub-area</h3>
                         </div>
                         <div id="exploreChildrenBody"></div>
                     </div>
@@ -250,20 +222,20 @@
                 <div class="tab-scroll">
                     <div class="card">
                         <div class="card-header">
-                            <h3>Method x Dataset Matrix</h3>
+                            <h3 data-i18n="evidence.title">Benchmark Matrix</h3>
                         </div>
                         <div class="evidence-controls">
-                            <label>Select taxonomy node:</label>
+                            <label data-i18n="evidence.select">Select research area:</label>
                             <select id="evidenceNodeSelect" class="select-input">
-                                <option value="">-- Select a leaf node --</option>
+                                <option value="" data-i18n="evidence.option">-- Select a leaf research area --</option>
                             </select>
-                            <span class="evidence-hint" id="evidenceHint">Select a leaf node to view the evidence matrix.</span>
+                            <span class="evidence-hint" id="evidenceHint" data-i18n="evidence.hint">Select a leaf research area to view the benchmark matrix.</span>
                         </div>
                         <div id="evidenceMatrixContainer" class="matrix-wrap"></div>
                     </div>
                     <div class="card" id="evidenceGapsCard" style="display:none;">
                         <div class="card-header">
-                            <h3 id="evidenceGapsTitle">Matrix Gaps</h3>
+                            <h3 id="evidenceGapsTitle" data-i18n="evidence.gaps">Matrix Gaps</h3>
                         </div>
                         <div id="evidenceGapsBody"></div>
                     </div>
@@ -275,11 +247,11 @@
                 <div class="tab-scroll">
                     <div class="card">
                         <div class="card-header">
-                            <h3>Paper Database</h3>
+                            <h3 data-i18n="papers.title">Source Paper</h3>
                             <div class="papers-controls">
-                                <input type="text" id="papersSearch" class="search-input-sm" placeholder="Filter papers...">
+                                <input type="text" id="papersSearch" class="search-input-sm" placeholder="Filter source papers..." data-i18n-placeholder="papers.filter">
                                 <select id="papersStatus" class="select-input-sm">
-                                    <option value="">All statuses</option>
+                                    <option value="" data-i18n="papers.allStatuses">All statuses</option>
                                     <option value="extracted">Extracted</option>
                                     <option value="reasoned">Reasoned</option>
                                     <option value="processing">Processing</option>
@@ -299,7 +271,7 @@
                     <div class="stat-grid paper-mini-stats" id="paperProgressStats"></div>
                     <div class="card">
                         <div class="card-header">
-                            <h3>Pipeline Papers</h3>
+                            <h3 data-i18n="paperProgress.pipeline">Source Papers In Progress</h3>
                             <span class="badge badge-dim" id="paperProgressPipelineCount">0</span>
                         </div>
                         <div class="paper-flow-list" id="paperProgressPipelineList">
@@ -308,7 +280,7 @@
                     </div>
                     <div class="card">
                         <div class="card-header">
-                            <h3>Research Paper Generation</h3>
+                            <h3 data-i18n="paperProgress.generation">Generated Manuscript Progress</h3>
                             <span class="badge badge-dim" id="paperProgressGenerationCount">0</span>
                         </div>
                         <div class="paper-flow-list" id="paperProgressGenerationList">
@@ -318,13 +290,13 @@
                 </div>
             </section>
 
-            <!-- ── Generated Papers Tab ─────────────────────────── -->
+            <!-- ── Generated Manuscript Tab ─────────────────────── -->
             <section class="tab-panel" id="tab-generated-papers">
                 <div class="tab-scroll">
                     <div class="stat-grid paper-mini-stats" id="generatedPapersStats"></div>
                     <div class="card">
                         <div class="card-header">
-                            <h3>Generated Papers</h3>
+                            <h3 data-i18n="generated.title">Generated Manuscript</h3>
                             <span class="badge badge-dim" id="generatedPapersCount">0</span>
                         </div>
                         <div class="paper-flow-list" id="generatedPapersList">
@@ -339,12 +311,12 @@
                 <div class="tab-scroll">
                     <div class="card">
                         <div class="card-header">
-                            <h3>Deep Discoveries</h3>
+                            <h3 data-i18n="discoveries.title">Discovery</h3>
                             <div class="opp-controls">
                                 <select id="discoveryTierFilter" class="select-input-sm">
-                                    <option value="">All Tiers</option>
-                                    <option value="1">Tier 1: Paradigm</option>
-                                    <option value="2">Tier 2: Paper Ideas</option>
+                                    <option value="" data-i18n="discoveries.allTiers">All tiers</option>
+                                    <option value="1" data-i18n="discoveries.tier1">Tier 1: Paradigm</option>
+                                    <option value="2" data-i18n="discoveries.tier2">Tier 2: Discovery</option>
                                 </select>
                             </div>
                         </div>
@@ -355,22 +327,22 @@
                 </div>
             </section>
 
-            <!-- ── Experiments Tab (SciForge) ──────────────────── -->
+            <!-- ── Experiments Tab ──────────────────────────────── -->
             <section class="tab-panel" id="tab-experiments">
                 <div class="tab-scroll">
                     <div class="card">
                         <div class="card-header">
-                            <h3>Automation Services</h3>
-                            <span class="badge badge-dim">Read-only automatic mode</span>
+                            <h3 data-i18n="experiments.services">Automation Services</h3>
+                            <span class="badge badge-dim" data-i18n="experiments.readOnly">Read-only automatic mode</span>
                         </div>
                         <div class="service-grid" id="automationServicesGrid"></div>
                         <div class="current-work-grid" id="currentWorkGrid"></div>
                     </div>
                     <div class="card">
                         <div class="card-header">
-                            <h3>Auto Research</h3>
+                            <h3 data-i18n="experiments.autoResearch">Auto Research</h3>
                             <div class="opp-controls" style="font-size:0.72rem;color:var(--text-dim);">
-                                Fixed automatic mode
+                                <span data-i18n="experiments.fixedMode">Fixed automatic mode</span>
                             </div>
                         </div>
                         <div id="autoResearchStatus" style="margin-bottom:12px;color:var(--text-secondary);font-size:0.8rem;">
@@ -382,16 +354,16 @@
                     </div>
                     <div class="card">
                         <div class="card-header">
-                            <h3>Idea Experiments</h3>
+                            <h3 data-i18n="experiments.ideaRuns">Discovery Experiment Runs</h3>
                             <div class="opp-controls">
                                 <select id="experimentStatusFilter" class="select-input-sm">
-                                    <option value="">All</option>
-                                    <option value="pending">Pending</option>
-                                    <option value="scaffolding">Scaffolding</option>
-                                    <option value="reproducing">Reproducing</option>
-                                    <option value="testing">Testing</option>
-                                    <option value="completed">Completed</option>
-                                    <option value="failed">Failed</option>
+                                    <option value="" data-i18n="experiments.all">All</option>
+                                    <option value="pending" data-i18n="experiments.pending">Pending</option>
+                                    <option value="scaffolding" data-i18n="experiments.scaffolding">Scaffolding</option>
+                                    <option value="reproducing" data-i18n="experiments.reproducing">Reproducing</option>
+                                    <option value="testing" data-i18n="experiments.testing">Testing</option>
+                                    <option value="completed" data-i18n="experiments.completed">Completed</option>
+                                    <option value="failed" data-i18n="experiments.failed">Failed</option>
                                 </select>
                             </div>
                         </div>
@@ -401,7 +373,7 @@
                     </div>
                     <div class="card" id="metaReportCard" style="display:none;">
                         <div class="card-header">
-                            <h3>Meta-Learning Report</h3>
+                            <h3 data-i18n="experiments.meta">Meta-Learning Report</h3>
                         </div>
                         <div id="metaReportBody"></div>
                     </div>
@@ -413,10 +385,10 @@
                 <div class="tab-scroll">
                     <div class="card">
                         <div class="card-header">
-                            <h3>Research Insights</h3>
+                            <h3 data-i18n="insights.title">Research Insight</h3>
                             <div class="opp-controls">
                                 <select id="insightTypeFilter" class="select-input-sm">
-                                    <option value="">All types</option>
+                                    <option value="" data-i18n="insights.allTypes">All types</option>
                                     <option value="contradiction_analysis">Contradiction Analysis</option>
                                     <option value="method_transfer">Method Transfer</option>
                                     <option value="assumption_challenge">Assumption Challenge</option>
@@ -424,11 +396,11 @@
                                     <option value="paradigm_exhaustion">Paradigm Exhaustion</option>
                                 </select>
                                 <select id="insightSortFilter" class="select-input-sm">
-                                    <option value="paradigm">Paradigm-Breaking</option>
-                                    <option value="score">By N+F Score</option>
-                                    <option value="novelty">By Novelty</option>
-                                    <option value="feasibility">By Feasibility</option>
-                                    <option value="recent">Most Recent</option>
+                                    <option value="paradigm" data-i18n="insights.paradigm">Paradigm-Breaking</option>
+                                    <option value="score" data-i18n="insights.score">By N+F Score</option>
+                                    <option value="novelty" data-i18n="insights.novelty">By Novelty</option>
+                                    <option value="feasibility" data-i18n="insights.feasibility">By Feasibility</option>
+                                    <option value="recent" data-i18n="insights.recent">Most Recent</option>
                                 </select>
                             </div>
                         </div>
@@ -442,7 +414,7 @@
                 <div class="tab-scroll">
                     <div class="card card-feed">
                         <div class="card-header">
-                            <h3>Pipeline Event Feed</h3>
+                            <h3 data-i18n="feed.title">Pipeline Event Feed</h3>
                             <span class="badge badge-dim" id="feedCount">0 events</span>
                         </div>
                         <div class="event-feed" id="eventFeed"></div>
@@ -455,8 +427,8 @@
                 <div class="tab-scroll">
                     <div class="card">
                         <div class="card-header">
-                            <h3>LLM Providers</h3>
-                            <span class="badge badge-dim" id="providerRefresh">Auto-refresh 10s</span>
+                            <h3 data-i18n="providers.title">LLM Providers</h3>
+                            <span class="badge badge-dim" id="providerRefresh" data-i18n="providers.refresh">Auto-refresh 10s</span>
                         </div>
                         <div class="providers-grid" id="providersList"></div>
                     </div>
@@ -468,13 +440,13 @@
                 <div class="tab-scroll">
                     <div class="card">
                         <div class="card-header">
-                            <h3>Research Agenda</h3>
-                            <span class="badge badge-dim" id="agendaActiveBadge">no agenda</span>
+                            <h3 data-i18n="agenda.title">Research Agenda</h3>
+                            <span class="badge badge-dim" id="agendaActiveBadge" data-i18n="agenda.noAgenda">no agenda</span>
                         </div>
                         <div style="padding:12px 16px;display:flex;flex-direction:column;gap:12px;">
                             <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
-                                <button id="agendaLoadBtn" class="btn-secondary">Refresh</button>
-                                <button id="agendaSelectBtn" class="btn-primary">Run Selector + Dispatch</button>
+                                <button id="agendaLoadBtn" class="btn-secondary" data-i18n="agenda.refresh">Refresh</button>
+                                <button id="agendaSelectBtn" class="btn-primary" data-i18n="agenda.select">Run Selector + Dispatch</button>
                                 <select id="agendaDispatchMode" style="background:transparent;color:inherit;border:1px solid var(--border);padding:4px 8px;border-radius:6px;">
                                     <option value="auto">auto</option>
                                     <option value="link">link existing</option>
@@ -483,46 +455,46 @@
                                 </select>
                             </div>
                             <details>
-                                <summary style="cursor:pointer;color:var(--text-dim);font-size:0.85rem;">Upload agenda (YAML)</summary>
+                                <summary style="cursor:pointer;color:var(--text-dim);font-size:0.85rem;" data-i18n="agenda.upload">Upload agenda (YAML)</summary>
                                 <textarea id="agendaYamlInput" placeholder="version: v1&#10;name: ..." style="width:100%;min-height:140px;margin-top:8px;background:var(--bg-elev);color:inherit;border:1px solid var(--border);border-radius:6px;padding:8px;font-family:monospace;font-size:0.78rem;"></textarea>
-                                <button id="agendaUploadBtn" class="btn-secondary" style="margin-top:6px;">Upload</button>
+                                <button id="agendaUploadBtn" class="btn-secondary" style="margin-top:6px;" data-i18n="agenda.uploadButton">Upload</button>
                             </details>
                             <div id="agendaCurrentInfo" style="font-size:0.82rem;color:var(--text-dim);"></div>
                         </div>
                     </div>
 
                     <div class="card" style="margin-top:14px;">
-                        <div class="card-header"><h3>Latest Selection</h3></div>
+                        <div class="card-header"><h3 data-i18n="agenda.latestSelection">Latest Selection</h3></div>
                         <div id="agendaSelectionView" style="padding:12px 16px;font-size:0.85rem;"></div>
                         <div style="padding:0 16px 12px;display:flex;gap:8px;flex-wrap:wrap;">
-                            <button id="agendaReviewBtn" class="btn-secondary">Run Review</button>
-                            <button id="agendaPlanBtn" class="btn-secondary">Build Revision Plan</button>
-                            <button id="agendaLoopBtn" class="btn-secondary">Inspect Full Loop</button>
+                            <button id="agendaReviewBtn" class="btn-secondary" data-i18n="agenda.review">Run Review</button>
+                            <button id="agendaPlanBtn" class="btn-secondary" data-i18n="agenda.plan">Build Revision Plan</button>
+                            <button id="agendaLoopBtn" class="btn-secondary" data-i18n="agenda.inspect">Inspect Full Loop</button>
                         </div>
                     </div>
 
                     <div class="card" style="margin-top:14px;">
-                        <div class="card-header"><h3>Loop Inspection</h3></div>
+                        <div class="card-header"><h3 data-i18n="agenda.loop">Loop Inspection</h3></div>
                         <pre id="agendaLoopView" style="padding:12px 16px;font-size:0.74rem;color:var(--text-dim);max-height:480px;overflow:auto;white-space:pre-wrap;"></pre>
                     </div>
 
                     <!-- ── Manuscript Routing (#15 / D4) ───────────────── -->
                     <div class="card" style="margin-top:14px;">
                         <div class="card-header">
-                            <h3>Manuscript Routing &amp; Format Lint</h3>
+                            <h3 data-i18n="manuscript.routing">Manuscript Routing &amp; Format Lint</h3>
                             <span class="badge badge-dim" id="venueCountBadge">— venues</span>
                         </div>
                         <div style="padding:12px 16px;display:flex;flex-direction:column;gap:10px;">
                             <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
-                                <button id="mrLoadVenuesBtn" class="btn-secondary">Refresh Venues</button>
-                                <button id="mrPreviewRouteBtn" class="btn-primary">Preview Route</button>
-                                <button id="mrPreviewLintBtn" class="btn-secondary">Preview Lint</button>
+                                <button id="mrLoadVenuesBtn" class="btn-secondary" data-i18n="manuscript.refreshVenues">Refresh Venues</button>
+                                <button id="mrPreviewRouteBtn" class="btn-primary" data-i18n="manuscript.previewRoute">Preview Route</button>
+                                <button id="mrPreviewLintBtn" class="btn-secondary" data-i18n="manuscript.previewLint">Preview Lint</button>
                                 <label style="display:flex;gap:4px;align-items:center;font-size:0.78rem;color:var(--text-dim);">
-                                    <input type="checkbox" id="mrIncludeTiebreak"> include tiebreak
+                                    <input type="checkbox" id="mrIncludeTiebreak"> <span data-i18n="manuscript.includeTiebreak">include tiebreak</span>
                                 </label>
                             </div>
                             <details>
-                                <summary style="cursor:pointer;color:var(--text-dim);font-size:0.85rem;">State JSON (for route preview)</summary>
+                                <summary style="cursor:pointer;color:var(--text-dim);font-size:0.85rem;" data-i18n="manuscript.stateJson">State JSON (for route preview)</summary>
                                 <textarea id="mrStateInput" style="width:100%;min-height:120px;margin-top:6px;background:var(--bg-elev);color:inherit;border:1px solid var(--border);border-radius:6px;padding:8px;font-family:monospace;font-size:0.78rem;">{
   "title": "Self-supervised image segmentation with diffusion priors",
   "claim_type": "empirical",
@@ -533,7 +505,7 @@
 }</textarea>
                             </details>
                             <details>
-                                <summary style="cursor:pointer;color:var(--text-dim);font-size:0.85rem;">Lint payload (template_id + source)</summary>
+                                <summary style="cursor:pointer;color:var(--text-dim);font-size:0.85rem;" data-i18n="manuscript.lintPayload">Lint payload (template_id + source)</summary>
                                 <input id="mrTemplateIdInput" placeholder="template_id (e.g. iclr2026)" value="iclr2026" style="width:100%;margin-top:6px;background:var(--bg-elev);color:inherit;border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-family:monospace;font-size:0.78rem;">
                                 <input id="mrPageCountInput" type="number" placeholder="page_count (optional)" value="8" style="width:100%;margin-top:6px;background:var(--bg-elev);color:inherit;border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-family:monospace;font-size:0.78rem;">
                                 <textarea id="mrSourceInput" style="width:100%;min-height:120px;margin-top:6px;background:var(--bg-elev);color:inherit;border:1px solid var(--border);border-radius:6px;padding:8px;font-family:monospace;font-size:0.78rem;">\documentclass{article}
@@ -554,6 +526,7 @@ Hello world.
     <!-- Tooltip (shared) -->
     <div class="tooltip" id="tooltip"></div>
 
+    <script src="/static/js/i18n.js"></script>
     <script src="/static/js/app.js"></script>
     <script src="/static/js/agenda.js"></script>
     <script src="/static/js/manuscript_routing.js"></script>
