@@ -116,6 +116,16 @@ class DashboardRefreshTests(unittest.TestCase):
         self.assertGreaterEqual(html.count("data-i18n="), 40)
         for key in ("nav.overview", "nav.explore", "nav.evidence", "nav.generated", "nav.insights", "nav.papers"):
             self.assertIn(f'data-i18n="{key}"', html)
+        for key in (
+            "empty.experimentGroups",
+            "search.researchAreas",
+            "discoveries.tier1",
+            "discoveries.tier2",
+            "insights.type.crossDomainBridge",
+            "agenda.noSelection",
+            "manuscript.routePreview",
+        ):
+            self.assertIn(f'"{key}"', i18n)
 
     def test_dashboard_legacy_visible_labels_are_gone(self):
         frontend = "\n".join(
@@ -143,6 +153,10 @@ class DashboardRefreshTests(unittest.TestCase):
             "Research Paper Generation",
             "Generated Papers",
             "Complete Papers",
+            "Taxonomy Nodes",
+            "experiment ideas",
+            "PARADIGM",
+            "DISCOVERY",
         ]
         for label in forbidden_labels:
             self.assertNotIn(label, frontend)

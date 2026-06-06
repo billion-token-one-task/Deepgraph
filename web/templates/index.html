@@ -252,11 +252,11 @@
                                 <input type="text" id="papersSearch" class="search-input-sm" placeholder="Filter source papers..." data-i18n-placeholder="papers.filter">
                                 <select id="papersStatus" class="select-input-sm">
                                     <option value="" data-i18n="papers.allStatuses">All statuses</option>
-                                    <option value="extracted">Extracted</option>
-                                    <option value="reasoned">Reasoned</option>
-                                    <option value="processing">Processing</option>
-                                    <option value="fetched">Fetched</option>
-                                    <option value="error">Error</option>
+                                    <option value="extracted" data-i18n="papers.status.extracted">Extracted</option>
+                                    <option value="reasoned" data-i18n="papers.status.reasoned">Reasoned</option>
+                                    <option value="processing" data-i18n="papers.status.processing">Processing</option>
+                                    <option value="fetched" data-i18n="papers.status.fetched">Fetched</option>
+                                    <option value="error" data-i18n="papers.status.error">Error</option>
                                 </select>
                             </div>
                         </div>
@@ -275,7 +275,7 @@
                             <span class="badge badge-dim" id="paperProgressPipelineCount">0</span>
                         </div>
                         <div class="paper-flow-list" id="paperProgressPipelineList">
-                            <p class="empty-msg">No papers are moving through the pipeline right now.</p>
+                            <p class="empty-msg" data-i18n="empty.paperProgress">No source papers are moving through the pipeline right now.</p>
                         </div>
                     </div>
                     <div class="card">
@@ -284,7 +284,7 @@
                             <span class="badge badge-dim" id="paperProgressGenerationCount">0</span>
                         </div>
                         <div class="paper-flow-list" id="paperProgressGenerationList">
-                            <p class="empty-msg">No paper-generation jobs are active right now.</p>
+                            <p class="empty-msg" data-i18n="empty.paperGeneration">No generated manuscript jobs are active right now.</p>
                         </div>
                     </div>
                 </div>
@@ -300,7 +300,7 @@
                             <span class="badge badge-dim" id="generatedPapersCount">0</span>
                         </div>
                         <div class="paper-flow-list" id="generatedPapersList">
-                            <p class="empty-msg">No manuscript runs have been generated yet.</p>
+                            <p class="empty-msg" data-i18n="empty.generated">No generated manuscript runs are ready yet.</p>
                         </div>
                     </div>
                 </div>
@@ -321,7 +321,7 @@
                             </div>
                         </div>
                         <div id="discoveriesList" class="insights-list">
-                            <p class="empty-msg">No deep discoveries yet. Discovery runs in fixed automatic mode.</p>
+                            <p class="empty-msg" data-i18n="empty.discoveries">No ready discoveries yet. Automatic discovery is still filtering candidates.</p>
                         </div>
                     </div>
                 </div>
@@ -349,7 +349,7 @@
                             Auto Research status unavailable.
                         </div>
                         <div id="autoResearchList" class="insights-list">
-                            <p class="empty-msg">No auto research jobs yet.</p>
+                            <p class="empty-msg" data-i18n="empty.autoResearch">No auto research jobs yet.</p>
                         </div>
                     </div>
                     <div class="card">
@@ -368,7 +368,7 @@
                             </div>
                         </div>
                         <div id="experimentsList" class="insights-list">
-                            <p class="empty-msg">No experiment ideas are active yet. The automatic queue will start them when ready.</p>
+                            <p class="empty-msg" data-i18n="empty.experimentGroups">No discoveries are active yet. The automatic queue will start them when ready.</p>
                         </div>
                     </div>
                     <div class="card" id="metaReportCard" style="display:none;">
@@ -389,11 +389,12 @@
                             <div class="opp-controls">
                                 <select id="insightTypeFilter" class="select-input-sm">
                                     <option value="" data-i18n="insights.allTypes">All types</option>
-                                    <option value="contradiction_analysis">Contradiction Analysis</option>
-                                    <option value="method_transfer">Method Transfer</option>
-                                    <option value="assumption_challenge">Assumption Challenge</option>
-                                    <option value="ignored_limitation">Ignored Limitation</option>
-                                    <option value="paradigm_exhaustion">Paradigm Exhaustion</option>
+                                    <option value="contradiction_analysis" data-i18n="insights.type.contradictionAnalysis">Contradiction Analysis</option>
+                                    <option value="method_transfer" data-i18n="insights.type.methodTransfer">Method Transfer</option>
+                                    <option value="assumption_challenge" data-i18n="insights.type.assumptionChallenge">Assumption Challenge</option>
+                                    <option value="ignored_limitation" data-i18n="insights.type.ignoredLimitation">Ignored Limitation</option>
+                                    <option value="paradigm_exhaustion" data-i18n="insights.type.paradigmExhaustion">Paradigm Exhaustion</option>
+                                    <option value="cross_domain_bridge" data-i18n="insights.type.crossDomainBridge">Cross-Domain Bridge</option>
                                 </select>
                                 <select id="insightSortFilter" class="select-input-sm">
                                     <option value="paradigm" data-i18n="insights.paradigm">Paradigm-Breaking</option>
@@ -514,7 +515,7 @@ Hello world.
 \bibliography{refs}
 \end{document}</textarea>
                             </details>
-                            <pre id="mrResultView" style="padding:0;font-size:0.74rem;color:var(--text-dim);max-height:360px;overflow:auto;white-space:pre-wrap;">No result yet.</pre>
+                            <pre id="mrResultView" style="padding:0;font-size:0.74rem;color:var(--text-dim);max-height:360px;overflow:auto;white-space:pre-wrap;" data-i18n="manuscript.noResult">No result yet.</pre>
                         </div>
                     </div>
                 </div>

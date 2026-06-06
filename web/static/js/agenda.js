@@ -7,6 +7,10 @@
   let latestSelection = null;
   let latestReviewId = null;
 
+  function tr(key, vars) {
+    return window.t ? window.t(key, vars) : key;
+  }
+
   function fmtJSON(obj) {
     try { return JSON.stringify(obj, null, 2); } catch (e) { return String(obj); }
   }
@@ -34,7 +38,7 @@
     const info = $("agendaCurrentInfo");
     if (!agenda) {
       badge.textContent = "no agenda";
-      info.textContent = "No active agenda. Upload one below.";
+      info.textContent = tr("agenda.noActive");
       return;
     }
     badge.textContent = agenda.is_active ? `active · #${agenda.id} ${agenda.name}` : `#${agenda.id} ${agenda.name}`;
@@ -49,7 +53,7 @@
   function renderSelection(sel) {
     const el = $("agendaSelectionView");
     if (!sel) {
-      el.textContent = "No selection yet.";
+      el.textContent = tr("agenda.noSelection");
       return;
     }
     el.innerHTML = `
@@ -83,42 +87,42 @@
     const { status, body } = await jpost("/api/research_agenda", text, {
       raw: true, contentType: "application/x-yaml",
     });
-    if (status >= 300) { alert("Upload failed: " + fmtJSON(body)); return; }
+    if (status >= 300) { alert(tr("agenda.uploadFailed", { detail: fmtJSON(body) })); return; }
     await loadCurrent();
   }
 
   async function runSelect() {
     const mode = $("agendaDispatchMode").value;
     const { status, body } = await jpost("/api/research_agenda/select", { dispatch_mode: mode });
-    if (status >= 300) { alert("Select failed: " + fmtJSON(body)); return; }
+    if (status >= 300) { alert(tr("agenda.selectFailed", { detail: fmtJSON(body) })); return; }
     latestSelection = body.selection;
     renderSelection(latestSelection);
   }
 
   async function runReview() {
-    if (!latestSelection) { alert("No selection."); return; }
+    if (!latestSelection) { alert(tr("agenda.noSelectionAlert")); return; }
     const { status, body } = await jpost(
       `/api/research_agenda/selection/${latestSelection.id}/review`, {}
     );
-    if (status >= 300) { alert("Review failed: " + fmtJSON(body)); return; }
+    if (status >= 300) { alert(tr("agenda.reviewFailed", { detail: fmtJSON(body) })); return; }
     latestReviewId = body.review && body.review.id;
-    $("agendaLoopView").textContent = "REVIEW:\n" + fmtJSON(body.review);
+    $("agendaLoopView").textContent = tr("agenda.reviewLabel") + ":\n" + fmtJSON(body.review);
   }
 
   async function runPlan() {
-    if (!latestSelection) { alert("No selection."); return; }
+    if (!latestSelection) { alert(tr("agenda.noSelectionAlert")); return; }
     const payload = latestReviewId ? { review_id: latestReviewId } : {};
     const { status, body } = await jpost(
       `/api/research_agenda/selection/${latestSelection.id}/plan`, payload
     );
-    if (status >= 300) { alert("Plan failed: " + fmtJSON(body)); return; }
-    $("agendaLoopView").textContent = "REVISION PLAN:\n" + fmtJSON(body.plan);
+    if (status >= 300) { alert(tr("agenda.planFailed", { detail: fmtJSON(body) })); return; }
+    $("agendaLoopView").textContent = tr("agenda.revisionPlan") + ":\n" + fmtJSON(body.plan);
   }
 
   async function inspectLoop() {
-    if (!latestSelection) { alert("No selection."); return; }
+    if (!latestSelection) { alert(tr("agenda.noSelectionAlert")); return; }
     const { status, body } = await jget(`/api/research_agenda/loop/${latestSelection.id}`);
-    if (status >= 300) { $("agendaLoopView").textContent = "Error: " + fmtJSON(body); return; }
+    if (status >= 300) { $("agendaLoopView").textContent = tr("agenda.error", { detail: fmtJSON(body) }); return; }
     $("agendaLoopView").textContent = fmtJSON(body.loop);
   }
 
