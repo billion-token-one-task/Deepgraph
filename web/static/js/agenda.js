@@ -37,16 +37,18 @@
     const badge = $("agendaActiveBadge");
     const info = $("agendaCurrentInfo");
     if (!agenda) {
-      badge.textContent = "no agenda";
+      badge.textContent = tr("agenda.noAgenda");
       info.textContent = tr("agenda.noActive");
       return;
     }
-    badge.textContent = agenda.is_active ? `active · #${agenda.id} ${agenda.name}` : `#${agenda.id} ${agenda.name}`;
+    badge.textContent = agenda.is_active
+      ? tr("agenda.active", { id: agenda.id, name: agenda.name })
+      : `#${agenda.id} ${agenda.name}`;
     info.innerHTML = `
-      <div><strong>focus</strong>: ${(agenda.focus || []).join(", ") || "—"}</div>
-      <div><strong>prefer.keywords</strong>: ${((agenda.prefer || {}).keywords || []).join(", ") || "—"}</div>
-      <div><strong>prefer.tiers</strong>: ${((agenda.prefer || {}).tiers || []).join(", ") || "—"}</div>
-      <div><strong>reject</strong>: ${fmtJSON(agenda.reject || {})}</div>
+      <div><strong>${tr("agenda.focus")}</strong>: ${(agenda.focus || []).join(", ") || "—"}</div>
+      <div><strong>${tr("agenda.preferKeywords")}</strong>: ${((agenda.prefer || {}).keywords || []).join(", ") || "—"}</div>
+      <div><strong>${tr("agenda.preferTiers")}</strong>: ${((agenda.prefer || {}).tiers || []).join(", ") || "—"}</div>
+      <div><strong>${tr("agenda.reject")}</strong>: ${fmtJSON(agenda.reject || {})}</div>
     `;
   }
 
@@ -57,11 +59,11 @@
       return;
     }
     el.innerHTML = `
-      <div><strong>selection #${sel.id}</strong> · status=<code>${sel.status}</code></div>
+      <div><strong>${tr("agenda.selection", { id: sel.id })}</strong> · ${tr("agenda.status")}=<code>${sel.status}</code></div>
       <div>insight_id: ${sel.selected_insight_id ?? "—"} · score: ${(sel.score ?? 0).toFixed ? sel.score.toFixed(3) : sel.score}</div>
       <div>experiment_run_id: ${sel.experiment_run_id ?? "—"} · manuscript_run_id: ${sel.manuscript_run_id ?? "—"} · bundle_id: ${sel.submission_bundle_id ?? "—"}</div>
       <details style="margin-top:6px;">
-        <summary>candidates_json</summary>
+        <summary>${tr("agenda.candidatesJson")}</summary>
         <pre style="font-size:0.72rem;max-height:200px;overflow:auto;">${fmtJSON(sel.candidates_json || sel.candidates || [])}</pre>
       </details>
     `;
@@ -83,7 +85,7 @@
 
   async function uploadAgenda() {
     const text = $("agendaYamlInput").value.trim();
-    if (!text) { alert("Paste YAML first."); return; }
+    if (!text) { alert(tr("agenda.pasteYamlFirst")); return; }
     const { status, body } = await jpost("/api/research_agenda", text, {
       raw: true, contentType: "application/x-yaml",
     });

@@ -36,7 +36,7 @@
     if (status >= 300) { setResult(tr("manuscript.errorVenues"), body); return; }
     const venues = (body && body.venues) || [];
     const badge = $("venueCountBadge");
-    if (badge) badge.textContent = `${venues.length} venues`;
+    if (badge) badge.textContent = tr("manuscript.venueCount", { count: venues.length });
     setResult(tr("manuscript.venues"), venues);
   }
 

@@ -162,6 +162,51 @@ class DashboardRefreshTests(unittest.TestCase):
             self.assertNotIn(label, frontend)
         self.assertIsNone(re.search(r"\bforge\b", frontend, re.I))
 
+    def test_dashboard_target_files_have_no_known_i18n_residuals(self):
+        frontend = "\n".join(
+            _read(path)
+            for path in (
+                "web/templates/index.html",
+                "web/static/js/app.js",
+                "web/static/js/agenda.js",
+                "web/static/js/manuscript_routing.js",
+            )
+        )
+        frontend = re.sub(r"<!--.*?-->", "", frontend, flags=re.S)
+        frontend = re.sub(r"//.*", "", frontend)
+        forbidden_labels = [
+            "Methods & Datasets",
+            "What People Are Working On",
+            "Where The Gaps Are",
+            "Recurring Themes",
+            "Paper Clusters",
+            "Core Entities",
+            "Key Links",
+            "NOVEL",
+            "PARTIAL",
+            "EXISTS",
+            "UNCHECKED",
+            "Universal",
+            "Cross-domain",
+            "Method:",
+            "Baselines:",
+            "Datasets:",
+            "Compute:",
+            "Strongest Challenge:",
+            "Fixed automatic pipeline",
+            "RUNNING",
+            "STOPPED",
+            "Auto Research status unavailable.",
+            "Paste YAML first.",
+            "VENUES",
+            "ROUTE PREVIEW",
+            "LINT PREVIEW",
+            "ERROR (",
+        ]
+        for label in forbidden_labels:
+            self.assertNotIn(label, frontend)
+        self.assertIsNone(re.search(r"\bNo [A-Z][^\"'<>]* yet\b", frontend))
+
     def test_dashboard_init_is_progressive_and_uses_idle_prefetch(self):
         app_js = _read("web/static/js/app.js")
         initial_block = re.search(

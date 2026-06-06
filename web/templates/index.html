@@ -185,7 +185,7 @@
                                 <span class="badge badge-dim" id="processingCount">0</span>
                             </div>
                             <div class="processing-list" id="processingList">
-                                <p class="empty-msg" data-i18n="overview.idle">Idle</p>
+                                <p class="empty-msg" data-i18n="overview.idle"></p>
                             </div>
                         </div>
                     </details>
@@ -300,13 +300,13 @@
                             <span class="badge badge-dim" id="generatedPapersCount">0</span>
                         </div>
                         <div class="paper-flow-list" id="generatedPapersList">
-                            <p class="empty-msg" data-i18n="empty.generated">No generated manuscript runs are ready yet.</p>
+                            <p class="empty-msg" data-i18n="empty.generated"></p>
                         </div>
                     </div>
                 </div>
             </section>
 
-            <!-- ── Discoveries Tab (Tier 1 + Tier 2) ────────────── -->
+            <!-- ── Discoveries Tab ────────────── -->
             <section class="tab-panel" id="tab-discoveries">
                 <div class="tab-scroll">
                     <div class="card">
@@ -314,14 +314,14 @@
                             <h3 data-i18n="discoveries.title">Discovery</h3>
                             <div class="opp-controls">
                                 <select id="discoveryTierFilter" class="select-input-sm">
-                                    <option value="" data-i18n="discoveries.allTiers">All tiers</option>
-                                    <option value="1" data-i18n="discoveries.tier1">Tier 1: Paradigm</option>
-                                    <option value="2" data-i18n="discoveries.tier2">Tier 2: Discovery</option>
+                                    <option value="" data-i18n="discoveries.allTiers"></option>
+                                    <option value="1" data-i18n="discoveries.tier1"></option>
+                                    <option value="2" data-i18n="discoveries.tier2"></option>
                                 </select>
                             </div>
                         </div>
                         <div id="discoveriesList" class="insights-list">
-                            <p class="empty-msg" data-i18n="empty.discoveries">No ready discoveries yet. Automatic discovery is still filtering candidates.</p>
+                            <p class="empty-msg" data-i18n="empty.discoveries"></p>
                         </div>
                     </div>
                 </div>
@@ -345,11 +345,10 @@
                                 <span data-i18n="experiments.fixedMode">Fixed automatic mode</span>
                             </div>
                         </div>
-                        <div id="autoResearchStatus" style="margin-bottom:12px;color:var(--text-secondary);font-size:0.8rem;">
-                            Auto Research status unavailable.
+                        <div id="autoResearchStatus" data-i18n="status.auto.unavailable" style="margin-bottom:12px;color:var(--text-secondary);font-size:0.8rem;">
                         </div>
                         <div id="autoResearchList" class="insights-list">
-                            <p class="empty-msg" data-i18n="empty.autoResearch">No auto research jobs yet.</p>
+                            <p class="empty-msg" data-i18n="empty.autoResearch"></p>
                         </div>
                     </div>
                     <div class="card">
@@ -368,7 +367,7 @@
                             </div>
                         </div>
                         <div id="experimentsList" class="insights-list">
-                            <p class="empty-msg" data-i18n="empty.experimentGroups">No discoveries are active yet. The automatic queue will start them when ready.</p>
+                            <p class="empty-msg" data-i18n="empty.experimentGroups"></p>
                         </div>
                     </div>
                     <div class="card" id="metaReportCard" style="display:none;">
@@ -416,7 +415,7 @@
                     <div class="card card-feed">
                         <div class="card-header">
                             <h3 data-i18n="feed.title">Pipeline Event Feed</h3>
-                            <span class="badge badge-dim" id="feedCount">0 events</span>
+                            <span class="badge badge-dim" id="feedCount" data-i18n="feed.initialCount">0 events</span>
                         </div>
                         <div class="event-feed" id="eventFeed"></div>
                     </div>
@@ -449,15 +448,15 @@
                                 <button id="agendaLoadBtn" class="btn-secondary" data-i18n="agenda.refresh">Refresh</button>
                                 <button id="agendaSelectBtn" class="btn-primary" data-i18n="agenda.select">Run Selector + Dispatch</button>
                                 <select id="agendaDispatchMode" style="background:transparent;color:inherit;border:1px solid var(--border);padding:4px 8px;border-radius:6px;">
-                                    <option value="auto">auto</option>
-                                    <option value="link">link existing</option>
-                                    <option value="enqueue">enqueue fresh</option>
-                                    <option value="none">no dispatch</option>
+                                    <option value="auto" data-i18n="agenda.dispatch.auto">auto</option>
+                                    <option value="link" data-i18n="agenda.dispatch.link">link existing</option>
+                                    <option value="enqueue" data-i18n="agenda.dispatch.enqueue">enqueue fresh</option>
+                                    <option value="none" data-i18n="agenda.dispatch.none">no dispatch</option>
                                 </select>
                             </div>
                             <details>
                                 <summary style="cursor:pointer;color:var(--text-dim);font-size:0.85rem;" data-i18n="agenda.upload">Upload agenda (YAML)</summary>
-                                <textarea id="agendaYamlInput" placeholder="version: v1&#10;name: ..." style="width:100%;min-height:140px;margin-top:8px;background:var(--bg-elev);color:inherit;border:1px solid var(--border);border-radius:6px;padding:8px;font-family:monospace;font-size:0.78rem;"></textarea>
+                                <textarea id="agendaYamlInput" placeholder="version: v1&#10;name: ..." data-i18n-placeholder="agenda.yamlPlaceholder" style="width:100%;min-height:140px;margin-top:8px;background:var(--bg-elev);color:inherit;border:1px solid var(--border);border-radius:6px;padding:8px;font-family:monospace;font-size:0.78rem;"></textarea>
                                 <button id="agendaUploadBtn" class="btn-secondary" style="margin-top:6px;" data-i18n="agenda.uploadButton">Upload</button>
                             </details>
                             <div id="agendaCurrentInfo" style="font-size:0.82rem;color:var(--text-dim);"></div>
@@ -483,7 +482,7 @@
                     <div class="card" style="margin-top:14px;">
                         <div class="card-header">
                             <h3 data-i18n="manuscript.routing">Manuscript Routing &amp; Format Lint</h3>
-                            <span class="badge badge-dim" id="venueCountBadge">— venues</span>
+                            <span class="badge badge-dim" id="venueCountBadge" data-i18n="manuscript.venueCountInitial">— venues</span>
                         </div>
                         <div style="padding:12px 16px;display:flex;flex-direction:column;gap:10px;">
                             <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
@@ -507,15 +506,15 @@
                             </details>
                             <details>
                                 <summary style="cursor:pointer;color:var(--text-dim);font-size:0.85rem;" data-i18n="manuscript.lintPayload">Lint payload (template_id + source)</summary>
-                                <input id="mrTemplateIdInput" placeholder="template_id (e.g. iclr2026)" value="iclr2026" style="width:100%;margin-top:6px;background:var(--bg-elev);color:inherit;border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-family:monospace;font-size:0.78rem;">
-                                <input id="mrPageCountInput" type="number" placeholder="page_count (optional)" value="8" style="width:100%;margin-top:6px;background:var(--bg-elev);color:inherit;border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-family:monospace;font-size:0.78rem;">
+                                <input id="mrTemplateIdInput" placeholder="template_id (e.g. iclr2026)" data-i18n-placeholder="manuscript.templatePlaceholder" value="iclr2026" style="width:100%;margin-top:6px;background:var(--bg-elev);color:inherit;border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-family:monospace;font-size:0.78rem;">
+                                <input id="mrPageCountInput" type="number" placeholder="page_count (optional)" data-i18n-placeholder="manuscript.pageCountPlaceholder" value="8" style="width:100%;margin-top:6px;background:var(--bg-elev);color:inherit;border:1px solid var(--border);border-radius:6px;padding:6px 8px;font-family:monospace;font-size:0.78rem;">
                                 <textarea id="mrSourceInput" style="width:100%;min-height:120px;margin-top:6px;background:var(--bg-elev);color:inherit;border:1px solid var(--border);border-radius:6px;padding:8px;font-family:monospace;font-size:0.78rem;">\documentclass{article}
 \begin{document}
 Hello world.
 \bibliography{refs}
 \end{document}</textarea>
                             </details>
-                            <pre id="mrResultView" style="padding:0;font-size:0.74rem;color:var(--text-dim);max-height:360px;overflow:auto;white-space:pre-wrap;" data-i18n="manuscript.noResult">No result yet.</pre>
+                            <pre id="mrResultView" style="padding:0;font-size:0.74rem;color:var(--text-dim);max-height:360px;overflow:auto;white-space:pre-wrap;" data-i18n="manuscript.noResult"></pre>
                         </div>
                     </div>
                 </div>
