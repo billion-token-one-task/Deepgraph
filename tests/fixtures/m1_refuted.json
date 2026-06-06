@@ -1,0 +1,38 @@
+{
+  "state": {
+    "result_packet": {
+      "run_id": "run-m1-refuted",
+      "claim_id": "claim-m1-refuted",
+      "claim_text": "The method improves utility.",
+      "metric_name": "exact_match",
+      "verdict": "refuted",
+      "p_value": 0.0123,
+      "effect_size": -0.01,
+      "benchmark_summary": {
+        "primary_metric": "exact_match",
+        "per_method": {
+          "Candidate": {"exact_match": 0.605, "n": 200},
+          "Baseline": {"exact_match": 0.655, "n": 200}
+        },
+        "seed_variance": {
+          "Candidate": {"mean": 0.605, "std": 0.012, "per_seed": {"0": 0.61, "1": 0.60, "2": 0.605}}
+        },
+        "seeds": [0, 1, 2],
+        "statistical_tests": "paired permutation p=0.0123"
+      }
+    }
+  },
+  "manifest": {
+    "datasets": [{"name": "GSM8K", "split": "test", "num_test": 200}],
+    "models": [{"name": "Qwen", "prompt_template": "qa", "decoding": "greedy"}],
+    "baselines": ["Baseline", "Candidate"],
+    "metrics": ["exact_match"],
+    "seeds": [0, 1, 2],
+    "hardware": "CPU test fixture",
+    "statistical_tests": "paired permutation p=0.0123",
+    "latency": {"per_method": {"Candidate": 1.0, "Baseline": 0.8}},
+    "token_cost": {"per_method": {"Candidate": 100, "Baseline": 80}},
+    "ablation": [{"name": "no_guard"}],
+    "artifacts": {"benchmark_summary": "benchmark_summary.json"}
+  }
+}

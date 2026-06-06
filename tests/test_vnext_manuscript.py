@@ -225,7 +225,18 @@ class ManuscriptBundleTests(unittest.TestCase):
         (results_dir / "ablation_table.json").write_text(json.dumps(benchmark_summary["ablation_table"]), encoding="utf-8")
         (results_dir / "latency_tokens_table.json").write_text(json.dumps(benchmark_summary["latency_tokens_table"]), encoding="utf-8")
 
-    def _stub_orchestra(self, state, literature_block, paper_ids, iterations, *, figures_dir, baseline, metric_name):
+    def _stub_orchestra(
+        self,
+        state,
+        literature_block,
+        paper_ids,
+        iterations,
+        *,
+        figures_dir,
+        baseline,
+        metric_name,
+        template_id=None,
+    ):
         figures_dir.mkdir(parents=True, exist_ok=True)
         (figures_dir / "fig_metric_trajectory.svg").write_text(
             '<svg xmlns="http://www.w3.org/2000/svg"><text>metric</text></svg>',
@@ -256,10 +267,39 @@ class ManuscriptBundleTests(unittest.TestCase):
                 "abstract": "Abstract text.",
                 "introduction": "Introduction text with \\cite{cite_a}.",
                 "method": "Method text.",
-                "experiments": "Experiments text.",
+                "experiments": (
+                    "Experiments text.\\n"
+                    "\\begin{figure}[t]\\n"
+                    "\\centering\\n"
+                    "\\includegraphics[width=0.9\\linewidth]{figures/fig_metric_trajectory.svg}\\n"
+                    "\\caption{Metric trajectory.}\\n"
+                    "\\label{fig:metric_trajectory}\\n"
+                    "\\end{figure}"
+                ),
                 "discussion": "Discussion text.",
             },
-            "refinement_full_text": "",
+            "refinement_full_text": (
+                "\\documentclass{article}\n"
+                "\\usepackage{graphicx}\n"
+                "\\title{Auto Manuscript Insight}\n"
+                "\\begin{document}\n"
+                "\\maketitle\n"
+                "\\begin{abstract}Abstract text.\\end{abstract}\n"
+                "\\section{Introduction}Intro with \\cite{cite_a}.\n"
+                "\\section{Related Work}Related work with \\cite{cite_a}.\n"
+                "\\section{Method}Method text.\n"
+                "\\section{Experiments}Experiments text.\n"
+                "\\begin{figure}[t]\n"
+                "\\centering\n"
+                "\\includegraphics[width=0.9\\linewidth]{figures/fig_metric_trajectory.svg}\n"
+                "\\caption{Metric trajectory.}\n"
+                "\\label{fig:metric_trajectory}\n"
+                "\\end{figure}\n"
+                "\\section{Discussion}Discussion text.\n"
+                "\\bibliographystyle{plain}\n"
+                "\\bibliography{references}\n"
+                "\\end{document}"
+            ),
             "agentreview_worklog": [],
             "bibtex": "@misc{cite_a,\n  title = {Verified Paper},\n  author = {Author One},\n  year = {2024}\n}\n",
             "bib_keys": ["cite_a"],
@@ -283,10 +323,63 @@ class ManuscriptBundleTests(unittest.TestCase):
             },
         }
 
+    def _generate_bundle_offline(self, run_full, side_effect):
+        run_full.side_effect = side_effect
+        with mock.patch(
+            "agents.manuscript_submission_enrichment.apply_venue_gates_with_retry",
+            side_effect=lambda main_tex, **_: (
+                main_tex,
+                {"pass": True, "final": {"pass": True, "template_id": "iclr2026"}},
+            ),
+        ), mock.patch(
+            "agents.manuscript_page_budget.apply_exact_page_budget",
+            side_effect=lambda main_tex, *_args, **_kwargs: (
+                main_tex,
+                {"pass": True, "main_body_pages": 9, "total_pdf_pages": 10},
+            ),
+        ), mock.patch(
+            "agents.manuscript_page_budget.page_budget_blockers",
+            return_value=[],
+        ):
+            return generate_submission_bundle(1, bundle_formats=["conference"])
+
+    def _orchestra_with_full_tex(self, full_tex):
+        def _stub(state, literature_block, paper_ids, iterations, *, figures_dir, baseline, metric_name, template_id=None):
+            out = self._stub_orchestra(
+                state,
+                literature_block,
+                paper_ids,
+                iterations,
+                figures_dir=figures_dir,
+                baseline=baseline,
+                metric_name=metric_name,
+                template_id=template_id,
+            )
+            out["refinement_full_text"] = full_tex
+            return out
+
+        return _stub
+
     @mock.patch("agents.paper_orchestra_pipeline._run_full_pipeline")
     def test_generate_submission_bundle_creates_verified_bundle_files_and_db_rows(self, run_full):
         run_full.side_effect = self._stub_orchestra
-        result = generate_submission_bundle(1, bundle_formats=["conference"])
+        with mock.patch(
+            "agents.manuscript_submission_enrichment.apply_venue_gates_with_retry",
+            side_effect=lambda main_tex, **_: (
+                main_tex,
+                {"pass": True, "final": {"pass": True, "template_id": "iclr2026"}},
+            ),
+        ), mock.patch(
+            "agents.manuscript_page_budget.apply_exact_page_budget",
+            side_effect=lambda main_tex, *_args, **_kwargs: (
+                main_tex,
+                {"pass": True, "main_body_pages": 9, "total_pdf_pages": 10},
+            ),
+        ), mock.patch(
+            "agents.manuscript_page_budget.page_budget_blockers",
+            return_value=[],
+        ):
+            result = generate_submission_bundle(1, bundle_formats=["conference"])
         self.assertIn("manuscript_run_id", result)
         self.assertEqual(result["backend"], "paper_orchestra")
         bundle = database.fetchone("SELECT * FROM submission_bundles WHERE manuscript_run_id=?", (result["manuscript_run_id"],))
@@ -313,6 +406,93 @@ class ManuscriptBundleTests(unittest.TestCase):
         self.assertIn("iclr2026_conference", main_tex)
         self.assertIn("fig_metric_trajectory.svg", main_tex)
         self.assertTrue((self.workspace_root / "idea_1" / "paper" / "current" / "main.tex").exists())
+
+    @mock.patch("agents.paper_orchestra_pipeline._run_full_pipeline")
+    def test_generate_submission_bundle_blocks_unresolved_reference_in_rendered_tex(self, run_full):
+        full_tex = (
+            "\\documentclass{article}\\begin{document}"
+            "\\begin{abstract}Clean abstract.\\end{abstract}"
+            "\\section{Results}Table ?? reports the result."
+            "\\section{Discussion}Clean discussion."
+            "\\end{document}"
+        )
+        result = self._generate_bundle_offline(run_full, self._orchestra_with_full_tex(full_tex))
+
+        self.assertIn("error", result)
+        blockers = " ".join(result.get("submission_blockers") or []).lower()
+        self.assertIn("??", blockers)
+
+    @mock.patch("agents.paper_orchestra_pipeline._run_full_pipeline")
+    def test_generate_submission_bundle_blocks_repeated_boilerplate_in_rendered_tex(self, run_full):
+        sentence = "This repeated boilerplate sentence should not appear in every generated paragraph."
+        full_tex = (
+            "\\documentclass{article}\\begin{document}"
+            "\\begin{abstract}Clean abstract.\\end{abstract}"
+            "\\section{Results}"
+            + "\n".join([sentence] * 4)
+            + "\n"
+            + "\\section{Discussion}Clean discussion."
+            "\\end{document}"
+        )
+        result = self._generate_bundle_offline(run_full, self._orchestra_with_full_tex(full_tex))
+
+        self.assertIn("error", result)
+        blockers = " ".join(result.get("submission_blockers") or []).lower()
+        self.assertIn("boilerplate", blockers)
+
+    @mock.patch("agents.paper_orchestra_pipeline._run_full_pipeline")
+    def test_generate_submission_bundle_preserves_existing_placeholder_gate(self, run_full):
+        full_tex = (
+            "\\documentclass{article}\\begin{document}"
+            "\\begin{abstract}Clean abstract.\\end{abstract}"
+            "\\section{Results}This placeholder text must not ship."
+            "\\section{Discussion}Clean discussion."
+            "\\end{document}"
+        )
+        result = self._generate_bundle_offline(run_full, self._orchestra_with_full_tex(full_tex))
+
+        self.assertIn("error", result)
+        blockers = " ".join(result.get("submission_blockers") or []).lower()
+        self.assertIn("placeholder", blockers)
+
+    @mock.patch("agents.paper_orchestra_pipeline._run_full_pipeline")
+    def test_generate_submission_bundle_reports_all_latex_sanity_hits(self, run_full):
+        full_tex = (
+            "\\documentclass{article}\\begin{document}"
+            "\\begin{abstract}Clean abstract.\\end{abstract}"
+            "\\section{Results}Table ?? appears with {{plot_cmd}}."
+            "\\section{Discussion}Clean discussion."
+            "\\end{document}"
+        )
+        result = self._generate_bundle_offline(run_full, self._orchestra_with_full_tex(full_tex))
+
+        self.assertIn("error", result)
+        blockers = " ".join(result.get("submission_blockers") or []).lower()
+        self.assertIn("??", blockers)
+        self.assertIn("plot_cmd", blockers)
+
+    @mock.patch("agents.paper_orchestra_pipeline._run_full_pipeline")
+    def test_generate_submission_bundle_blocks_cross_run_identity_in_rendered_tex(self, run_full):
+        full_tex = (
+            "\\documentclass{article}"
+            "\\title{Auto Manuscript Insight}"
+            "\\begin{document}"
+            "\\maketitle"
+            "\\begin{abstract}Clean abstract.\\end{abstract}"
+            "\\section{Introduction}Intro with \\cite{cite_a}."
+            "\\begin{figure}[t]"
+            "\\caption{OtherMethod trajectory.}"
+            "\\end{figure}"
+            "\\section{Discussion}Clean discussion."
+            "\\bibliographystyle{plain}"
+            "\\bibliography{references}"
+            "\\end{document}"
+        )
+        result = self._generate_bundle_offline(run_full, self._orchestra_with_full_tex(full_tex))
+
+        self.assertIn("error", result)
+        blockers = " ".join(result.get("submission_blockers") or []).lower()
+        self.assertIn("othermethod", blockers)
 
     def test_generate_submission_bundle_blocks_non_formal_run(self):
         database.execute(
@@ -371,7 +551,17 @@ class ManuscriptBundleTests(unittest.TestCase):
 
     @mock.patch("agents.paper_orchestra_pipeline._run_full_pipeline")
     def test_generate_submission_bundle_blocks_placeholder_figure_assets(self, run_full):
-        def _stub_with_placeholder(state, literature_block, paper_ids, iterations, *, figures_dir, baseline, metric_name):
+        def _stub_with_placeholder(
+            state,
+            literature_block,
+            paper_ids,
+            iterations,
+            *,
+            figures_dir,
+            baseline,
+            metric_name,
+            template_id=None,
+        ):
             out = self._stub_orchestra(
                 state,
                 literature_block,
@@ -380,6 +570,7 @@ class ManuscriptBundleTests(unittest.TestCase):
                 figures_dir=figures_dir,
                 baseline=baseline,
                 metric_name=metric_name,
+                template_id=template_id,
             )
             (figures_dir / "fig_metric_trajectory.svg").write_text(
                 '<svg xmlns="http://www.w3.org/2000/svg"><text>Diagram placeholder: failed API figure.</text></svg>',
@@ -389,7 +580,23 @@ class ManuscriptBundleTests(unittest.TestCase):
 
         run_full.side_effect = _stub_with_placeholder
 
-        result = generate_submission_bundle(1, bundle_formats=["conference"])
+        with mock.patch(
+            "agents.manuscript_submission_enrichment.apply_venue_gates_with_retry",
+            side_effect=lambda main_tex, **_: (
+                main_tex,
+                {"pass": True, "final": {"pass": True, "template_id": "iclr2026"}},
+            ),
+        ), mock.patch(
+            "agents.manuscript_page_budget.apply_exact_page_budget",
+            side_effect=lambda main_tex, *_args, **_kwargs: (
+                main_tex,
+                {"pass": True, "main_body_pages": 9, "total_pdf_pages": 10},
+            ),
+        ), mock.patch(
+            "agents.manuscript_page_budget.page_budget_blockers",
+            return_value=[],
+        ):
+            result = generate_submission_bundle(1, bundle_formats=["conference"])
 
         self.assertIn("error", result)
         self.assertIn("placeholder", " ".join(result.get("submission_blockers") or []).lower())

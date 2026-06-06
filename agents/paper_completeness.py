@@ -36,6 +36,9 @@ FORBIDDEN_LATEX_TERMS = (
     "outside the verified claim",
     "missing generated figure",
     "diagram placeholder",
+    "fixme",
+    "<scaffold",
+    "generate a figure that",
 )
 
 FORBIDDEN_LATEX_SYMBOLS = ("￾", "", "�")
@@ -86,6 +89,21 @@ IRRELEVANT_CITATION_TERMS = (
     "finance",
     "graph-organized neural units",
 )
+
+METHOD_TOKEN_WHITELIST = {
+    "GSM8K",
+    "MuSiQue",
+    "MMLU",
+    "BLEU",
+    "GPU",
+    "CPU",
+    "LLM",
+    "LaTeX",
+    "JSON",
+    "API",
+}
+
+BOILERPLATE_REPEAT_THRESHOLD = 3
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
@@ -143,6 +161,208 @@ def _numeric(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _significance_alpha() -> float:
+    raw = os.environ.get("DEEPGRAPH_SIGNIFICANCE_ALPHA")
+    alpha = _numeric(raw)
+    if alpha is None or alpha <= 0:
+        return 0.05
+    return alpha
+
+
+def build_evidence_ledger(
+    packet: dict,
+    benchmark_summary: dict,
+    *,
+    alpha: float,
+    provenance: dict | None = None,
+) -> dict:
+    """Build the single source of truth for presentation evidence."""
+    packet = _as_dict(packet)
+    summary = _as_dict(benchmark_summary)
+    p_value = _numeric(packet.get("p_value"))
+    effect_size = _numeric(_first_present(packet.get("effect_size"), packet.get("effect_pct")))
+    metric = _text(_first_present(packet.get("metric_name"), summary.get("primary_metric"), summary.get("metric_name")))
+    seeds = _as_list(_first_present(summary.get("seeds"), summary.get("seed_values")))
+    if not seeds:
+        seeds = _seed_list(summary)
+    confidence = round(1.0 - p_value, 10) if p_value is not None else None
+    return {
+        "schema_version": "1.0",
+        "run_id": _text(packet.get("run_id")),
+        "claim_id": _text(packet.get("claim_id")),
+        "metric": metric,
+        "alpha": alpha,
+        "verdict": _text(packet.get("verdict")),
+        "p_value": p_value,
+        "effect_size": effect_size,
+        "confidence": confidence,
+        "repro_ci": _as_list(_first_present(packet.get("repro_ci"), summary.get("repro_ci"))),
+        "kept_ci": _as_list(_first_present(packet.get("kept_ci"), summary.get("kept_ci"))),
+        "per_method": _as_dict(summary.get("per_method")),
+        "seed_variance": _as_dict(summary.get("seed_variance")),
+        "seeds": seeds,
+        "provenance": _as_dict(provenance),
+    }
+
+
+def _ledger_supports_significance(ledger: dict[str, Any]) -> bool:
+    p_value = _numeric(ledger.get("p_value"))
+    alpha = _numeric(ledger.get("alpha"))
+    verdict = _lower(ledger.get("verdict"))
+    return bool(
+        p_value is not None
+        and alpha is not None
+        and p_value < alpha
+        and verdict in {"confirmed", "reproduced"}
+    )
+
+
+EVIDENCE_LEDGER_REQUIRED_FIELDS = (
+    "schema_version",
+    "run_id",
+    "claim_id",
+    "metric",
+    "alpha",
+    "verdict",
+    "p_value",
+    "effect_size",
+    "confidence",
+    "repro_ci",
+    "kept_ci",
+    "per_method",
+    "seed_variance",
+    "seeds",
+    "provenance",
+)
+
+TRACEABILITY_POSITIVE_TERMS = (
+    "improves",
+    "improve",
+    "outperforms",
+    "outperform",
+    "significant",
+    "significantly",
+    "superior",
+    "beats",
+    "surpasses",
+)
+
+TRACEABILITY_NUMBER_RE = re.compile(r"-?\d+\.?\d*%?")
+
+
+def validate_evidence_ledger(ledger: dict) -> list[dict]:
+    """Return schema violations. Missing required fields are explicit."""
+    ledger = _as_dict(ledger)
+    violations: list[dict] = []
+    for field in EVIDENCE_LEDGER_REQUIRED_FIELDS:
+        if field not in ledger:
+            violations.append(
+                {
+                    "rule": "schema_error",
+                    "location": {"section": "ledger", "line": 0},
+                    "snippet": f"missing required field: {field}",
+                    "value": field,
+                }
+            )
+    return violations
+
+
+def _traceable_sections(main_tex: str) -> list[tuple[str, str, int]]:
+    sections: list[tuple[str, str, int]] = []
+    abstract = re.search(r"\\begin\{abstract\}(.*?)\\end\{abstract\}", main_tex or "", re.DOTALL | re.IGNORECASE)
+    if abstract:
+        sections.append(("abstract", abstract.group(1), abstract.start(1)))
+    section_re = re.compile(r"\\section\{([^}]*)\}", re.IGNORECASE)
+    matches = list(section_re.finditer(main_tex or ""))
+    for idx, match in enumerate(matches):
+        name = _lower(match.group(1))
+        if name not in {"conclusion", "conclusions", "discussion"}:
+            continue
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else len(main_tex or "")
+        section_name = "discussion" if name == "discussion" else "conclusion"
+        sections.append((section_name, (main_tex or "")[match.end():end], match.end()))
+    return sections
+
+
+def _ledger_numeric_sources(ledger: dict[str, Any]) -> list[float]:
+    sources: list[float] = []
+
+    def add(value: Any) -> None:
+        numeric = _numeric(value)
+        if numeric is not None:
+            sources.append(numeric)
+
+    add(ledger.get("p_value"))
+    add(ledger.get("effect_size"))
+    for value in _as_list(ledger.get("repro_ci")) + _as_list(ledger.get("kept_ci")):
+        add(value)
+    metric = _text(ledger.get("metric"))
+    for payload in _as_dict(ledger.get("per_method")).values():
+        row = _as_dict(payload)
+        if metric:
+            add(row.get(metric))
+    for payload in _as_dict(ledger.get("seed_variance")).values():
+        add(_as_dict(payload).get("mean"))
+    return sources
+
+
+def _traceable_number(token: str, sources: list[float]) -> bool:
+    is_percent = token.endswith("%")
+    numeric = _numeric(token[:-1] if is_percent else token)
+    if numeric is None:
+        return True
+    if is_percent:
+        numeric /= 100.0
+    return any(abs(numeric - source) <= 1e-6 for source in sources)
+
+
+def _skip_traceability_number(line: str, start: int, end: int) -> bool:
+    prefix = line[:start]
+    suffix = line[end:]
+    if re.search(r"(?:Table|Figure|Section)\s*$", prefix, re.IGNORECASE):
+        return True
+    if re.match(r"\s*seeds?\b", suffix, re.IGNORECASE):
+        return True
+    return False
+
+
+def assert_traceable(main_tex: str, ledger: dict) -> list[dict]:
+    """Return evidence traceability violations for Abstract / Conclusion only."""
+    ledger = _as_dict(ledger)
+    violations = validate_evidence_ledger(ledger)
+    sources = _ledger_numeric_sources(ledger)
+    negative_verdict = _lower(ledger.get("verdict")) in {"refuted", "inconclusive"}
+    positive_re = re.compile(r"\b(" + "|".join(re.escape(term) for term in TRACEABILITY_POSITIVE_TERMS) + r")\b", re.IGNORECASE)
+    text = main_tex or ""
+
+    for section, body, offset in _traceable_sections(text):
+        for rel_line, line in enumerate(body.splitlines(), start=1):
+            absolute_line = text.count("\n", 0, offset) + rel_line
+            if negative_verdict and positive_re.search(line):
+                violations.append(
+                    {
+                        "rule": "positive_claim_with_negative_verdict",
+                        "location": {"section": section, "line": absolute_line},
+                        "snippet": line.strip(),
+                        "value": ledger.get("verdict"),
+                    }
+                )
+            for match in TRACEABILITY_NUMBER_RE.finditer(line):
+                if _skip_traceability_number(line, match.start(), match.end()):
+                    continue
+                token = match.group(0)
+                if not _traceable_number(token, sources):
+                    violations.append(
+                        {
+                            "rule": "unsourced_number",
+                            "location": {"section": section, "line": absolute_line},
+                            "snippet": line.strip(),
+                            "value": token[:-1] if token.endswith("%") else token,
+                        }
+                    )
+    return violations
 
 
 def _infer_model_size(name: str) -> str:
@@ -586,9 +806,9 @@ def build_claim_evidence_matrix(state: dict[str, Any], manifest: dict[str, Any])
     packet, summary, _artifact_manifest, _contract = _packet_parts(state)
     per_method = _as_dict(summary.get("per_method"))
     seeds = _as_list(manifest.get("seeds"))
-    p_text = _lower(manifest.get("statistical_tests"))
     has_multi_seed = len(seeds) >= 3
-    has_significance = "p=" in p_text or "bootstrap" in p_text or "permutation" in p_text
+    ledger = build_evidence_ledger(packet, summary, alpha=_significance_alpha())
+    has_significance = _ledger_supports_significance(ledger)
     rows = [
         {
             "claim": "Improves utility",
@@ -634,8 +854,8 @@ def build_claim_evidence_matrix(state: dict[str, Any], manifest: dict[str, Any])
                 "claim": _text(packet.get("claim_text"))[:280],
                 "required_evidence": "mapped quantitative artifact in result_packet or benchmark_summary",
                 "current_evidence": "present" if len(per_method) >= 2 else "missing benchmark comparison",
-                "can_appear_in_abstract": bool(len(per_method) >= 2 and has_multi_seed),
-                "allowed_sections": ["Abstract", "Introduction", "Conclusion"] if len(per_method) >= 2 and has_multi_seed else ["Motivation", "Limitations"],
+                "can_appear_in_abstract": bool(len(per_method) >= 2 and has_multi_seed and has_significance),
+                "allowed_sections": ["Abstract", "Introduction", "Conclusion"] if len(per_method) >= 2 and has_multi_seed and has_significance else ["Motivation", "Limitations"],
             },
         )
     return rows
@@ -742,6 +962,7 @@ def build_reviewer_report(
     blockers: list[str],
 ) -> dict[str, Any]:
     packet, summary, _artifact_manifest, _contract = _packet_parts(state)
+    ledger = build_evidence_ledger(packet, summary, alpha=_significance_alpha())
     answers: list[dict[str, Any]] = []
 
     def add(question: str, yes: bool, evidence: str) -> None:
@@ -750,7 +971,11 @@ def build_reviewer_report(
     add("What is the exact dataset?", bool(_as_list(manifest.get("datasets")) and not any("dataset" in b.lower() for b in blockers[:3])), str(manifest.get("datasets") or "missing"))
     add("What is the exact model?", bool(_as_list(manifest.get("models")) and not any("model" in b.lower() for b in blockers)), str(manifest.get("models") or "missing"))
     add("What is the exact baseline?", len(_as_list(manifest.get("baselines"))) >= 2, ", ".join(_as_list(manifest.get("baselines"))))
-    add("Is the improvement statistically significant?", bool(_text(manifest.get("statistical_tests")) and not any("statistical" in b.lower() for b in blockers)), _text(manifest.get("statistical_tests")))
+    add(
+        "Is the improvement statistically significant?",
+        bool(_ledger_supports_significance(ledger) and not any("statistical" in b.lower() for b in blockers)),
+        f"p={ledger.get('p_value')}; alpha={ledger.get('alpha')}; verdict={ledger.get('verdict')}",
+    )
     add("Is there more than one benchmark?", len(_as_list(manifest.get("datasets"))) > 1, str(len(_as_list(manifest.get("datasets")))))
     add("Are compute savings actually measured?", bool(manifest.get("latency") or manifest.get("token_cost")), "latency/token payload present" if (manifest.get("latency") or manifest.get("token_cost")) else "missing")
     add("Is the proposed gate better than confidence/disagreement routing?", any("Beats confidence" in row.get("claim", "") and row.get("can_appear_in_abstract") for row in claim_matrix), "claim-evidence matrix")
@@ -826,10 +1051,89 @@ def audit_evidence_completeness(state: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def latex_sanity_check(text: str) -> dict[str, Any]:
+def _line_hit(rule: str, value: str, line_no: int, line: str, *, kind: str = "deterministic") -> dict[str, Any]:
+    return {
+        "kind": kind,
+        "rule": rule,
+        "value": value,
+        "location": {"line": line_no},
+        "snippet": line.strip(),
+    }
+
+
+def _strip_latex_code_blocks(text: str) -> str:
+    stripped = re.sub(
+        r"\\begin\{(?:verbatim|lstlisting|minted)\}.*?\\end\{(?:verbatim|lstlisting|minted)\}",
+        "",
+        text or "",
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    stripped = re.sub(r"```.*?```", "", stripped, flags=re.DOTALL)
+    return stripped
+
+
+def _deterministic_latex_hits(text: str, state: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    state = _as_dict(state)
+    scan_text = _strip_latex_code_blocks(text or "")
+    hits: list[dict[str, Any]] = []
+    for line_no, line in enumerate(scan_text.splitlines(), start=1):
+        if re.search(r"\?\?|Table\s+\?\?|Figure\s+\?\?", line):
+            hits.append(_line_hit("unresolved_reference", "??", line_no, line))
+        for match in re.finditer(r"\\(?:ref|cite[a-zA-Z*]*)\{([^}]*)\}", line):
+            key = match.group(1).strip()
+            if not key or "?" in key or _lower(key) in {"todo", "tbd", "placeholder"}:
+                hits.append(_line_hit("unresolved_reference", match.group(0), line_no, line))
+        for match in re.finditer(r"\{\{[a-z_][a-z0-9_]*\}\}", line):
+            prefix = line[: match.start()]
+            if re.search(r"\\[A-Za-z]+\s*$", prefix) or prefix.rstrip().endswith("}"):
+                continue
+            hits.append(_line_hit("template_placeholder", match.group(0), line_no, line))
+
+    method_name = _text(state.get("method_name"))
+    if method_name:
+        allowed = set(METHOD_TOKEN_WHITELIST)
+        allowed.update(re.findall(r"\b(?:[A-Z]{2,}[A-Za-z0-9]*|[A-Z][a-z]+(?:[A-Z][A-Za-z0-9]*)+)\b", method_name))
+        scoped_parts: list[tuple[str, int]] = []
+        for match in re.finditer(r"\\title\{([^}]*)\}", scan_text, re.DOTALL | re.IGNORECASE):
+            scoped_parts.append((match.group(1), scan_text.count("\n", 0, match.start(1)) + 1))
+        begin_doc = re.search(r"\\begin\{document\}", scan_text, re.IGNORECASE)
+        if begin_doc:
+            scoped_parts.append((scan_text[:begin_doc.start()], 1))
+        for match in re.finditer(r"\\caption\{([^}]*)\}", scan_text, re.DOTALL | re.IGNORECASE):
+            scoped_parts.append((match.group(1), scan_text.count("\n", 0, match.start(1)) + 1))
+        token_re = re.compile(r"\b(?:[A-Z]{2,}[A-Za-z0-9]*|[A-Z][a-z]+(?:[A-Z][A-Za-z0-9]*)+)\b")
+        for snippet, base_line in scoped_parts:
+            for token_match in token_re.finditer(snippet):
+                token = token_match.group(0)
+                if token not in allowed:
+                    hits.append(
+                        _line_hit(
+                            "cross_run_identity",
+                            token,
+                            base_line + snippet.count("\n", 0, token_match.start()),
+                            snippet.splitlines()[0] if snippet.splitlines() else snippet,
+                        )
+                    )
+
+    sentence_locations: dict[str, list[tuple[int, str]]] = {}
+    for line_no, line in enumerate(scan_text.splitlines(), start=1):
+        for sentence in re.split(r"(?<=[.!?])\s+", line.strip()):
+            normalized = re.sub(r"[^a-z0-9\s]", "", sentence.lower())
+            normalized = re.sub(r"\s+", " ", normalized).strip()
+            if len(normalized.split()) >= 8:
+                sentence_locations.setdefault(normalized, []).append((line_no, sentence))
+    for normalized, locations in sentence_locations.items():
+        if len(locations) >= BOILERPLATE_REPEAT_THRESHOLD:
+            line_no, sentence = locations[0]
+            hits.append(_line_hit("boilerplate_repetition", normalized, line_no, sentence))
+    return hits
+
+
+def latex_sanity_check(text: str, state: dict[str, Any] | None = None, ledger: dict[str, Any] | None = None) -> dict[str, Any]:
     lower = (text or "").lower()
     hits = [{"kind": "term", "value": term} for term in FORBIDDEN_LATEX_TERMS if term in lower]
     hits.extend({"kind": "symbol", "value": symbol} for symbol in FORBIDDEN_LATEX_SYMBOLS if symbol in (text or ""))
+    hits.extend(_deterministic_latex_hits(text or "", state=state))
     return {
         "schema_version": "latex_sanity_v1",
         "ok": not hits,
