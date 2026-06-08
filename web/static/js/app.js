@@ -13,7 +13,7 @@ const ROOT_NODE = document.body.dataset.rootNode || 'ml';
 let activeTab       = 'overview';
 let exploreNodeId   = ROOT_NODE;
 let exploreData     = null;      // cached /api/taxonomy/<id> response
-let eventSource     = null;
+let eventsSince     = 0;
 let events          = [];        // max 50
 let activePapers    = {};        // paper_id -> {title, step, startTime}
 let statsCache      = null;
@@ -176,41 +176,23 @@ async function refreshStats() {
     }
 }
 
-// ── SSE Event Stream ─────────────────────────────────────────────────
+// ── Event Polling ────────────────────────────────────────────────────
 
-let sseRetryDelay = 2000;
-
-function startSSE() {
-    if (eventSource) {
-        try { eventSource.close(); } catch(e) {}
-        eventSource = null;
-    }
-    eventSource = new EventSource('/api/events');
-
-    eventSource.onopen = () => {
-        sseRetryDelay = 2000;
-    };
-
-    eventSource.onmessage = (msg) => {
-        try {
-            const ev = JSON.parse(msg.data);
+async function fetchEvents() {
+    try {
+        const payload = await api(`/api/events?since=${eventsSince}`);
+        eventsSince = payload.next_seq || eventsSince;
+        for (const ev of payload.events || []) {
             events.push(ev);
             if (events.length > 50) events.shift();
 
             trackPaperEvent(ev);
             updateLiveBadge(ev);
             appendFeedEvent(ev);
-        } catch (e) {
-            console.error('SSE parse error:', e);
         }
-    };
-
-    eventSource.onerror = () => {
-        eventSource.close();
-        eventSource = null;
-        setTimeout(startSSE, sseRetryDelay);
-        sseRetryDelay = Math.min(sseRetryDelay * 1.5, 15000);
-    };
+    } catch (e) {
+        console.error('Event polling error:', e);
+    }
 }
 
 let pipelineRunning = false;
@@ -2608,7 +2590,8 @@ function init() {
     // Initial data loads
     refreshStats();
     loadRecentlyDiscovered();
-    startSSE();
+    fetchEvents();
+    setInterval(fetchEvents, 2000);
 
     // Stats refresh every 15s
     statsTimer = setInterval(refreshStats, 15000);
