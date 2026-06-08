@@ -7,7 +7,7 @@ import time
 import traceback
 from pathlib import Path
 from typing import Any
-from flask import Flask, Response, abort, jsonify, render_template, request, send_file, url_for
+from flask import Flask, abort, jsonify, render_template, request, send_file, url_for
 from agents.workspace_layout import get_idea_workspace, list_paper_assets, plan_file_path, resolve_paper_asset
 from config import APP_NAME, APP_SUBTITLE, PROFILE, ROOT_NODE_ID
 from db import database as db
@@ -81,6 +81,14 @@ def block_manual_experiment_post_apis():
         return _manual_api_removed_response()
     if request.method == "POST" and request.path.endswith("/run"):
         return _manual_api_removed_response()
+
+
+@app.teardown_request
+def rollback_request_transaction(_exc):
+    try:
+        db.rollback()
+    except Exception:
+        pass
 
 
 def _pick_canonical_run(runs: list[dict], canonical_run_id: int | None = None) -> dict | None:
@@ -1144,24 +1152,23 @@ def api_matrix_gaps():
     return jsonify(rows)
 
 
-# ── Events (SSE) ──────────────────────────────────────────────────
+# ── Events ────────────────────────────────────────────────────────
 
 @app.route("/api/events")
 def api_events():
-    """SSE endpoint for real-time updates."""
-    def generate():
-        # Start from near the end - only send last 20 events on connect
-        all_events = get_events(0)
-        last_seq = max(0, all_events[-1]["seq"] - 20) if all_events else 0
-        while True:
-            events = get_events(last_seq)
-            for e in events:
-                yield f"data: {json.dumps(e, ensure_ascii=False, default=str)}\n\n"
-                last_seq = e["seq"] + 1
-            time.sleep(2)  # slower polling = less browser load
-
-    return Response(generate(), mimetype="text/event-stream",
-                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+    """Short-poll pipeline events without holding a web worker thread."""
+    since = max(0, request.args.get("since", 0, type=int) or 0)
+    events = get_events(since)
+    payload_events = json.loads(json.dumps(events, ensure_ascii=False, default=str))
+    next_seq = since
+    for event in payload_events:
+        try:
+            next_seq = max(next_seq, int(event.get("seq", since)) + 1)
+        except (TypeError, ValueError):
+            pass
+    response = jsonify({"events": payload_events, "next_seq": next_seq})
+    response.headers["Cache-Control"] = "no-cache"
+    return response
 
 
 # ── Pipeline Control ──────────────────────────────────────────────

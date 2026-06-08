@@ -22,20 +22,28 @@ class WebAppTests(unittest.TestCase):
     def setUp(self):
         self.client = web_app.app.test_client()
 
-    def test_api_events_serializes_datetime_payloads(self):
+    def test_api_events_returns_short_polling_json_and_serializes_datetimes(self):
         with mock.patch.object(
             web_app,
             "get_events",
-            side_effect=[
-                [{"seq": 1, "created_at": datetime(2026, 4, 21, 12, 0, 0)}],
-                [{"seq": 1, "created_at": datetime(2026, 4, 21, 12, 0, 0)}],
-            ],
-        ):
-            response = self.client.get("/api/events")
-            first_chunk = next(response.response).decode("utf-8")
+            return_value=[{"seq": 6, "created_at": datetime(2026, 4, 21, 12, 0, 0)}],
+        ) as get_events:
+            response = self.client.get("/api/events?since=5")
+            payload = response.get_json()
 
-        self.assertIn("2026-04-21 12:00:00", first_chunk)
-        self.assertIn('"seq": 1', first_chunk)
+        get_events.assert_called_once_with(5)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, "application/json")
+        self.assertEqual(payload["events"][0]["created_at"], "2026-04-21 12:00:00")
+        self.assertEqual(payload["events"][0]["seq"], 6)
+        self.assertEqual(payload["next_seq"], 7)
+
+    def test_read_requests_roll_back_open_transaction_on_teardown(self):
+        with mock.patch.object(web_app.db, "rollback") as rollback:
+            response = self.client.get("/api/meta")
+
+        self.assertEqual(response.status_code, 200)
+        rollback.assert_called()
 
     def test_api_meta_includes_database_backend_summary(self):
         response = self.client.get("/api/meta")
@@ -126,6 +134,63 @@ class DashboardRefreshTests(unittest.TestCase):
             "manuscript.routePreview",
         ):
             self.assertIn(f'"{key}"', i18n)
+
+    def test_dashboard_stat_cards_have_i18n_tooltips(self):
+        expected_tips = {
+            "sourcePapers": (
+                "Papers extracted/parsed (excludes fetched-but-unprocessed)",
+                "已抽取/解析完成的文献数(不含仅入库未处理的)",
+            ),
+            "results": (
+                "Benchmark result records produced by experiments",
+                "基准实验产出的结果记录条数",
+            ),
+            "researchAreas": (
+                "Nodes in the research-area taxonomy tree",
+                "研究领域分类树的节点数",
+            ),
+            "contradictions": (
+                "Pairs of conflicting claims found across papers",
+                "从文献中发现的互相矛盾的论断对数",
+            ),
+            "researchInsights": (
+                "Research insights (insights table; distinct from Discoveries)",
+                "研究洞见条数(insights 表;与\"深度发现\"是不同的表)",
+            ),
+            "tokens": (
+                "Total LLM tokens consumed processing papers",
+                "处理文献累计消耗的 LLM token 总量",
+            ),
+            "experimentRuns": (
+                "Total experiment runs",
+                "实验运行的总次数",
+            ),
+            "discoveries": (
+                "Discoveries that can grow into papers (deep_insights table; distinct from Research Insights)",
+                "可发展成论文的深度发现条数(deep_insights 表;与\"研究洞见\"是不同的表)",
+            ),
+            "submissionBundles": (
+                "Completed paper bundles ready for submission",
+                "打包完成、可投稿的完整论文数",
+            ),
+        }
+        html = _read("web/templates/index.html")
+        i18n = _read("web/static/js/i18n.js")
+
+        self.assertEqual(html.count('class="stat-card'), 9)
+        self.assertEqual(html.count("data-i18n-title=\"overview."), 9)
+        for key, (en_tip, zh_tip) in expected_tips.items():
+            i18n_key = f"overview.{key}.tip"
+            self.assertIn(f'data-i18n-title="{i18n_key}"', html)
+            self.assertIn(f'"{i18n_key}": {json.dumps(en_tip, ensure_ascii=False)}', i18n)
+            self.assertIn(f'"{i18n_key}": {json.dumps(zh_tip, ensure_ascii=False)}', i18n)
+
+    def test_dashboard_events_use_short_polling_not_eventsource(self):
+        app_js = _read("web/static/js/app.js")
+        self.assertNotIn("EventSource", app_js)
+        self.assertIn("function fetchEvents()", app_js)
+        self.assertIn("/api/events?since=", app_js)
+        self.assertIn("setInterval(fetchEvents, 2000)", app_js)
 
     def test_dashboard_legacy_visible_labels_are_gone(self):
         frontend = "\n".join(
