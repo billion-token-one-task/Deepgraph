@@ -1,4 +1,5 @@
 import json
+import re
 import tempfile
 import unittest
 from datetime import datetime
@@ -8,6 +9,13 @@ from unittest import mock
 from agents import workspace_layout
 from db import database
 from web import app as web_app
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _read(path: str) -> str:
+    return (REPO_ROOT / path).read_text(encoding="utf-8")
 
 
 class WebAppTests(unittest.TestCase):
@@ -45,6 +53,193 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 410)
         self.assertEqual(payload["mode"], "fixed_flow_read_only")
         self.assertIn("removed", payload["error"].lower())
+
+
+class DashboardRefreshTests(unittest.TestCase):
+    def setUp(self):
+        self.client = web_app.app.test_client()
+
+    def test_dashboard_and_stats_routes_return_200(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            old_db_path = database.DB_PATH
+            old_database_url = database.DATABASE_URL
+            for attr in ("pg_conn", "sqlite_conn", "conn"):
+                if hasattr(database._local, attr):
+                    try:
+                        getattr(database._local, attr).close()
+                    except Exception:
+                        pass
+                    setattr(database._local, attr, None)
+            try:
+                database.DATABASE_URL = ""
+                database.DB_PATH = Path(tmpdir) / "stats.db"
+                database.init_db()
+
+                self.assertEqual(self.client.get("/").status_code, 200)
+                self.assertEqual(self.client.get("/api/stats").status_code, 200)
+            finally:
+                for attr in ("pg_conn", "sqlite_conn", "conn"):
+                    if hasattr(database._local, attr):
+                        try:
+                            getattr(database._local, attr).close()
+                        except Exception:
+                            pass
+                        setattr(database._local, attr, None)
+                database.DATABASE_URL = old_database_url
+                database.DB_PATH = old_db_path
+
+    def test_dashboard_main_tabs_are_phase1_six_with_advanced_collapsed(self):
+        html = _read("web/templates/index.html")
+        main_tabs = re.findall(r'<button class="nav-item(?: active)?" data-tab="([^"]+)"', html)
+        self.assertEqual(
+            main_tabs,
+            ["overview", "explore", "evidence", "generated-papers", "insights", "papers"],
+        )
+        self.assertRegex(html, r"<details[^>]+class=\"[^\"]*advanced-nav[^\"]*\"[^>]*>")
+        self.assertNotRegex(html, r"<details[^>]+class=\"[^\"]*advanced-nav[^\"]*\"[^>]*open")
+
+    def test_dashboard_i18n_keys_match_and_static_labels_are_marked(self):
+        i18n = _read("web/static/js/i18n.js")
+        en_match = re.search(r"en:\s*\{(?P<body>.*?)\n\s*\},\n\s*zh:", i18n, re.S)
+        zh_match = re.search(r"zh:\s*\{(?P<body>.*?)\n\s*\},?\n\s*\};", i18n, re.S)
+        self.assertIsNotNone(en_match)
+        self.assertIsNotNone(zh_match)
+        key_pattern = r'^\s*"([^"]+)":'
+        en_keys = set(re.findall(key_pattern, en_match.group("body"), re.M))
+        zh_keys = set(re.findall(key_pattern, zh_match.group("body"), re.M))
+        self.assertEqual(en_keys, zh_keys)
+        self.assertIn("navigator.language", i18n)
+        self.assertIn("startsWith('zh')", i18n)
+        self.assertIn("localStorage", i18n)
+
+        html = _read("web/templates/index.html")
+        self.assertGreaterEqual(html.count("data-i18n="), 40)
+        for key in ("nav.overview", "nav.explore", "nav.evidence", "nav.generated", "nav.insights", "nav.papers"):
+            self.assertIn(f'data-i18n="{key}"', html)
+        for key in (
+            "empty.experimentGroups",
+            "search.researchAreas",
+            "discoveries.tier1",
+            "discoveries.tier2",
+            "insights.type.crossDomainBridge",
+            "agenda.noSelection",
+            "manuscript.routePreview",
+        ):
+            self.assertIn(f'"{key}"', i18n)
+
+    def test_dashboard_legacy_visible_labels_are_gone(self):
+        frontend = "\n".join(
+            _read(path)
+            for path in (
+                "web/templates/index.html",
+                "web/static/js/app.js",
+                "web/static/js/agenda.js",
+                "web/static/js/manuscript_routing.js",
+            )
+        )
+        forbidden_labels = [
+            "Paper DB",
+            "Pipeline Papers",
+            "Paper Ideas",
+            "Method x Dataset Matrix",
+            "Method × Dataset Matrix",
+            "Taxonomy Map",
+            "Opportunity Map",
+            "Deep Insight",
+            "Deep Insights",
+            "IDEA #",
+            "RUN #",
+            "Main run",
+            "Research Paper Generation",
+            "Generated Papers",
+            "Complete Papers",
+            "Taxonomy Nodes",
+            "experiment ideas",
+            "PARADIGM",
+            "DISCOVERY",
+        ]
+        for label in forbidden_labels:
+            self.assertNotIn(label, frontend)
+        self.assertIsNone(re.search(r"\bforge\b", frontend, re.I))
+
+    def test_dashboard_target_files_have_no_known_i18n_residuals(self):
+        frontend = "\n".join(
+            _read(path)
+            for path in (
+                "web/templates/index.html",
+                "web/static/js/app.js",
+                "web/static/js/agenda.js",
+                "web/static/js/manuscript_routing.js",
+            )
+        )
+        frontend = re.sub(r"<!--.*?-->", "", frontend, flags=re.S)
+        frontend = re.sub(r"//.*", "", frontend)
+        forbidden_labels = [
+            "Methods & Datasets",
+            "What People Are Working On",
+            "Where The Gaps Are",
+            "Recurring Themes",
+            "Paper Clusters",
+            "Core Entities",
+            "Key Links",
+            "NOVEL",
+            "PARTIAL",
+            "EXISTS",
+            "UNCHECKED",
+            "Universal",
+            "Cross-domain",
+            "Method:",
+            "Baselines:",
+            "Datasets:",
+            "Compute:",
+            "Strongest Challenge:",
+            "Fixed automatic pipeline",
+            "RUNNING",
+            "STOPPED",
+            "Auto Research status unavailable.",
+            "Paste YAML first.",
+            "VENUES",
+            "ROUTE PREVIEW",
+            "LINT PREVIEW",
+            "ERROR (",
+        ]
+        for label in forbidden_labels:
+            self.assertNotIn(label, frontend)
+        self.assertIsNone(re.search(r"\bNo [A-Z][^\"'<>]* yet\b", frontend))
+
+    def test_dashboard_init_is_progressive_and_uses_idle_prefetch(self):
+        app_js = _read("web/static/js/app.js")
+        initial_block = re.search(
+            r"// Initial data loads(?P<body>.*?)// Stats refresh",
+            app_js,
+            re.S,
+        )
+        self.assertIsNotNone(initial_block)
+        initial_loads = set(re.findall(r"\b(load[A-Za-z0-9_]+)\(", initial_block.group("body")))
+        self.assertFalse(
+            initial_loads
+            & {
+                "loadTaxonomyDropdown",
+                "loadPapers",
+                "loadPaperProgressTab",
+                "loadGeneratedPapersTab",
+                "loadDiscoveriesTab",
+                "loadExperimentsTab",
+                "loadInsightsTab",
+                "loadProviders",
+                "loadOverviewGraph",
+            }
+        )
+        self.assertRegex(app_js, r"requestIdleCallback|setTimeout")
+        self.assertIn("prefetchInactiveTabs", app_js)
+        self.assertIn("overviewGraphLoaded", app_js)
+
+    def test_dashboard_dead_code_is_removed(self):
+        app_py = _read("web/app.py")
+        app_js = _read("web/static/js/app.js")
+        self.assertEqual(app_py.count("def _planned_tracks("), 1)
+        self.assertNotIn('label": "主实验"', app_py)
+        self.assertNotIn("function renderExperimentGroups(groups)", app_js)
 
 
 class ExperimentGroupApiTests(unittest.TestCase):

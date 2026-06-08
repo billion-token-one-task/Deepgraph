@@ -4,6 +4,10 @@
 (function () {
   const $ = (id) => document.getElementById(id);
 
+  function tr(key, vars) {
+    return window.t ? window.t(key, vars) : key;
+  }
+
   function fmtJSON(obj) {
     try { return JSON.stringify(obj, null, 2); } catch (e) { return String(obj); }
   }
@@ -29,18 +33,18 @@
 
   async function loadVenues() {
     const { status, body } = await jget("/api/manuscript/venues");
-    if (status >= 300) { setResult("ERROR (venues)", body); return; }
+    if (status >= 300) { setResult(tr("manuscript.errorVenues"), body); return; }
     const venues = (body && body.venues) || [];
     const badge = $("venueCountBadge");
-    if (badge) badge.textContent = `${venues.length} venues`;
-    setResult("VENUES", venues);
+    if (badge) badge.textContent = tr("manuscript.venueCount", { count: venues.length });
+    setResult(tr("manuscript.venues"), venues);
   }
 
   function parseState() {
     const raw = ($("mrStateInput") && $("mrStateInput").value || "").trim();
     if (!raw) return {};
     try { return JSON.parse(raw); }
-    catch (e) { alert("State JSON parse error: " + e.message); return null; }
+    catch (e) { alert(tr("manuscript.stateParseError", { message: e.message })); return null; }
   }
 
   async function previewRoute() {
@@ -49,7 +53,7 @@
     const includeTiebreak = !!($("mrIncludeTiebreak") && $("mrIncludeTiebreak").checked);
     const payload = Object.assign({}, state, { include_tiebreak: includeTiebreak });
     const { status, body } = await jpost("/api/manuscript/route", payload);
-    setResult(status >= 300 ? "ERROR (route)" : "ROUTE PREVIEW", body);
+    setResult(status >= 300 ? tr("manuscript.errorRoute") : tr("manuscript.routePreview"), body);
   }
 
   async function previewLint() {
@@ -62,7 +66,7 @@
       if (!Number.isNaN(n)) payload.page_count = n;
     }
     const { status, body } = await jpost("/api/manuscript/lint", payload);
-    setResult(status >= 300 ? "ERROR (lint)" : "LINT PREVIEW", body);
+    setResult(status >= 300 ? tr("manuscript.errorLint") : tr("manuscript.lintPreview"), body);
   }
 
   function init() {

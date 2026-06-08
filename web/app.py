@@ -222,39 +222,6 @@ def _planned_tracks(insight: dict, runs: list[dict]) -> list[dict]:
     ablations = experimental_plan.get("ablations") or []
     has_plot = any((run.get("artifact_counts") or {}).get("plot", 0) > 0 for run in runs)
     has_bundle = any(run.get("has_bundle") for run in runs) or (insight.get("submission_status") == "bundle_ready")
-    main_state = "not_started"
-    canonical = _pick_canonical_run(runs, insight.get("canonical_run_id"))
-    if canonical:
-        main_state = canonical.get("status") or "unknown"
-    return [
-        {"key": "main", "label": "主实验", "enabled": True, "state": main_state},
-        {
-            "key": "ablation",
-            "label": "消融",
-            "enabled": bool((evidence_plan.get("ablation") or {}).get("enabled") or ablations),
-            "state": f"{len(ablations)} planned" if ablations else ("enabled" if (evidence_plan.get("ablation") or {}).get("enabled") else "not_planned"),
-        },
-        {
-            "key": "visualization",
-            "label": "可视化",
-            "enabled": bool((evidence_plan.get("visualization") or {}).get("enabled") or has_plot),
-            "state": "artifacts_ready" if has_plot else ("planned" if (evidence_plan.get("visualization") or {}).get("enabled") else "not_planned"),
-        },
-        {
-            "key": "bundle",
-            "label": "论文包",
-            "enabled": True,
-            "state": "bundle_ready" if has_bundle else (insight.get("submission_status") or "not_started"),
-        },
-    ]
-
-
-def _planned_tracks(insight: dict, runs: list[dict]) -> list[dict]:
-    evidence_plan = _json_load(insight.get("evidence_plan"), {})
-    experimental_plan = _json_load(insight.get("experimental_plan"), {})
-    ablations = experimental_plan.get("ablations") or []
-    has_plot = any((run.get("artifact_counts") or {}).get("plot", 0) > 0 for run in runs)
-    has_bundle = any(run.get("has_bundle") for run in runs) or (insight.get("submission_status") == "bundle_ready")
     canonical = _pick_canonical_run(runs, insight.get("canonical_run_id"))
     return [
         {

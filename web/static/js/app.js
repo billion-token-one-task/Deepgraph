@@ -26,8 +26,14 @@ let providerTimer   = null;
 let papersLoaded    = false;
 let oppsLoaded      = false;
 let providersLoaded = false;
+let taxonomyLoaded  = false;
 let paperProgressLoaded = false;
 let generatedPapersLoaded = false;
+let discoveriesLoaded = false;
+let experimentsLoaded = false;
+let insightsLoaded = false;
+let overviewGraphLoaded = false;
+let inactiveTabsPrefetched = false;
 let sidebarCollapsed = false;
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -55,6 +61,11 @@ function trunc(str, max) {
 function $(sel) { return document.querySelector(sel); }
 function $$(sel) { return document.querySelectorAll(sel); }
 function el(id) { return document.getElementById(id); }
+function tr(key, vars) { return window.t ? window.t(key, vars) : key; }
+function setText(id, value) {
+    const node = el(id);
+    if (node) node.textContent = value;
+}
 
 async function api(path, opts) {
     const r = await fetch(path, opts);
@@ -66,10 +77,10 @@ function timeAgo(ts) {
     if (!ts) return '';
     const d = new Date(ts);
     const s = Math.floor((Date.now() - d.getTime()) / 1000);
-    if (s < 60)   return s + 's ago';
-    if (s < 3600) return Math.floor(s / 60) + 'm ago';
-    if (s < 86400) return Math.floor(s / 3600) + 'h ago';
-    return Math.floor(s / 86400) + 'd ago';
+    if (s < 60)   return tr('common.secondsAgo', { count: s });
+    if (s < 3600) return tr('common.minutesAgo', { count: Math.floor(s / 60) });
+    if (s < 86400) return tr('common.hoursAgo', { count: Math.floor(s / 3600) });
+    return tr('common.daysAgo', { count: Math.floor(s / 86400) });
 }
 
 function fmtDateTime(ts) {
@@ -86,7 +97,7 @@ function switchTab(tab) {
     activeTab = tab;
 
     // Update nav items
-    $$('.nav-item').forEach(btn => {
+    $$('.nav-item, .advanced-nav-item').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.tab === tab);
     });
 
@@ -106,27 +117,25 @@ function onTabActivated(tab) {
             if (!exploreData) navigateTo(exploreNodeId);
             break;
         case 'evidence':
-            loadTaxonomyDropdown();
+            if (!taxonomyLoaded) loadTaxonomyDropdown();
             break;
         case 'papers':
             if (!papersLoaded) loadPapers();
             break;
         case 'paper-progress':
-            loadPaperProgressTab();
-            paperProgressLoaded = true;
+            if (!paperProgressLoaded) loadPaperProgressTab();
             break;
         case 'generated-papers':
-            loadGeneratedPapersTab();
-            generatedPapersLoaded = true;
+            if (!generatedPapersLoaded) loadGeneratedPapersTab();
             break;
         case 'discoveries':
-            loadDiscoveriesTab();
+            if (!discoveriesLoaded) loadDiscoveriesTab();
             break;
         case 'experiments':
-            loadExperimentsTab();
+            if (!experimentsLoaded) loadExperimentsTab();
             break;
         case 'insights':
-            loadInsightsTab();
+            if (!insightsLoaded) loadInsightsTab();
             break;
         case 'feed':
             scrollFeedToBottom();
@@ -152,22 +161,16 @@ async function refreshStats() {
         const s = await api('/api/stats');
         statsCache = s;
 
-        // Top bar
-        el('hdrPapers').textContent  = fmt(s.papers_processed || 0);
-        el('hdrResults').textContent = fmt(s.results_total || 0);
-        el('hdrInsights').textContent = fmt(s.insights_total || 0);
-        el('hdrTokens').textContent  = fmt(s.tokens_consumed || 0);
-
         // Overview stat cards
-        el('statPapers').textContent        = fmt(s.papers_processed || 0);
-        el('statResults').textContent       = fmt(s.results_total || 0);
-        el('statTaxonomy').textContent = fmt(s.taxonomy_nodes_total || 0);
-        el('statContradictions').textContent = fmt(s.contradictions_total || 0);
-        el('statInsights').textContent      = fmt(s.insights_total || 0);
-        el('statTokens').textContent        = fmt(s.tokens_consumed || 0);
-        el('statExperiments').textContent   = fmt(s.experiment_runs_total || 0);
-        el('statDeepDiscoveries').textContent = fmt(s.deep_insights_total || 0);
-        el('statCompletePapers').textContent = fmt(s.submission_bundles_total || 0);
+        setText('statPapers', fmt(s.papers_processed || 0));
+        setText('statResults', fmt(s.results_total || 0));
+        setText('statTaxonomy', fmt(s.taxonomy_nodes_total || 0));
+        setText('statContradictions', fmt(s.contradictions_total || 0));
+        setText('statInsights', fmt(s.insights_total || 0));
+        setText('statTokens', fmt(s.tokens_consumed || 0));
+        setText('statExperiments', fmt(s.experiment_runs_total || 0));
+        setText('statDeepDiscoveries', fmt(s.deep_insights_total || 0));
+        setText('statCompletePapers', fmt(s.submission_bundles_total || 0));
     } catch (e) {
         console.error('Stats error:', e);
     }
@@ -220,7 +223,7 @@ function updateLiveBadge(ev) {
     const badge = el('liveBadge');
     const activeCount = Object.values(activePapers).filter(p => !p.done).length;
     const running = pipelineRunning || activeCount > 0;
-    badge.textContent = running ? 'LIVE' : 'IDLE';
+    badge.textContent = running ? tr('app.live.live') : tr('app.live.idle');
     badge.classList.toggle('running', running);
 }
 
@@ -295,7 +298,7 @@ function renderProcessingList() {
     countEl.textContent = activeCount || entries.length;
 
     if (entries.length === 0) {
-        listEl.innerHTML = '<p class="empty-msg">Idle</p>';
+        listEl.innerHTML = `<p class="empty-msg">${esc(tr('overview.idle'))}</p>`;
         return;
     }
 
@@ -348,7 +351,7 @@ function appendFeedEvent(ev) {
 
     // Update count
     const countEl = el('feedCount');
-    if (countEl) countEl.textContent = feed.children.length + ' events';
+    if (countEl) countEl.textContent = tr('common.eventsCount', { count: feed.children.length });
 
     // Auto-scroll if tab is active
     if (activeTab === 'feed') scrollFeedToBottom();
@@ -363,26 +366,38 @@ function scrollFeedToBottom() {
 
 async function loadRecentlyDiscovered() {
     try {
-        const [data, insights] = await Promise.all([
+        const [data, insights, discoveries] = await Promise.all([
             api('/api/recent_discoveries?limit=8'),
             api('/api/insights?limit=6'),
+            api('/api/deep_insights?limit=4'),
         ]);
-        renderRecentlyDiscovered(data, insights);
+        renderRecentlyDiscovered(data, insights, discoveries);
     } catch (e) {
         console.error('Recent discoveries error:', e);
     }
 }
 
-function renderRecentlyDiscovered(data, insights) {
+function renderRecentlyDiscovered(data, insights, discoveries) {
     const grid = el('recentlyGrid');
     let items = [];
 
-    // Prioritize real insights over old opportunities
+    if (discoveries && discoveries.length > 0) {
+        for (const d of discoveries.filter(isDisplayableDiscovery).slice(0, 3)) {
+            items.push({
+                type: 'discovery',
+                title: d.title || tr('label.discovery'),
+                desc: d.problem_statement || d.formal_structure || d.evidence_summary || '',
+                meta: `${esc(tr('label.tier', { tier: d.tier || '?' }))} | ${esc(d.novelty_status || 'unchecked')}`,
+            });
+        }
+    }
+
+    // Prioritize research insights over older opportunity rows.
     if (insights && insights.length > 0) {
         for (const ins of insights.slice(0, 4)) {
             items.push({
-                type: ins.insight_type || 'insight',
-                title: ins.title || 'Insight',
+                type: 'research-insight',
+                title: ins.title || tr('label.researchInsight'),
                 desc: ins.hypothesis || '',
                 meta: `${esc(ins.node_id)} | N:${ins.novelty_score}/5 F:${ins.feasibility_score}/5`,
                 nodeId: ins.node_id,
@@ -392,9 +407,9 @@ function renderRecentlyDiscovered(data, insights) {
         for (const o of data.opportunities.slice(0, 3)) {
             items.push({
                 type: 'opportunity',
-                title: o.title || 'Opportunity',
+                title: o.title || tr('label.opportunity'),
                 desc: o.description || '',
-                meta: `${esc(o.node_name || o.node_id)} | score ${o.value_score || '?'}/5`,
+                meta: `${esc(o.node_name || o.node_id)} | ${esc(tr('common.scoreValue', { score: o.value_score || '?' }))}`,
                 nodeId: o.node_id,
             });
         }
@@ -403,9 +418,9 @@ function renderRecentlyDiscovered(data, insights) {
         for (const g of data.gaps.slice(0, 3)) {
             items.push({
                 type: 'gap',
-                title: `${g.method_name || ''} on ${g.dataset_name || ''}`,
+                title: tr('common.onDataset', { method: g.method_name || '', dataset: g.dataset_name || '' }),
                 desc: g.gap_description || '',
-                meta: `${esc(g.node_name || g.node_id)} | value ${g.value_score || '?'}/5`,
+                meta: `${esc(g.node_name || g.node_id)} | ${esc(tr('common.valueScore', { score: g.value_score || '?' }))}`,
                 nodeId: g.node_id,
             });
         }
@@ -414,7 +429,7 @@ function renderRecentlyDiscovered(data, insights) {
         for (const c of data.contradictions.slice(0, 2)) {
             items.push({
                 type: 'contradiction',
-                title: c.description || 'Contradiction',
+                title: c.description || tr('insights.type.contradiction'),
                 desc: c.hypothesis || '',
                 meta: `${esc(c.paper_a || '')} vs ${esc(c.paper_b || '')}`,
             });
@@ -433,11 +448,11 @@ function renderRecentlyDiscovered(data, insights) {
     }
 
     if (items.length === 0) {
-        grid.innerHTML = '<p class="empty-msg">Run the pipeline to discover gaps, contradictions, and opportunities.</p>';
+        grid.innerHTML = `<p class="empty-msg">${esc(tr('overview.latestEmpty'))}</p>`;
         return;
     }
 
-    const order = { opportunity: 0, gap: 1, contradiction: 2, paper: 3 };
+    const order = { discovery: 0, 'research-insight': 1, opportunity: 2, gap: 3, contradiction: 4, paper: 5 };
     items.sort((a, b) => (order[a.type] || 9) - (order[b.type] || 9));
 
     grid.innerHTML = items.slice(0, 8).map(item => {
@@ -459,10 +474,13 @@ function renderRecentlyDiscovered(data, insights) {
 // ── Overview Graph Preview ───────────────────────────────────────────
 
 async function loadOverviewGraph() {
+    if (overviewGraphLoaded) return;
+    overviewGraphLoaded = true;
     try {
         const data = await api(`/api/taxonomy/${ROOT_NODE}`);
         renderRadialGraph('overviewGraphSvg', data.node, data.children, 320, true);
     } catch (e) {
+        overviewGraphLoaded = false;
         console.error('Overview graph error:', e);
     }
 }
@@ -487,7 +505,7 @@ async function navigateTo(nodeId) {
         renderBreadcrumb(data.breadcrumb || []);
 
         // Title
-        el('exploreTitle').textContent = data.node.name + ' \u2014 Opportunity Map';
+        el('exploreTitle').textContent = data.node.name + ' \u2014 ' + tr('explore.title');
 
         // Graph
         renderRadialGraph('exploreGraphSvg', data.node, data.children, 520, false);
@@ -496,7 +514,7 @@ async function navigateTo(nodeId) {
         const sumCard = el('exploreSummaryCard');
         if (data.summary || data.node.description || insights.length > 0) {
             sumCard.style.display = '';
-            el('exploreSummaryTitle').textContent = 'What Is Happening In ' + data.node.name + '?';
+            el('exploreSummaryTitle').textContent = tr('explore.happeningTitle', { name: data.node.name });
             renderExploreSummary(data);
         } else {
             sumCard.style.display = 'none';
@@ -506,7 +524,7 @@ async function navigateTo(nodeId) {
         const childCard = el('exploreChildrenCard');
         if (data.children && data.children.length > 0) {
             childCard.style.display = '';
-            el('exploreChildrenTitle').textContent = `Sub-areas of ${data.node.name} (${data.children.length})`;
+            el('exploreChildrenTitle').textContent = tr('explore.subareasTitle', { name: data.node.name, count: data.children.length });
             renderExploreChildren(data.children);
         } else {
             childCard.style.display = 'none';
@@ -534,12 +552,12 @@ function renderExploreSummary(data) {
 
     // Chips for children
     const childChips = children.slice(0, 10).map(c =>
-        `<span class="chip" onclick="window._dg.navigateTo('${esc(c.id)}')">${esc(c.name)}${c.paper_count ? ' \u00B7 ' + c.paper_count + 'p' : ''}</span>`
+        `<span class="chip" onclick="window._dg.navigateTo('${esc(c.id)}')">${esc(c.name)}${c.paper_count ? ' \u00B7 ' + esc(tr('common.paperShort', { count: c.paper_count })) : ''}</span>`
     ).join('');
 
     let html = `<div class="summary-hero">
         <h4>${esc(node.name)}</h4>
-        <p>${esc(s ? (s.overview || node.description || '') : (node.description || 'No summary generated yet.'))}</p>
+        <p>${esc(s ? (s.overview || node.description || '') : (node.description || tr('empty.exploreSummary')))}</p>
         ${s && s.why_it_matters ? `<p>${esc(s.why_it_matters)}</p>` : ''}
         ${childChips ? `<div class="chip-row">${childChips}</div>` : ''}
     </div>`;
@@ -547,17 +565,17 @@ function renderExploreSummary(data) {
     if (s) {
         // Work items and gaps
         const workHtml = (s.what_people_are_building || []).map(w =>
-            `<div class="summary-item"><strong>${esc(w.label || 'Workstream')}</strong><p>${esc(w.description || '')}</p>${w.paper_count ? `<div class="meta">${w.paper_count} papers</div>` : ''}</div>`
-        ).join('') || '<p class="empty-msg">No workstreams yet.</p>';
+            `<div class="summary-item"><strong>${esc(w.label || tr('explore.workstream'))}</strong><p>${esc(w.description || '')}</p>${w.paper_count ? `<div class="meta">${esc(tr('common.papersCount', { count: w.paper_count }))}</div>` : ''}</div>`
+        ).join('') || `<p class="empty-msg">${esc(tr('empty.workstreams'))}</p>`;
 
         const gapHtml = (s.current_gaps || []).map(g => {
             const tl = g.gap_type ? `<span style="color:var(--text-dim);font-size:0.68rem;">[${esc(g.gap_type.replace(/_/g, ' '))}]</span> ` : '';
-            return `<div class="summary-item"><strong>${tl}${esc(g.title || 'Open gap')}</strong><p>${esc(g.description || '')}</p>${g.why_now ? `<div class="meta">Why now: ${esc(g.why_now)}</div>` : ''}</div>`;
-        }).join('') || '<p class="empty-msg">No gaps yet.</p>';
+            return `<div class="summary-item"><strong>${tl}${esc(g.title || tr('explore.openGap'))}</strong><p>${esc(g.description || '')}</p>${g.why_now ? `<div class="meta">${esc(tr('explore.whyNow', { text: g.why_now }))}</div>` : ''}</div>`;
+        }).join('') || `<p class="empty-msg">${esc(tr('empty.gaps'))}</p>`;
 
         html += `<div class="summary-grid">
-            <div class="summary-card-inner"><h4>What People Are Working On</h4>${workHtml}</div>
-            <div class="summary-card-inner"><h4>Where The Gaps Are</h4>${gapHtml}</div>
+            <div class="summary-card-inner"><h4>${esc(tr('explore.whatPeopleWorking'))}</h4>${workHtml}</div>
+            <div class="summary-card-inner"><h4>${esc(tr('explore.whereGapsAre'))}</h4>${gapHtml}</div>
         </div>`;
 
         // Chips
@@ -567,8 +585,8 @@ function renderExploreSummary(data) {
 
         if (patterns || methods || datasets) {
             html += `<div class="summary-grid">
-                <div class="summary-card-inner"><h4>Recurring Themes</h4><div class="chip-row">${patterns || '<span class="chip">None yet</span>'}</div></div>
-                <div class="summary-card-inner"><h4>Methods & Datasets</h4>
+                <div class="summary-card-inner"><h4>${esc(tr('explore.recurringThemes'))}</h4><div class="chip-row">${patterns || `<span class="chip">${esc(tr('explore.noneYet'))}</span>`}</div></div>
+                <div class="summary-card-inner"><h4>${esc(tr('explore.methodsDatasets'))}</h4>
                     ${methods ? `<div class="chip-row">${methods}</div>` : ''}
                     ${datasets ? `<div class="chip-row" style="margin-top:6px;">${datasets}</div>` : ''}
                 </div>
@@ -578,20 +596,20 @@ function renderExploreSummary(data) {
         if (paperClusters.length > 0) {
             const clusterHtml = paperClusters.map(cluster => `
                 <div class="summary-item">
-                    <strong>${esc(cluster.label || 'Paper Cluster')}</strong>
-                    <p>${cluster.paper_count} papers${cluster.shared_entities?.length ? ' · shared entities: ' + esc(cluster.shared_entities.slice(0, 3).join(', ')) : ''}</p>
+                    <strong>${esc(cluster.label || tr('explore.paperCluster'))}</strong>
+                    <p>${esc(tr('common.papersCount', { count: cluster.paper_count }))}${cluster.shared_entities?.length ? ' · ' + esc(tr('explore.sharedEntities', { entities: cluster.shared_entities.slice(0, 3).join(', ') })) : ''}</p>
                     ${cluster.sample_papers?.length ? `<div class="meta">${cluster.sample_papers.map(p => esc(trunc(p.title, 48))).join(' | ')}</div>` : ''}
                 </div>
             `).join('');
 
             html += `<div class="summary-card-inner">
-                <h4>Paper Clusters</h4>
+                <h4>${esc(tr('explore.paperClusters'))}</h4>
                 ${clusterHtml}
             </div>`;
         } else if ((data.papers || []).length >= 10) {
             html += `<div class="summary-card-inner">
-                <h4>Paper Clusters</h4>
-                <p class="empty-msg">This node has ${data.papers.length} papers, but the current graph signals were not strong enough to form stable clusters yet.</p>
+                <h4>${esc(tr('explore.paperClusters'))}</h4>
+                <p class="empty-msg">${esc(tr('explore.clusterWeakSignals', { count: data.papers.length }))}</p>
             </div>`;
         }
 
@@ -599,15 +617,15 @@ function renderExploreSummary(data) {
         const gs = data.graph_summary;
         if (gs && (gs.top_entities || gs.top_relations)) {
             const entHtml = (gs.top_entities || []).slice(0, 6).map(e =>
-                `<div class="summary-item"><strong>${esc(e.name)}</strong><p>${esc(e.entity_type)} \u00B7 ${e.paper_count} papers \u00B7 ${e.mention_count} mentions</p></div>`
-            ).join('') || '<p class="empty-msg">No entities yet.</p>';
+                `<div class="summary-item"><strong>${esc(e.name)}</strong><p>${esc(e.entity_type)} \u00B7 ${esc(tr('common.papersCount', { count: e.paper_count }))} \u00B7 ${esc(tr('common.mentionsCount', { count: e.mention_count }))}</p></div>`
+            ).join('') || `<p class="empty-msg">${esc(tr('empty.entities'))}</p>`;
             const relHtml = (gs.top_relations || []).slice(0, 6).map(r =>
-                `<div class="summary-item"><strong>${esc(r.subject)} \u2192 ${esc(r.object)}</strong><p>${esc(r.predicate)} \u00B7 ${r.paper_count} papers</p></div>`
-            ).join('') || '<p class="empty-msg">No relations yet.</p>';
+                `<div class="summary-item"><strong>${esc(r.subject)} \u2192 ${esc(r.object)}</strong><p>${esc(r.predicate)} \u00B7 ${esc(tr('common.papersCount', { count: r.paper_count }))}</p></div>`
+            ).join('') || `<p class="empty-msg">${esc(tr('empty.relations'))}</p>`;
 
             html += `<div class="summary-grid">
-                <div class="summary-card-inner"><h4>Core Entities</h4>${entHtml}</div>
-                <div class="summary-card-inner"><h4>Key Links</h4>${relHtml}</div>
+                <div class="summary-card-inner"><h4>${esc(tr('explore.coreEntities'))}</h4>${entHtml}</div>
+                <div class="summary-card-inner"><h4>${esc(tr('explore.keyLinks'))}</h4>${relHtml}</div>
             </div>`;
         }
     }
@@ -629,7 +647,7 @@ function renderExploreSummary(data) {
             let papers = [];
             try { papers = JSON.parse(ins.supporting_papers || '[]'); } catch(e) {}
             const paperLinks = papers.map(pid =>
-                `<a class="paper-cite" href="https://arxiv.org/abs/${esc(pid)}" target="_blank" title="Open on arXiv">${esc(pid)}</a>`
+                `<a class="paper-cite" href="https://arxiv.org/abs/${esc(pid)}" target="_blank" title="${esc(tr('common.openArxiv'))}">${esc(pid)}</a>`
             ).join(' ');
             return `<div class="insight-card" style="border-left: 3px solid ${color};">
                 <div class="insight-header">
@@ -638,43 +656,43 @@ function renderExploreSummary(data) {
                 </div>
                 <div class="insight-title">${esc(ins.title)}</div>
                 ${paperLinks ? `<div class="insight-papers">${paperLinks}</div>` : ''}
-                <div class="insight-evidence"><span class="insight-label">Evidence:</span> ${esc(ins.evidence || '')}</div>
-                <div class="insight-hypothesis"><span class="insight-label">Hypothesis:</span> ${esc(ins.hypothesis)}</div>
-                <div class="insight-experiment"><span class="insight-label">Experiment:</span> ${esc(ins.experiment)}</div>
-                ${ins.impact ? `<div class="insight-impact"><span class="insight-label">Impact:</span> ${esc(ins.impact)}</div>` : ''}
+                <div class="insight-evidence"><span class="insight-label">${esc(tr('label.evidence'))}</span> ${esc(ins.evidence || '')}</div>
+                <div class="insight-hypothesis"><span class="insight-label">${esc(tr('label.hypothesis'))}</span> ${esc(ins.hypothesis)}</div>
+                <div class="insight-experiment"><span class="insight-label">${esc(tr('label.experiment'))}</span> ${esc(ins.experiment)}</div>
+                ${ins.impact ? `<div class="insight-impact"><span class="insight-label">${esc(tr('label.impact'))}</span> ${esc(ins.impact)}</div>` : ''}
                 <div class="insight-actions">
-                    <button class="btn-preview" onclick="window._dg.previewProposal(${ins.id})">Preview Proposal</button>
+                    <button class="btn-preview" onclick="window._dg.previewProposal(${ins.id})">${esc(tr('label.previewProposal'))}</button>
                 </div>
             </div>`;
         }).join('');
 
         html += `<div class="summary-card-inner insights-section">
-            <h4>Research Insights (${insights.length})</h4>
+            <h4>${esc(tr('explore.researchInsights', { count: insights.length }))}</h4>
             <div class="insights-list">${insightHtml}</div>
         </div>`;
     }
 
-    // Universal patterns for this node
+    // Cross-node patterns for this node
     const patterns = data._patterns || [];
     if (patterns.length > 0) {
         const patHtml = patterns.map(p => {
             let domains = [];
             try { domains = JSON.parse(p.domains || '[]'); } catch(e) {}
             const levelBadge = p.abstraction_level === 'universal'
-                ? '<span class="pattern-level universal">Universal</span>'
-                : '<span class="pattern-level cross-domain">Cross-domain</span>';
+                ? `<span class="pattern-level universal">${esc(tr('explore.universal'))}</span>`
+                : `<span class="pattern-level cross-domain">${esc(tr('explore.crossDomain'))}</span>`;
             return `<div class="pattern-card">
                 <div class="pattern-header">
                     ${levelBadge}
                     <span class="pattern-type">${esc((p.pattern_type || '').replace(/_/g, ' '))}</span>
                 </div>
                 <div class="pattern-text">${esc(p.pattern_text)}</div>
-                ${domains.length ? `<div class="pattern-domains">Also applies to: ${domains.map(d => `<span class="pattern-domain-chip">${esc(d)}</span>`).join(' ')}</div>` : ''}
+                ${domains.length ? `<div class="pattern-domains">${esc(tr('explore.alsoAppliesTo'))} ${domains.map(d => `<span class="pattern-domain-chip">${esc(d)}</span>`).join(' ')}</div>` : ''}
             </div>`;
         }).join('');
 
         html += `<div class="summary-card-inner">
-            <h4>Universal Patterns (${patterns.length})</h4>
+            <h4>${esc(tr('explore.universalPatterns', { count: patterns.length }))}</h4>
             <div class="patterns-list">${patHtml}</div>
         </div>`;
     }
@@ -688,9 +706,9 @@ function renderExploreChildren(children) {
         <div class="child-card" onclick="window._dg.navigateTo('${esc(c.id)}')">
             <div class="child-name">${esc(c.name)}</div>
             <div class="child-stats">
-                <span>${c.paper_count || 0} papers</span>
-                <span>${c.method_count || 0} methods</span>
-                ${c.gap_count ? `<span style="color:var(--green);">${c.gap_count} gaps</span>` : ''}
+                <span>${esc(tr('common.papersCount', { count: c.paper_count || 0 }))}</span>
+                <span>${esc(tr('common.methodsCount', { count: c.method_count || 0 }))}</span>
+                ${c.gap_count ? `<span style="color:var(--green);">${esc(tr('common.gapsCount', { count: c.gap_count }))}</span>` : ''}
             </div>
         </div>
     `).join('')}</div>`;
@@ -715,7 +733,7 @@ function renderRadialGraph(svgId, parentNode, children, targetHeight, isPreview)
             .attr('x', cx).attr('y', cy - 8)
             .attr('text-anchor', 'middle')
             .attr('fill', '#9a9088').attr('font-size', '14px').attr('font-weight', '600')
-            .text('Leaf domain \u2014 see the detailed analysis below');
+            .text(tr('explore.leafDomain'));
         svg.append('text')
             .attr('x', cx).attr('y', cy + 16)
             .attr('text-anchor', 'middle')
@@ -806,7 +824,7 @@ function renderRadialGraph(svgId, parentNode, children, targetHeight, isPreview)
         .attr('text-anchor', 'middle').attr('dy', isPreview ? 10 : 12)
         .attr('fill', d => d.paper_count > 0 ? '#c4704b' : '#b5ada4')
         .attr('font-size', isPreview ? '8px' : '10px').attr('font-weight', '700')
-        .text(d => d.paper_count > 0 ? d.paper_count + 'p' : 'empty');
+        .text(d => d.paper_count > 0 ? tr('common.paperShort', { count: d.paper_count }) : tr('common.emptyGraphNode'));
 
     if (!isPreview) {
         childG.filter(d => d.gap_count > 0 || d.method_count > 0)
@@ -818,7 +836,7 @@ function renderRadialGraph(svgId, parentNode, children, targetHeight, isPreview)
             .text(d => {
                 const parts = [];
                 if (d.method_count > 0) parts.push(d.method_count + 'M');
-                if (d.gap_count > 0) parts.push(d.gap_count + ' gaps');
+                if (d.gap_count > 0) parts.push(tr('common.gapsCount', { count: d.gap_count }));
                 return parts.join(' | ');
             });
     }
@@ -842,11 +860,11 @@ function renderRadialGraph(svgId, parentNode, children, targetHeight, isPreview)
                 <div style="color:#c4704b;font-weight:700;margin-bottom:5px;">${esc(d.name)}</div>
                 <div style="color:var(--text-secondary);margin-bottom:8px;line-height:1.5;">${esc(trunc(d.description, 160))}</div>
                 <div style="display:flex;gap:12px;color:var(--text-dim);font-size:0.72rem;">
-                    <span><b style="color:#c4704b;">${d.paper_count}</b> papers</span>
-                    <span><b style="color:#a8842a;">${d.method_count}</b> methods</span>
-                    <span><b style="color:#3d8b5e;">${d.gap_count}</b> gaps</span>
+                    <span><b style="color:#c4704b;">${d.paper_count}</b> ${esc(tr('common.papersUnit'))}</span>
+                    <span><b style="color:#a8842a;">${d.method_count}</b> ${esc(tr('common.methodsUnit'))}</span>
+                    <span><b style="color:#3d8b5e;">${d.gap_count}</b> ${esc(tr('common.gapsUnit'))}</span>
                 </div>
-                <div style="color:var(--text-muted);margin-top:6px;font-size:0.65rem;">Click to explore</div>
+                <div style="color:var(--text-muted);margin-top:6px;font-size:0.65rem;">${esc(tr('common.clickToExplore'))}</div>
             `;
             tip.classList.add('visible');
             positionTooltip(e);
@@ -882,14 +900,16 @@ function gapColor(gapCount, maxGap) {
 
 async function loadTaxonomyDropdown() {
     if (taxonomyFlat.length > 0) return; // already loaded
+    taxonomyLoaded = true;
     try {
         taxonomyFlat = await api('/api/taxonomy');
         const sel = el('evidenceNodeSelect');
-        sel.innerHTML = '<option value="">-- Select a leaf node --</option>';
+        sel.innerHTML = `<option value="">${esc(tr('evidence.option'))}</option>`;
         for (const n of taxonomyFlat) {
             sel.innerHTML += `<option value="${esc(n.id)}">${esc(n.id)} \u2014 ${esc(n.name)}</option>`;
         }
     } catch (e) {
+        taxonomyLoaded = false;
         console.error('Taxonomy dropdown error:', e);
     }
 }
@@ -898,11 +918,11 @@ async function loadEvidenceForNode(nodeId) {
     if (!nodeId) {
         el('evidenceMatrixContainer').innerHTML = '';
         el('evidenceGapsCard').style.display = 'none';
-        el('evidenceHint').textContent = 'Select a leaf node to view the evidence matrix.';
+        el('evidenceHint').textContent = tr('evidence.hint');
         return;
     }
 
-    el('evidenceHint').textContent = 'Loading...';
+    el('evidenceHint').textContent = tr('common.loading');
 
     try {
         const data = await api(`/api/taxonomy/${nodeId}`);
@@ -910,30 +930,30 @@ async function loadEvidenceForNode(nodeId) {
 
         if (m && m.methods && m.methods.length > 0 && m.datasets && m.datasets.length > 0) {
             renderMatrix(el('evidenceMatrixContainer'), m);
-            el('evidenceHint').textContent = `${m.methods.length} methods x ${m.datasets.length} datasets`;
+            el('evidenceHint').textContent = `${tr('common.methodsCount', { count: m.methods.length })} x ${tr('common.datasetsCount', { count: m.datasets.length })}`;
         } else {
-            el('evidenceMatrixContainer').innerHTML = '<p class="empty-msg">No structured evidence for this node. Try a leaf node with papers.</p>';
-            el('evidenceHint').textContent = data.is_leaf ? 'No evidence data yet.' : 'Select a leaf node.';
+            el('evidenceMatrixContainer').innerHTML = `<p class="empty-msg">${esc(tr('empty.evidenceStructured'))}</p>`;
+            el('evidenceHint').textContent = data.is_leaf ? tr('empty.evidenceBenchmark') : tr('evidence.option').replace(/-/g, '').trim();
         }
 
         // Gaps
         const gapsCard = el('evidenceGapsCard');
         if (data.gaps && data.gaps.length > 0) {
             gapsCard.style.display = '';
-            el('evidenceGapsTitle').textContent = `Matrix Gaps (${data.gaps.length})`;
+            el('evidenceGapsTitle').textContent = `${tr('evidence.gaps')} (${data.gaps.length})`;
             renderGaps(el('evidenceGapsBody'), data.gaps);
         } else {
             gapsCard.style.display = 'none';
         }
     } catch (e) {
         console.error('Evidence load error:', e);
-        el('evidenceHint').textContent = 'Error loading data.';
+        el('evidenceHint').textContent = tr('common.errorLoadingData');
     }
 }
 
 function renderMatrix(container, matrix) {
     if (!matrix.methods.length || !matrix.datasets.length) {
-        container.innerHTML = '<p class="empty-msg">No results data yet.</p>';
+        container.innerHTML = `<p class="empty-msg">${esc(tr('empty.resultData'))}</p>`;
         return;
     }
 
@@ -947,17 +967,17 @@ function renderMatrix(container, matrix) {
     const defaultMetric = metrics[0] || '';
 
     let html = '<div class="matrix-controls">';
-    html += '<label>Metric:</label>';
+    html += `<label>${esc(tr('common.metric'))}</label>`;
     html += '<select class="matrix-metric-select" onchange="window._dg.updateMatrixMetric(this)">';
     for (const m of metrics) {
-        html += `<option value="${esc(m)}"${m === defaultMetric ? ' selected' : ''}>${esc(m || '(none)')}</option>`;
+        html += `<option value="${esc(m)}"${m === defaultMetric ? ' selected' : ''}>${esc(m || tr('common.noneOption'))}</option>`;
     }
     html += '</select>';
-    html += `<span class="matrix-info">${matrix.methods.length} methods x ${matrix.datasets.length} datasets</span>`;
+    html += `<span class="matrix-info">${esc(tr('common.methodsCount', { count: matrix.methods.length }))} x ${esc(tr('common.datasetsCount', { count: matrix.datasets.length }))}</span>`;
     html += '</div>';
 
     html += '<div class="matrix-scroll"><table class="matrix-table">';
-    html += '<thead><tr><th class="method-header">Method \\ Dataset</th>';
+    html += `<thead><tr><th class="method-header">${esc(tr('common.methodDataset'))}</th>`;
     for (const ds of matrix.datasets) {
         html += `<th class="dataset-header" title="${esc(ds)}">${esc(trunc(ds, 16))}</th>`;
     }
@@ -972,9 +992,9 @@ function renderMatrix(container, matrix) {
             if (cell) {
                 const cls = cell.is_sota ? 'cell-sota' : 'cell-filled';
                 const val = cell.value != null ? Number(cell.value).toFixed(1) : '-';
-                html += `<td class="matrix-cell ${cls}" title="${esc(method)} on ${esc(ds)}: ${val}${cell.paper_id ? ' (' + esc(cell.paper_id) + ')' : ''}">${val}</td>`;
+                html += `<td class="matrix-cell ${cls}" title="${esc(tr('common.onDataset', { method, dataset: ds }))}: ${val}${cell.paper_id ? ' (' + esc(cell.paper_id) + ')' : ''}">${val}</td>`;
             } else {
-                html += `<td class="matrix-cell cell-empty" title="No data">-</td>`;
+                html += `<td class="matrix-cell cell-empty" title="${esc(tr('common.noData'))}">-</td>`;
             }
         }
         html += '</tr>';
@@ -1004,11 +1024,11 @@ function updateMatrixMetric(selectEl) {
                 const val = cell.value != null ? Number(cell.value).toFixed(1) : '-';
                 td.textContent = val;
                 td.className = 'matrix-cell ' + (cell.is_sota ? 'cell-sota' : 'cell-filled');
-                td.title = `${method} on ${ds}: ${val}`;
+                td.title = `${tr('common.onDataset', { method, dataset: ds })}: ${val}`;
             } else {
                 td.textContent = '-';
                 td.className = 'matrix-cell cell-empty';
-                td.title = 'No data';
+                td.title = tr('common.noData');
             }
         });
     });
@@ -1055,7 +1075,7 @@ function renderPapers() {
     }
 
     if (filtered.length === 0) {
-        list.innerHTML = '<p class="empty-msg">No papers found.</p>';
+        list.innerHTML = `<p class="empty-msg">${esc(tr('empty.papers'))}</p>`;
         return;
     }
 
@@ -1069,7 +1089,7 @@ function renderPapers() {
                 <span class="paper-status ${sc}">${esc(p.status || '')}</span>
             </div>
             <div class="paper-expanded-body">
-                <div class="paper-detail-loading">Loading details...</div>
+                <div class="paper-detail-loading">${esc(tr('common.loadingDetails'))}</div>
             </div>
         </div>`;
     }).join('');
@@ -1122,13 +1142,13 @@ function renderPaperPipelineRows(rows) {
     const papers = (rows || []).slice(0, 20);
     count.textContent = papers.length;
     if (!papers.length) {
-        list.innerHTML = '<p class="empty-msg">No papers are moving through the pipeline right now.</p>';
+        list.innerHTML = `<p class="empty-msg">${esc(tr('empty.paperProgress'))}</p>`;
         return;
     }
     list.innerHTML = papers.map(item => `
         <div class="paper-flow-item">
             <div class="paper-flow-head">
-                <div class="paper-flow-title">${esc(trunc(item.title || item.id || 'Untitled paper', 120))}</div>
+                <div class="paper-flow-title">${esc(trunc(item.title || item.id || tr('common.untitledPaper'), 120))}</div>
                 ${statusBadge(item.processing_stage || item.status || 'queued', toneForPaperStage(item.processing_stage || item.status))}
             </div>
             <div class="paper-flow-meta">
@@ -1155,7 +1175,7 @@ function renderPaperGenerationRows(jobs, manuscripts) {
     count.textContent = total;
 
     if (!total) {
-        list.innerHTML = '<p class="empty-msg">No paper-generation jobs are active right now.</p>';
+        list.innerHTML = `<p class="empty-msg">${esc(tr('empty.paperGeneration'))}</p>`;
         return;
     }
 
@@ -1165,19 +1185,19 @@ function renderPaperGenerationRows(jobs, manuscripts) {
         return `
             <div class="paper-flow-item">
                 <div class="paper-flow-head">
-                    <div class="paper-flow-title">${esc(trunc(job.title || `Idea #${job.deep_insight_id}`, 120))}</div>
+                <div class="paper-flow-title">${esc(trunc(job.title || tr('label.discoveryId', { id: job.deep_insight_id }), 120))}</div>
                     ${statusBadge(stage, toneForPaperStage(job.stage || job.status))}
                 </div>
                 <div class="paper-flow-meta">
-                    <span>Idea #${esc(job.deep_insight_id || '-')}</span>
-                    ${job.experiment_status ? `<span>Experiment: ${esc(job.experiment_status)}</span>` : ''}
+                    <span>${esc(tr('label.discoveryId', { id: job.deep_insight_id || '-' }))}</span>
+                    ${job.experiment_status ? `<span>${esc(tr('label.experimentStatus', { status: job.experiment_status }))}</span>` : ''}
                     ${job.updated_at ? `<span>${esc(timeAgo(job.updated_at))}</span>` : ''}
                 </div>
                 ${job.last_note ? `<div class="paper-flow-note">${esc(trunc(job.last_note, 220))}</div>` : ''}
                 ${job.last_error ? `<div class="paper-flow-note paper-flow-error">${esc(trunc(job.last_error, 220))}</div>` : ''}
                 <div class="paper-flow-actions">
-                    <button class="btn-preview" onclick="window._dg.viewPaperGeneration(${Number(job.deep_insight_id)})">View details</button>
-                    ${previewUrl ? `<button class="btn-preview" onclick="window.open('${esc(previewUrl)}','_blank')">Open paper preview</button>` : ''}
+                    <button class="btn-preview" onclick="window._dg.viewPaperGeneration(${Number(job.deep_insight_id)})">${esc(tr('common.viewDetails'))}</button>
+                    ${previewUrl ? `<button class="btn-preview" onclick="window.open('${esc(previewUrl)}','_blank')">${esc(tr('label.openPaperPreview'))}</button>` : ''}
                 </div>
             </div>
         `;
@@ -1186,17 +1206,17 @@ function renderPaperGenerationRows(jobs, manuscripts) {
     const manuscriptCards = activeManuscripts.map(row => `
         <div class="paper-flow-item">
             <div class="paper-flow-head">
-                <div class="paper-flow-title">${esc(trunc(row.insight_title || `Manuscript #${row.id}`, 120))}</div>
+                <div class="paper-flow-title">${esc(trunc(row.insight_title || tr('label.manuscriptId', { id: row.id }), 120))}</div>
                 ${statusBadge(row.status || 'drafting', toneForPaperStage(row.status))}
             </div>
             <div class="paper-flow-meta">
-                <span>Manuscript #${esc(row.id || '-')}</span>
-                ${row.hypothesis_verdict ? `<span>Verdict: ${esc(row.hypothesis_verdict)}</span>` : ''}
+                <span>${esc(tr('label.manuscriptId', { id: row.id || '-' }))}</span>
+                ${row.hypothesis_verdict ? `<span>${esc(tr('label.verdict', { verdict: row.hypothesis_verdict }))}</span>` : ''}
                 ${row.updated_at ? `<span>${esc(timeAgo(row.updated_at))}</span>` : ''}
             </div>
             ${row.workdir ? `<div class="paper-flow-note">${esc(trunc(row.workdir, 220))}</div>` : ''}
             <div class="paper-flow-actions">
-                ${row.deep_insight_id ? `<button class="btn-preview" onclick="window.open('${esc(paperPreviewHref(row.deep_insight_id, 'index'))}','_blank')">Open paper preview</button>` : ''}
+                ${row.deep_insight_id ? `<button class="btn-preview" onclick="window.open('${esc(paperPreviewHref(row.deep_insight_id, 'index'))}','_blank')">${esc(tr('label.openPaperPreview'))}</button>` : ''}
             </div>
         </div>
     `);
@@ -1205,6 +1225,7 @@ function renderPaperGenerationRows(jobs, manuscripts) {
 }
 
 async function loadPaperProgressTab() {
+    paperProgressLoaded = true;
     try {
         const [automation, jobs, manuscripts] = await Promise.all([
             api('/api/automation'),
@@ -1217,18 +1238,19 @@ async function loadPaperProgressTab() {
             return status && !['stale', 'completed', 'ready'].includes(status);
         });
         renderMiniStatGrid('paperProgressStats', [
-            { label: 'Pipeline Papers', value: (current.papers || []).length },
-            { label: 'Paper Jobs', value: (jobs || []).filter(job => !['completed', 'failed'].includes(String(job.status || '').toLowerCase())).length },
-            { label: 'Active Manuscripts', value: activeManuscripts.length },
-            { label: 'Blocked Jobs', value: ((automation || {}).auto_research || {}).blocked || 0 },
+            { label: tr('paperProgress.stat.sourcePapers'), value: (current.papers || []).length },
+            { label: tr('paperProgress.stat.paperJobs'), value: (jobs || []).filter(job => !['completed', 'failed'].includes(String(job.status || '').toLowerCase())).length },
+            { label: tr('paperProgress.stat.activeManuscripts'), value: activeManuscripts.length },
+            { label: tr('paperProgress.stat.blockedJobs'), value: ((automation || {}).auto_research || {}).blocked || 0 },
         ]);
         renderPaperPipelineRows(current.papers || []);
         renderPaperGenerationRows(jobs || [], manuscripts || []);
     } catch (e) {
+        paperProgressLoaded = false;
         const listA = el('paperProgressPipelineList');
         const listB = el('paperProgressGenerationList');
-        if (listA) listA.innerHTML = `<p class="empty-msg">Failed to load paper progress: ${esc(e.message)}</p>`;
-        if (listB) listB.innerHTML = `<p class="empty-msg">Failed to load paper generation jobs: ${esc(e.message)}</p>`;
+        if (listA) listA.innerHTML = `<p class="empty-msg">${esc(tr('common.failedToLoad', { message: e.message }))}</p>`;
+        if (listB) listB.innerHTML = `<p class="empty-msg">${esc(tr('common.failedToLoad', { message: e.message }))}</p>`;
     }
 }
 
@@ -1247,7 +1269,7 @@ function renderGeneratedPapers(manuscripts) {
     const rows = (manuscripts || []).slice(0, 100);
     count.textContent = rows.length;
     if (!rows.length) {
-        list.innerHTML = '<p class="empty-msg">No manuscript runs have been generated yet.</p>';
+        list.innerHTML = `<p class="empty-msg">${esc(tr('empty.generated'))}</p>`;
         return;
     }
     list.innerHTML = rows.map(row => {
@@ -1255,23 +1277,23 @@ function renderGeneratedPapers(manuscripts) {
         return `
             <div class="paper-flow-item">
                 <div class="paper-flow-head">
-                    <div class="paper-flow-title">${esc(trunc(row.insight_title || `Manuscript #${row.id}`, 130))}</div>
+                    <div class="paper-flow-title">${esc(trunc(row.insight_title || tr('label.manuscriptId', { id: row.id }), 130))}</div>
                     ${statusBadge(row.status || 'generated', manuscriptTone(row.status))}
                 </div>
                 <div class="paper-flow-meta">
-                    <span>Manuscript #${esc(row.id || '-')}</span>
-                    ${row.experiment_run_id ? `<span>Run #${esc(row.experiment_run_id)}</span>` : ''}
-                    ${row.hypothesis_verdict ? `<span>Verdict: ${esc(row.hypothesis_verdict)}</span>` : ''}
+                    <span>${esc(tr('label.manuscriptId', { id: row.id || '-' }))}</span>
+                    ${row.experiment_run_id ? `<span>${esc(tr('label.experimentRun', { id: row.experiment_run_id }))}</span>` : ''}
+                    ${row.hypothesis_verdict ? `<span>${esc(tr('label.verdict', { verdict: row.hypothesis_verdict }))}</span>` : ''}
                     ${row.updated_at ? `<span>${esc(timeAgo(row.updated_at))}</span>` : ''}
                 </div>
                 <div class="paper-flow-meta">
-                    ${row.created_at ? `<span>Generated: ${esc(fmtDateTime(row.created_at))}</span>` : ''}
-                    ${row.updated_at ? `<span>Updated: ${esc(fmtDateTime(row.updated_at))}</span>` : ''}
+                    ${row.created_at ? `<span>${esc(tr('common.generated', { time: fmtDateTime(row.created_at) }))}</span>` : ''}
+                    ${row.updated_at ? `<span>${esc(tr('common.updated', { time: fmtDateTime(row.updated_at) }))}</span>` : ''}
                 </div>
                 ${row.workdir ? `<div class="paper-flow-note">${esc(trunc(row.workdir, 220))}</div>` : ''}
-                <div class="paper-flow-note">Use the paper page to open only the assets that actually exist for this manuscript.</div>
+                <div class="paper-flow-note">${esc(tr('label.usePaperPage'))}</div>
                 <div class="paper-flow-actions">
-                    ${preview ? `<button class="btn-preview" onclick="window.open('${esc(preview)}','_blank')">Open paper page</button>` : ''}
+                    ${preview ? `<button class="btn-preview" onclick="window.open('${esc(preview)}','_blank')">${esc(tr('label.openPaperPage'))}</button>` : ''}
                 </div>
             </div>
         `;
@@ -1279,6 +1301,7 @@ function renderGeneratedPapers(manuscripts) {
 }
 
 async function loadGeneratedPapersTab() {
+    generatedPapersLoaded = true;
     try {
         const manuscripts = await api('/api/manuscripts?limit=100');
         const counts = (manuscripts || []).reduce((acc, row) => {
@@ -1288,15 +1311,16 @@ async function loadGeneratedPapersTab() {
             return acc;
         }, { total: 0 });
         renderMiniStatGrid('generatedPapersStats', [
-            { label: 'Total Manuscripts', value: counts.total || 0 },
-            { label: 'Ready', value: counts.ready || counts.bundle_ready || 0 },
-            { label: 'Stale', value: counts.stale || 0 },
-            { label: 'Drafting', value: counts.drafting || 0 },
+            { label: tr('generated.stat.total'), value: counts.total || 0 },
+            { label: tr('generated.stat.ready'), value: counts.ready || counts.bundle_ready || 0 },
+            { label: tr('generated.stat.stale'), value: counts.stale || 0 },
+            { label: tr('generated.stat.drafting'), value: counts.drafting || 0 },
         ]);
         renderGeneratedPapers(manuscripts || []);
     } catch (e) {
+        generatedPapersLoaded = false;
         const list = el('generatedPapersList');
-        if (list) list.innerHTML = `<p class="empty-msg">Failed to load generated papers: ${esc(e.message)}</p>`;
+        if (list) list.innerHTML = `<p class="empty-msg">${esc(tr('common.failedToLoad', { message: e.message }))}</p>`;
     }
 }
 
@@ -1325,30 +1349,31 @@ async function togglePaper(rowEl) {
 
         let html = '';
         if (claims.length > 0) {
-            html += '<div class="paper-claims"><strong style="color:var(--accent);font-size:0.75rem;">Claims & Insights</strong>';
+            html += `<div class="paper-claims"><strong style="color:var(--accent);font-size:0.75rem;">${esc(tr('label.claim'))}</strong>`;
             for (const c of claims.slice(0, 8)) {
                 html += `<div class="paper-claim-item">${esc(c.claim_text || c.claim_type || '')}</div>`;
             }
             html += '</div>';
         }
         if (results.length > 0) {
-            html += '<div class="paper-claims" style="margin-top:10px;"><strong style="color:var(--gold);font-size:0.75rem;">Results</strong>';
+            html += `<div class="paper-claims" style="margin-top:10px;"><strong style="color:var(--gold);font-size:0.75rem;">${esc(tr('label.results'))}</strong>`;
             for (const r of results.slice(0, 8)) {
                 const val = r.metric_value != null ? Number(r.metric_value).toFixed(2) : '';
-                html += `<div class="paper-claim-item">${esc(r.method_name || '')} on ${esc(r.dataset_name || '')}${val ? ': <b>' + val + '</b>' : ''} ${esc(r.metric_name || '')}</div>`;
+                html += `<div class="paper-claim-item">${esc(tr('common.onDataset', { method: r.method_name || '', dataset: r.dataset_name || '' }))}${val ? ': <b>' + val + '</b>' : ''} ${esc(r.metric_name || '')}</div>`;
             }
             html += '</div>';
         }
-        if (!html) html = '<p class="empty-msg" style="padding:8px;">No claims or results extracted yet.</p>';
+        if (!html) html = `<p class="empty-msg" style="padding:8px;">${esc(tr('empty.claimsResults'))}</p>`;
         body.innerHTML = html;
     } catch (e) {
-        body.innerHTML = '<p class="empty-msg" style="padding:8px;">Failed to load details.</p>';
+        body.innerHTML = `<p class="empty-msg" style="padding:8px;">${esc(tr('common.failedToLoadDetails'))}</p>`;
     }
 }
 
 // ── Opportunities Tab ────────────────────────────────────────────────
 
 async function loadInsightsTab() {
+    insightsLoaded = true;
     const typeFilter = el('insightTypeFilter')?.value || '';
     const sortFilter = el('insightSortFilter')?.value || 'score';
     try {
@@ -1374,7 +1399,7 @@ async function loadInsightsTab() {
 
         const list = el('insightsList');
         if (!insights.length) {
-            list.innerHTML = '<p class="empty-msg">No insights discovered yet. Run the pipeline to analyze papers.</p>';
+            list.innerHTML = `<p class="empty-msg">${esc(tr('empty.researchInsights'))}</p>`;
             return;
         }
 
@@ -1401,15 +1426,16 @@ async function loadInsightsTab() {
                 <div class="insight-title">${esc(ins.title)}</div>
                 ${ins.rank_rationale ? `<div class="insight-rationale">${esc(ins.rank_rationale)}</div>` : ''}
                 ${paperLinks ? `<div class="insight-papers">${paperLinks}</div>` : ''}
-                <div class="insight-hypothesis"><span class="insight-label">Hypothesis:</span> ${esc(ins.hypothesis)}</div>
-                <div class="insight-experiment"><span class="insight-label">Experiment:</span> ${esc(ins.experiment)}</div>
-                ${ins.impact ? `<div class="insight-impact"><span class="insight-label">Impact:</span> ${esc(ins.impact)}</div>` : ''}
+                <div class="insight-hypothesis"><span class="insight-label">${esc(tr('label.hypothesis'))}</span> ${esc(ins.hypothesis)}</div>
+                <div class="insight-experiment"><span class="insight-label">${esc(tr('label.experiment'))}</span> ${esc(ins.experiment)}</div>
+                ${ins.impact ? `<div class="insight-impact"><span class="insight-label">${esc(tr('label.impact'))}</span> ${esc(ins.impact)}</div>` : ''}
                 <div class="insight-actions">
-                    <button class="btn-preview" onclick="window._dg.previewProposal(${ins.id})">Preview Proposal</button>
+                    <button class="btn-preview" onclick="window._dg.previewProposal(${ins.id})">${esc(tr('label.previewProposal'))}</button>
                 </div>
             </div>`;
         }).join('');
     } catch (e) {
+        insightsLoaded = false;
         console.error('Insights tab error:', e);
     }
 }
@@ -1430,13 +1456,18 @@ async function loadOpportunities() {
 }
 
 const insightTypeColors = {
-    contradiction_analysis: { color: '#c4453a', label: 'Contradiction' },
-    method_transfer:        { color: '#c4704b', label: 'Method Transfer' },
-    assumption_challenge:   { color: '#a8842a', label: 'Assumption Challenge' },
-    ignored_limitation:     { color: '#7c5cbf', label: 'Ignored Limitation' },
-    paradigm_exhaustion:    { color: '#9a9088', label: 'Paradigm Exhaustion' },
-    cross_domain_bridge:    { color: '#2e86ab', label: 'Cross-Domain Bridge' },
+    contradiction_analysis: { color: '#c4453a', labelKey: 'insights.type.contradiction' },
+    method_transfer:        { color: '#c4704b', labelKey: 'insights.type.methodTransfer' },
+    assumption_challenge:   { color: '#a8842a', labelKey: 'insights.type.assumptionChallenge' },
+    ignored_limitation:     { color: '#7c5cbf', labelKey: 'insights.type.ignoredLimitation' },
+    paradigm_exhaustion:    { color: '#9a9088', labelKey: 'insights.type.paradigmExhaustion' },
+    cross_domain_bridge:    { color: '#2e86ab', labelKey: 'insights.type.crossDomainBridge' },
 };
+
+function insightTypeLabel(type) {
+    const meta = insightTypeColors[type] || {};
+    return meta.labelKey ? tr(meta.labelKey) : String(type || '').replace(/_/g, ' ');
+}
 
 function renderOpportunities() {
     const list = el('oppList');
@@ -1447,13 +1478,13 @@ function renderOpportunities() {
     const currentVal = select.value;
     if (select.options.length <= 1 && allOpportunities.length > 0) {
         // Clear old hardcoded options
-        select.innerHTML = '<option value="">All types</option>';
+        select.innerHTML = `<option value="">${esc(tr('insights.allTypes'))}</option>`;
         const types = [...new Set(allOpportunities.map(o => o.insight_type))].filter(Boolean).sort();
         for (const t of types) {
             const meta = insightTypeColors[t] || {};
             const opt = document.createElement('option');
             opt.value = t;
-            opt.textContent = meta.label || t.replace(/_/g, ' ');
+            opt.textContent = insightTypeLabel(t);
             select.appendChild(opt);
         }
         if (currentVal) select.value = currentVal;
@@ -1465,12 +1496,12 @@ function renderOpportunities() {
     }
 
     if (filtered.length === 0) {
-        list.innerHTML = '<p class="empty-msg">No research insights yet. Run the pipeline to discover genuine research opportunities.</p>';
+        list.innerHTML = `<p class="empty-msg">${esc(tr('empty.opportunities'))}</p>`;
         return;
     }
 
     list.innerHTML = filtered.map(ins => {
-        const meta = insightTypeColors[ins.insight_type] || { color: '#888', label: ins.insight_type };
+        const meta = insightTypeColors[ins.insight_type] || { color: '#888' };
         // Parse supporting papers for links
         let papers = [];
         try { papers = JSON.parse(ins.supporting_papers || '[]'); } catch(e) {}
@@ -1479,29 +1510,29 @@ function renderOpportunities() {
         ).join(' ');
 
         return `<div class="opp-card" style="border-left: 3px solid ${meta.color};">
-            <div class="opp-type-badge" style="background:${meta.color}22;color:${meta.color};">${esc(meta.label)}</div>
+            <div class="opp-type-badge" style="background:${meta.color}22;color:${meta.color};">${esc(insightTypeLabel(ins.insight_type))}</div>
             <div class="opp-header">
                 <div class="opp-title">${esc(ins.title)}</div>
                 <div class="opp-score-group">
-                    <span class="opp-score-item" title="Novelty" style="color:${(ins.novelty_score||0) >= 4 ? '#ffaa33' : '#6a7a8a'};">N:${ins.novelty_score || '?'}/5</span>
-                    <span class="opp-score-item" title="Feasibility" style="color:${(ins.feasibility_score||0) >= 4 ? '#44dd88' : '#6a7a8a'};">F:${ins.feasibility_score || '?'}/5</span>
+                    <span class="opp-score-item" title="${esc(tr('insights.novelty'))}" style="color:${(ins.novelty_score||0) >= 4 ? '#ffaa33' : '#6a7a8a'};">N:${ins.novelty_score || '?'}/5</span>
+                    <span class="opp-score-item" title="${esc(tr('insights.feasibility'))}" style="color:${(ins.feasibility_score||0) >= 4 ? '#44dd88' : '#6a7a8a'};">F:${ins.feasibility_score || '?'}/5</span>
                 </div>
             </div>
             ${paperLinks ? `<div class="opp-papers">${paperLinks}</div>` : ''}
             ${ins.evidence ? `<div class="opp-section">
-                <div class="opp-section-label">Evidence</div>
+                <div class="opp-section-label">${esc(tr('label.evidence').replace(/:$/, ''))}</div>
                 <div class="opp-evidence">${esc(ins.evidence)}</div>
             </div>` : ''}
             <div class="opp-section">
-                <div class="opp-section-label">Hypothesis</div>
+                <div class="opp-section-label">${esc(tr('label.hypothesis').replace(/:$/, ''))}</div>
                 <div class="opp-desc">${esc(ins.hypothesis)}</div>
             </div>
             ${ins.experiment ? `<div class="opp-section">
-                <div class="opp-section-label">Proposed Experiment</div>
+                <div class="opp-section-label">${esc(tr('label.proposedExperiment'))}</div>
                 <div class="opp-experiment">${esc(ins.experiment)}</div>
             </div>` : ''}
             ${ins.impact ? `<div class="opp-section">
-                <div class="opp-section-label">Potential Impact</div>
+                <div class="opp-section-label">${esc(tr('label.potentialImpact'))}</div>
                 <div class="opp-impact">${esc(ins.impact)}</div>
             </div>` : ''}
             <div class="opp-footer">
@@ -1511,9 +1542,10 @@ function renderOpportunities() {
     }).join('');
 }
 
-// ── Discoveries Tab (Tier 1 + Tier 2 Deep Insights) ──────────────────
+// ── Discoveries Tab (Tier 1 + Tier 2) ────────────────────────────────
 
 async function loadDiscoveriesTab() {
+    discoveriesLoaded = true;
     const tierFilter = el('discoveryTierFilter')?.value || '';
     try {
         let url = '/api/deep_insights?limit=50';
@@ -1521,8 +1553,9 @@ async function loadDiscoveriesTab() {
         const insights = await api(url);
         renderDiscoveries(insights);
     } catch (e) {
+        discoveriesLoaded = false;
         const list = el('discoveriesList');
-        if (list) list.innerHTML = '<p class="empty-msg">No ready discoveries yet. Automatic discovery is still filtering candidates.</p>';
+        if (list) list.innerHTML = `<p class="empty-msg">${esc(tr('empty.discoveries'))}</p>`;
     }
 }
 
@@ -1539,41 +1572,41 @@ function renderDiscoveries(discoveries) {
     const list = el('discoveriesList');
     const visible = (discoveries || []).filter(isDisplayableDiscovery);
     if (visible.length === 0) {
-        list.innerHTML = '<p class="empty-msg">No ready discoveries yet. Automatic discovery is still filtering candidates.</p>';
+        list.innerHTML = `<p class="empty-msg">${esc(tr('empty.discoveries'))}</p>`;
         return;
     }
 
     list.innerHTML = visible.map(d => {
         const isTier1 = d.tier === 1;
         const tierColor = isTier1 ? '#c4453a' : '#2e86ab';
-        const tierLabel = isTier1 ? 'PARADIGM' : 'PAPER IDEA';
+        const tierLabel = isTier1 ? tr('discoveries.tier1') : tr('discoveries.tier2');
 
         const noveltyBadge = d.novelty_status === 'novel'
-            ? '<span class="paradigm-badge high">NOVEL</span>'
+            ? `<span class="paradigm-badge high">${esc(tr('status.novelty.novel'))}</span>`
             : d.novelty_status === 'partially_exists'
-            ? '<span class="paradigm-badge mid">PARTIAL</span>'
+            ? `<span class="paradigm-badge mid">${esc(tr('status.novelty.partial'))}</span>`
             : d.novelty_status === 'exists'
-            ? '<span class="paradigm-badge low">EXISTS</span>'
-            : '<span class="paradigm-badge low">UNCHECKED</span>';
+            ? `<span class="paradigm-badge low">${esc(tr('status.novelty.exists'))}</span>`
+            : `<span class="paradigm-badge low">${esc(tr('status.novelty.unchecked'))}</span>`;
 
         const scoreBadge = d.adversarial_score
-            ? `<span class="insight-scores">Adversarial: ${d.adversarial_score}/10</span>`
+            ? `<span class="insight-scores">${esc(tr('label.adversarial', { score: d.adversarial_score }))}</span>`
             : '';
 
         let bodyHtml = '';
 
         if (isTier1) {
             bodyHtml += d.formal_structure
-                ? `<div class="insight-hypothesis"><span class="insight-label">Formal Structure:</span> ${esc(d.formal_structure)}</div>` : '';
+                ? `<div class="insight-hypothesis"><span class="insight-label">${esc(tr('label.formalStructure'))}</span> ${esc(d.formal_structure)}</div>` : '';
             bodyHtml += d.transformation
-                ? `<div class="insight-experiment"><span class="insight-label">Transformation:</span> ${esc(d.transformation)}</div>` : '';
+                ? `<div class="insight-experiment"><span class="insight-label">${esc(tr('label.transformation'))}</span> ${esc(d.transformation)}</div>` : '';
 
             let fieldA = {}, fieldB = {};
             try { fieldA = JSON.parse(d.field_a || '{}'); } catch(e) {}
             try { fieldB = JSON.parse(d.field_b || '{}'); } catch(e) {}
             if (fieldA.node_id || fieldB.node_id) {
                 bodyHtml += `<div class="insight-evidence">
-                    <span class="insight-label">Fields:</span>
+                    <span class="insight-label">${esc(tr('label.fields'))}</span>
                     ${fieldA.node_id ? `<span class="chip" onclick="window._dg.exploreNode('${esc(fieldA.node_id)}')">${esc(fieldA.node_id)}</span>` : ''}
                     <span style="margin:0 4px;">-&gt;</span>
                     ${fieldB.node_id ? `<span class="chip" onclick="window._dg.exploreNode('${esc(fieldB.node_id)}')">${esc(fieldB.node_id)}</span>` : ''}
@@ -1583,7 +1616,7 @@ function renderDiscoveries(discoveries) {
             let predictions = [];
             try { predictions = JSON.parse(d.predictions || '[]'); } catch(e) {}
             if (predictions.length) {
-                bodyHtml += '<div class="insight-experiment"><span class="insight-label">Predictions:</span><ul style="margin:4px 0;padding-left:20px;">';
+                bodyHtml += `<div class="insight-experiment"><span class="insight-label">${esc(tr('label.predictions'))}</span><ul style="margin:4px 0;padding-left:20px;">`;
                 for (const p of predictions.slice(0, 3)) {
                     const stmt = typeof p === 'string' ? p : (p.statement || '');
                     bodyHtml += `<li>${esc(stmt)}</li>`;
@@ -1595,20 +1628,20 @@ function renderDiscoveries(discoveries) {
                 let critique = {};
                 try { critique = JSON.parse(d.adversarial_critique); } catch(e) {}
                 if (critique.strongest_attack) {
-                    bodyHtml += `<div class="insight-impact"><span class="insight-label">Strongest Challenge:</span> ${esc(critique.strongest_attack)}</div>`;
+                    bodyHtml += `<div class="insight-impact"><span class="insight-label">${esc(tr('label.strongestChallenge'))}</span> ${esc(critique.strongest_attack)}</div>`;
                 }
             }
         } else {
             bodyHtml += d.problem_statement
-                ? `<div class="insight-hypothesis"><span class="insight-label">Problem:</span> ${esc(d.problem_statement)}</div>` : '';
+                ? `<div class="insight-hypothesis"><span class="insight-label">${esc(tr('label.problem'))}</span> ${esc(d.problem_statement)}</div>` : '';
             bodyHtml += d.existing_weakness
-                ? `<div class="insight-evidence"><span class="insight-label">Weakness:</span> ${esc(d.existing_weakness)}</div>` : '';
+                ? `<div class="insight-evidence"><span class="insight-label">${esc(tr('label.weakness'))}</span> ${esc(d.existing_weakness)}</div>` : '';
 
             let method = {};
             try { method = JSON.parse(d.proposed_method || '{}'); } catch(e) {}
             if (method.name) {
                 bodyHtml += `<div class="insight-experiment">
-                    <span class="insight-label">Method: ${esc(method.name)}</span> (${esc(method.type || '?')})
+                    <span class="insight-label">${esc(tr('label.method'))} ${esc(method.name)}</span> (${esc(method.type || '?')})
                     <div style="margin-top:4px;">${esc(method.one_line || '')}</div>
                     ${method.definition ? `<pre style="font-size:0.72rem;margin:6px 0;white-space:pre-wrap;color:var(--text-secondary);">${esc(trunc(method.definition, 300))}</pre>` : ''}
                 </div>`;
@@ -1617,37 +1650,38 @@ function renderDiscoveries(discoveries) {
             let plan = {};
             try { plan = JSON.parse(d.experimental_plan || '{}'); } catch(e) {}
             if (plan.baselines && plan.baselines.length) {
-                bodyHtml += '<div class="insight-impact"><span class="insight-label">Baselines:</span> ';
+                bodyHtml += `<div class="insight-impact"><span class="insight-label">${esc(tr('label.baselines'))}</span> `;
                 bodyHtml += plan.baselines.map(b => esc(b.name || b)).join(', ');
                 bodyHtml += '</div>';
             }
             if (plan.datasets && plan.datasets.length) {
-                bodyHtml += '<div class="insight-impact"><span class="insight-label">Datasets:</span> ';
+                bodyHtml += `<div class="insight-impact"><span class="insight-label">${esc(tr('label.datasets'))}</span> `;
                 bodyHtml += plan.datasets.map(ds => esc(ds.name || ds)).join(', ');
                 bodyHtml += '</div>';
             }
             if (plan.compute_budget) {
-                bodyHtml += `<div class="insight-impact"><span class="insight-label">Compute:</span> ${esc(plan.compute_budget.total_gpu_hours || '?')} GPU-hours</div>`;
+                bodyHtml += `<div class="insight-impact"><span class="insight-label">${esc(tr('label.compute'))}</span> ${esc(plan.compute_budget.total_gpu_hours || '?')} GPU-hours</div>`;
             }
         }
 
         return `<div class="insight-card" style="border-left: 3px solid ${tierColor};">
             <div class="insight-header">
-                <span class="insight-type" style="color:${tierColor};font-weight:700;">TIER ${d.tier}: ${tierLabel}</span>
+                <span class="insight-type" style="color:${tierColor};font-weight:700;">${esc(tierLabel)}</span>
                 ${noveltyBadge}
                 ${scoreBadge}
             </div>
             <div class="insight-title">${esc(d.title)}</div>
             ${bodyHtml}
-            ${d.evidence_summary ? `<div class="insight-evidence"><span class="insight-label">Evidence:</span> ${esc(trunc(d.evidence_summary, 250))}</div>` : ''}
-            <div class="insight-impact"><span class="insight-label">Mode:</span> Fixed automatic pipeline</div>
+            ${d.evidence_summary ? `<div class="insight-evidence"><span class="insight-label">${esc(tr('label.evidence'))}</span> ${esc(trunc(d.evidence_summary, 250))}</div>` : ''}
+            <div class="insight-impact"><span class="insight-label">${esc(tr('label.mode'))}</span> ${esc(tr('label.fixedAutomaticPipeline'))}</div>
         </div>`;
     }).join('');
 }
 
-// ── Experiments Tab (SciForge) ────────────────────────────────────────
+// ── Experiments Tab ───────────────────────────────────────────────────
 
 async function loadExperimentsTab() {
+    experimentsLoaded = true;
     const statusFilter = el('experimentStatusFilter')?.value || '';
     try {
         const automation = await api('/api/automation');
@@ -1665,15 +1699,16 @@ async function loadExperimentsTab() {
         const meta = await api('/api/meta_report');
         renderMetaReport(meta);
     } catch (e) {
+        experimentsLoaded = false;
         const list = el('experimentsList');
         if (list) list.innerHTML = `<p class="empty-msg">Automation status failed to load: ${esc(e.message)}</p>`;
     }
 }
 
 function serviceState(name, ok, active) {
-    if (ok === false) return { label: 'missing', color: '#c4453a' };
-    if (active) return { label: 'active', color: '#3d8b5e' };
-    return { label: 'ready', color: '#a8842a' };
+    if (ok === false) return { label: tr('service.state.missing'), color: '#c4453a' };
+    if (active) return { label: tr('service.state.active'), color: '#3d8b5e' };
+    return { label: tr('service.state.ready'), color: '#a8842a' };
 }
 
 function serviceCard(title, state, detail) {
@@ -1700,43 +1735,43 @@ function renderAutomationOverview(snapshot) {
 
     grid.innerHTML = [
         serviceCard(
-            'Paper Pipeline',
+            tr('experiments.service.paperPipeline'),
             serviceState('paper', true, paper.running),
-            `Batch ${esc(paper.batch_size || '?')}, ${esc(paper.status || 'idle')}`
+            esc(tr('service.detail.paper', { batch: paper.batch_size || '?', status: paper.status || 'idle' }))
         ),
         serviceCard(
-            'Auto Research',
+            tr('experiments.service.autoResearch'),
             serviceState('auto', true, auto.running),
-            `${auto.total || 0} jobs, ${auto.running_experiment || 0} experiments, ${auto.blocked || 0} blocked`
+            esc(tr('service.detail.auto', { jobs: auto.total || 0, experiments: auto.running_experiment || 0, blocked: auto.blocked || 0 }))
         ),
         serviceCard(
-            'EvoScientist',
+            tr('experiments.service.evoScientist'),
             serviceState('evoscientist', evo.available, (evo.active_count || 0) > 0),
-            `${evo.active_count || 0} active sessions`
+            esc(tr('service.detail.evo', { count: evo.active_count || 0 }))
         ),
         serviceCard(
-            'PaperOrchestra',
+            tr('experiments.service.paperOrchestra'),
             serviceState('paperorchestra', po.available, (po.active_count || 0) > 0),
-            `${(po.counts || {}).bundle_ready || 0} bundles, ${(po.counts || {}).drafting || 0} drafting`
+            esc(tr('service.detail.paperOrchestra', { bundles: (po.counts || {}).bundle_ready || 0, drafting: (po.counts || {}).drafting || 0 }))
         ),
         serviceCard(
-            'GPU Scheduler',
+            tr('experiments.service.gpuScheduler'),
             serviceState('gpu', true, (gpu.running_jobs || 0) > 0),
-            `${gpu.running_jobs || 0} running, ${gpu.queued_jobs || 0} queued, ${(gpu.workers || []).length} workers`
+            esc(tr('service.detail.gpu', { running: gpu.running_jobs || 0, queued: gpu.queued_jobs || 0, workers: (gpu.workers || []).length }))
         ),
     ].join('');
 
     work.innerHTML = [
-        workLane('Pipeline activity', current.pipeline, item =>
+        workLane(tr('experiments.work.pipeline'), current.pipeline, item =>
             `${esc(item.status || '')} / ${esc(item.stage || '')}`, item => item.title),
-        workLane('Processing papers', current.papers, item =>
+        workLane(tr('experiments.work.processingPapers'), current.papers, item =>
             `${esc(item.id || '')} · ${esc(item.processing_stage || item.status || '')}`, item => item.title),
-        workLane('Generating experiment plans', current.experiment_plans, item =>
+        workLane(tr('experiments.work.experimentPlans'), current.experiment_plans, item =>
             `${esc(item.status || '')} / ${esc(item.stage || '')}`, item => item.title),
-        workLane('Running experiments', current.experiments, item =>
-            `Run #${esc(item.id || '')} · ${esc(item.status || '')} · ${esc(item.phase || '')}`, item => item.title),
-        workLane('Writing papers', current.manuscripts, item =>
-            `Manuscript #${esc(item.id || '')} · ${esc(item.status || '')}`, item => item.title),
+        workLane(tr('experiments.work.running'), current.experiments, item =>
+            `${esc(tr('label.experimentRun', { id: item.id || '' }))} · ${esc(item.status || '')} · ${esc(item.phase || '')}`, item => item.title),
+        workLane(tr('experiments.work.writing'), current.manuscripts, item =>
+            `${esc(tr('label.manuscriptId', { id: item.id || '' }))} · ${esc(item.status || '')}`, item => item.title),
     ].join('');
 }
 
@@ -1744,12 +1779,12 @@ function workLane(title, items, metaFn, titleFn) {
     const rows = (items || []).slice(0, 4);
     const body = rows.length
         ? rows.map(item => `<div class="work-item">
-            <div class="work-item-title">${esc(trunc(titleFn(item) || 'Untitled', 80))}</div>
+            <div class="work-item-title">${esc(trunc(titleFn(item) || tr('common.untitled'), 80))}</div>
             <div>${metaFn(item)}</div>
             ${item.last_note ? `<div>${esc(trunc(item.last_note, 110))}</div>` : ''}
             ${item.last_error ? `<div style="color:#c4453a;">${esc(trunc(item.last_error, 110))}</div>` : ''}
         </div>`).join('')
-        : '<div class="work-item">Idle</div>';
+        : `<div class="work-item">${esc(tr('overview.idle'))}</div>`;
     return `<div class="work-lane"><div class="work-lane-title">${esc(title)}</div>${body}</div>`;
 }
 
@@ -1757,40 +1792,40 @@ function renderAutoResearchStatus(status) {
     const box = el('autoResearchStatus');
     if (!box) return;
     if (!status) {
-        box.textContent = 'Auto Research status unavailable.';
+        box.textContent = tr('status.auto.unavailable');
         return;
     }
-    const running = status.running ? 'RUNNING' : 'STOPPED';
-    const evo = status.evoscientist_available ? 'EvoScientist ready' : 'EvoScientist missing';
+    const running = status.running ? tr('status.auto.running') : tr('status.auto.stopped');
+    const evo = status.evoscientist_available ? tr('status.evo.ready') : tr('status.evo.missing');
     box.innerHTML = `
         <strong>${running}</strong>
-        <span style="margin-left:10px;">Interval: ${status.interval_seconds || '?'}s</span>
+        <span style="margin-left:10px;">${esc(tr('status.auto.interval', { seconds: status.interval_seconds || '?' }))}</span>
         <span style="margin-left:10px;">${esc(evo)}</span>
-        <span style="margin-left:10px;">Jobs: ${status.total || 0}</span>
-        <span style="margin-left:10px;">Completed: ${status.completed || 0}</span>
-        <span style="margin-left:10px;">Blocked: ${status.blocked || 0}</span>
+        <span style="margin-left:10px;">${esc(tr('status.auto.jobs', { count: status.total || 0 }))}</span>
+        <span style="margin-left:10px;">${esc(tr('status.auto.completed', { count: status.completed || 0 }))}</span>
+        <span style="margin-left:10px;">${esc(tr('status.auto.blocked', { count: status.blocked || 0 }))}</span>
     `;
 }
 
 function friendlyAutomationStage(status, stage) {
     const key = String(stage || status || '').toLowerCase();
-    if (key.includes('verification')) return 'Checking novelty';
-    if (key.includes('research')) return 'Running EvoScientist research';
-    if (key.includes('review') || key.includes('forge') || key.includes('formal')) return 'Generating experiment plan';
-    if (key.includes('gpu')) return 'Running on GPU';
-    if (key.includes('validation') || key.includes('experiment')) return 'Running experiment';
-    if (key.includes('writing') || key.includes('submission') || key.includes('bundle')) return 'Writing paper';
-    if (key.includes('blocked')) return 'Blocked';
-    if (key.includes('failed')) return 'Failed';
-    if (key.includes('complete')) return 'Complete';
-    return stage || status || 'Queued';
+    if (key.includes('verification')) return tr('status.stage.checkingNovelty');
+    if (key.includes('research')) return tr('status.stage.runningResearch');
+    if (key.includes('review') || key.includes('formal')) return tr('status.stage.generatingPlan');
+    if (key.includes('gpu')) return tr('status.stage.runningGpu');
+    if (key.includes('validation') || key.includes('experiment')) return tr('status.stage.runningExperiment');
+    if (key.includes('writing') || key.includes('submission') || key.includes('bundle')) return tr('status.stage.writingPaper');
+    if (key.includes('blocked')) return tr('status.stage.blocked');
+    if (key.includes('failed')) return tr('status.stage.failed');
+    if (key.includes('complete')) return tr('status.stage.complete');
+    return stage || status || tr('status.stage.queued');
 }
 
 function renderAutoResearchJobs(jobs) {
     const list = el('autoResearchList');
     if (!list) return;
     if (!jobs || !jobs.length) {
-        list.innerHTML = '<p class="empty-msg">No auto research jobs yet.</p>';
+        list.innerHTML = `<p class="empty-msg">${esc(tr('empty.autoResearch'))}</p>`;
         return;
     }
 
@@ -1808,13 +1843,13 @@ function renderAutoResearchJobs(jobs) {
     list.innerHTML = jobs.map(j => {
         const color = colors[j.status] || '#888';
         const cpu = j.cpu_eligible == null
-            ? 'CPU unchecked'
-            : (j.cpu_eligible ? 'CPU OK' : 'CPU blocked');
+            ? tr('status.cpu.unchecked')
+            : (j.cpu_eligible ? tr('status.cpu.eligible') : tr('status.cpu.blocked'));
         const exp = j.experiment_status
-            ? `<span class="insight-scores">Experiment: ${esc(j.experiment_status)}</span>`
+            ? `<span class="insight-scores">${esc(tr('label.experimentStatus', { status: j.experiment_status }))}</span>`
             : '';
         const verdict = j.hypothesis_verdict
-            ? `<span class="insight-scores">Verdict: ${esc(j.hypothesis_verdict)}</span>`
+            ? `<span class="insight-scores">${esc(tr('label.verdict', { verdict: j.hypothesis_verdict }))}</span>`
             : '';
         const friendly = friendlyAutomationStage(j.status, j.stage);
         return `<div class="insight-card" style="border-left: 3px solid ${color};">
@@ -1824,12 +1859,12 @@ function renderAutoResearchJobs(jobs) {
                 ${exp}
                 ${verdict}
             </div>
-            <div class="insight-title">${esc(j.title || 'Deep Insight')}</div>
-            <div class="insight-impact"><span class="insight-label">Internal stage:</span> ${esc(j.stage || '')}</div>
-            ${j.novelty_status ? `<div class="insight-impact"><span class="insight-label">Novelty:</span> ${esc(j.novelty_status)}</div>` : ''}
-            ${j.cpu_reason ? `<div class="insight-evidence"><span class="insight-label">CPU Check:</span> ${esc(j.cpu_reason)}</div>` : ''}
-            ${j.last_note ? `<div class="insight-experiment"><span class="insight-label">Latest:</span> ${esc(trunc(j.last_note, 220))}</div>` : ''}
-            ${j.last_error ? `<div class="insight-impact" style="color:#c4453a;"><span class="insight-label">Error:</span> ${esc(trunc(j.last_error, 220))}</div>` : ''}
+            <div class="insight-title">${esc(j.title || tr('label.discovery'))}</div>
+            <div class="insight-impact"><span class="insight-label">${esc(tr('label.internalStage'))}</span> ${esc(j.stage || '')}</div>
+            ${j.novelty_status ? `<div class="insight-impact"><span class="insight-label">${esc(tr('label.novelty'))}</span> ${esc(j.novelty_status)}</div>` : ''}
+            ${j.cpu_reason ? `<div class="insight-evidence"><span class="insight-label">${esc(tr('label.cpuCheck'))}</span> ${esc(j.cpu_reason)}</div>` : ''}
+            ${j.last_note ? `<div class="insight-experiment"><span class="insight-label">${esc(tr('common.latest'))}</span> ${esc(trunc(j.last_note, 220))}</div>` : ''}
+            ${j.last_error ? `<div class="insight-impact" style="color:#c4453a;"><span class="insight-label">${esc(tr('common.error'))}</span> ${esc(trunc(j.last_error, 220))}</div>` : ''}
         </div>`;
     }).join('');
 }
@@ -1837,7 +1872,7 @@ function renderAutoResearchJobs(jobs) {
 function renderExperiments(runs) {
     const list = el('experimentsList');
     if (!runs || !runs.length) {
-        list.innerHTML = '<p class="empty-msg">No experiments are active yet. The automatic queue will start them when a discovery is ready.</p>';
+        list.innerHTML = `<p class="empty-msg">${esc(tr('empty.experiments'))}</p>`;
         return;
     }
 
@@ -1859,20 +1894,20 @@ function renderExperiments(runs) {
 
         return `<div class="insight-card" style="border-left: 3px solid ${color};">
             <div class="insight-header">
-                <span class="insight-type" style="color:${color};font-weight:700;">RUN #${r.id} [${esc(r.status)}]</span>
+                <span class="insight-type" style="color:${color};font-weight:700;">${esc(tr('label.experimentRunStatus', { id: r.id, status: r.status }))}</span>
                 ${verdict}
-                ${effect ? `<span class="insight-scores">Effect: ${effect}</span>` : ''}
-                <span style="color:var(--text-dim);font-size:0.68rem;">Tier ${r.insight_tier || '?'}</span>
+                ${effect ? `<span class="insight-scores">${esc(tr('label.effect', { effect }))}</span>` : ''}
+                <span style="color:var(--text-dim);font-size:0.68rem;">${esc(tr('label.tier', { tier: r.insight_tier || '?' }))}</span>
             </div>
-            <div class="insight-title">${esc(r.insight_title || 'Experiment')}</div>
+            <div class="insight-title">${esc(r.insight_title || tr('experiments.run'))}</div>
             <div style="display:flex;gap:16px;margin:6px 0;font-size:0.75rem;color:var(--text-secondary);">
-                <span>Iterations: ${r.iterations_total || 0} (${r.iterations_kept || 0} kept)</span>
-                <span>Baseline: ${r.baseline_metric_value != null ? r.baseline_metric_value.toFixed(4) : '?'}</span>
-                <span>Best: ${r.best_metric_value != null ? r.best_metric_value.toFixed(4) : '?'}</span>
+                <span>${esc(tr('label.iterations', { total: r.iterations_total || 0, kept: r.iterations_kept || 0 }))}</span>
+                <span>${esc(tr('label.baseline', { value: r.baseline_metric_value != null ? r.baseline_metric_value.toFixed(4) : '?' }))}</span>
+                <span>${esc(tr('label.best', { value: r.best_metric_value != null ? r.best_metric_value.toFixed(4) : '?' }))}</span>
             </div>
-            ${r.codebase_url && r.codebase_url !== 'scratch' ? `<div style="font-size:0.7rem;color:var(--text-dim);">Repo: ${esc(r.codebase_url)}</div>` : ''}
+            ${r.codebase_url && r.codebase_url !== 'scratch' ? `<div style="font-size:0.7rem;color:var(--text-dim);">${esc(tr('label.repo', { repo: r.codebase_url }))}</div>` : ''}
             <div class="insight-actions">
-                <button class="btn-preview" onclick="window._dg.viewExperiment(${r.id})">View Details</button>
+                <button class="btn-preview" onclick="window._dg.viewExperiment(${r.id})">${esc(tr('common.viewDetails'))}</button>
             </div>
         </div>`;
     }).join('');
@@ -1911,16 +1946,16 @@ function renderManuscriptBlockers(report, limit = 4) {
     const blockers = (report || {}).blockers || [];
     if (!blockers.length) return '';
     return `<div class="insight-impact" style="border-left:3px solid #c4453a;padding-left:10px;color:#c4453a;">
-        <span class="insight-label">Paper blocked:</span>
+        <span class="insight-label">${esc(tr('label.paperBlocked'))}</span>
         ${blockers.slice(0, limit).map(x => `<div>${esc(trunc(x, 160))}</div>`).join('')}
-        ${blockers.length > limit ? `<div>${blockers.length - limit} more blocker(s)</div>` : ''}
+        ${blockers.length > limit ? `<div>${esc(tr('label.moreBlockers', { count: blockers.length - limit }))}</div>` : ''}
     </div>`;
 }
 
 function renderExperimentGroupsV2(groups) {
     const list = el('experimentsList');
     if (!groups || !groups.length) {
-        list.innerHTML = '<p class="empty-msg">No experiment ideas are active yet. The automatic queue will start them when ready.</p>';
+        list.innerHTML = `<p class="empty-msg">${esc(tr('empty.experimentGroups'))}</p>`;
         return;
     }
 
@@ -1938,111 +1973,57 @@ function renderExperimentGroupsV2(groups) {
         const progress = auto.stage
             ? friendlyAutomationStage(auto.status, auto.stage)
             : ((currentRun || {}).status || 'not_started');
-        const currentRunLabel = currentRun ? `Main run #${currentRun.id}` : 'No run created yet';
+        const currentRunLabel = currentRun ? `${tr('experiments.run')} ${currentRun.id}` : tr('empty.experimentRunCreated');
         const previewUrl = (((group || {}).paper_preview_urls || {}).index) || '';
         const plan = group.plan_snapshot || {};
         const latest = plan.latest_status || {};
         const manuscriptBlockers = plan.manuscript_blockers || {};
         const planReady = [
-            plan.experiment_spec ? 'experiment spec' : '',
-            plan.evidence_plan ? 'evidence plan' : '',
-            plan.manuscript_input_state ? 'manuscript state' : '',
-            plan.manuscript_blockers ? 'manuscript blockers' : '',
-        ].filter(Boolean).join(', ') || 'waiting for plan files';
+            plan.experiment_spec ? tr('label.planFile.experimentSpec') : '',
+            plan.evidence_plan ? tr('label.planFile.evidencePlan') : '',
+            plan.manuscript_input_state ? tr('label.planFile.manuscriptState') : '',
+            plan.manuscript_blockers ? tr('label.planFile.manuscriptBlockers') : '',
+        ].filter(Boolean).join(', ') || tr('label.waitingPlanFiles');
         return `<div class="insight-card" style="border-left: 3px solid ${color};">
             <div class="insight-header">
-                <span class="insight-type" style="color:${color};font-weight:700;">IDEA #${insight.id}</span>
+                <span class="insight-type" style="color:${color};font-weight:700;">${esc(tr('label.discoveryId', { id: insight.id }))}</span>
                 <span class="insight-scores">${esc(currentRunLabel)}</span>
                 ${verdict}
-                ${effect ? `<span class="insight-scores">Effect: ${effect}</span>` : ''}
-                <span style="color:var(--text-dim);font-size:0.68rem;">Tier ${insight.tier || '?'}</span>
+                ${effect ? `<span class="insight-scores">${esc(tr('label.effect', { effect }))}</span>` : ''}
+                <span style="color:var(--text-dim);font-size:0.68rem;">${esc(tr('label.tier', { tier: insight.tier || '?' }))}</span>
             </div>
-            <div class="insight-title">${esc(insight.title || 'Deep Insight')}</div>
-            <div class="insight-impact"><span class="insight-label">Current work:</span> ${esc(progress)}</div>
-            ${latest.stage ? `<div class="insight-experiment"><span class="insight-label">Latest file status:</span> ${esc(latest.stage)} / ${esc(latest.status || '')}</div>` : ''}
-            ${latest.error ? `<div class="insight-impact" style="color:#c4453a;"><span class="insight-label">Latest error:</span> ${esc(trunc(latest.error, 180))}</div>` : ''}
+            <div class="insight-title">${esc(insight.title || tr('label.discovery'))}</div>
+            <div class="insight-impact"><span class="insight-label">${esc(tr('experiments.currentWork'))}</span> ${esc(progress)}</div>
             ${renderManuscriptBlockers(manuscriptBlockers)}
-            <div class="insight-evidence"><span class="insight-label">Plan files:</span> ${esc(planReady)}</div>
-            <div style="display:flex;gap:16px;margin:6px 0;font-size:0.75rem;color:var(--text-secondary);flex-wrap:wrap;">
-                <span>Runs: ${group.run_count || 0}</span>
-                <span>Latest run: ${esc((group.latest_run || {}).status || 'none')}</span>
-                <span>Bundle: ${esc(insight.submission_status || 'not_started')}</span>
-            </div>
-            <div style="display:flex;gap:16px;margin:6px 0;font-size:0.75rem;color:var(--text-secondary);flex-wrap:wrap;">
-                <span>Experiment: ${esc(group.experiment_root || '-')}</span>
-                <span>Plan: ${esc(group.plan_root || '-')}</span>
-                <span>Paper: ${esc(group.paper_root || '-')}</span>
-            </div>
-            <div class="chip-row" style="margin:8px 0;">${renderTrackChips(group.planned_tracks)}</div>
-            ${auto.last_note ? `<div class="insight-experiment"><span class="insight-label">Latest:</span> ${esc(trunc(auto.last_note, 220))}</div>` : ''}
-            ${auto.last_error ? `<div class="insight-impact" style="color:#c4453a;"><span class="insight-label">Error:</span> ${esc(trunc(auto.last_error, 220))}</div>` : ''}
+            <details class="advanced-inline">
+                <summary>${esc(tr('experiments.advancedFields'))}</summary>
+                ${latest.stage ? `<div class="insight-experiment"><span class="insight-label">${esc(tr('label.latestFileStatus'))}</span> ${esc(latest.stage)} / ${esc(latest.status || '')}</div>` : ''}
+                ${latest.error ? `<div class="insight-impact" style="color:#c4453a;"><span class="insight-label">${esc(tr('label.latestError'))}</span> ${esc(trunc(latest.error, 180))}</div>` : ''}
+                <div class="insight-evidence"><span class="insight-label">${esc(tr('experiments.planFiles'))}</span> ${esc(planReady)}</div>
+                <div style="display:flex;gap:16px;margin:6px 0;font-size:0.75rem;color:var(--text-secondary);flex-wrap:wrap;">
+                    <span>${esc(tr('label.experimentRuns', { count: group.run_count || 0 }))}</span>
+                    <span>${esc(tr('label.latestExperimentRun', { status: (group.latest_run || {}).status || 'none' }))}</span>
+                    <span>${esc(tr('label.submissionBundle', { status: insight.submission_status || 'not_started' }))}</span>
+                </div>
+                <div style="display:flex;gap:16px;margin:6px 0;font-size:0.75rem;color:var(--text-secondary);flex-wrap:wrap;">
+                    <span>${esc(tr('label.experimentPath', { path: group.experiment_root || '-' }))}</span>
+                    <span>${esc(tr('label.planPath', { path: group.plan_root || '-' }))}</span>
+                    <span>${esc(tr('label.generatedManuscriptPath', { path: group.paper_root || '-' }))}</span>
+                </div>
+                <div class="chip-row" style="margin:8px 0;">${renderTrackChips(group.planned_tracks)}</div>
+            </details>
+            ${auto.last_note ? `<div class="insight-experiment"><span class="insight-label">${esc(tr('common.latest'))}</span> ${esc(trunc(auto.last_note, 220))}</div>` : ''}
+            ${auto.last_error ? `<div class="insight-impact" style="color:#c4453a;"><span class="insight-label">${esc(tr('common.error'))}</span> ${esc(trunc(auto.last_error, 220))}</div>` : ''}
             <div class="insight-actions">
-                <button class="btn-preview" onclick="window._dg.viewExperimentGroup(${insight.id})">View automation history</button>
-                ${currentRun ? `<button class="btn-preview" onclick="window._dg.viewExperiment(${currentRun.id})">View main run</button>` : ''}
-                ${previewUrl ? `<button class="btn-preview" onclick="window.open('${esc(previewUrl)}','_blank')">Open paper preview</button>` : ''}
+                <button class="btn-preview" onclick="window._dg.viewExperimentGroup(${insight.id})">${esc(tr('experiments.viewHistory'))}</button>
+                ${currentRun ? `<button class="btn-preview" onclick="window._dg.viewExperiment(${currentRun.id})">${esc(tr('experiments.viewRun'))}</button>` : ''}
+                ${previewUrl ? `<button class="btn-preview" onclick="window.open('${esc(previewUrl)}','_blank')">${esc(tr('experiments.openManuscript'))}</button>` : ''}
             </div>
         </div>`;
     }).join('');
 }
 
-function renderExperimentGroups(groups) {
-    const list = el('experimentsList');
-    if (!groups || !groups.length) {
-        list.innerHTML = '<p class="empty-msg">No experiment ideas are active yet. The automatic queue will start them when ready.</p>';
-        return;
-    }
-
-    list.innerHTML = groups.map(group => {
-        const insight = group.insight || {};
-        const auto = group.auto_job || {};
-        const currentRun = group.canonical_run || group.latest_run || null;
-        const color = experimentStatusColor((currentRun || {}).status || auto.status);
-        const verdict = currentRun && currentRun.hypothesis_verdict
-            ? `<span style="color:${verdictColor(currentRun.hypothesis_verdict)};font-weight:700;text-transform:uppercase;">${esc(currentRun.hypothesis_verdict)}</span>`
-            : '';
-        const effect = currentRun && currentRun.effect_pct != null
-            ? `${currentRun.effect_pct >= 0 ? '+' : ''}${currentRun.effect_pct.toFixed(2)}%`
-            : '';
-        const progress = auto.stage
-            ? `${auto.status || 'queued'} / ${auto.stage}`
-            : ((currentRun || {}).status || 'not_started');
-        const currentRunLabel = currentRun
-            ? `主实验 Run #${currentRun.id}`
-            : '尚未创建 run';
-        const previewUrl = (((group || {}).paper_preview_urls || {}).index) || '';
-        return `<div class="insight-card" style="border-left: 3px solid ${color};">
-            <div class="insight-header">
-                <span class="insight-type" style="color:${color};font-weight:700;">IDEA #${insight.id}</span>
-                <span class="insight-scores">${esc(currentRunLabel)}</span>
-                ${verdict}
-                ${effect ? `<span class="insight-scores">Effect: ${effect}</span>` : ''}
-                <span style="color:var(--text-dim);font-size:0.68rem;">Tier ${insight.tier || '?'}</span>
-            </div>
-            <div class="insight-title">${esc(insight.title || 'Deep Insight')}</div>
-            <div class="insight-impact"><span class="insight-label">当前进度:</span> ${esc(progress)}</div>
-            <div style="display:flex;gap:16px;margin:6px 0;font-size:0.75rem;color:var(--text-secondary);flex-wrap:wrap;">
-                <span>历史 runs: ${group.run_count || 0}</span>
-                <span>最新状态: ${esc((group.latest_run || {}).status || 'none')}</span>
-                <span>Bundle: ${esc(insight.submission_status || 'not_started')}</span>
-            </div>
-            <div style="display:flex;gap:16px;margin:6px 0;font-size:0.75rem;color:var(--text-secondary);flex-wrap:wrap;">
-                <span>实验区: ${esc(group.experiment_root || '-')}</span>
-                <span>方案区: ${esc(group.plan_root || '-')}</span>
-                <span>论文区: ${esc(group.paper_root || '-')}</span>
-            </div>
-            <div class="chip-row" style="margin:8px 0;">${renderTrackChips(group.planned_tracks)}</div>
-            ${auto.last_note ? `<div class="insight-experiment"><span class="insight-label">Latest:</span> ${esc(trunc(auto.last_note, 220))}</div>` : ''}
-            ${auto.last_error ? `<div class="insight-impact" style="color:#c4453a;"><span class="insight-label">Error:</span> ${esc(trunc(auto.last_error, 220))}</div>` : ''}
-            <div class="insight-actions">
-                <button class="btn-preview" onclick="window._dg.viewExperimentGroup(${insight.id})">查看实验历史</button>
-                ${currentRun ? `<button class="btn-preview" onclick="window._dg.viewExperiment(${currentRun.id})">查看主实验详情</button>` : ''}
-                ${previewUrl ? `<button class="btn-preview" onclick="window.open('${esc(previewUrl)}','_blank')">打开论文预览</button>` : ''}
-            </div>
-        </div>`;
-    }).join('');
-}
-
-function jsonPreview(obj, emptyText = '暂无') {
+function jsonPreview(obj, emptyText = 'None') {
     if (!obj || (typeof obj === 'object' && Object.keys(obj).length === 0)) {
         return `<p class="empty-msg">${esc(emptyText)}</p>`;
     }
@@ -2051,7 +2032,7 @@ function jsonPreview(obj, emptyText = '暂无') {
 
 function renderPaperAssetLinks(insightId, assets) {
     if (!assets || !assets.length) {
-        return '<p class="empty-msg">暂无论文资产。</p>';
+        return `<p class="empty-msg">${esc(tr('empty.manuscriptAssets'))}</p>`;
     }
     return `<div style="display:flex;flex-direction:column;gap:6px;">${assets.slice(0, 20).map(asset => `
         <a href="/papers/${insightId}/view/${encodeURI(asset.path)}" target="_blank">${esc(asset.path)}</a>
@@ -2067,30 +2048,30 @@ function renderMetaReport(meta) {
     }
     card.style.display = '';
 
-    const tr = meta.track_record || {};
+    const track = meta.track_record || {};
     let html = `<div style="display:flex;gap:20px;flex-wrap:wrap;margin-bottom:12px;">
-        <div class="stat-card" style="min-width:100px;">
-            <div class="stat-number">${meta.total_experiments}</div>
-            <div class="stat-label">Experiments</div>
-        </div>
-        <div class="stat-card" style="min-width:100px;">
-            <div class="stat-number" style="color:#3d8b5e;">${tr.total_confirmed || 0}</div>
-            <div class="stat-label">Confirmed</div>
-        </div>
-        <div class="stat-card" style="min-width:100px;">
-            <div class="stat-number" style="color:#c4453a;">${tr.total_refuted || 0}</div>
-            <div class="stat-label">Refuted</div>
-        </div>
-        <div class="stat-card" style="min-width:100px;">
-            <div class="stat-number">${((tr.overall_hit_rate || 0) * 100).toFixed(1)}%</div>
-            <div class="stat-label">Hit Rate</div>
-        </div>
-    </div>`;
+            <div class="stat-card" style="min-width:100px;">
+                <div class="stat-number">${meta.total_experiments}</div>
+                <div class="stat-label">${esc(tr('nav.experiments'))}</div>
+            </div>
+            <div class="stat-card" style="min-width:100px;">
+                <div class="stat-number" style="color:#3d8b5e;">${track.total_confirmed || 0}</div>
+                <div class="stat-label">${esc(tr('meta.confirmed'))}</div>
+            </div>
+            <div class="stat-card" style="min-width:100px;">
+                <div class="stat-number" style="color:#c4453a;">${track.total_refuted || 0}</div>
+                <div class="stat-label">${esc(tr('meta.refuted'))}</div>
+            </div>
+            <div class="stat-card" style="min-width:100px;">
+                <div class="stat-number">${((track.overall_hit_rate || 0) * 100).toFixed(1)}%</div>
+                <div class="stat-label">${esc(tr('meta.hitRate'))}</div>
+            </div>
+        </div>`;
 
-    if (tr.signal_types && tr.signal_types.length) {
-        html += '<h4 style="margin:12px 0 6px;">Signal Type Performance</h4>';
-        html += '<table class="matrix-table" style="font-size:0.75rem;"><thead><tr><th>Signal</th><th>Total</th><th>Confirmed</th><th>Refuted</th><th>Hit Rate</th></tr></thead><tbody>';
-        for (const s of tr.signal_types) {
+    if (track.signal_types && track.signal_types.length) {
+        html += `<h4 style="margin:12px 0 6px;">${esc(tr('meta.signalTypePerformance'))}</h4>`;
+        html += `<table class="matrix-table" style="font-size:0.75rem;"><thead><tr><th>${esc(tr('meta.signal'))}</th><th>${esc(tr('meta.total'))}</th><th>${esc(tr('meta.confirmed'))}</th><th>${esc(tr('meta.refuted'))}</th><th>${esc(tr('meta.hitRate'))}</th></tr></thead><tbody>`;
+        for (const s of track.signal_types) {
             html += `<tr><td>${esc(s.signal_type)}</td><td>${s.hypothesis_count}</td><td style="color:#3d8b5e;">${s.confirmed_count}</td><td style="color:#c4453a;">${s.refuted_count}</td><td><b>${((s.hit_rate || 0) * 100).toFixed(1)}%</b></td></tr>`;
         }
         html += '</tbody></table>';
@@ -2098,7 +2079,7 @@ function renderMetaReport(meta) {
 
     const weights = meta.signal_weights || {};
     if (Object.keys(weights).length) {
-        html += '<h4 style="margin:12px 0 6px;">Learned Signal Weights</h4><div class="chip-row">';
+        html += `<h4 style="margin:12px 0 6px;">${esc(tr('meta.learnedSignalWeights'))}</h4><div class="chip-row">`;
         for (const [k, v] of Object.entries(weights)) {
             const color = v > 1.5 ? '#3d8b5e' : v < 0.5 ? '#c4453a' : '#a8842a';
             html += `<span class="chip" style="border-color:${color};color:${color};">${esc(k)}: ${v}x</span>`;
@@ -2118,7 +2099,7 @@ async function loadProviders() {
         renderProviders(providers);
     } catch (e) {
         console.error('Providers load error:', e);
-        el('providersList').innerHTML = '<p class="empty-msg">Failed to load provider data.</p>';
+        el('providersList').innerHTML = `<p class="empty-msg">${esc(tr('providers.failed'))}</p>`;
     }
 }
 
@@ -2131,13 +2112,13 @@ function renderProviders(providers) {
             // Convert object to array
             const arr = Object.entries(providers).map(([k, v]) => ({ name: k, ...v }));
             if (arr.length === 0) {
-                list.innerHTML = '<p class="empty-msg">No provider data available.</p>';
+                list.innerHTML = `<p class="empty-msg">${esc(tr('empty.providers'))}</p>`;
                 return;
             }
             renderProviderCards(arr);
             return;
         }
-        list.innerHTML = '<p class="empty-msg">No provider data available.</p>';
+        list.innerHTML = `<p class="empty-msg">${esc(tr('empty.providers'))}</p>`;
         return;
     }
 
@@ -2161,24 +2142,24 @@ function renderProviderCards(providers) {
         const barPct = Math.round((calls / maxCalls) * 100);
 
         return `<div class="provider-card">
-            <div class="provider-name">${esc(p.name || p.provider || 'Unknown')}</div>
+            <div class="provider-name">${esc(p.name || p.provider || tr('providers.unknown'))}</div>
             <div class="provider-url">${esc(p.base_url || p.url || '')}</div>
             <div class="provider-stats">
                 <div class="provider-stat">
                     <span class="provider-stat-val cyan">${fmt(calls)}</span>
-                    <span class="provider-stat-lbl">Calls</span>
+                    <span class="provider-stat-lbl">${esc(tr('providers.calls'))}</span>
                 </div>
                 <div class="provider-stat">
                     <span class="provider-stat-val gold">${fmt(tokens)}</span>
-                    <span class="provider-stat-lbl">Tokens</span>
+                    <span class="provider-stat-lbl">${esc(tr('providers.tokens'))}</span>
                 </div>
                 <div class="provider-stat">
                     <span class="provider-stat-val ${errors > 0 ? 'red' : 'green'}">${fmt(errors)}</span>
-                    <span class="provider-stat-lbl">Errors</span>
+                    <span class="provider-stat-lbl">${esc(tr('providers.errors'))}</span>
                 </div>
                 <div class="provider-stat">
                     <span class="provider-stat-val">${latency ? latency.toFixed(1) + 's' : '-'}</span>
-                    <span class="provider-stat-lbl">Avg Latency</span>
+                    <span class="provider-stat-lbl">${esc(tr('providers.avgLatency'))}</span>
                 </div>
             </div>
             <div class="provider-bar-wrap">
@@ -2193,6 +2174,40 @@ function startProviderRefresh() {
     providerTimer = setInterval(() => {
         if (activeTab === 'providers') loadProviders();
     }, 10000);
+}
+
+// ── Progressive Loading ──────────────────────────────────────────────
+
+function runWhenIdle(fn, timeout = 700) {
+    if ('requestIdleCallback' in window) {
+        window.requestIdleCallback(fn, { timeout });
+    } else {
+        setTimeout(fn, timeout);
+    }
+}
+
+async function prefetchInactiveTabs() {
+    if (inactiveTabsPrefetched) return;
+    inactiveTabsPrefetched = true;
+
+    const tasks = [
+        () => loadTaxonomyDropdown(),
+        () => loadGeneratedPapersTab(),
+        () => loadInsightsTab(),
+        () => loadPapers(),
+        () => loadPaperProgressTab(),
+        () => loadDiscoveriesTab(),
+        () => loadExperimentsTab(),
+        () => loadProviders(),
+    ];
+
+    for (const task of tasks) {
+        try {
+            await task();
+        } catch (e) {
+            console.debug('Idle prefetch skipped:', e);
+        }
+    }
 }
 
 // ── Search ───────────────────────────────────────────────────────────
@@ -2231,7 +2246,7 @@ async function performSearch(query) {
         const data = await api(`/api/search?q=${encodeURIComponent(query)}`);
         renderSearchResults(data);
     } catch (e) {
-        results.innerHTML = '<div class="search-section"><p class="empty-msg">Search failed.</p></div>';
+        results.innerHTML = `<div class="search-section"><p class="empty-msg">${esc(tr('search.failed'))}</p></div>`;
         results.classList.add('open');
     }
 }
@@ -2241,18 +2256,18 @@ function renderSearchResults(data) {
     let html = '';
 
     if (data.nodes && data.nodes.length) {
-        html += '<div class="search-section"><div class="search-section-title">Taxonomy Nodes</div>';
+        html += `<div class="search-section"><div class="search-section-title">${esc(tr('search.researchAreas'))}</div>`;
         for (const n of data.nodes) {
             html += `<div class="search-result-item" onclick="window._dg.searchNav('node','${esc(n.id)}')">
                 <div class="sr-title">${esc(n.name)}</div>
-                <div class="sr-meta">${esc(n.id)} \u00B7 ${n.paper_count || 0} papers</div>
+                <div class="sr-meta">${esc(n.id)} \u00B7 ${esc(tr('common.papersCount', { count: n.paper_count || 0 }))}</div>
             </div>`;
         }
         html += '</div>';
     }
 
     if (data.papers && data.papers.length) {
-        html += '<div class="search-section"><div class="search-section-title">Papers</div>';
+        html += `<div class="search-section"><div class="search-section-title">${esc(tr('search.sourcePapers'))}</div>`;
         for (const p of data.papers.slice(0, 8)) {
             html += `<div class="search-result-item" onclick="window.open('https://arxiv.org/abs/${esc(p.id)}','_blank')">
                 <div class="sr-title">${esc(trunc(p.title, 70))}</div>
@@ -2263,32 +2278,32 @@ function renderSearchResults(data) {
     }
 
     if (data.methods && data.methods.length) {
-        html += '<div class="search-section"><div class="search-section-title">Methods</div>';
+        html += `<div class="search-section"><div class="search-section-title">${esc(tr('search.methods'))}</div>`;
         for (const m of data.methods) {
             html += `<div class="search-result-item">
                 <div class="sr-title">${esc(m.name)}</div>
-                <div class="sr-meta">${m.paper_count || 0} papers \u00B7 ${m.result_count || 0} results</div>
+                <div class="sr-meta">${esc(tr('common.papersCount', { count: m.paper_count || 0 }))} \u00B7 ${esc(tr('common.resultsCount', { count: m.result_count || 0 }))}</div>
             </div>`;
         }
         html += '</div>';
     }
 
     if (data.opportunities && data.opportunities.length) {
-        html += '<div class="search-section"><div class="search-section-title">Opportunities</div>';
+        html += `<div class="search-section"><div class="search-section-title">${esc(tr('search.opportunities'))}</div>`;
         for (const o of data.opportunities) {
             html += `<div class="search-result-item" onclick="window._dg.searchNav('node','${esc(o.node_id)}')">
                 <div class="sr-title">${esc(o.title)}</div>
-                <div class="sr-meta">${esc(o.node_name || o.node_id)} \u00B7 score ${o.value_score || '?'}/5</div>
+                <div class="sr-meta">${esc(o.node_name || o.node_id)} \u00B7 ${esc(tr('common.scoreValue', { score: o.value_score || '?' }))}</div>
             </div>`;
         }
         html += '</div>';
     }
 
     if (data.gaps && data.gaps.length) {
-        html += '<div class="search-section"><div class="search-section-title">Gaps</div>';
+        html += `<div class="search-section"><div class="search-section-title">${esc(tr('search.gaps'))}</div>`;
         for (const g of data.gaps) {
             html += `<div class="search-result-item" onclick="window._dg.searchNav('node','${esc(g.node_id)}')">
-                <div class="sr-title">${esc(g.method_name)} on ${esc(g.dataset_name)}</div>
+                <div class="sr-title">${esc(tr('common.onDataset', { method: g.method_name, dataset: g.dataset_name }))}</div>
                 <div class="sr-meta">${esc(trunc(g.gap_description, 90))}</div>
             </div>`;
         }
@@ -2296,7 +2311,7 @@ function renderSearchResults(data) {
     }
 
     if (!html) {
-        html = '<div class="search-section"><p class="empty-msg">No results found.</p></div>';
+        html = `<div class="search-section"><p class="empty-msg">${esc(tr('empty.search'))}</p></div>`;
     }
 
     results.innerHTML = html;
@@ -2340,49 +2355,49 @@ window._dg = {
 
             let html = `<div class="proposal-content" style="max-height:80vh;">
                 <div class="proposal-header">
-                    <h3>Idea #${insight.id}: ${esc(insight.title || '')}</h3>
-                    <span class="proposal-stats">主实验: ${esc(canonical ? `Run #${canonical.id} / ${canonical.status}` : 'not started')}</span>
+                    <h3>${esc(tr('label.discoveryId', { id: insight.id }))}: ${esc(insight.title || '')}</h3>
+                    <span class="proposal-stats">${esc(tr('label.experimentRun', { id: canonical ? `${canonical.id} / ${canonical.status}` : tr('empty.experimentRunCreated') }))}</span>
                     <button class="btn-close" onclick="this.closest('.proposal-modal').remove()">×</button>
                 </div>
                 <div class="proposal-body">
-                <h4>Idea Progress</h4>
-                <p>Auto Research: ${esc(auto.status || 'not_started')} ${auto.stage ? `/ ${esc(auto.stage)}` : ''}</p>
-                <p>Submission: ${esc(insight.submission_status || 'not_started')} | Run count: ${runs.length}</p>
-                <p>Workspace: ${esc(data.workspace_root || '-')}</p>
+                <h4>${esc(tr('experiments.discoveryProgress'))}</h4>
+                <p>${esc(tr('label.autoResearch', { status: `${auto.status || 'not_started'}${auto.stage ? ` / ${auto.stage}` : ''}` }))}</p>
+                <p>${esc(tr('label.submissionRunCount', { status: insight.submission_status || 'not_started', count: runs.length }))}</p>
+                <p>${esc(tr('label.workspace', { path: data.workspace_root || '-' }))}</p>
                 <div class="chip-row" style="margin:8px 0 14px;">${renderTrackChips(data.planned_tracks)}</div>
                 ${renderManuscriptBlockers(plan.manuscript_blockers || {}, 8)}
-                ${auto.last_note ? `<p><b>Latest:</b> ${esc(auto.last_note)}</p>` : ''}
-                ${auto.last_error ? `<p style="color:#c4453a;"><b>Error:</b> ${esc(auto.last_error)}</p>` : ''}
+                ${auto.last_note ? `<p><b>${esc(tr('common.latest'))}</b> ${esc(auto.last_note)}</p>` : ''}
+                ${auto.last_error ? `<p style="color:#c4453a;"><b>${esc(tr('common.error'))}</b> ${esc(auto.last_error)}</p>` : ''}
                 <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px;margin:16px 0;">
                     <div style="background:var(--bg-elevated);padding:12px;border-radius:10px;">
-                        <h4 style="margin-top:0;">实验区</h4>
-                        <p><b>实验根目录:</b> ${esc(data.experiment_root || '-')}</p>
-                        <p><b>Canonical Run:</b> ${esc(data.canonical_run_id || canonical?.id || '-')}</p>
+                        <h4 style="margin-top:0;">${esc(tr('label.experimentArea'))}</h4>
+                        <p><b>${esc(tr('label.experimentPath', { path: '' }))}</b> ${esc(data.experiment_root || '-')}</p>
+                        <p><b>${esc(tr('label.canonicalRun', { run: '' }))}</b> ${esc(data.canonical_run_id || canonical?.id || '-')}</p>
                     </div>
                     <div style="background:var(--bg-elevated);padding:12px;border-radius:10px;">
-                        <h4 style="margin-top:0;">实验方案区</h4>
-                        <p><b>方案根目录:</b> ${esc(data.plan_root || '-')}</p>
-                        ${jsonPreview(plan.latest_status, '暂无 latest_status.json')}
+                        <h4 style="margin-top:0;">${esc(tr('label.experimentPlanArea'))}</h4>
+                        <p><b>${esc(tr('label.planPath', { path: '' }))}</b> ${esc(data.plan_root || '-')}</p>
+                        ${jsonPreview(plan.latest_status, tr('common.noLatestStatus'))}
                     </div>
                     <div style="background:var(--bg-elevated);padding:12px;border-radius:10px;">
-                        <h4 style="margin-top:0;">论文区</h4>
-                        <p><b>论文根目录:</b> ${esc(data.paper_root || '-')}</p>
+                        <h4 style="margin-top:0;">${esc(tr('label.generatedManuscriptArea'))}</h4>
+                        <p><b>${esc(tr('label.generatedManuscriptPath', { path: '' }))}</b> ${esc(data.paper_root || '-')}</p>
                         <div class="insight-actions" style="margin:8px 0;">
-                            ${paperUrls.index ? `<button class="btn-preview" onclick="window.open('${esc(paperUrls.index)}','_blank')">打开论文页</button>` : ''}
-                            ${paperUrls.pdf ? `<button class="btn-preview" onclick="window.open('${esc(paperUrls.pdf)}','_blank')">打开 PDF</button>` : ''}
-                            ${paperUrls.tex ? `<button class="btn-preview" onclick="window.open('${esc(paperUrls.tex)}','_blank')">打开 TeX</button>` : ''}
+                            ${paperUrls.index ? `<button class="btn-preview" onclick="window.open('${esc(paperUrls.index)}','_blank')">${esc(tr('label.openManuscriptPage'))}</button>` : ''}
+                            ${paperUrls.pdf ? `<button class="btn-preview" onclick="window.open('${esc(paperUrls.pdf)}','_blank')">${esc(tr('common.openPdf'))}</button>` : ''}
+                            ${paperUrls.tex ? `<button class="btn-preview" onclick="window.open('${esc(paperUrls.tex)}','_blank')">${esc(tr('common.openTex'))}</button>` : ''}
                         </div>
                         ${renderPaperAssetLinks(insight.id, paperAssets)}
                     </div>
                 </div>`;
 
-            html += `<h4>方案快照</h4>
-                ${jsonPreview(plan.experiment_spec, '暂无 experiment_spec.json')}
-                ${jsonPreview(plan.manuscript_blockers, 'No manuscript blockers')}
-                ${jsonPreview(plan.manuscript_input_state, '暂无 manuscript_input_state.json')}`;
+            html += `<h4>${esc(tr('label.planSnapshot'))}</h4>
+                ${jsonPreview(plan.experiment_spec, tr('common.noExperimentSpec'))}
+                ${jsonPreview(plan.manuscript_blockers, tr('common.noManuscriptBlockers'))}
+                ${jsonPreview(plan.manuscript_input_state, tr('common.noManuscriptInputState'))}`;
 
             if (runs.length) {
-                html += '<h4>Experiment History</h4>';
+                html += `<h4>${esc(tr('label.experimentHistory'))}</h4>`;
                 for (const run of runs) {
                     const color = experimentStatusColor(run.status);
                     const artifactSummary = Object.entries(run.artifact_counts || {})
@@ -2391,30 +2406,30 @@ window._dg = {
                         ? `<span style="color:${verdictColor(run.hypothesis_verdict)};font-weight:700;">${esc(run.hypothesis_verdict.toUpperCase())}</span>`
                         : '';
                     const badges = [];
-                    if (canonical && canonical.id === run.id) badges.push('主实验');
-                    if (run.has_plot_artifacts) badges.push('可视化');
-                    if (run.has_bundle) badges.push('论文包');
+                    if (canonical && canonical.id === run.id) badges.push(tr('label.canonical'));
+                    if (run.has_plot_artifacts) badges.push(tr('label.plot'));
+                    if (run.has_bundle) badges.push(tr('label.submissionBundleBadge'));
                     html += `<div style="padding:10px;margin:8px 0;border-left:3px solid ${color};background:var(--bg-elevated);border-radius:8px;">
                         <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
-                            <strong style="color:${color};">Run #${run.id}</strong>
+                            <strong style="color:${color};">${esc(tr('label.experimentRun', { id: run.id }))}</strong>
                             <span>${esc(run.status || 'unknown')}</span>
                             ${verdict}
                             ${badges.map(label => `<span class="chip">${esc(label)}</span>`).join('')}
                         </div>
                         <div style="margin-top:6px;font-size:0.78rem;color:var(--text-secondary);display:flex;gap:12px;flex-wrap:wrap;">
-                            <span>Iterations: ${run.iterations_total || 0} (${run.iterations_kept || 0} kept)</span>
-                            <span>Claims: ${run.claim_count || 0}</span>
-                            ${run.effect_pct != null ? `<span>Effect: ${run.effect_pct.toFixed(2)}%</span>` : ''}
-                            ${artifactSummary ? `<span>Artifacts: ${esc(artifactSummary)}</span>` : ''}
+                            <span>${esc(tr('label.iterations', { total: run.iterations_total || 0, kept: run.iterations_kept || 0 }))}</span>
+                            <span>${esc(tr('common.claimsCount', { count: run.claim_count || 0 }))}</span>
+                            ${run.effect_pct != null ? `<span>${esc(tr('label.effect', { effect: run.effect_pct.toFixed(2) + '%' }))}</span>` : ''}
+                            ${artifactSummary ? `<span>${esc(tr('label.artifacts', { artifacts: artifactSummary }))}</span>` : ''}
                         </div>
                         ${run.error_message ? `<div style="margin-top:6px;color:#c4453a;font-size:0.76rem;">${esc(trunc(run.error_message, 220))}</div>` : ''}
                         <div class="insight-actions" style="margin-top:8px;">
-                            <button class="btn-preview" onclick="window._dg.viewExperiment(${run.id})">View Run Details</button>
+                            <button class="btn-preview" onclick="window._dg.viewExperiment(${run.id})">${esc(tr('common.viewRunDetails'))}</button>
                         </div>
                     </div>`;
                 }
             } else {
-                html += '<p>No runs yet for this idea.</p>';
+                html += `<p>${esc(tr('empty.experimentRuns'))}</p>`;
             }
 
             html += '</div></div>';
@@ -2424,7 +2439,7 @@ window._dg = {
             modal.innerHTML = `<div class="proposal-overlay" onclick="this.parentElement.remove()"></div>${html}`;
             document.body.appendChild(modal);
         } catch (e) {
-            alert('Failed to load idea history: ' + e.message);
+            alert(tr('common.failedToLoadIdeaHistory', { message: e.message }));
         }
     },
 
@@ -2437,19 +2452,19 @@ window._dg = {
 
             let html = `<div class="proposal-content" style="max-height:80vh;">
                 <div class="proposal-header">
-                    <h3>Experiment #${run.id}: ${esc(run.insight_title || '')}</h3>
-                    <span class="proposal-stats">Status: ${esc(run.status)} | Verdict: ${esc(run.hypothesis_verdict || 'pending')}</span>
+                    <h3>${esc(tr('label.experimentRun', { id: `#${run.id}` }))}: ${esc(run.insight_title || '')}</h3>
+                    <span class="proposal-stats">${esc(tr('label.statusVerdict', { status: run.status, verdict: run.hypothesis_verdict || 'pending' }))}</span>
                     <button class="btn-close" onclick="this.closest('.proposal-modal').remove()">×</button>
                 </div>
                 <div class="proposal-body">
-                <h4>Metrics</h4>
-                <p>Baseline: ${run.baseline_metric_value || '?'} | Best: ${run.best_metric_value || '?'} | Effect: ${run.effect_pct != null ? run.effect_pct.toFixed(2) + '%' : '?'}</p>
-                <p>Iterations: ${run.iterations_total || 0} total, ${run.iterations_kept || 0} kept</p>
-                ${run.codebase_url ? `<p>Codebase: <a href="${esc(run.codebase_url)}" target="_blank">${esc(run.codebase_url)}</a></p>` : ''}
-                ${run.error_message ? `<p style="color:#c4453a;">Error: ${esc(run.error_message)}</p>` : ''}`;
+                <h4>${esc(tr('label.metrics'))}</h4>
+                <p>${esc(tr('label.baseline', { value: run.baseline_metric_value || '?' }))} | ${esc(tr('label.best', { value: run.best_metric_value || '?' }))} | ${esc(tr('label.effect', { effect: run.effect_pct != null ? run.effect_pct.toFixed(2) + '%' : '?' }))}</p>
+                <p>${esc(tr('label.iterations', { total: run.iterations_total || 0, kept: run.iterations_kept || 0 }))}</p>
+                ${run.codebase_url ? `<p>${esc(tr('label.codebase'))} <a href="${esc(run.codebase_url)}" target="_blank">${esc(run.codebase_url)}</a></p>` : ''}
+                ${run.error_message ? `<p style="color:#c4453a;">${esc(tr('common.error'))} ${esc(run.error_message)}</p>` : ''}`;
 
             if (iters.length) {
-                html += '<h4>Iteration History</h4><table class="matrix-table" style="font-size:0.72rem;"><thead><tr><th>#</th><th>Phase</th><th>Metric</th><th>Status</th><th>Description</th></tr></thead><tbody>';
+                html += `<h4>${esc(tr('label.iterationHistory'))}</h4><table class="matrix-table" style="font-size:0.72rem;"><thead><tr><th>#</th><th>${esc(tr('label.phase'))}</th><th>${esc(tr('label.metric'))}</th><th>${esc(tr('label.status'))}</th><th>${esc(tr('label.description'))}</th></tr></thead><tbody>`;
                 for (const it of iters.slice(-30)) {
                     const sColor = it.status === 'keep' ? '#3d8b5e' : it.status === 'crash' ? '#c4453a' : '#9a9088';
                     html += `<tr><td>${it.iteration_number}</td><td>${esc(it.phase)}</td><td>${it.metric_value != null ? it.metric_value.toFixed(6) : '-'}</td><td style="color:${sColor};">${esc(it.status)}</td><td>${esc(trunc(it.description || '', 60))}</td></tr>`;
@@ -2458,7 +2473,7 @@ window._dg = {
             }
 
             if (claims.length) {
-                html += '<h4>Experimental Claims</h4>';
+                html += `<h4>${esc(tr('label.experimentalClaims'))}</h4>`;
                 for (const cl of claims) {
                     const vColor = cl.verdict === 'confirmed' ? '#3d8b5e' : cl.verdict === 'refuted' ? '#c4453a' : '#a8842a';
                     html += `<div style="padding:8px;margin:4px 0;border-left:3px solid ${vColor};background:var(--bg-elevated);">
@@ -2475,7 +2490,7 @@ window._dg = {
             modal.innerHTML = `<div class="proposal-overlay" onclick="this.parentElement.remove()"></div>${html}`;
             document.body.appendChild(modal);
         } catch (e) {
-            alert('Failed to load: ' + e.message);
+            alert(tr('common.failedToLoad', { message: e.message }));
         }
     },
 
@@ -2508,14 +2523,14 @@ window._dg = {
                 <div class="proposal-content">
                     <div class="proposal-header">
                         <h3>${esc(res.title)}</h3>
-                        <span class="proposal-stats">${res.paper_count} papers · ${res.claim_count} claims · ${res.contradiction_count} contradictions</span>
+                        <span class="proposal-stats">${esc(tr('common.papersCount', { count: res.paper_count }))} · ${esc(tr('common.claimsCount', { count: res.claim_count }))} · ${esc(tr('common.contradictionsCount', { count: res.contradiction_count }))}</span>
                         <button class="btn-close" onclick="this.closest('.proposal-modal').remove()">\u00D7</button>
                     </div>
                     <div class="proposal-body">${bodyHtml}</div>
                 </div>`;
             document.body.appendChild(modal);
         } catch (e) {
-            alert('Failed to load proposal: ' + e.message);
+            alert(tr('common.failedToLoadProposal', { message: e.message }));
         }
     },
 };
@@ -2523,8 +2538,19 @@ window._dg = {
 // ── Init ─────────────────────────────────────────────────────────────
 
 function init() {
+    if (window.dgI18n) {
+        window.dgI18n.applyI18n(document);
+        $$('[data-lang]').forEach(btn => {
+            btn.addEventListener('click', () => window.dgI18n.setLanguage(btn.dataset.lang));
+        });
+        document.addEventListener('deepgraph:languagechange', () => {
+            updateLiveBadge();
+            if (taxonomyLoaded) loadTaxonomyDropdown();
+        });
+    }
+
     // Nav items
-    $$('.nav-item').forEach(btn => {
+    $$('[data-tab]').forEach(btn => {
         btn.addEventListener('click', () => switchTab(btn.dataset.tab));
     });
 
@@ -2539,17 +2565,29 @@ function init() {
 
     // Discovery filters + generate button
     const dtf = el('discoveryTierFilter');
-    if (dtf) dtf.addEventListener('change', loadDiscoveriesTab);
+    if (dtf) dtf.addEventListener('change', () => {
+        discoveriesLoaded = false;
+        loadDiscoveriesTab();
+    });
 
     // Experiment filters
     const esf = el('experimentStatusFilter');
-    if (esf) esf.addEventListener('change', loadExperimentsTab);
+    if (esf) esf.addEventListener('change', () => {
+        experimentsLoaded = false;
+        loadExperimentsTab();
+    });
 
     // Insight filters
     const itf = el('insightTypeFilter');
     const isf = el('insightSortFilter');
-    if (itf) itf.addEventListener('change', loadInsightsTab);
-    if (isf) isf.addEventListener('change', loadInsightsTab);
+    if (itf) itf.addEventListener('change', () => {
+        insightsLoaded = false;
+        loadInsightsTab();
+    });
+    if (isf) isf.addEventListener('change', () => {
+        insightsLoaded = false;
+        loadInsightsTab();
+    });
 
     // Evidence node select
     el('evidenceNodeSelect').addEventListener('change', (e) => {
@@ -2570,15 +2608,21 @@ function init() {
     // Initial data loads
     refreshStats();
     loadRecentlyDiscovered();
-    loadOverviewGraph();
-    loadProcessingPapers();
     startSSE();
 
     // Stats refresh every 15s
     statsTimer = setInterval(refreshStats, 15000);
 
-    // Processing panel refresh every 3s (also fetches from API)
-    setInterval(loadProcessingPapers, 3000);
+    // Idle work after first text content renders.
+    runWhenIdle(loadOverviewGraph, 300);
+    runWhenIdle(prefetchInactiveTabs, 900);
+
+    const overviewAdvanced = el('overviewAdvanced');
+    if (overviewAdvanced) {
+        overviewAdvanced.addEventListener('toggle', () => {
+            if (overviewAdvanced.open) loadProcessingPapers();
+        });
+    }
 
     // Periodically refresh recently discovered (every 30s)
     setInterval(loadRecentlyDiscovered, 30000);
@@ -2588,6 +2632,7 @@ function init() {
         if (activeTab === 'paper-progress') loadPaperProgressTab();
         if (activeTab === 'generated-papers') loadGeneratedPapersTab();
         if (activeTab === 'discoveries') loadDiscoveriesTab();
+        if (el('overviewAdvanced')?.open) loadProcessingPapers();
     }, 10000);
 }
 
