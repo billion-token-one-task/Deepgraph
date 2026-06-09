@@ -106,7 +106,7 @@ class ManuscriptBundleTests(unittest.TestCase):
                 "avg_new_tokens": 42.0,
                 "avg_latency_seconds": 0.8,
                 "route_rate": 0.0,
-                "count": 90,
+                "count": 1200,
             },
             "Always-Reason Chain-of-Thought": {
                 "metric_value": 0.57,
@@ -114,7 +114,63 @@ class ManuscriptBundleTests(unittest.TestCase):
                 "avg_new_tokens": 180.0,
                 "avg_latency_seconds": 2.4,
                 "route_rate": 1.0,
-                "count": 90,
+                "count": 1200,
+            },
+            "Random Budget-Matched Routing": {
+                "metric_value": 0.54,
+                "score": 0.60,
+                "avg_new_tokens": 108.0,
+                "avg_latency_seconds": 1.4,
+                "route_rate": 0.4,
+                "count": 1200,
+            },
+            "Self-Consistency Reasoning": {
+                "metric_value": 0.565,
+                "score": 0.62,
+                "avg_new_tokens": 210.0,
+                "avg_latency_seconds": 2.6,
+                "route_rate": 1.0,
+                "count": 1200,
+            },
+            "Best-of-N Verifier": {
+                "metric_value": 0.575,
+                "score": 0.63,
+                "avg_new_tokens": 190.0,
+                "avg_latency_seconds": 2.2,
+                "route_rate": 1.0,
+                "count": 1200,
+            },
+            "Debate Vote": {
+                "metric_value": 0.568,
+                "score": 0.625,
+                "avg_new_tokens": 240.0,
+                "avg_latency_seconds": 2.9,
+                "route_rate": 1.0,
+                "count": 1200,
+            },
+            "Confidence Routing": {
+                "metric_value": 0.55,
+                "score": 0.61,
+                "avg_new_tokens": 96.0,
+                "avg_latency_seconds": 1.2,
+                "route_rate": 0.35,
+                "count": 1200,
+            },
+            "Disagreement Routing": {
+                "metric_value": 0.56,
+                "score": 0.62,
+                "avg_new_tokens": 104.0,
+                "avg_latency_seconds": 1.35,
+                "route_rate": 0.38,
+                "count": 1200,
+            },
+            "Oracle Routing": {
+                "metric_value": 0.67,
+                "score": 0.72,
+                "avg_new_tokens": 130.0,
+                "avg_latency_seconds": 1.8,
+                "route_rate": 0.48,
+                "count": 1200,
             },
             "Candidate Method": {
                 "metric_value": 0.61,
@@ -122,15 +178,15 @@ class ManuscriptBundleTests(unittest.TestCase):
                 "avg_new_tokens": 110.0,
                 "avg_latency_seconds": 1.5,
                 "route_rate": 0.4,
-                "count": 90,
+                "count": 1200,
             },
         }
         datasets = [
             {
                 "name": "GSM8K",
                 "split": "test",
-                "num_test": 90,
-                "num_materialized_examples": 90,
+                "num_test": 1200,
+                "num_materialized_examples": 1200,
                 "preprocessing": "answer normalization",
                 "license_or_source": "openai/gsm8k",
             }
@@ -163,6 +219,30 @@ class ManuscriptBundleTests(unittest.TestCase):
             "latency": {"per_method": {name: row["avg_latency_seconds"] for name, row in per_method.items()}},
             "ablation_table": [{"ablation": "no_guard", "method": "Candidate/no_guard", "metric_value": 0.58}],
             "bootstrap_ci": {"paired_permutation_p": 0.01, "candidate_ci95": [0.59, 0.63]},
+            "route_rate": {"Candidate Method": 0.4, "Confidence Routing": 0.35, "Disagreement Routing": 0.38},
+            "cost_saving": {"Candidate Method": 0.39, "relative_to_always_reason": 0.39},
+            "easy_medium_hard_breakdown": {
+                "easy": {"metric_value": 0.82, "simple_degradation": 0.0},
+                "medium": {"metric_value": 0.62},
+                "hard": {"metric_value": 0.41},
+            },
+            "difficulty_breakdown_table": [
+                {"difficulty": "easy", "metric_value": 0.82, "simple_degradation": 0.0},
+                {"difficulty": "medium", "metric_value": 0.62},
+                {"difficulty": "hard", "metric_value": 0.41},
+            ],
+            "simple_case_degradation": {"easy": 0.0, "simple": 0.0, "degradation": 0.0},
+            "calibration_reliability": {"ece": 0.04, "calibration": "temperature scaled confidence"},
+            "routing_analysis": {
+                "route_rate": 0.4,
+                "cost_saving": 0.39,
+                "easy_medium_hard_breakdown": "easy medium hard breakdown recorded",
+                "simple_case_degradation": "simple degradation is zero on easy cases",
+                "calibration": "calibration reliability checked with ECE 0.04",
+            },
+            "subset_analysis": {"severe_disagreement": {"num_examples": 300, "metric_gain": 0.06}},
+            "quality_cost_frontier": {"pareto_methods": ["Confidence Routing", "Candidate Method"]},
+            "live_sanity_check": {"datasets": ["GSM8K"], "num_examples": 200},
             "full_benchmark_completed": True,
         }
         manifest = {
@@ -185,7 +265,13 @@ class ManuscriptBundleTests(unittest.TestCase):
             "minimum_seeds": 5,
             "required_real_benchmarks": ["GSM8K"],
             "required_models": ["Qwen/Qwen2.5-7B-Instruct"],
-            "required_baselines": ["Vanilla Direct Answering", "Always-Reason Chain-of-Thought"],
+            "required_baselines": [
+                "Vanilla Direct Answering",
+                "Always-Reason Chain-of-Thought",
+                "Confidence Routing",
+                "Disagreement Routing",
+                "Oracle Routing",
+            ],
             "required_ablations": ["no_guard"],
             "primary_metric": "accuracy",
             "statistical_test": "paired bootstrap confidence interval plus paired permutation test",
@@ -227,27 +313,123 @@ class ManuscriptBundleTests(unittest.TestCase):
 
     def _stub_orchestra(self, state, literature_block, paper_ids, iterations, *, figures_dir, baseline, metric_name):
         figures_dir.mkdir(parents=True, exist_ok=True)
-        (figures_dir / "fig_metric_trajectory.svg").write_text(
-            '<svg xmlns="http://www.w3.org/2000/svg"><text>metric</text></svg>',
-            encoding="utf-8",
+        assets = []
+        for figure_id, label in (
+            ("fig_main_benchmark", "main benchmark"),
+            ("fig_ablation", "ablation"),
+            ("fig_cost_quality", "cost quality"),
+        ):
+            fig_path = figures_dir / f"{figure_id}.png"
+            import matplotlib
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+            fig, ax = plt.subplots(figsize=(7, 4.2), dpi=220)
+            ax.bar(["A", "B", "C"], [0.50, 0.57, 0.61], color=["#64748b", "#94a3b8", "#2563eb"])
+            ax.set_ylim(0.0, 0.75)
+            ax.set_title(label + " evidence panel with benchmark detail")
+            ax.set_ylabel("accuracy")
+            fig.tight_layout()
+            fig.savefig(fig_path)
+            plt.close(fig)
+            assets.append(
+                {
+                    "figure_id": figure_id,
+                    "path": str(fig_path),
+                    "svg_path": "",
+                    "pdf_path": "",
+                    "code_path": "",
+                    "objective": f"Show {label} evidence.",
+                    "kind": "plot",
+                }
+            )
+        body = " ".join(
+            [
+                "The problem is budgeted reasoning under disagreement, where a system must decide when extra candidate traces are worth the latency and token cost.",
+                "The motivation is that fixed direct answering and fixed majority aggregation either miss useful evidence or spend compute uniformly.",
+                "The method uses confidence, route, cost, disagreement, and calibration signals to select reasoning paths under a compute budget.",
+                "The result is reported against four benchmark baselines with seed variation, ablation evidence, latency analysis, cost analysis, difficulty breakdown, and a disagreement subset.",
+                "The limitations include a single-model setting, one primary benchmark family, and sensitivity to confidence calibration.",
+            ]
+            * 220
         )
+        full_text = rf"""\documentclass{{article}}
+\usepackage{{iclr2026_conference,times}}
+\input{{math_commands.tex}}
+\usepackage{{graphicx}}
+\usepackage{{booktabs}}
+\usepackage{{array}}
+\title{{Auto Manuscript Insight}}
+\author{{Anonymous authors}}
+\begin{{document}}
+\maketitle
+\begin{{abstract}}
+This paper studies the problem of budgeted reasoning under disagreement. The challenge is to preserve useful minority evidence without paying keep-all token and latency cost. The proposed method routes candidate traces with confidence, disagreement, and cost signals. On GSM8K it improves the candidate accuracy to 0.61 while the strongest deployable baseline reaches 0.57, and the analysis reports ablation, cost, latency, and disagreement subset behavior.
+\end{{abstract}}
+\section{{Introduction}}
+{body} \cite{{cite_a}}
+\section{{Related Work}}
+{body} Prior work on selective prediction, test-time compute, uncertainty routing, and multi-agent aggregation motivates the benchmark design \cite{{cite_a}}.
+\section{{Method}}
+{body}
+\begin{{figure}}[t]
+\centering
+\includegraphics[width=\linewidth]{{figures/fig_main_benchmark.png}}
+\caption{{Main benchmark comparison across four methods.}}
+\label{{fig:main-benchmark}}
+\end{{figure}}
+\section{{Experiments}}
+{body}
+\begin{{table}}[t]
+\centering
+\begin{{tabular}}{{lrr}}
+\toprule
+Method & Accuracy & Tokens \\
+\midrule
+Direct & 0.50 & 42 \\
+CoT & 0.57 & 180 \\
+Random & 0.54 & 108 \\
+Candidate & 0.61 & 110 \\
+\bottomrule
+\end{{tabular}}
+\caption{{Main benchmark results.}}
+\end{{table}}
+\begin{{figure}}[t]
+\centering
+\includegraphics[width=\linewidth]{{figures/fig_ablation.png}}
+\caption{{Ablation results for the routing guard.}}
+\label{{fig:ablation}}
+\end{{figure}}
+\section{{Results}}
+{body} The ablation without the guard reaches 0.58, confirming that the routing guard matters. The latency and cost analysis shows the candidate keeps accuracy gains while using fewer tokens than always-reasoning. The disagreement subset analysis isolates examples where candidates disagree and confirms the method keeps high-confidence minority evidence.
+\begin{{table}}[t]
+\centering
+\begin{{tabular}}{{lrr}}
+\toprule
+Analysis & Accuracy & Latency \\
+\midrule
+No guard ablation & 0.58 & 1.3 \\
+Candidate & 0.61 & 1.5 \\
+\bottomrule
+\end{{tabular}}
+\caption{{Ablation and latency/cost analysis.}}
+\end{{table}}
+\begin{{figure}}[t]
+\centering
+\includegraphics[width=\linewidth]{{figures/fig_cost_quality.png}}
+\caption{{Cost-quality tradeoff and disagreement subset behavior.}}
+\label{{fig:cost-quality}}
+\end{{figure}}
+\section{{Discussion}}
+{body} These results support the method while preserving clear limitations about benchmark scope, calibration, and model coverage.
+\bibliographystyle{{iclr2026_conference}}
+\bibliography{{references}}
+\end{{document}}
+"""
         return {
-            "outline": {"plotting_plan": [{"figure_id": "fig_metric_trajectory", "plot_type": "plot"}]},
+            "outline": {"plotting_plan": [{"figure_id": asset["figure_id"], "plot_type": "plot"} for asset in assets]},
             "plotting": {
-                "figure_captions": [{"figure_id": "fig_metric_trajectory", "caption": "Metric trajectory."}],
-                "plotting_executor": {
-                    "assets": [
-                        {
-                            "figure_id": "fig_metric_trajectory",
-                            "path": str(figures_dir / "fig_metric_trajectory.svg"),
-                            "svg_path": str(figures_dir / "fig_metric_trajectory.svg"),
-                            "pdf_path": "",
-                            "code_path": "",
-                            "objective": "Show the metric trajectory.",
-                            "kind": "plot",
-                        }
-                    ]
-                },
+                "figure_captions": [{"figure_id": asset["figure_id"], "caption": asset["objective"]} for asset in assets],
+                "plotting_executor": {"assets": assets},
             },
             "literature_discovery": {},
             "literature_text": r"\section{Introduction}Intro with \cite{cite_a}.\section{Related Work}Related work with \cite{cite_a}.",
@@ -259,7 +441,7 @@ class ManuscriptBundleTests(unittest.TestCase):
                 "experiments": "Experiments text.",
                 "discussion": "Discussion text.",
             },
-            "refinement_full_text": "",
+            "refinement_full_text": full_text,
             "agentreview_worklog": [],
             "bibtex": "@misc{cite_a,\n  title = {Verified Paper},\n  author = {Author One},\n  year = {2024}\n}\n",
             "bib_keys": ["cite_a"],
@@ -383,8 +565,8 @@ class ManuscriptBundleTests(unittest.TestCase):
                 baseline=baseline,
                 metric_name=metric_name,
             )
-            (figures_dir / "fig_metric_trajectory.svg").write_text(
-                '<svg xmlns="http://www.w3.org/2000/svg"><text>Diagram placeholder: failed API figure.</text></svg>',
+            (figures_dir / "fig_main_benchmark.png").write_text(
+                "Diagram placeholder: failed API figure.",
                 encoding="utf-8",
             )
             return out

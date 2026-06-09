@@ -75,7 +75,7 @@ base_url = "http://127.0.0.1:8070"
 request_timeout_seconds = 300
 
 [pdf]
-text_backend = "auto"
+text_backend = "source_auto"
 
 [pipeline]
 concurrency = 30
@@ -137,8 +137,14 @@ allow_synthetic_fallback = false
 real_llm_model = "Qwen/Qwen2.5-7B-Instruct"
 real_benchmark_dataset = "openai/gsm8k"
 real_benchmark_dataset_config = "main"
-real_benchmark_max_examples = 64
-real_benchmark_seeds = 3
+real_benchmark_max_examples = 1000
+real_benchmark_seeds = 5
+full_benchmark_min_examples = 1000
+full_benchmark_min_datasets = 2
+full_benchmark_min_models = 2
+full_benchmark_min_baselines = 6
+full_benchmark_require_significance = true
+full_benchmark_require_strongest_win = true
 real_benchmark_time_budget_seconds = 3600
 validation_benchmark_max_examples = 64
 validation_benchmark_seeds = 3
@@ -192,8 +198,8 @@ paperbanana_cmd = ""
 refinement_iters = 4
 
 [auto_research]
-pipeline_enabled = false
-pipeline_batch_size = 100
+pipeline_enabled = true
+pipeline_batch_size = 1
 pipeline_interval_seconds = 120
 pipeline_start_delay_seconds = 10
 enabled = true

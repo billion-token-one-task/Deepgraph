@@ -111,6 +111,10 @@ CREATE TABLE IF NOT EXISTS performance_plateaus (
     spread_pct REAL NOT NULL,                 -- spread as % of max
     method_count INTEGER DEFAULT 0,
     paper_count INTEGER DEFAULT 0,
+    plateau_kind TEXT,                        -- benchmark_saturation|method_bottleneck|metric_insensitive|method_plateau
+    plateau_level TEXT,                       -- high|mid|low
+    max_value REAL,
+    min_value REAL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(node_id, dataset_name, metric_name)
 );
@@ -269,6 +273,9 @@ CREATE TABLE IF NOT EXISTS hidden_variable_bridges (
     shared_factor TEXT NOT NULL,
     paper_ids TEXT,                         -- JSON array
     score REAL DEFAULT 0,
+    factor_idf REAL,
+    pair_rarity REAL,
+    shared_factor_count INTEGER,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(node_a_id, node_b_id, shared_factor)
 );

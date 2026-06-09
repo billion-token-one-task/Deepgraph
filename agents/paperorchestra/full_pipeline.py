@@ -35,6 +35,10 @@ from agents.paperorchestra.tracing import (
     write_json_checkpoint,
     write_text_checkpoint,
 )
+from agents.paperorchestra.writing_standard import (
+    MANUSCRIPT_WRITING_STANDARD_TEXT,
+    section_style_rules,
+)
 from config import (
     PAPERBANANA_CMD,
     PAPERORCHESTRA_REFINEMENT_ITERS,
@@ -57,7 +61,9 @@ DEEPGRAPH_WRITING_GUARD = """DeepGraph writing constraints:
 - Prefer data figures and tables over conceptual diagrams. Never include prompt text, TODOs, placeholders, or artifact-audit wording in the paper body or captions.
 - API-generated conceptual figures must be requested only after a manuscript draft exists; early plotting is for artifact-backed data figures.
 - Explicitly discuss baseline fairness, required ablations, seed variance, statistical testing, and limitations once, without repeatedly self-disqualifying the contribution.
-- Bootstrap/proxy evidence may be reported as engineering validation only, never as full benchmark proof."""
+- Bootstrap/proxy evidence may be reported as engineering validation only, never as full benchmark proof.
+
+""" + MANUSCRIPT_WRITING_STANDARD_TEXT
 
 COMPACT_LITERATURE_SYSTEM = """PaperOrchestra literature writer, compact mode.
 Write only the Introduction and Related Work LaTeX sections inside the supplied template context.
@@ -311,7 +317,7 @@ def _default_section_fragments(
     )
 
     abstract = (
-        "Training-free multi-agent reasoning can improve answer quality at inference time, but simple "
+        "Inference-time multi-agent reasoning can improve answer quality at inference time, but simple "
         "majority voting discards useful dissent while keep-all debate spends unnecessary tokens. "
         f"We study {_latex_escape_text(method.get('name') or state.get('method_name'))}, a selector that retains "
         "high-confidence minority answers only under disagreement and otherwise exits early. "
@@ -325,11 +331,11 @@ def _default_section_fragments(
             "",
             "Inference-time reasoning methods such as self-consistency and deliberative search show that sampling or searching over multiple reasoning paths can improve LLM answers "
             + intro_cite
-            + ". Multi-agent debate extends this idea by eliciting distinct roles and disagreement, but the final decision rule is often treated as a secondary implementation choice. This paper asks whether the decision rule itself should preserve minority evidence when a token budget is fixed.",
+            + ". Multi-agent debate extends this idea by eliciting distinct roles and disagreement, but the final decision rule is often treated as a secondary implementation choice. This paper studies decision rules that preserve minority evidence under a fixed token budget.",
             "",
-            f"We propose {_latex_escape_text(method.get('name') or state.get('method_name'))}, a training-free selector over fixed agent candidates. The selector measures answer disagreement, majority margin, and retained-agent confidence. It exits early when direct and deliberative agents agree, uses consensus when a majority is stable, and preserves high-confidence dissent when disagreement suggests that majority collapse is risky.",
+            f"We propose {_latex_escape_text(method.get('name') or state.get('method_name'))}, an inference-time selector over fixed agent candidates. The selector measures answer disagreement, majority margin, and retained-agent confidence. It exits early when direct and deliberative agents agree, uses consensus when a majority is stable, and preserves high-confidence dissent when disagreement suggests that majority collapse is risky.",
             "",
-            f"Our evidence is intentionally training-free: no model weights are trained, and the benchmark uses controlled materialized multi-agent traces on {datasets}. The main result in Table~\\ref{{tab:main_results}} and {figure_sentence} shows the quality-cost tradeoff, while Table~\\ref{{tab:ablations}} isolates the minority-retention and budget-gating components.",
+            f"Our evidence is scoped to inference-time evaluation: no model weights are trained, and the benchmark uses controlled materialized multi-agent traces on {datasets}. The main result in Table~\\ref{{tab:main_results}} and {figure_sentence} shows the quality-cost tradeoff, while Table~\\ref{{tab:ablations}} isolates the minority-retention and budget-gating components.",
         ]
     )
     related = "\n".join(
@@ -339,26 +345,26 @@ def _default_section_fragments(
             + _tex_cite([cite_sc] if cite_sc else bib_keys[:1])
             + ". Tree-style deliberation makes the inference-time search process explicit "
             + _tex_cite([cite_tot] if cite_tot else bib_keys[1:2])
-            + ". Our setting shares the training-free constraint but focuses on selection among already materialized agent candidates.",
+            + ". Our setting shares the inference-time evaluation scope but focuses on selection among already materialized agent candidates.",
             "",
             r"\paragraph{Multi-agent debate and diversity.}",
             "Multi-agent debate creates diverse candidate rationales and lets agents challenge one another "
             + _tex_cite([cite_debate] if cite_debate else bib_keys[2:3])
             + ". Surveys and frameworks for LLM multi-agent systems emphasize that orchestration and final decision protocols are central experimental choices "
             + _tex_cite([cite_multi] if cite_multi else bib_keys[3:4])
-            + ". DPC treats the decision protocol as the object of study: it preserves useful disagreement without always paying for every agent.",
+            + ". The proposed method treats the decision protocol as the object of study: it preserves useful disagreement without always paying for every agent.",
         ]
     )
     method_tex = "\n".join(
         [
             (
-                _latex_escape_text(method.get("name") or "DPC")
+                _latex_escape_text(method.get("name") or "the proposed method")
                 + r" receives a set of candidate answers $\mathcal{A}=\{(a_i,c_i,t_i)\}_{i=1}^K$, "
                 + r"where $a_i$ is an answer, $c_i$ is a confidence proxy, and $t_i$ is the observed token cost. "
                 + r"It computes the majority answer $a_m$, its support margin, and the answer-diversity ratio."
             ),
             "",
-            "The selector keeps the direct and chain-of-thought agents when they agree with high confidence. If the majority margin is stable and no minority answer has high confidence, it returns the majority answer. Otherwise it retains the highest-confidence diverse subset and chooses the answer with the largest confidence-weighted support, with a small bonus for high-confidence minority answers. This rule is deterministic, training-free, and adds no parameter-learning stage.",
+            "The selector keeps the direct and chain-of-thought agents when they agree with high confidence. If the majority margin is stable and no minority answer has high confidence, it returns the majority answer. Otherwise it retains the highest-confidence diverse subset and chooses the answer with the largest confidence-weighted support, with a small bonus for high-confidence minority answers. This rule is deterministic and adds no parameter-learning stage.",
             "",
             "The measured cost of a decision is the sum of retained-agent tokens and the maximum retained latency. This accounting makes the method comparable to direct answering, confidence routing, disagreement routing, random budget-matched routing, oracle routing, and always multi-agent majority.",
         ]
@@ -367,7 +373,7 @@ def _default_section_fragments(
         [
             table,
             "",
-            f"The benchmark contains {datasets} with the deterministic seed count recorded in the artifact manifest. The primary metric is {metric}; secondary metrics are average new tokens, latency, route rate, and retained-agent count. DPC improves over direct answering by {round(float(ours.get('metric_value') or 0) - float(direct.get('metric_value') or 0), 4)} absolute accuracy while using substantially fewer tokens than always retaining all agents.",
+            f"The benchmark contains {datasets} with the deterministic seed count recorded in the artifact manifest. The primary metric is {metric}; secondary metrics are average new tokens, latency, route rate, and retained-agent count. The proposed method improves over direct answering by {round(float(ours.get('metric_value') or 0) - float(direct.get('metric_value') or 0), 4)} absolute accuracy while using substantially fewer tokens than always retaining all agents.",
             "",
             ablation_table,
             "",
@@ -376,7 +382,7 @@ def _default_section_fragments(
     )
     discussion = "\n".join(
         [
-            "The results support a narrow claim: in this controlled materialized trace suite, decision rules that preserve high-confidence dissent can improve the quality-cost frontier. They do not establish that DPC is universally better than live multi-agent debate on large held-out benchmarks.",
+            "The results support a narrow claim: in this controlled materialized trace suite, decision rules that preserve high-confidence dissent can improve the quality-cost frontier. They do not establish that the proposed method is universally better than live multi-agent debate on large held-out benchmarks.",
             "",
             "The main limitation is scale. The evidence uses offline traces rather than live API calls over thousands of examples. This makes the experiment reproducible on local hardware and appropriate for testing the selector, but future work should validate the same decision rule with fresh model samples, stronger backbones, and larger benchmark suites.",
         ]
@@ -609,6 +615,8 @@ def run_paperorchestra_full(
         + _short_json(lit_claim_map_small, 8000)
         + "\n--- collected_papers.json ---\n"
         + _short_json(lit_registry_small, 14000)
+        + "\n--- writing_standard ---\n"
+        + section_style_rules("Introduction Related Work")
     )
     lit_user_fallback = (
         "--- template.tex ---\n"
@@ -621,6 +629,8 @@ def run_paperorchestra_full(
         + _short_json({"allowed_cite_keys": bib_keys[:12], "rule": "Only cite these exact keys."}, 1500)
         + "\n--- collected_papers.json ---\n"
         + _short_json(lit_registry_tiny, 7000)
+        + "\n--- writing_standard ---\n"
+        + section_style_rules("Introduction Related Work")
     )
     # ── Section Writing Agent ─────────────────────────────────────────────
     citation_map: dict[str, dict] = {}
@@ -726,7 +736,8 @@ def run_paperorchestra_full(
         problem = evidence_brief.get("problem") or {}
         method_rows = _pick_methods(
             [
-                "Diversity-Preserving",
+                "Candidate",
+                "Proposed",
                 "Vanilla Direct",
                 "Always Multi-Agent",
                 "Confidence Routing",
@@ -741,7 +752,7 @@ def run_paperorchestra_full(
             "method": {
                 "name": method.get("name"),
                 "summary": _clip_text(method.get("summary"), 420),
-                "training_free": method.get("training_free"),
+                "no_weight_updates": method.get("training_free"),
                 "constraints": method.get("constraints") or {},
             },
             "problem": {
@@ -766,7 +777,7 @@ def run_paperorchestra_full(
             return {
                 **common,
                 "write_focus": [
-                    "Define the training-free selector and its inputs.",
+                    "Define the inference-time selector and its inputs.",
                     "Describe disagreement, confidence, minority retention, early consensus, and cost accounting.",
                     "Include concise pseudocode-style prose or equations if helpful.",
                     "Mention no model weights are trained.",
@@ -785,7 +796,7 @@ def run_paperorchestra_full(
                 "statistical_tests": exp.get("statistical_tests") or {},
                 "write_focus": [
                     "Report setup, baselines, metrics, seed count, main table, ablations, latency, and token cost.",
-                    "Use exact numeric values from main_results and ablation_table.",
+                    "Use evidence-backed numeric values from main_results and ablation_table, rounded for paper presentation rather than raw Python floats.",
                     "State the controlled materialized-trace boundary clearly.",
                 ],
             }
@@ -797,7 +808,7 @@ def run_paperorchestra_full(
             "write_focus": [
                 "Interpret what the completed evidence supports.",
                 "State limitations without undermining the bounded contribution.",
-                "Conclude with the training-free multi-agent reasoning takeaway.",
+                "Conclude with the inference-time multi-agent reasoning takeaway.",
             ],
         }
 
@@ -808,6 +819,8 @@ def run_paperorchestra_full(
             + "\n--- style_rules ---\n"
             + "ICLR-style concise LaTeX. Use booktabs if creating tables. Use only allowed citation keys and listed figures. "
             + "Keep this fragment 700-1200 words unless tables require more.\n"
+            + section_style_rules(section_title)
+            + "\n"
             + ("\n--- prior_fragment_excerpt ---\n" + partial_template[:900] if partial_template else "")
         )
 
@@ -823,6 +836,8 @@ def run_paperorchestra_full(
         return (
             "--- compact_section_task_card.json ---\n"
             + _short_json(card, 4200)
+            + "\n--- style_rules ---\n"
+            + section_style_rules(section_title)
             + "\nWrite the requested LaTeX fragment only."
         )
 
@@ -953,6 +968,8 @@ def run_paperorchestra_full(
             + _short_json(_compact_citation_registry(citation_registry_prompt, limit=10, abstract_chars=300), 3500)
             + "\n--- figures_list ---\n"
             + _short_json(fig_list[:6], 2500)
+            + "\n--- writing_standard ---\n"
+            + MANUSCRIPT_WRITING_STANDARD_TEXT
             + "\n--- reviewer_feedback ---\n"
             + json.dumps(
                 {

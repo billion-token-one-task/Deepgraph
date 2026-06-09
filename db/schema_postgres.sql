@@ -183,6 +183,19 @@ CREATE TABLE IF NOT EXISTS paper_insights (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS paper_research_facets (
+    id BIGSERIAL PRIMARY KEY,
+    paper_id TEXT NOT NULL REFERENCES papers(id),
+    facet_type TEXT NOT NULL,              -- problem_frame|motivation_rationale|methodology_unit|design_decision|protocol_mechanism|boundary_condition
+    facet_name TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    evidence_location TEXT,
+    source_quote TEXT,
+    metadata TEXT,                         -- JSON object
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(paper_id, facet_type, facet_name, summary)
+);
+
 CREATE TABLE IF NOT EXISTS insights (
     id BIGSERIAL PRIMARY KEY,
     node_id TEXT NOT NULL REFERENCES taxonomy_nodes(id),
@@ -342,6 +355,8 @@ CREATE INDEX IF NOT EXISTS idx_results_method ON results(method_name);
 CREATE INDEX IF NOT EXISTS idx_results_dataset ON results(dataset_name);
 CREATE INDEX IF NOT EXISTS idx_matrix_gaps_node ON matrix_gaps(node_id);
 CREATE INDEX IF NOT EXISTS idx_paper_insights_work_type ON paper_insights(work_type);
+CREATE INDEX IF NOT EXISTS idx_paper_research_facets_paper ON paper_research_facets(paper_id);
+CREATE INDEX IF NOT EXISTS idx_paper_research_facets_type ON paper_research_facets(facet_type);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_graph_entities_type_name ON graph_entities(entity_type, normalized_name);
 CREATE INDEX IF NOT EXISTS idx_paper_entity_mentions_paper ON paper_entity_mentions(paper_id);
 CREATE INDEX IF NOT EXISTS idx_paper_entity_mentions_node ON paper_entity_mentions(node_id);

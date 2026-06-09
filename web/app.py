@@ -111,6 +111,92 @@ def _disk_snapshot(path: Path) -> dict[str, Any]:
     except OSError:
         return {}
 
+def _cpu_snapshot() -> dict[str, Any]:
+    snapshot: dict[str, Any] = {"count": os.cpu_count()}
+    try:
+        one, five, fifteen = os.getloadavg()
+        snapshot.update({
+            "load_1m": round(one, 2),
+            "load_5m": round(five, 2),
+            "load_15m": round(fifteen, 2),
+            "load_pct_1m": round((one / max(os.cpu_count() or 1, 1)) * 100, 1),
+        })
+    except (OSError, AttributeError):
+        pass
+    return snapshot
+
+
+def _gpu_snapshot() -> dict[str, Any]:
+    if not shutil.which("nvidia-smi"):
+        return {"available": False, "gpus": [], "processes": []}
+    query = "index,name,memory.total,memory.used,utilization.gpu,temperature.gpu,power.draw,power.limit"
+    try:
+        out = subprocess.check_output(
+            ["nvidia-smi", f"--query-gpu={query}", "--format=csv,noheader,nounits"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+        gpus = []
+        for line in out.splitlines():
+            parts = [part.strip() for part in line.split(",")]
+            if len(parts) < 8:
+                continue
+            idx, name, mem_total, mem_used, util, temp, power, power_limit = parts[:8]
+            def _float(value: str) -> float | None:
+                try:
+                    return round(float(value), 1)
+                except ValueError:
+                    return None
+            total = _float(mem_total) or 0
+            used = _float(mem_used) or 0
+            gpus.append({
+                "index": int(idx),
+                "name": name,
+                "memory_total_mb": total,
+                "memory_used_mb": used,
+                "memory_used_pct": round((used / total) * 100, 1) if total else None,
+                "utilization_pct": _float(util),
+                "temperature_c": _float(temp),
+                "power_w": _float(power),
+                "power_limit_w": _float(power_limit),
+            })
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return {"available": False, "gpus": [], "processes": []}
+
+    processes = []
+    try:
+        pout = subprocess.check_output(
+            [
+                "nvidia-smi",
+                "--query-compute-apps=gpu_uuid,pid,process_name,used_memory",
+                "--format=csv,noheader,nounits",
+            ],
+            text=True,
+            stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+        for line in pout.splitlines():
+            parts = [part.strip() for part in line.split(",")]
+            if len(parts) < 4:
+                continue
+            gpu_uuid, pid, process_name, used_memory = parts[:4]
+            try:
+                used_memory_mb = round(float(used_memory), 1)
+            except ValueError:
+                used_memory_mb = None
+            processes.append({
+                "gpu_uuid": gpu_uuid,
+                "pid": pid,
+                "process_name": process_name,
+                "used_memory_mb": used_memory_mb,
+            })
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+    return {"available": True, "gpus": gpus, "processes": processes}
+
+
 
 def _read_dotenv_lines(path: Path) -> list[str]:
     if not path.exists():
@@ -809,6 +895,8 @@ def api_runtime_config():
         db_info = db.describe_backend()
         workspace_disk = _disk_snapshot(cfg.WORKSPACE_DIR)
         experiment_disk = _disk_snapshot(cfg.EXPERIMENT_WORKDIR)
+        cpu_info = _cpu_snapshot()
+        gpu_info = _gpu_snapshot()
         return jsonify({
             "llm": {
                 "primary": {
@@ -844,6 +932,7 @@ def api_runtime_config():
                 "python": cfg.RUNTIME_PYTHON,
                 "platform": platform.platform(),
                 "cpu_count": os.cpu_count(),
+                "cpu": cpu_info,
                 "process_rss_mb": _process_rss_mb(),
                 "total_memory_mb": _total_memory_mb(),
                 "database": db_info,
@@ -859,11 +948,20 @@ def api_runtime_config():
                 "real_llm_model": cfg.EXPERIMENT_REAL_LLM_MODEL,
                 "benchmark_dataset": cfg.EXPERIMENT_REAL_BENCHMARK_DATASET,
                 "benchmark_dataset_config": cfg.EXPERIMENT_REAL_BENCHMARK_DATASET_CONFIG,
+                "real_benchmark_max_examples": cfg.EXPERIMENT_REAL_BENCHMARK_MAX_EXAMPLES,
+                "real_benchmark_seeds": cfg.EXPERIMENT_REAL_BENCHMARK_SEEDS,
+                "full_benchmark_min_examples": cfg.EXPERIMENT_FULL_BENCHMARK_MIN_EXAMPLES,
+                "full_benchmark_min_datasets": cfg.EXPERIMENT_FULL_BENCHMARK_MIN_DATASETS,
+                "full_benchmark_min_models": cfg.EXPERIMENT_FULL_BENCHMARK_MIN_MODELS,
+                "full_benchmark_min_baselines": cfg.EXPERIMENT_FULL_BENCHMARK_MIN_BASELINES,
+                "full_benchmark_require_significance": cfg.EXPERIMENT_FULL_BENCHMARK_REQUIRE_SIGNIFICANCE,
+                "full_benchmark_require_strongest_win": cfg.EXPERIMENT_FULL_BENCHMARK_REQUIRE_STRONGEST_WIN,
                 "gpu_mode": cfg.GPU_MODE,
                 "gpu_worker_slots": cfg.GPU_WORKER_SLOTS,
                 "gpu_visible_devices": cfg.GPU_VISIBLE_DEVICES,
                 "gpu_default_model": cfg.GPU_DEFAULT_MODEL,
                 "gpu_default_vram_gb": cfg.GPU_DEFAULT_VRAM_GB,
+                "gpu_snapshot": gpu_info,
                 "experiment_workdir": str(cfg.EXPERIMENT_WORKDIR),
                 "experiment_disk": experiment_disk,
             },

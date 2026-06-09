@@ -229,7 +229,7 @@ CONCEPT_FIGURE_RULES = {
         "layout": {
             "principle": "clear regions, strong alignment, enough whitespace, readable when scaled to paper width; layouts should be tidy and aligned but not use a visible grid background",
             "motivation": "high-density structured comparison grounded in the paper's own domain entities. For multi-agent papers this means agent/avatar trace sources, majority voting, lost useful dissent, keep-all token waste, and conditional retention with concrete answer bubbles, counters, score/cost tags, and small callout icons; for other domains, substitute the correct domain objects. Use tidy comparison regions or a single-row triptych, not three empty boxes, card stacks, icon-only groups, or a poster scene",
-            "overview": "mechanism-rich schematic grounded in the paper's own domain entities. For multi-agent papers this means agent/avatar traces, DPC grouping, margin evidence, dissent score, budget constraint, retained/discarded traces, and selected output; for other domains, substitute the correct domain objects. Include at least one worked example table or local zoom-in; use a central mechanism map or structured evidence map, not a numbered four-column flow",
+            "overview": "mechanism-rich schematic grounded in the paper's own domain entities. For multi-agent papers this means agent/avatar traces, method-specific grouping, margin evidence, dissent score, budget constraint, retained/discarded traces, and selected output; for other domains, substitute the correct domain objects. Include at least one worked example table or local zoom-in; use a central mechanism map or structured evidence map, not a numbered four-column flow",
             "avoid": "deep nested containers, overcrowded modules, repeated titles, weak output area, empty step-by-step chains, visible step numbers, numbered circle badges, large blank canvas around tiny modules, isolated icon boards, decision dashboards, full-scene cartoon posters, mascot-dominated illustrations, cinematic rooms, decorative backgrounds, graph-paper backgrounds, furniture, envelopes/trays as central metaphors, or large environmental scenes",
         },
         "text": {
@@ -267,7 +267,7 @@ CONCEPT_FIGURE_RULES = {
         },
         "overview": {
             "purpose": "make the method intuitive before Method details by showing entities, decisions, and evidence as a structured schematic with local visual callouts",
-            "structure": "mechanism-rich DPC schematic with domain-specific trace sources, candidate answers, confidence/cost cues, grouped support, margin evidence, dissent scoring, retained/discarded traces, selected output, and flat icon accents",
+            "structure": "mechanism-rich method schematic with domain-specific trace sources, candidate answers, confidence/cost cues, grouped support, margin evidence, dissent scoring, retained/discarded traces, selected output, and flat icon accents",
             "main_region_count": [3, 6],
             "must_show_at_least_three": ["input structure", "intermediate groups or candidate sets", "core margin/scoring mechanism", "information retained/discarded/reweighted", "output semantics"],
             "avoid": "empty input-gate-output diagrams, generic module/process labels, all implementation details, loss/training minutiae, repeated motivation contrast, mandatory left-to-right flow, text-only card stacks, decision boards, dashboard layouts, isolated icon collages, full-scene posters, mascot-dominated scenes",

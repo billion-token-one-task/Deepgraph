@@ -1,6 +1,7 @@
 """Extraction Agent: scientific paper -> taxonomy classification, evidence rows, and graph evidence."""
 from agents.llm_client import call_llm_json
 from db.taxonomy import get_all_leaf_ids
+from config import MULTI_AGENT_EXTRACTION_ENABLED
 
 SYSTEM_PROMPT = """You are a scientific paper analysis agent. Extract structured, concrete information from research papers.
 
@@ -192,6 +193,25 @@ def extract_paper(paper_id: str, title: str, text: str) -> tuple[dict, int]:
     taxonomy_hint = "Available taxonomy leaf nodes:\n" + "\n".join(
         f"  {nid}" for nid in leaf_ids
     )
+    compact_text = _compact_paper_text(text)
+
+    if MULTI_AGENT_EXTRACTION_ENABLED:
+        try:
+            from agents.multi_agent_extraction import extract_paper_multi_agent
+
+            result, tokens = extract_paper_multi_agent(
+                paper_id,
+                title,
+                taxonomy_hint,
+                compact_text,
+            )
+            result.setdefault("extraction_mode", "multi_agent")
+            return result, tokens
+        except Exception as exc:
+            print(
+                f"[EXTRACT] Multi-agent extraction failed for {paper_id}; falling back to monolithic prompt: {exc}",
+                flush=True,
+            )
 
     user_prompt = f"""Paper ID: {paper_id}
 Title: {title}
@@ -199,7 +219,9 @@ Title: {title}
 {taxonomy_hint}
 
 Full text:
-{_compact_paper_text(text)}"""
+{compact_text}"""
 
     result, tokens = call_llm_json(SYSTEM_PROMPT, user_prompt)
+    if isinstance(result, dict):
+        result.setdefault("extraction_mode", "monolithic")
     return result, tokens

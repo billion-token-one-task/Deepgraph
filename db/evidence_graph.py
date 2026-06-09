@@ -53,6 +53,30 @@ WHITESPACE_PATTERN = re.compile(r"\s+")
 SEPARATOR_PATTERN = re.compile(r"[^a-z0-9]+")
 WORD_PATTERN = re.compile(r"[a-z0-9]+")
 
+GENERIC_ENTITY_NAMES = {
+    "model",
+    "models",
+    "method",
+    "methods",
+    "system",
+    "systems",
+    "approach",
+    "approaches",
+    "framework",
+    "task",
+    "tasks",
+    "dataset",
+    "datasets",
+    "benchmark",
+    "benchmarks",
+    "metric",
+    "metrics",
+    "performance",
+    "evaluation",
+    "results",
+    "analysis",
+}
+
 
 def canonicalize_entity_name(entity_type: str | None, name: str) -> str:
     """Convert an entity mention into a stable display name."""
@@ -81,6 +105,32 @@ def normalize_entity_name(name: str) -> str:
 
 def _tokenize_words(name: str) -> list[str]:
     return WORD_PATTERN.findall((name or "").lower())
+
+
+def _is_sentence_like_entity(name: str) -> bool:
+    text = (name or "").strip()
+    if not text:
+        return True
+    words = _tokenize_words(text)
+    if len(words) > 10:
+        return True
+    if text.endswith((".", "?", "!")) and len(words) > 4:
+        return True
+    return False
+
+
+def is_high_value_entity(entity_type: str | None, name: str) -> bool:
+    """Filter generic words and claim-like sentences out of the reusable graph."""
+    entity_type = normalize_entity_type(entity_type)
+    canonical = canonicalize_entity_name(entity_type, name)
+    if not canonical:
+        return False
+    norm = normalize_entity_name(canonical)
+    if norm in {normalize_entity_name(x) for x in GENERIC_ENTITY_NAMES}:
+        return False
+    if entity_type == "concept" and _is_sentence_like_entity(canonical):
+        return False
+    return True
 
 
 def _acronym(name: str) -> str:
@@ -219,7 +269,7 @@ def _merge_entity_buckets(items: list[dict]) -> list[dict]:
     for item in items:
         entity_type = normalize_entity_type(item.get("entity_type"))
         canonical_name = canonicalize_entity_name(entity_type, item.get("name") or item.get("canonical_name") or "")
-        if not canonical_name:
+        if not canonical_name or not is_high_value_entity(entity_type, canonical_name):
             continue
         key = (entity_type, canonical_name)
         bucket = buckets.setdefault(key, {
@@ -251,7 +301,12 @@ def _merge_relation_buckets(items: list[dict]) -> list[dict]:
         subject = canonicalize_entity_name(subject_type, item.get("subject") or "")
         obj = canonicalize_entity_name(object_type, item.get("object") or "")
         predicate = normalize_predicate(item.get("predicate"))
-        if not subject or not obj:
+        if (
+            not subject
+            or not obj
+            or not is_high_value_entity(subject_type, subject)
+            or not is_high_value_entity(object_type, obj)
+        ):
             continue
         key = (subject_type, subject, predicate, object_type, obj)
         bucket = buckets.setdefault(key, {
@@ -623,7 +678,7 @@ def build_structured_graph_payload_from_records(
 
     def add_entity(name: str, entity_type: str, **extra: Any):
         canonical_name = canonicalize_entity_name(entity_type, name)
-        if not canonical_name:
+        if not canonical_name or not is_high_value_entity(entity_type, canonical_name):
             return
         entities.append({
             "name": canonical_name,
@@ -638,7 +693,12 @@ def build_structured_graph_payload_from_records(
         })
 
     def add_relation(subject: str, subject_type: str, predicate: str, obj: str, object_type: str, **extra: Any):
-        if not subject or not obj:
+        if (
+            not subject
+            or not obj
+            or not is_high_value_entity(subject_type, subject)
+            or not is_high_value_entity(object_type, obj)
+        ):
             return
         relations.append({
             "subject": canonicalize_entity_name(subject_type, subject),
@@ -695,16 +755,8 @@ def build_structured_graph_payload_from_records(
         if claim.get("claim_type") == "method" and method_name:
             add_entity(method_name, "method", mention_role="method_claim", confidence=0.82, source_text=claim.get("claim_text"))
 
-    if insight:
-        work_type = (insight.get("work_type") or "").strip()
-        if work_type:
-            add_entity(work_type.replace("_", " "), "concept", mention_role="work_type", confidence=0.78)
-        for text in insight.get("key_findings", []):
-            add_entity(text, "concept", mention_role="finding", confidence=0.72)
-        for text in insight.get("limitations", []):
-            add_entity(text, "concept", mention_role="limitation", confidence=0.68)
-        for text in insight.get("open_questions", []):
-            add_entity(text, "concept", mention_role="open_question", confidence=0.68)
+    # Paper overview sentences are useful as claims/signals, but they are not
+    # reusable graph entities. Avoid turning findings/open questions into nodes.
 
     return merge_graph_payloads({"entities": entities, "relations": relations})
 
@@ -766,7 +818,10 @@ def insert_relation(relation: dict, commit: bool = True) -> int:
 def store_paper_graph(paper_id: str, node_ids: list[str], graph: dict) -> dict:
     """Store extracted entities and relations for a paper."""
     clear_paper_graph(paper_id)
-    assigned_nodes = node_ids or [None]
+    # Store each paper-level graph fact once. Multi-node taxonomy assignment is
+    # already represented in paper_taxonomy; copying every entity/relation to
+    # each node inflates node overlap and bridge signals.
+    assigned_nodes = [node_ids[0]] if node_ids else [None]
 
     entities_by_name: dict[tuple[str, str], str] = {}
     entity_count = 0
@@ -775,7 +830,7 @@ def store_paper_graph(paper_id: str, node_ids: list[str], graph: dict) -> dict:
     for entity in graph.get("entities", []):
         entity_type = normalize_entity_type(entity.get("entity_type"))
         canonical_name = canonicalize_entity_name(entity_type, entity.get("canonical_name") or entity.get("name") or "")
-        if not canonical_name:
+        if not canonical_name or not is_high_value_entity(entity_type, canonical_name):
             continue
         entity_id = upsert_entity({
             "name": canonical_name,
@@ -822,6 +877,10 @@ def store_paper_graph(paper_id: str, node_ids: list[str], graph: dict) -> dict:
         subject = (relation.get("subject") or "").strip()
         obj = (relation.get("object") or "").strip()
         if not subject or not obj:
+            continue
+        if not is_high_value_entity(relation.get("subject_type"), subject):
+            continue
+        if not is_high_value_entity(relation.get("object_type"), obj):
             continue
         subject_entity_id = resolve_entity_id(subject, relation.get("subject_type"))
         object_entity_id = resolve_entity_id(obj, relation.get("object_type"))

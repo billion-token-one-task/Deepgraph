@@ -63,11 +63,24 @@ _worker_thread: threading.Thread | None = None
 _worker_lock = threading.Lock()
 _stop_event = threading.Event()
 _process_lock: FileLock | None = None
+_active_execution_lock = threading.Lock()
+_active_execution: dict | None = None
 AUTO_RESEARCH_CONSUMER = "auto_research"
 VERIFY_STALE_SECONDS = 60 * 60
 RESEARCH_STALE_SECONDS = 6 * 60 * 60
 REVIEW_PENDING_STALE_SECONDS = 15 * 60
+EXECUTION_STALE_SECONDS = int(os.environ.get("DEEPGRAPH_EXECUTION_STALE_SECONDS", "600"))
 MAX_PARALLEL_VERIFICATIONS = 2
+TERMINAL_RUN_STATUSES = {
+    "completed",
+    "failed",
+    "superseded",
+    "reset",
+    "archived",
+    "cancelled",
+    "manuscript_blocked",
+    "bundle_ready",
+}
 MANUAL_REFORGE_STAGES = {
     "manual_reforge_unfinished",
     "manual_requeue_unfinished",
@@ -247,12 +260,108 @@ def _supersede_stale_scaffold_run(run_id: int, reason: str) -> None:
     db.commit()
 
 
-def _upsert_job(insight_id: int, **fields) -> None:
+def _active_execution_run_id() -> int | None:
+    with _active_execution_lock:
+        active = _active_execution
+    if not active:
+        return None
+    run_id = active.get("run_id")
+    return int(run_id) if run_id is not None else None
+
+
+def _is_execution_live_in_process(run_id: int | None) -> bool:
+    active_run_id = _active_execution_run_id()
+    if active_run_id is None or run_id is None:
+        return False
+    return active_run_id == int(run_id)
+
+
+def _requeue_stale_execution_job(job: dict, reason: str) -> None:
+    insight_id = int(job["deep_insight_id"])
+    run_id = job.get("experiment_run_id")
+    _upsert_job(
+        insight_id,
+        status="queued",
+        stage="execution_retry",
+        experiment_run_id=run_id,
+        assigned_worker=None,
+        last_error=None,
+        last_note=reason,
+    )
+    log_event(
+        "warning",
+        {
+            "step": "auto_research_execution_stale",
+            "insight_id": insight_id,
+            "run_id": run_id,
+            "reason": reason,
+        },
+    )
+
+
+def recover_stale_execution_jobs() -> int:
+    """Requeue CPU validation jobs left running after a controller restart.
+
+    ``run_validation_loop`` executes synchronously inside the auto-research
+    worker thread. If ``main.py`` restarts, the DB can still show
+    ``running_cpu`` even though no loop is alive. Those rows block scheduling
+    because they count against ``max_active``.
+    """
+    active_run_id = _active_execution_run_id()
+    jobs = db.fetchall(
+        """
+        SELECT arj.*, er.status AS run_status
+        FROM auto_research_jobs arj
+        LEFT JOIN experiment_runs er ON er.id = arj.experiment_run_id
+        WHERE arj.status IN ('running_experiment', 'running_cpu')
+          AND arj.experiment_run_id IS NOT NULL
+        """
+    )
+    recovered = 0
+    for job in jobs:
+        run_id = job.get("experiment_run_id")
+        if run_id is not None and active_run_id is not None and int(run_id) == active_run_id:
+            continue
+        run_status = str(job.get("run_status") or "").strip()
+        if run_status in TERMINAL_RUN_STATUSES:
+            continue
+        if _is_execution_live_in_process(run_id):
+            continue
+        reason = (
+            "Recovered stale CPU execution after scheduler restart; "
+            "validation will resume from saved run state."
+        )
+        _requeue_stale_execution_job(job, reason)
+        recovered += 1
+    return recovered
+
+
+def _execute_cpu_validation_loop(insight_id: int, run_id: int) -> dict:
+    global _active_execution
+    with _active_execution_lock:
+        if _active_execution is not None:
+            raise RuntimeError(
+                f"CPU validation already active for run {_active_execution.get('run_id')}"
+            )
+        _active_execution = {
+            "run_id": int(run_id),
+            "insight_id": int(insight_id),
+            "started_at": time.time(),
+        }
+    try:
+        return run_validation_loop(run_id)
+    finally:
+        with _active_execution_lock:
+            _active_execution = None
+
+
+def _upsert_job(insight_id: int, *, touch_updated_at: bool = True, **fields) -> None:
     existing = db.fetchone(
         "SELECT id FROM auto_research_jobs WHERE deep_insight_id=?",
         (insight_id,),
     )
-    fields["updated_at"] = "CURRENT_TIMESTAMP"
+    if touch_updated_at:
+        fields["updated_at"] = "CURRENT_TIMESTAMP"
     fields["last_checked_at"] = "CURRENT_TIMESTAMP"
 
     if existing:
@@ -754,8 +863,23 @@ def _refresh_running_jobs() -> None:
             elif run["status"] == "running_gpu":
                 _upsert_job(insight_id, status="running_gpu", stage="gpu_scheduler", last_note="GPU job running.")
             elif run["status"] == "running_cpu":
-                _upsert_job(insight_id, status="running_cpu", stage="validation_loop", last_note="CPU validation loop running.")
+                _upsert_job(
+                    insight_id,
+                    status="running_cpu",
+                    stage="validation_loop",
+                    last_note="CPU validation loop running.",
+                    touch_updated_at=False,
+                )
             elif run["status"] in {"reproducing", "testing"}:
+                if not _is_execution_live_in_process(run.get("id")):
+                    _requeue_stale_execution_job(
+                        job,
+                        (
+                            "Recovered interrupted SciForge run; "
+                            f"resuming from phase {run.get('phase') or 'validation_loop'}."
+                        ),
+                    )
+                    continue
                 lane_status = "running_gpu" if job["status"] in {"running_gpu", "queued_gpu"} else "running_cpu"
                 phase = run.get("phase") or "validation_loop"
                 note = f"SciForge {phase}: best={run.get('best_metric_value')}, baseline={run.get('baseline_metric_value')}."
@@ -765,10 +889,12 @@ def _refresh_running_jobs() -> None:
                     stage=phase,
                     last_note=note,
                     last_error=None,
+                    touch_updated_at=False,
                 )
 
 
 def _launch_candidates_to_capacity() -> dict:
+    recovered_execution = recover_stale_execution_jobs()
     _refresh_running_jobs()
     scheduled: list[int] = []
     seen_candidates: set[int] = set()
@@ -794,6 +920,7 @@ def _launch_candidates_to_capacity() -> dict:
         "active": _active_job_count(),
         "execution_active": _execution_active_job_count(),
         "verifying_active": _verification_job_count(),
+        "recovered_execution": recovered_execution,
     }
 
 
@@ -1297,7 +1424,7 @@ def _process_candidate(insight: dict) -> None:
         last_error=None,
     )
     log_event("auto_research", {"step": "experiment_started", "insight_id": insight_id, "run_id": existing_run["id"]})
-    result = run_validation_loop(existing_run["id"])
+    result = _execute_cpu_validation_loop(insight_id, existing_run["id"])
     process_completed_run(existing_run["id"])
     bundle = generate_submission_bundle(existing_run["id"])
     if schedule_benchmark_completion(
@@ -1423,6 +1550,12 @@ def _run_loop() -> None:
 def start() -> dict:
     global _worker_thread
     db.init_db()
+    recovered = recover_stale_execution_jobs()
+    if recovered:
+        log_event(
+            "auto_research",
+            {"step": "execution_stale_recovered_on_start", "count": recovered},
+        )
     with _worker_lock:
         if _worker_thread and _worker_thread.is_alive():
             return {"status": "already_running"}

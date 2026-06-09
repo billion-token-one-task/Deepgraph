@@ -11,6 +11,12 @@ and here's the mathematical structure that proves it."
 import json
 import time
 from agents.discovery_metadata import build_evidence_packet, enrich_deep_insight
+from agents.idea_taste import (
+    attach_graph_taste_to_insight,
+    format_counterevidence_block,
+    graph_novelty_gate,
+    retrieve_graph_counterevidence,
+)
 from agents.insight_validation import get_evosci_input_issue
 from agents.llm_client import (
     call_llm_json,
@@ -432,14 +438,29 @@ def discover_paradigm_insights(
 
         # Stage 3: Adversarial Challenge
         print(f"[PARADIGM] Call 3/3: Adversarial challenge for '{title[:50]}'...", flush=True)
-        adversarial_prompt = json.dumps({
+        adversarial_seed = {
             "title": result2.get("title", title),
             "formal_structure": result2.get("formal_structure", ""),
             "transformation": result2.get("transformation", ""),
             "predictions": result2.get("predictions", []),
             "field_a": candidate.get("field_a", {}),
             "field_b": candidate.get("field_b", {}),
-        }, indent=2)
+        }
+        counterevidence = retrieve_graph_counterevidence(
+            {
+                "title": adversarial_seed["title"],
+                "source_node_ids": json.dumps(
+                    [
+                        candidate.get("field_a", {}).get("node_id"),
+                        candidate.get("field_b", {}).get("node_id"),
+                    ]
+                ),
+                "predictions": json.dumps(result2.get("predictions", [])),
+            }
+        )
+        adversarial_prompt = json.dumps(adversarial_seed, indent=2)
+        if counterevidence:
+            adversarial_prompt += "\n\n" + format_counterevidence_block(counterevidence)
 
         try:
             result3, tokens3 = call_llm_json(ADVERSARIAL_SYSTEM, adversarial_prompt)
@@ -554,7 +575,15 @@ def store_deep_insight(insight: dict) -> int:
         )
         return 0
 
-    normalized = enrich_deep_insight(insight)
+    gate = graph_novelty_gate(insight)
+    if gate:
+        print(
+            f"[DISCOVERY] Skipping low-graph-novelty insight '{insight.get('title', '')[:80]}'",
+            flush=True,
+        )
+        return 0
+
+    normalized = enrich_deep_insight(attach_graph_taste_to_insight(insight))
     spec = DeepInsightSpec.from_raw(normalized)
     insight = {**normalized, **normalize_deep_insight_storage(spec)}
     insight.setdefault("generation_run_id", new_generation_run_id())

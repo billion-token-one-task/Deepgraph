@@ -218,7 +218,7 @@ def build_evidence_brief(
             "contributions": [_clip(x, 260) for x in _as_list(state.get("contributions"))[:6]],
             "training_free": bool(
                 state.get("training_free")
-                or "training-free" in json.dumps(state, ensure_ascii=False).lower()
+                or "inference-time" in json.dumps(state, ensure_ascii=False).lower()
                 or "no training" in json.dumps(state, ensure_ascii=False).lower()
             ),
             "constraints": {
@@ -307,14 +307,14 @@ def evidence_brief_markdown(brief: dict[str, Any], *, max_chars: int = 18000) ->
         f"# Evidence Brief: {brief.get('title') or 'Untitled'}",
         "",
         "## Problem",
-        f"- Question: {problem.get('central_question') or problem.get('statement')}",
+        f"- Central problem: {problem.get('central_question') or problem.get('statement')}",
         f"- Motivation: {problem.get('motivation')}",
         f"- Limitation to state: {problem.get('limitation')}",
         "",
         "## Method",
         f"- Name: {method.get('name')}",
         f"- Summary: {method.get('summary')}",
-        f"- Training-free / no GPU training: {method.get('training_free')}",
+        f"- No model-weight updates required: {method.get('training_free')}",
         "- Contributions:",
     ]
     lines.extend(f"  - {item}" for item in method.get("contributions") or [])
@@ -386,7 +386,7 @@ def build_deterministic_outline(
         str(x or "")
         for x in [
             method_name,
-            "training-free multi-agent LLM reasoning",
+            "inference-time multi-agent LLM reasoning",
             "test-time compute",
             "self-consistency debate consensus verification",
         ]
@@ -405,7 +405,7 @@ def build_deterministic_outline(
                 "contribution_order": method.get("contributions") or [],
                 "search_directions": [
                     core_query,
-                    "training-free LLM test-time reasoning multi-agent debate",
+                    "inference-time LLM reasoning multi-agent debate",
                     "self-consistency verifier consensus large language models",
                     "adaptive test-time compute allocation reasoning",
                 ],
@@ -413,7 +413,7 @@ def build_deterministic_outline(
             "related_work_strategy": {
                 "subsections": [
                     {
-                        "title": "Training-free test-time reasoning",
+                        "title": "Test-Time Reasoning",
                         "methodology_cluster": "self-consistency, tree search, deliberation, and adaptive compute allocation",
                         "limitation_search_queries": [
                             "self-consistency large language models reasoning",
@@ -443,15 +443,15 @@ def build_deterministic_outline(
         "section_plan": [
             {
                 "section_title": "Introduction",
-                "purpose": "State the problem, the training-free constraint, the proposed method, and the verified result.",
+                "purpose": "State the problem, the inference-time evaluation scope, the proposed method, and the verified result.",
                 "subsections": [
                     {"title": "Problem and motivation", "citation_hints": ["test-time reasoning and multi-agent LLM reliability"]},
-                    {"title": "Contributions", "citation_hints": ["training-free multi-agent deliberation"]},
+                    {"title": "Contributions", "citation_hints": ["inference-time multi-agent deliberation"]},
                 ],
             },
             {
                 "section_title": "Method",
-                "purpose": "Define the training-free multi-agent procedure and all inference-time decisions.",
+                "purpose": "Define the inference-time multi-agent procedure and all inference-time decisions.",
                 "subsections": [
                     {"title": "Agent candidate generation", "citation_hints": ["self-consistency reasoning"]},
                     {"title": "Consensus and verification", "citation_hints": ["multi-agent debate verification"]},
@@ -471,7 +471,7 @@ def build_deterministic_outline(
                 "section_title": "Discussion_Conclusion",
                 "purpose": "Interpret the evidence, state limitations, and avoid unsupported claims.",
                 "subsections": [
-                    {"title": "Limitations", "citation_hints": ["training-free reasoning limitations"]},
+                    {"title": "Limitations", "citation_hints": ["inference-time reasoning limitations"]},
                     {"title": "Conclusion", "citation_hints": []},
                 ],
             },
