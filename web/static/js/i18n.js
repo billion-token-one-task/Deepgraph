@@ -4,6 +4,34 @@
 
   const I18N = {
     en: {
+      "graph.zoomHint": "Scroll to zoom · drag to pan · click an area for its gaps & discoveries",
+      "graph.entityHint": "Click an entity to find its papers & insights",
+      "graph.legendPapers": "Size = papers",
+      "graph.legendGaps": "Color = open gaps",
+      "graph.legendMethods": "Badge = methods",
+      "graph.clickForStory": "Click for gaps & discoveries",
+      "graph.clickEntity": "Click to search papers & insights",
+      "graph.moreNodes": "+%d more",
+      "graph.links": "links",
+      "explore.entityNetwork": "Entity-Relation Network",
+      "evidence.entityGraph": "Entity-Relation Network",
+      "story.area": "Research area",
+      "story.stepArea": "Area",
+      "story.stepGap": "Gaps",
+      "story.stepDiscovery": "Discoveries",
+      "story.gaps": "Open gaps",
+      "story.contradictions": "Contradictions",
+      "story.discoveries": "Discoveries",
+      "story.noContradictions": "No contradictions surfaced yet.",
+      "story.noDiscoveries": "No discoveries generated yet.",
+      "story.enterArea": "Explore this area →",
+      "entityType.method": "Method",
+      "entityType.dataset": "Dataset",
+      "entityType.metric": "Metric",
+      "entityType.task": "Task",
+      "entityType.model": "Model",
+      "entityType.artifact": "Artifact",
+      "entityType.concept": "Concept",
       "app.live.idle": "IDLE",
       "app.live.live": "LIVE",
       "topbar.search.placeholder": "Search source papers, methods, research insights...",
@@ -417,6 +445,34 @@
       "manuscript.lintPreview": "LINT PREVIEW"
     },
     zh: {
+      "graph.zoomHint": "滚轮缩放 · 拖拽平移 · 点击领域查看空白与发现",
+      "graph.entityHint": "点击实体可查找相关文献与洞见",
+      "graph.legendPapers": "大小 = 文献量",
+      "graph.legendGaps": "颜色 = 空白数",
+      "graph.legendMethods": "角标 = 方法数",
+      "graph.clickForStory": "点击查看空白与发现",
+      "graph.clickEntity": "点击搜索相关文献与洞见",
+      "graph.moreNodes": "+%d 更多",
+      "graph.links": "关联",
+      "explore.entityNetwork": "实体关系网络",
+      "evidence.entityGraph": "实体关系网络",
+      "story.area": "研究领域",
+      "story.stepArea": "领域",
+      "story.stepGap": "空白",
+      "story.stepDiscovery": "发现",
+      "story.gaps": "研究空白",
+      "story.contradictions": "矛盾",
+      "story.discoveries": "深度发现",
+      "story.noContradictions": "暂未发现矛盾。",
+      "story.noDiscoveries": "暂未生成发现。",
+      "story.enterArea": "进入该领域 →",
+      "entityType.method": "方法",
+      "entityType.dataset": "数据集",
+      "entityType.metric": "指标",
+      "entityType.task": "任务",
+      "entityType.model": "模型",
+      "entityType.artifact": "工件",
+      "entityType.concept": "概念",
       "app.live.idle": "空闲",
       "app.live.live": "运行中",
       "topbar.search.placeholder": "搜索文献、方法、研究洞见...",
@@ -864,8 +920,12 @@
     scope.querySelectorAll("[data-i18n-placeholder]").forEach((node) => {
       node.setAttribute("placeholder", t(node.dataset.i18nPlaceholder));
     });
+    // data-i18n-title elements get a styled custom tooltip (DGTooltip), not the
+    // native `title` popup. We keep the i18n key on the element and resolve it at
+    // hover time, so the tooltip always follows the current language. Any stale
+    // native title (e.g. from an older render) is cleared.
     scope.querySelectorAll("[data-i18n-title]").forEach((node) => {
-      node.setAttribute("title", t(node.dataset.i18nTitle));
+      if (node.hasAttribute("title")) node.removeAttribute("title");
     });
     // NOTE: documentElement.lang is set once at init (see preferredLanguage
     // above), NOT here — rewriting it per toggle forces a full-document restyle.

@@ -34,3 +34,4 @@ workspace/tmp/
 # Node test harness deps (Acceptance A)
 tests/js/node_modules/
 tests/js/package-lock.json
+tests/js/*.log

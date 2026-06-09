@@ -3,12 +3,16 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
-  "description": "Node test harness for the dashboard responsiveness acceptance gates (Acceptance A).",
+  "description": "Frontend tests for the DeepGraph dashboard: graph adapter unit + perf, renderer perf (jsdom), and the Playwright responsiveness gate (issue #19 / #34).",
   "scripts": {
-    "perf": "node taxonomy_dropdown_perf.mjs",
-    "e2e": "node responsiveness_e2e.mjs"
+    "test:adapter": "node graph_adapter.test.mjs",
+    "test:renderer": "node graph_renderer_perf.mjs",
+    "test:unit": "node graph_adapter.test.mjs && node graph_renderer_perf.mjs",
+    "test:e2e": "node graph_e2e.mjs"
   },
   "dependencies": {
+    "d3": "^7.9.0",
+    "jsdom": "^25.0.0",
     "playwright": "^1.49.0"
   }
 }

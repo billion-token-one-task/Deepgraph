@@ -460,7 +460,7 @@ async function loadOverviewGraph() {
     overviewGraphLoaded = true;
     try {
         const data = await api(`/api/taxonomy/${ROOT_NODE}`);
-        renderRadialGraph('overviewGraphSvg', data.node, data.children, 320, true);
+        renderTaxonomyGraph('overviewGraph', data.node, data.children, { height: 320, isPreview: true });
     } catch (e) {
         overviewGraphLoaded = false;
         console.error('Overview graph error:', e);
@@ -490,7 +490,8 @@ async function navigateTo(nodeId) {
         el('exploreTitle').textContent = data.node.name + ' \u2014 ' + tr('explore.title');
 
         // Graph
-        renderRadialGraph('exploreGraphSvg', data.node, data.children, 520, false);
+        closeAreaStory();
+        renderTaxonomyGraph('exploreGraph', data.node, data.children, { height: 520, isPreview: false });
 
         // Summary card
         const sumCard = el('exploreSummaryCard');
@@ -595,19 +596,12 @@ function renderExploreSummary(data) {
             </div>`;
         }
 
-        // Graph entities
+        // Entity-relation network (rendered after innerHTML is set, below)
         const gs = data.graph_summary;
-        if (gs && (gs.top_entities || gs.top_relations)) {
-            const entHtml = (gs.top_entities || []).slice(0, 6).map(e =>
-                `<div class="summary-item"><strong>${esc(e.name)}</strong><p>${esc(e.entity_type)} \u00B7 ${esc(tr('common.papersCount', { count: e.paper_count }))} \u00B7 ${esc(tr('common.mentionsCount', { count: e.mention_count }))}</p></div>`
-            ).join('') || `<p class="empty-msg">${esc(tr('empty.entities'))}</p>`;
-            const relHtml = (gs.top_relations || []).slice(0, 6).map(r =>
-                `<div class="summary-item"><strong>${esc(r.subject)} \u2192 ${esc(r.object)}</strong><p>${esc(r.predicate)} \u00B7 ${esc(tr('common.papersCount', { count: r.paper_count }))}</p></div>`
-            ).join('') || `<p class="empty-msg">${esc(tr('empty.relations'))}</p>`;
-
-            html += `<div class="summary-grid">
-                <div class="summary-card-inner"><h4>${esc(tr('explore.coreEntities'))}</h4>${entHtml}</div>
-                <div class="summary-card-inner"><h4>${esc(tr('explore.keyLinks'))}</h4>${relHtml}</div>
+        if (gs && ((gs.top_entities && gs.top_entities.length) || (gs.top_relations && gs.top_relations.length))) {
+            html += `<div class="summary-card-inner entity-graph-block">
+                <h4>${esc(tr('explore.entityNetwork'))} <span class="graph-hint">${esc(tr('graph.entityHint'))}</span></h4>
+                <div id="exploreEntityGraph" class="dg-graph-host dg-entity-host"></div>
             </div>`;
         }
     }
@@ -680,6 +674,11 @@ function renderExploreSummary(data) {
     }
 
     body.innerHTML = html;
+
+    // Render the entity-relation network into its host (now in the DOM).
+    if (el('exploreEntityGraph')) {
+        renderEntityGraph('exploreEntityGraph', data.graph_summary, { height: 380 });
+    }
 }
 
 function renderExploreChildren(children) {
@@ -696,186 +695,191 @@ function renderExploreChildren(children) {
     `).join('')}</div>`;
 }
 
-// ── Radial Graph (D3, static layout, no force sim) ───────────────────
+// ── Knowledge Graph glue (adapter + renderer + tooltip) ──────────────
+// All D3 lives in /static/js/graph/renderer.js. This layer only builds the
+// model (via DGGraphAdapter), reads the theme from CSS vars, and injects the
+// app's tooltip / navigation / click-through as callbacks. Swapping the
+// renderer means rewriting renderer.js alone — nothing here changes.
 
-function renderRadialGraph(svgId, parentNode, children, targetHeight, isPreview) {
-    const svg = d3.select('#' + svgId);
-    svg.selectAll('*').remove();
-
-    const container = svg.node().parentElement;
-    const width = container.clientWidth - 4;
-    const height = targetHeight;
-    svg.attr('width', width).attr('height', height).attr('viewBox', `0 0 ${width} ${height}`);
-
-    const cx = width / 2;
-    const cy = height / 2;
-
-    if (!children || children.length === 0) {
-        svg.append('text')
-            .attr('x', cx).attr('y', cy - 8)
-            .attr('text-anchor', 'middle')
-            .attr('fill', '#9a9088').attr('font-size', '14px').attr('font-weight', '600')
-            .text(tr('explore.leafDomain'));
-        svg.append('text')
-            .attr('x', cx).attr('y', cy + 16)
-            .attr('text-anchor', 'middle')
-            .attr('fill', '#b5ada4').attr('font-size', '12px')
-            .text(trunc(parentNode.description || '', 80));
-        return;
-    }
-
-    const maxGap = Math.max(...children.map(c => c.gap_count || 0), 1);
-    const radius = Math.min(width, height) * (isPreview ? 0.32 : 0.34);
-    const angleStep = (2 * Math.PI) / children.length;
-
-    // Positions
-    const nodes = [{
-        id: parentNode.id, name: parentNode.name, description: parentNode.description || '',
-        paper_count: 0, gap_count: 0, method_count: 0, isParent: true, x: cx, y: cy
-    }];
-    const links = [];
-
-    children.forEach((child, i) => {
-        const angle = angleStep * i - Math.PI / 2;
-        const x = cx + Math.cos(angle) * radius;
-        const y = cy + Math.sin(angle) * radius;
-        nodes.push({
-            id: child.id, name: child.name, description: child.description || '',
-            paper_count: child.paper_count || 0, gap_count: child.gap_count || 0,
-            method_count: child.method_count || 0, isParent: false, x, y
-        });
-        links.push({ source: parentNode.id, target: child.id });
-    });
-
-    const nodeMap = Object.fromEntries(nodes.map(n => [n.id, n]));
-
-    // Gradient for links
-    const defs = svg.append('defs');
-    const grad = defs.append('linearGradient').attr('id', 'linkGrad-' + svgId)
-        .attr('gradientUnits', 'userSpaceOnUse');
-    grad.append('stop').attr('offset', '0%').attr('stop-color', 'rgba(196,112,75,0.3)');
-    grad.append('stop').attr('offset', '100%').attr('stop-color', 'rgba(196,112,75,0.06)');
-
-    // Draw links
-    svg.append('g').selectAll('line')
-        .data(links).join('line')
-        .attr('x1', cx).attr('y1', cy)
-        .attr('x2', d => (nodeMap[d.target] || {}).x || cx)
-        .attr('y2', d => (nodeMap[d.target] || {}).y || cy)
-        .attr('stroke', `url(#linkGrad-${svgId})`)
-        .attr('stroke-width', 1.5);
-
-    // Draw nodes
-    const nodeG = svg.append('g').selectAll('g')
-        .data(nodes).join('g')
-        .attr('transform', d => `translate(${d.x},${d.y})`)
-        .attr('class', d => d.isParent ? 'graph-node-parent' : 'graph-node');
-
-    // Parent node
-    const parentG = nodeG.filter(d => d.isParent);
-    parentG.append('circle')
-        .attr('r', isPreview ? 28 : 34)
-        .attr('fill', '#faf5ee')
-        .attr('stroke', '#c4704b')
-        .attr('stroke-width', 2.5);
-    parentG.append('text')
-        .attr('text-anchor', 'middle').attr('dy', 4)
-        .attr('fill', '#c4704b').attr('font-size', isPreview ? '10px' : '11px').attr('font-weight', '700')
-        .text(d => trunc(d.name, isPreview ? 12 : 16));
-
-    // Child nodes
-    const childG = nodeG.filter(d => !d.isParent);
-
-    childG.append('circle')
-        .attr('r', d => {
-            const base = isPreview ? 18 : 22;
-            const max  = isPreview ? 36 : 46;
-            return Math.max(base, Math.min(max, base + (d.paper_count || 0) * 0.5));
-        })
-        .attr('fill', d => gapColor(d.gap_count, maxGap).fill)
-        .attr('stroke', d => gapColor(d.gap_count, maxGap).stroke)
-        .attr('stroke-width', d => d.gap_count > 0 ? 2 : 1.2);
-
-    // Labels
-    childG.append('text')
-        .attr('text-anchor', 'middle').attr('dy', isPreview ? -2 : -4)
-        .attr('fill', '#2b2520').attr('font-size', isPreview ? '9px' : '11px').attr('font-weight', '700')
-        .text(d => trunc(d.name, isPreview ? 14 : 20));
-
-    childG.append('text')
-        .attr('text-anchor', 'middle').attr('dy', isPreview ? 10 : 12)
-        .attr('fill', d => d.paper_count > 0 ? '#c4704b' : '#b5ada4')
-        .attr('font-size', isPreview ? '8px' : '10px').attr('font-weight', '700')
-        .text(d => d.paper_count > 0 ? tr('common.paperShort', { count: d.paper_count }) : tr('common.emptyGraphNode'));
-
-    if (!isPreview) {
-        childG.filter(d => d.gap_count > 0 || d.method_count > 0)
-            .append('text')
-            .attr('text-anchor', 'middle').attr('dy', 24)
-            .attr('font-size', '9px')
-            .attr('fill', d => d.gap_count > 0 ? '#3d8b5e' : '#9a9088')
-            .attr('font-weight', '600')
-            .text(d => {
-                const parts = [];
-                if (d.method_count > 0) parts.push(d.method_count + 'M');
-                if (d.gap_count > 0) parts.push(tr('common.gapsCount', { count: d.gap_count }));
-                return parts.join(' | ');
-            });
-    }
-
-    // Click handler
-    childG.on('click', (e, d) => {
-        if (isPreview) {
-            switchTab('explore');
-            navigateTo(d.id);
-        } else {
-            navigateTo(d.id);
-        }
-    });
-
-    // Tooltip (non-preview only)
-    if (!isPreview) {
-        const tip = el('tooltip');
-
-        childG.on('mouseover', (e, d) => {
-            tip.innerHTML = `
-                <div style="color:#c4704b;font-weight:700;margin-bottom:5px;">${esc(d.name)}</div>
-                <div style="color:var(--text-secondary);margin-bottom:8px;line-height:1.5;">${esc(trunc(d.description, 160))}</div>
-                <div style="display:flex;gap:12px;color:var(--text-dim);font-size:0.72rem;">
-                    <span><b style="color:#c4704b;">${d.paper_count}</b> ${esc(tr('common.papersUnit'))}</span>
-                    <span><b style="color:#a8842a;">${d.method_count}</b> ${esc(tr('common.methodsUnit'))}</span>
-                    <span><b style="color:#3d8b5e;">${d.gap_count}</b> ${esc(tr('common.gapsUnit'))}</span>
-                </div>
-                <div style="color:var(--text-muted);margin-top:6px;font-size:0.65rem;">${esc(tr('common.clickToExplore'))}</div>
-            `;
-            tip.classList.add('visible');
-            positionTooltip(e);
-        }).on('mousemove', positionTooltip)
-          .on('mouseout', () => tip.classList.remove('visible'));
-    }
-}
-
-function positionTooltip(e) {
-    const tip = el('tooltip');
-    const pad = 14;
-    let x = e.clientX + pad;
-    let y = e.clientY - pad;
-    // Keep in viewport
-    const tw = tip.offsetWidth, th = tip.offsetHeight;
-    if (x + tw > window.innerWidth - 10) x = e.clientX - tw - pad;
-    if (y + th > window.innerHeight - 10) y = window.innerHeight - th - 10;
-    if (y < 10) y = 10;
-    tip.style.left = x + 'px';
-    tip.style.top = y + 'px';
-}
-
-function gapColor(gapCount, maxGap) {
-    if (gapCount <= 0) return { fill: '#f0ede6', stroke: '#d0c9bc' };
-    const t = Math.min(gapCount / Math.max(maxGap, 1), 1);
+function graphTheme() {
+    const cs = getComputedStyle(document.documentElement);
+    const v = (name, fb) => (cs.getPropertyValue(name).trim() || fb);
     return {
-        fill: `rgb(${Math.round(250 - t * 20)},${Math.round(245 - t * 20)},${Math.round(238 - t * 20)})`,
-        stroke: `rgb(${Math.round(196 - t * 40)},${Math.round(112 + t * 10)},${Math.round(75 + t * 10)})`
+        accent: v('--accent', '#c4704b'), green: v('--green', '#3d8b5e'),
+        gold: v('--gold', '#a8842a'), purple: v('--purple', '#7c5cbf'),
+        text: v('--text-primary', '#2b2520'), dim: v('--text-dim', '#9a9088'),
+        muted: v('--text-muted', '#c4bdb4'), bg: v('--bg-card', '#ffffff'),
+        bgElevated: v('--bg-elevated', '#f0ede6'), border: v('--border', '#e5e0d5'),
+        gapLo: v('--graph-gap-lo', '#eef3ee'), gapHi: v('--graph-gap-hi', '#3d8b5e'),
+        entityPalette: {
+            method: v('--graph-ent-method', '#c4704b'), dataset: v('--graph-ent-dataset', '#2e86ab'),
+            metric: v('--graph-ent-metric', '#a8842a'), task: v('--graph-ent-task', '#7c5cbf'),
+            model: v('--graph-ent-model', '#c4453a'), artifact: v('--graph-ent-artifact', '#3d8b5e'),
+            concept: v('--graph-ent-concept', '#9a9088'),
+        },
     };
+}
+
+const dgTooltip = {
+    show: (html, ev) => window.DGTooltip && window.DGTooltip.show(html, ev),
+    move: (ev) => window.DGTooltip && window.DGTooltip.move(ev),
+    hide: () => window.DGTooltip && window.DGTooltip.hide(),
+};
+
+function taxonomyLegendItems() {
+    return [
+        { kind: 'papers', label: tr('graph.legendPapers') },
+        { kind: 'gaps', label: tr('graph.legendGaps') },
+        { kind: 'methods', label: tr('graph.legendMethods') },
+    ];
+}
+
+function taxonomyNodeTooltip(d) {
+    if (d.role === 'parent') {
+        return `<div class="tip-title">${esc(d.name)}</div>
+            <div class="tip-body">${esc(trunc(d.description, 160))}</div>`;
+    }
+    return `<div class="tip-title">${esc(d.name)}</div>
+        <div class="tip-body">${esc(trunc(d.description, 160))}</div>
+        <div class="tip-stats">
+            <span><b style="color:var(--accent);">${d.paper_count}</b> ${esc(tr('common.papersUnit'))}</span>
+            <span><b style="color:var(--gold);">${d.method_count}</b> ${esc(tr('common.methodsUnit'))}</span>
+            <span><b style="color:var(--green);">${d.gap_count}</b> ${esc(tr('common.gapsUnit'))}</span>
+        </div>
+        <div class="tip-hint">${esc(tr('graph.clickForStory'))}</div>`;
+}
+
+let _taxGraphHandle = null;
+function renderTaxonomyGraph(containerId, parentNode, children, opts) {
+    const container = el(containerId);
+    if (!container || !window.DGGraphRenderer) return;
+    const isPreview = !!(opts && opts.isPreview);
+    const model = window.DGGraphAdapter.taxonomyToModel(parentNode, children);
+    const handle = window.DGGraphRenderer.renderRadial(container, model, {
+        height: (opts && opts.height) || 420,
+        isPreview,
+        theme: graphTheme(),
+        tooltip: dgTooltip,
+        nodeTooltipHtml: taxonomyNodeTooltip,
+        legendItems: isPreview ? null : taxonomyLegendItems(),
+        moreLabel: tr('graph.moreNodes'),
+        onNodeClick: (d) => {
+            if (d.role === 'parent') return;
+            if (isPreview) {
+                switchTab('explore');
+                navigateTo(d.id);
+            } else {
+                openAreaStory(d);
+            }
+        },
+    });
+    if (!isPreview) _taxGraphHandle = handle;
+    return handle;
+}
+
+function entityLegendItems(model) {
+    const types = Array.from(new Set((model.nodes || []).map((n) => n.entity_type))).slice(0, 6);
+    const t = graphTheme();
+    return types.map((ty) => ({ color: t.entityPalette[ty] || t.entityPalette.concept, label: tr('entityType.' + ty, {}) !== 'entityType.' + ty ? tr('entityType.' + ty) : ty }));
+}
+
+function renderEntityGraph(containerId, graphSummary, opts) {
+    const container = el(containerId);
+    if (!container || !window.DGGraphRenderer) return null;
+    const model = window.DGGraphAdapter.entityGraphToModel(graphSummary);
+    if (!model.nodes.length) {
+        container.innerHTML = `<p class="empty-msg">${esc(tr('empty.entities'))}</p>`;
+        return null;
+    }
+    return window.DGGraphRenderer.renderNetwork(container, model, {
+        height: (opts && opts.height) || 360,
+        theme: graphTheme(),
+        tooltip: dgTooltip,
+        nodeTooltipHtml: (n) => `<div class="tip-title">${esc(n.name)}</div>
+            <div class="tip-body">${esc(n.entity_type)}</div>
+            <div class="tip-stats">
+                <span><b>${n.paper_count}</b> ${esc(tr('common.papersUnit'))}</span>
+                <span><b>${n.degree}</b> ${esc(tr('graph.links'))}</span>
+            </div>
+            <div class="tip-hint">${esc(tr('graph.clickEntity'))}</div>`,
+        legendItems: entityLegendItems(model),
+        moreLabel: tr('graph.moreNodes'),
+        onNodeClick: (n) => window._dg.searchEntity(n.name),
+    });
+}
+
+// In-graph "domain → gap → discovery" story panel (acceptance A2). Clicking an
+// area node fetches its gaps / contradictions / discoveries and shows them
+// without leaving the graph; a button navigates deeper on demand.
+async function openAreaStory(node) {
+    const panel = el('exploreStoryPanel');
+    if (!panel) return;
+    panel.hidden = false;
+    panel.innerHTML = `<div class="story-loading">${esc(tr('common.loading'))}</div>`;
+    try {
+        const [data, insights] = await Promise.all([
+            api(`/api/taxonomy/${encodeURIComponent(node.id)}`),
+            api(`/api/insights?node_id=${encodeURIComponent(node.id)}&limit=12`),
+        ]);
+        const gaps = (data.gaps && data.gaps.length)
+            ? data.gaps
+            : ((data.summary && data.summary.current_gaps) || []);
+        const contradictions = insights.filter((i) => i.insight_type === 'contradiction_analysis');
+        const discoveries = insights.filter((i) => i.insight_type !== 'contradiction_analysis');
+
+        const gapHtml = gaps.length ? gaps.slice(0, 5).map((g) => `
+            <li class="story-item story-gap">${esc(g.title || g.gap_description || tr('explore.openGap'))}
+                ${g.description ? `<span class="story-sub">${esc(trunc(g.description, 110))}</span>` : ''}</li>`).join('')
+            : `<li class="story-empty">${esc(tr('empty.gaps'))}</li>`;
+
+        const contraHtml = contradictions.length ? contradictions.slice(0, 4).map((c) => `
+            <li class="story-item story-contra" onclick="window._dg.previewProposal(${c.id})">${esc(c.title)}
+                <span class="story-sub">${esc(trunc(c.evidence || '', 100))}</span></li>`).join('')
+            : `<li class="story-empty">${esc(tr('story.noContradictions'))}</li>`;
+
+        const discHtml = discoveries.length ? discoveries.slice(0, 5).map((d) => `
+            <li class="story-item story-disc" onclick="window._dg.previewProposal(${d.id})">${esc(d.title)}
+                <span class="story-sub">N:${d.novelty_score}/5 · F:${d.feasibility_score}/5</span></li>`).join('')
+            : `<li class="story-empty">${esc(tr('story.noDiscoveries'))}</li>`;
+
+        panel.innerHTML = `
+            <div class="story-head">
+                <div>
+                    <div class="story-kicker">${esc(tr('story.area'))}</div>
+                    <h4>${esc(node.name)}</h4>
+                </div>
+                <button class="story-close" aria-label="close" onclick="window._dg.closeAreaStory()">×</button>
+            </div>
+            <div class="story-flow">
+                <span class="story-flow-step">${esc(tr('story.stepArea'))}</span>
+                <span class="story-flow-arrow">→</span>
+                <span class="story-flow-step">${esc(tr('story.stepGap'))}</span>
+                <span class="story-flow-arrow">→</span>
+                <span class="story-flow-step">${esc(tr('story.stepDiscovery'))}</span>
+            </div>
+            <div class="story-section">
+                <div class="story-section-title gap">${esc(tr('story.gaps'))} <span class="story-count">${gaps.length}</span></div>
+                <ul>${gapHtml}</ul>
+            </div>
+            <div class="story-section">
+                <div class="story-section-title contra">${esc(tr('story.contradictions'))} <span class="story-count">${contradictions.length}</span></div>
+                <ul>${contraHtml}</ul>
+            </div>
+            <div class="story-section">
+                <div class="story-section-title disc">${esc(tr('story.discoveries'))} <span class="story-count">${discoveries.length}</span></div>
+                <ul>${discHtml}</ul>
+            </div>
+            <button class="story-enter" onclick="window._dg.navigateTo('${esc(node.id)}')">${esc(tr('story.enterArea'))}</button>`;
+    } catch (e) {
+        console.error('Area story error:', e);
+        panel.innerHTML = `<div class="story-loading">${esc(tr('common.errorLoadingData'))}</div>
+            <button class="story-close" onclick="window._dg.closeAreaStory()">×</button>`;
+    }
+}
+
+function closeAreaStory() {
+    const panel = el('exploreStoryPanel');
+    if (panel) { panel.hidden = true; panel.innerHTML = ''; }
 }
 
 // ── Evidence Tab ─────────────────────────────────────────────────────
@@ -911,6 +915,7 @@ async function loadEvidenceForNode(nodeId) {
     if (!nodeId) {
         el('evidenceMatrixContainer').innerHTML = '';
         el('evidenceGapsCard').style.display = 'none';
+        el('evidenceGraphCard').style.display = 'none';
         el('evidenceHint').textContent = tr('evidence.hint');
         return;
     }
@@ -937,6 +942,16 @@ async function loadEvidenceForNode(nodeId) {
             renderGaps(el('evidenceGapsBody'), data.gaps);
         } else {
             gapsCard.style.display = 'none';
+        }
+
+        // Entity-relation network
+        const gs = data.graph_summary;
+        const graphCard = el('evidenceGraphCard');
+        if (gs && ((gs.top_entities && gs.top_entities.length) || (gs.top_relations && gs.top_relations.length))) {
+            graphCard.style.display = '';
+            renderEntityGraph('evidenceEntityGraph', gs, { height: 420 });
+        } else {
+            graphCard.style.display = 'none';
         }
     } catch (e) {
         console.error('Evidence load error:', e);
@@ -2358,6 +2373,16 @@ window._dg = {
     togglePaper,
     updateMatrixMetric,
     searchNav,
+    closeAreaStory,
+    // Entity click-through: surface the entity's papers/insights via global search.
+    searchEntity(name) {
+        const input = el('searchInput');
+        if (input) {
+            input.value = name;
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            input.focus();
+        }
+    },
     viewPaperGeneration(insightId) {
         return this.viewExperimentGroup(insightId);
     },
@@ -2558,6 +2583,9 @@ window._dg = {
 // ── Init ─────────────────────────────────────────────────────────────
 
 function init() {
+    // Custom tooltips for [data-i18n-title] metric cards (replaces native title).
+    if (window.DGTooltip) window.DGTooltip.attachDelegated();
+
     if (window.dgI18n) {
         window.dgI18n.applyI18n(document);
         $$('[data-lang]').forEach(btn => {
@@ -2566,6 +2594,12 @@ function init() {
         document.addEventListener('deepgraph:languagechange', () => {
             updateLiveBadge();
             if (taxonomyLoaded) loadTaxonomyDropdown();
+            // Re-render graphs so legend/tooltip labels follow the new language.
+            if (overviewGraphLoaded) { overviewGraphLoaded = false; loadOverviewGraph(); }
+            if (exploreData) {
+                closeAreaStory();
+                renderTaxonomyGraph('exploreGraph', exploreData.node, exploreData.children, { height: 520, isPreview: false });
+            }
         });
     }
 

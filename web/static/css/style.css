@@ -35,6 +35,20 @@
     --radius:        8px;
     --radius-sm:     5px;
     --transition:    0.2s cubic-bezier(0.4, 0, 0.2, 1);
+
+    /* ── Knowledge-graph encoding tokens (issue #19) ──────────────── */
+    --graph-gap-lo:        #eef3ee;   /* node fill, no/low open gaps */
+    --graph-gap-hi:        #3d8b5e;   /* node fill, many open gaps (salient) */
+    --graph-link:          rgba(196, 112, 75, 0.22);
+    --graph-host-bg:       #fbfaf7;
+    --graph-host-border:   #ece6da;
+    --graph-ent-method:    #c4704b;
+    --graph-ent-dataset:   #2e86ab;
+    --graph-ent-metric:    #a8842a;
+    --graph-ent-task:      #7c5cbf;
+    --graph-ent-model:     #c4453a;
+    --graph-ent-artifact:  #3d8b5e;
+    --graph-ent-concept:   #9a9088;
 }
 
 /* ── Reset ────────────────────────────────────────────────────────── */
@@ -1587,10 +1601,114 @@ header#topBar {
 }
 .tooltip.visible { opacity: 1; }
 
-/* ── D3 graph nodes ───────────────────────────────────────────────── */
+/* ── Knowledge graph (issue #19) ──────────────────────────────────── */
 
-.graph-node { cursor: pointer; }
-.graph-node-parent { cursor: default; }
+.dg-graph-host {
+    width: 100%;
+    min-height: 120px;
+    background: var(--graph-host-bg);
+    border: 1px solid var(--graph-host-border);
+    border-radius: var(--radius);
+    overflow: hidden;
+}
+.dg-entity-host { margin-top: 8px; }
+.dg-graph-svg { display: block; cursor: grab; }
+.dg-graph-svg:active { cursor: grabbing; }
+
+.dg-node { cursor: pointer; transition: opacity 0.15s ease; }
+.dg-node-parent { cursor: default; }
+.dg-node circle { transition: stroke-width 0.12s ease, r 0.12s ease; }
+.dg-node:hover circle { stroke-width: 3px; }
+.dg-node-label { paint-order: stroke; stroke: var(--graph-host-bg); stroke-width: 3px; }
+.dg-link { transition: opacity 0.15s ease; }
+.dg-legend-label { font-family: var(--font); }
+.dg-overflow { font-family: var(--font); font-style: italic; }
+
+.graph-hint {
+    font-size: 0.7rem;
+    color: var(--text-dim);
+    font-weight: 500;
+}
+.card-header .graph-hint { margin-left: auto; }
+
+.explore-graph-card { position: relative; }
+.explore-graph-stage { position: relative; }
+
+.entity-graph-block { margin-top: 16px; }
+.entity-graph-block h4 .graph-hint { margin-left: 8px; font-weight: 500; }
+
+/* Custom tooltip content (graph nodes + metric cards) */
+.tip-title { color: var(--accent); font-weight: 700; margin-bottom: 5px; }
+.tip-body { color: var(--text-secondary); margin-bottom: 6px; line-height: 1.5; }
+.tip-stats { display: flex; gap: 12px; color: var(--text-dim); font-size: 0.72rem; }
+.tip-hint { color: var(--text-muted); margin-top: 6px; font-size: 0.65rem; }
+
+/* In-graph "domain → gap → discovery" story panel (acceptance A2) */
+.dg-story-panel {
+    position: absolute;
+    top: 12px;
+    right: 12px;
+    width: min(340px, 80%);
+    max-height: calc(100% - 24px);
+    overflow-y: auto;
+    background: var(--bg-card);
+    border: 1px solid var(--border-hover);
+    border-radius: var(--radius);
+    box-shadow: 0 12px 32px rgba(0,0,0,0.12);
+    padding: 14px 16px;
+    z-index: 5;
+    animation: storyIn 0.16s ease;
+}
+@keyframes storyIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+.story-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+.story-head h4 { margin: 2px 0 0; font-size: 1rem; color: var(--text-primary); }
+.story-kicker { font-size: 0.62rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-dim); }
+.story-close {
+    border: none; background: var(--bg-elevated); color: var(--text-secondary);
+    width: 26px; height: 26px; border-radius: 50%; cursor: pointer; font-size: 1rem; line-height: 1;
+}
+.story-close:hover { background: var(--border-hover); }
+.story-flow { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+.story-flow-step {
+    font-size: 0.66rem; font-weight: 700; padding: 2px 8px; border-radius: 999px;
+    background: var(--accent-dim); color: var(--accent);
+}
+.story-flow-arrow { color: var(--text-muted); font-size: 0.7rem; }
+.story-section { margin-bottom: 12px; }
+.story-section-title {
+    font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+    margin-bottom: 6px; display: flex; align-items: center; gap: 6px;
+}
+.story-section-title.gap { color: var(--green); }
+.story-section-title.contra { color: var(--red); }
+.story-section-title.disc { color: var(--accent); }
+.story-count {
+    font-size: 0.62rem; background: var(--bg-elevated); color: var(--text-dim);
+    border-radius: 999px; padding: 1px 7px; font-weight: 700;
+}
+.dg-story-panel ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.story-item {
+    font-size: 0.78rem; color: var(--text-primary); line-height: 1.4;
+    padding: 7px 9px; border-radius: var(--radius-sm); background: var(--bg-elevated);
+    border-left: 3px solid var(--border-hover);
+}
+.story-item .story-sub { display: block; font-size: 0.68rem; color: var(--text-dim); margin-top: 2px; }
+.story-gap { border-left-color: var(--green); }
+.story-contra { border-left-color: var(--red); cursor: pointer; }
+.story-disc { border-left-color: var(--accent); cursor: pointer; }
+.story-contra:hover, .story-disc:hover { background: var(--bg-card-hover); }
+.story-empty { font-size: 0.74rem; color: var(--text-dim); font-style: italic; padding: 4px 0; }
+.story-loading { font-size: 0.8rem; color: var(--text-dim); padding: 8px 0; }
+.story-enter {
+    width: 100%; margin-top: 4px; padding: 9px; border: none; cursor: pointer;
+    background: var(--accent); color: #fff; border-radius: var(--radius-sm);
+    font-weight: 700; font-size: 0.8rem;
+}
+.story-enter:hover { filter: brightness(1.05); }
+
+@media (max-width: 768px) {
+    .dg-story-panel { position: static; width: 100%; max-height: none; margin-top: 10px; box-shadow: none; }
+}
 
 /* ── Insight Cards in Explore ─────────────────────────────────────── */
 
