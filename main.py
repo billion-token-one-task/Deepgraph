@@ -146,6 +146,13 @@ def main():
             start_gpu_scheduler()
             print("Auto Research worker ready.", flush=True)
 
+        # Warm the /api/stats cache in the background so the first browser paint
+        # is served from cache, not a cold ~30-COUNT(*) query (issue #34).
+        import threading
+        from web.app import prewarm_stats_cache
+        print("Prewarming stats cache in background...", flush=True)
+        threading.Thread(target=prewarm_stats_cache, daemon=True).start()
+
         # Start web server
         _serve_http()
     finally:

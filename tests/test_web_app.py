@@ -438,5 +438,185 @@ class ExperimentGroupApiTests(unittest.TestCase):
         tex_response.close()
 
 
+class StatsCacheTests(unittest.TestCase):
+    """Issue #34 · Feature 1 — /api/stats served from an in-process TTL cache."""
+
+    def setUp(self):
+        self.client = web_app.app.test_client()
+
+    def test_api_stats_served_from_cache_not_recomputed_each_request(self):
+        sentinel = {
+            "papers_processed": 1,
+            "results_total": 2,
+            "insights_total": 3,
+            "deep_insights_total": 4,
+            "submission_bundles_total": 5,
+        }
+        with mock.patch.object(
+            web_app, "get_stats_dict", return_value=sentinel
+        ) as heavy:
+            web_app._stats_cache.invalidate()
+            web_app._stats_cache.prewarm()
+            for _ in range(8):
+                response = self.client.get("/api/stats")
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.get_json(), sentinel)
+
+        # The heavy COUNT(*) computation must run at most once across the
+        # warm-up plus eight requests — proving the cache is hit, not recomputed.
+        self.assertLessEqual(heavy.call_count, 1)
+
+    def test_api_stats_returns_correct_fields(self):
+        sentinel = {
+            "papers_processed": 11,
+            "results_total": 22,
+            "insights_total": 33,
+            "deep_insights_total": 44,
+            "submission_bundles_total": 55,
+        }
+        with mock.patch.object(web_app, "get_stats_dict", return_value=sentinel):
+            web_app._stats_cache.invalidate()
+            web_app._stats_cache.prewarm()
+            payload = self.client.get("/api/stats").get_json()
+
+        # Caching must not change the contract: every field and value the
+        # underlying computation produced is served verbatim.
+        for key in (
+            "papers_processed",
+            "results_total",
+            "insights_total",
+            "deep_insights_total",
+            "submission_bundles_total",
+        ):
+            self.assertIn(key, payload)
+        self.assertEqual(payload, sentinel)
+
+    def test_import_web_app_does_not_block_on_heavy_stats(self):
+        import importlib
+        from orchestrator import pipeline
+
+        with mock.patch.object(pipeline, "get_stats_dict") as heavy:
+            importlib.reload(web_app)
+            # Importing / building the app must not synchronously run the heavy
+            # stats query (tests import web.app; deploy imports it at startup).
+            heavy.assert_not_called()
+        # Restore a clean module bound to the real computation.
+        importlib.reload(web_app)
+
+
+class EventsTailTests(unittest.TestCase):
+    """Issue #34 · Feature 2 — /api/events?since=0 returns only the tail."""
+
+    def setUp(self):
+        self.client = web_app.app.test_client()
+
+    def test_api_events_since_zero_returns_tail_only(self):
+        full = [{"seq": i, "type": "x"} for i in range(120)]
+        with mock.patch.object(web_app, "get_events", return_value=list(full)):
+            payload = self.client.get("/api/events?since=0").get_json()
+
+        self.assertLessEqual(len(payload["events"]), 50)
+        # next_seq must still point past the newest event so subsequent
+        # ?since=next_seq polling keeps advancing correctly.
+        self.assertEqual(payload["next_seq"], 120)
+        self.assertEqual(payload["events"][-1]["seq"], 119)
+
+    def test_api_events_incremental_since_unchanged(self):
+        incremental = [{"seq": i, "type": "x"} for i in range(50, 120)]
+        with mock.patch.object(
+            web_app, "get_events", return_value=list(incremental)
+        ) as get_events:
+            payload = self.client.get("/api/events?since=50").get_json()
+
+        get_events.assert_called_once_with(50)
+        # Incremental polling is untouched: every event after the cursor is
+        # returned, no truncation.
+        self.assertEqual(len(payload["events"]), 70)
+        self.assertEqual(payload["events"][0]["seq"], 50)
+        self.assertEqual(payload["next_seq"], 120)
+
+
+class FirstPaintE2ETests(unittest.TestCase):
+    """Issue #34 · end-to-end — the first-paint endpoints are 200 and bounded."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.old_db_path = database.DB_PATH
+        self.old_database_url = database.DATABASE_URL
+        for attr in ("pg_conn", "sqlite_conn", "conn"):
+            if hasattr(database._local, attr):
+                try:
+                    getattr(database._local, attr).close()
+                except Exception:
+                    pass
+                setattr(database._local, attr, None)
+        database.DATABASE_URL = ""
+        database.DB_PATH = Path(self.tmpdir.name) / "firstpaint.db"
+        database.init_db()
+        self.client = web_app.app.test_client()
+
+    def tearDown(self):
+        for attr in ("pg_conn", "sqlite_conn", "conn"):
+            if hasattr(database._local, attr):
+                try:
+                    getattr(database._local, attr).close()
+                except Exception:
+                    pass
+                setattr(database._local, attr, None)
+        database.DATABASE_URL = self.old_database_url
+        database.DB_PATH = self.old_db_path
+        self.tmpdir.cleanup()
+
+    def test_first_paint_endpoints_are_fast_and_bounded(self):
+        # Seed more than the tail size so truncation is actually exercised.
+        for i in range(80):
+            web_app.log_event("seed", {"i": i})
+
+        stats_payload = {
+            "papers_processed": 0,
+            "results_total": 0,
+            "insights_total": 0,
+            "deep_insights_total": 0,
+            "submission_bundles_total": 0,
+        }
+        first_paint_paths = [
+            "/api/stats",
+            "/api/events?since=0",
+            "/api/recent_discoveries",
+            "/api/insights?limit=6",
+            "/api/deep_insights?limit=4",
+        ]
+
+        with mock.patch.object(
+            web_app, "get_stats_dict", return_value=stats_payload
+        ) as heavy:
+            web_app._stats_cache.invalidate()
+            web_app._stats_cache.prewarm()  # deploy/startup prewarm
+            responses = {p: self.client.get(p) for p in first_paint_paths}
+
+            # 2) stats is served from the warm cache: the heavy query is not
+            #    recomputed per request (mock count, no wall-clock dependency).
+            self.assertLessEqual(heavy.call_count, 1)
+
+        # 1) every first-paint endpoint returns 200.
+        for path, response in responses.items():
+            self.assertEqual(response.status_code, 200, f"{path} -> {response.status_code}")
+
+        # 3) since=0 returns only the tail (<= 50 events).
+        events_payload = responses["/api/events?since=0"].get_json()
+        self.assertLessEqual(len(events_payload["events"]), 50)
+
+        # 4) stats keeps its contract fields (cache does not drop/rename them).
+        stats_resp = responses["/api/stats"].get_json()
+        for key in (
+            "papers_processed",
+            "results_total",
+            "insights_total",
+            "deep_insights_total",
+            "submission_bundles_total",
+        ):
+            self.assertIn(key, stats_resp)
+
+
 if __name__ == "__main__":
     unittest.main()
