@@ -173,7 +173,7 @@
                             <button class="btn-link" id="btnJumpExplore" data-i18n="overview.openExplore">Open in Explore</button>
                         </div>
                         <div class="graph-preview-wrap">
-                            <svg id="overviewGraphSvg" width="100%" height="320"></svg>
+                            <div id="overviewGraph" class="dg-graph-host"></div>
                         </div>
                     </div>
 
@@ -199,8 +199,12 @@
                     <div class="card explore-graph-card">
                         <div class="card-header">
                             <h3 id="exploreTitle" data-i18n="explore.title">Research Area Explorer</h3>
+                            <span class="graph-hint" data-i18n="graph.zoomHint">Scroll to zoom · drag to pan · click an area for its gaps &amp; discoveries</span>
                         </div>
-                        <svg id="exploreGraphSvg" width="100%" height="520"></svg>
+                        <div class="explore-graph-stage">
+                            <div id="exploreGraph" class="dg-graph-host"></div>
+                            <aside id="exploreStoryPanel" class="dg-story-panel" hidden></aside>
+                        </div>
                     </div>
                     <div class="card" id="exploreSummaryCard" style="display:none;">
                         <div class="card-header">
@@ -237,6 +241,13 @@
                             <span class="evidence-hint" id="evidenceHint" data-i18n="evidence.hint">Select a leaf research area to view the benchmark matrix.</span>
                         </div>
                         <div id="evidenceMatrixContainer" class="matrix-wrap"></div>
+                    </div>
+                    <div class="card" id="evidenceGraphCard" style="display:none;">
+                        <div class="card-header">
+                            <h3 data-i18n="evidence.entityGraph">Entity-Relation Network</h3>
+                            <span class="graph-hint" data-i18n="graph.entityHint">Click an entity to find its papers &amp; insights</span>
+                        </div>
+                        <div id="evidenceEntityGraph" class="dg-graph-host"></div>
                     </div>
                     <div class="card" id="evidenceGapsCard" style="display:none;">
                         <div class="card-header">
@@ -532,6 +543,9 @@ Hello world.
     <div class="tooltip" id="tooltip"></div>
 
     <script src="/static/js/i18n.js"></script>
+    <script src="/static/js/graph/adapter.js"></script>
+    <script src="/static/js/graph/renderer.js"></script>
+    <script src="/static/js/graph/tooltip.js"></script>
     <script src="/static/js/app.js"></script>
     <script src="/static/js/agenda.js"></script>
     <script src="/static/js/manuscript_routing.js"></script>
