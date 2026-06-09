@@ -306,6 +306,42 @@ class DashboardRefreshTests(unittest.TestCase):
         self.assertNotIn('label": "主实验"', app_py)
         self.assertNotIn("function renderExperimentGroups(groups)", app_js)
 
+    def test_taxonomy_dropdown_build_is_not_quadratic(self):
+        """Regression guard for the main-thread freeze (Acceptance A).
+
+        The taxonomy ``<select>`` holds ~3300 nodes. Building it with
+        ``sel.innerHTML += '<option>...'`` inside a loop re-serializes and
+        re-parses the entire <select> on every iteration — O(n²) — which
+        froze the main thread ~4s after load (when prefetchInactiveTabs ran
+        loadTaxonomyDropdown). The fix must batch the option strings and
+        assign innerHTML (or append a DocumentFragment) exactly once.
+
+        We assert against the *source* so the O(n) property is pinned to the
+        real file; the wall-clock proof lives in the node perf microbench
+        (tests/perf/taxonomy_dropdown_perf.mjs) and the Playwright E2E.
+        """
+        app_js = _read("web/static/js/app.js")
+        body = re.search(
+            r"async function loadTaxonomyDropdown\(\)\s*\{(?P<body>.*?)\n\}",
+            app_js,
+            re.S,
+        )
+        self.assertIsNotNone(body, "loadTaxonomyDropdown not found")
+        fn = body.group("body")
+        # No `someEl.innerHTML += ...` accumulation anywhere in the function:
+        # that is the quadratic pattern we are forbidding.
+        self.assertIsNone(
+            re.search(r"\.innerHTML\s*\+=", fn),
+            "loadTaxonomyDropdown must not use `innerHTML +=` (O(n^2))",
+        )
+        # And it must build the options in a batch (join an array) before a
+        # single assignment / fragment append.
+        self.assertRegex(
+            fn,
+            r"\.join\(|createDocumentFragment|insertAdjacentHTML",
+            "loadTaxonomyDropdown must build options in one batch",
+        )
+
 
 class ExperimentGroupApiTests(unittest.TestCase):
     def setUp(self):

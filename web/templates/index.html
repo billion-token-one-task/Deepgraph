@@ -226,9 +226,14 @@
                         </div>
                         <div class="evidence-controls">
                             <label data-i18n="evidence.select">Select research area:</label>
-                            <select id="evidenceNodeSelect" class="select-input">
-                                <option value="" data-i18n="evidence.option">-- Select a leaf research area --</option>
-                            </select>
+                            <!-- Typeahead input + datalist instead of a 3300-<option> <select>:
+                                 the browser virtualizes datalist suggestions, so the page no
+                                 longer pays ~200ms to lay out the control when shown nor ~100ms
+                                 to restyle it on every language switch. -->
+                            <input id="evidenceNodeSelect" class="select-input" list="evidenceNodeOptions"
+                                   autocomplete="off" data-i18n-placeholder="evidence.option"
+                                   placeholder="-- Select a leaf research area --">
+                            <datalist id="evidenceNodeOptions"></datalist>
                             <span class="evidence-hint" id="evidenceHint" data-i18n="evidence.hint">Select a leaf research area to view the benchmark matrix.</span>
                         </div>
                         <div id="evidenceMatrixContainer" class="matrix-wrap"></div>

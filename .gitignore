@@ -30,3 +30,7 @@ workspace/pdfs/
 workspace/tmp/
 
 .DS_Store
+
+# Node test harness deps (Acceptance A)
+tests/js/node_modules/
+tests/js/package-lock.json

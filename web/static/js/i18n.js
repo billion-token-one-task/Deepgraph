@@ -838,6 +838,12 @@
   }
 
   let currentLanguage = preferredLanguage();
+  // Declare the document language once, up front (good for a11y / browser
+  // translation). We deliberately do NOT rewrite documentElement.lang on every
+  // toggle: changing this inherited, style-affecting attribute forces a
+  // full-document style recalc — a ~1.5s main-thread freeze on this dashboard's
+  // large DOM — and no CSS here keys off :lang()/[lang], so it buys nothing.
+  try { document.documentElement.lang = currentLanguage === "zh" ? "zh-CN" : "en"; } catch (_) {}
 
   function t(key, vars) {
     const table = I18N[currentLanguage] || I18N.en;
@@ -861,7 +867,8 @@
     scope.querySelectorAll("[data-i18n-title]").forEach((node) => {
       node.setAttribute("title", t(node.dataset.i18nTitle));
     });
-    document.documentElement.lang = currentLanguage === "zh" ? "zh-CN" : "en";
+    // NOTE: documentElement.lang is set once at init (see preferredLanguage
+    // above), NOT here — rewriting it per toggle forces a full-document restyle.
     document.querySelectorAll("[data-lang]").forEach((node) => {
       node.classList.toggle("active", node.dataset.lang === currentLanguage);
     });
