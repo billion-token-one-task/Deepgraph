@@ -18,6 +18,7 @@ from orchestrator.pipeline import get_events, run_continuous, log_event, get_sta
 from agents.taxonomy_expander import run_expansion
 from web.agenda_routes import register as register_agenda_routes
 from web.manuscript_routes import register as register_manuscript_routes
+from web.stats_cache import StatsCache
 
 app = Flask(__name__,
             template_folder="templates",
@@ -25,6 +26,25 @@ app = Flask(__name__,
 
 register_agenda_routes(app)
 register_manuscript_routes(app)
+
+# In-process TTL cache for the heavy /api/stats query (issue #34). The lambda
+# resolves get_stats_dict at call time so it stays patchable in tests; the
+# cache is lazy — constructing it here does NOT run the heavy query at import.
+STATS_CACHE_TTL_SECONDS = 30.0
+_stats_cache = StatsCache(lambda: get_stats_dict(), ttl=STATS_CACHE_TTL_SECONDS)
+
+
+def prewarm_stats_cache():
+    """Warm the stats cache once and start its background refresher. Call from
+    server startup (in a thread) so the first browser paint is served from a
+    warm cache, not a cold ~30-COUNT(*) query, and stays fresh thereafter."""
+    _stats_cache.prewarm()
+    _stats_cache.start_background_refresh()
+
+# How many events /api/events?since=0 returns on first paint. The frontend only
+# keeps the last 50, so returning the full ~1000-event log just wastes ~463KB
+# and a concurrency slot on the first-paint critical path (issue #34).
+FIRST_PAINT_EVENT_TAIL = 50
 
 _pipeline_running = False
 _pipeline_lock = threading.Lock()
@@ -646,7 +666,17 @@ def api_meta():
 
 @app.route("/api/stats")
 def api_stats():
-    return jsonify(get_stats_dict())
+    # Serve from the in-process TTL cache; the heavy COUNT(*) query never runs
+    # in this request thread (issue #34). Stale entries trigger a background
+    # refresh inside the cache.
+    stats = _stats_cache.get()
+    if stats is None:
+        # Cold start before the startup warm-up completes: return a "warming"
+        # marker rather than blocking the request thread on the heavy query or
+        # fabricating numbers. The startup prewarm makes this window
+        # effectively never hit in production.
+        return jsonify({"warming": True})
+    return jsonify(stats)
 
 
 @app.route("/api/providers")
@@ -1159,6 +1189,13 @@ def api_events():
     """Short-poll pipeline events without holding a web worker thread."""
     since = max(0, request.args.get("since", 0, type=int) or 0)
     events = get_events(since)
+    if since == 0:
+        # First paint: the frontend only keeps the last 50 events, so return
+        # just the tail instead of the full ~1000-event log. next_seq is still
+        # computed from the newest event below, so subsequent ?since=next_seq
+        # polling continues forward correctly (issue #34). Incremental
+        # (since>0) requests are untouched.
+        events = events[-FIRST_PAINT_EVENT_TAIL:]
     payload_events = json.loads(json.dumps(events, ensure_ascii=False, default=str))
     next_seq = since
     for event in payload_events:
