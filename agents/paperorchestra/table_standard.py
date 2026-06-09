@@ -35,6 +35,7 @@ TABLE_RULES = {
         "no_long_text_columns": True,
         "move_interpretation_to_prose": True,
         "prefer_derived_numeric_columns": ["Std.", r"95\% CI", r"$\Delta$", "Rel.", "Range"],
+        "numeric_precision": "Round paper-facing numbers: rates/accuracy/p-values to 3--4 significant digits, token/latency/cost values to 1--2 decimals, and never emit raw Python floats with 5+ decimal places.",
         "boolean_values": r"Use \checkmark and -- rather than Yes/No.",
     },
 }

@@ -658,6 +658,47 @@ def _ensure_papers_checkpoint_columns() -> None:
         "CREATE INDEX IF NOT EXISTS idx_papers_processing_stage ON papers(processing_stage)",
         best_effort_if_locked=_use_pg(),
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS paper_research_facets (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            paper_id TEXT NOT NULL REFERENCES papers(id),
+            facet_type TEXT NOT NULL,
+            facet_name TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            evidence_location TEXT,
+            source_quote TEXT,
+            metadata TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(paper_id, facet_type, facet_name, summary)
+        )
+        """
+        if not _use_pg()
+        else """
+        CREATE TABLE IF NOT EXISTS paper_research_facets (
+            id BIGSERIAL PRIMARY KEY,
+            paper_id TEXT NOT NULL REFERENCES papers(id),
+            facet_type TEXT NOT NULL,
+            facet_name TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            evidence_location TEXT,
+            source_quote TEXT,
+            metadata TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(paper_id, facet_type, facet_name, summary)
+        )
+        """
+    )
+    _execute_startup_statement(
+        conn,
+        "CREATE INDEX IF NOT EXISTS idx_paper_research_facets_paper ON paper_research_facets(paper_id)",
+        best_effort_if_locked=_use_pg(),
+    )
+    _execute_startup_statement(
+        conn,
+        "CREATE INDEX IF NOT EXISTS idx_paper_research_facets_type ON paper_research_facets(facet_type)",
+        best_effort_if_locked=_use_pg(),
+    )
     conn.commit()
 
 
@@ -1214,6 +1255,82 @@ def get_paper_insight(paper_id: str) -> dict | None:
     row["limitations"] = _load_json(row.get("limitations"), [])
     row["open_questions"] = _load_json(row.get("open_questions"), [])
     return row
+
+
+VALID_RESEARCH_FACET_TYPES = {
+    "problem_frame",
+    "motivation_rationale",
+    "methodology_unit",
+    "design_decision",
+    "protocol_mechanism",
+    "boundary_condition",
+}
+
+
+def _normalize_research_facet(facet: dict) -> dict | None:
+    if not isinstance(facet, dict):
+        return None
+    facet_type = str(facet.get("facet_type") or "").strip().lower()
+    if facet_type not in VALID_RESEARCH_FACET_TYPES:
+        return None
+    facet_name = str(facet.get("facet_name") or facet.get("name") or "").strip()
+    summary = str(facet.get("summary") or facet.get("description") or "").strip()
+    if not facet_name or not summary:
+        return None
+    return {
+        "facet_type": facet_type,
+        "facet_name": facet_name[:160],
+        "summary": summary[:1000],
+        "evidence_location": facet.get("evidence_location"),
+        "source_quote": facet.get("source_quote"),
+        "metadata": facet.get("metadata", {}),
+    }
+
+
+def replace_paper_research_facets(paper_id: str, facets: list[dict]) -> int:
+    """Replace structured problem/motivation/methodology facets for one paper."""
+    execute("DELETE FROM paper_research_facets WHERE paper_id=?", (paper_id,))
+    count = 0
+    for facet in facets or []:
+        normalized = _normalize_research_facet(facet)
+        if not normalized:
+            continue
+        execute(
+            """
+            INSERT INTO paper_research_facets
+              (paper_id, facet_type, facet_name, summary, evidence_location, source_quote, metadata)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(paper_id, facet_type, facet_name, summary) DO UPDATE SET
+              evidence_location=excluded.evidence_location,
+              source_quote=excluded.source_quote,
+              metadata=excluded.metadata
+            """,
+            (
+                paper_id,
+                normalized["facet_type"],
+                normalized["facet_name"],
+                normalized["summary"],
+                normalized.get("evidence_location"),
+                normalized.get("source_quote"),
+                _dump_json(normalized.get("metadata", {})),
+            ),
+        )
+        count += 1
+    commit()
+    return count
+
+
+def get_paper_research_facets(paper_id: str, facet_type: str | None = None) -> list[dict]:
+    params: list = [paper_id]
+    sql = "SELECT * FROM paper_research_facets WHERE paper_id=?"
+    if facet_type:
+        sql += " AND facet_type=?"
+        params.append(facet_type)
+    sql += " ORDER BY facet_type, id"
+    rows = fetchall(sql, tuple(params))
+    for row in rows:
+        row["metadata"] = _load_json(row.get("metadata"), {})
+    return rows
 
 
 def upsert_node_summary(summary: dict):

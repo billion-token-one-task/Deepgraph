@@ -5,7 +5,16 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from contracts import DeepInsightSpec, ExperimentJudgement
-from config import EXPERIMENT_ALLOW_SYNTHETIC_FALLBACK, EXPERIMENT_REQUIRE_REAL_BENCHMARK
+from config import (
+    EXPERIMENT_ALLOW_SYNTHETIC_FALLBACK,
+    EXPERIMENT_FULL_BENCHMARK_MIN_BASELINES,
+    EXPERIMENT_FULL_BENCHMARK_MIN_DATASETS,
+    EXPERIMENT_FULL_BENCHMARK_MIN_EXAMPLES,
+    EXPERIMENT_FULL_BENCHMARK_MIN_MODELS,
+    EXPERIMENT_REAL_BENCHMARK_MAX_EXAMPLES,
+    EXPERIMENT_REAL_BENCHMARK_SEEDS,
+    EXPERIMENT_REQUIRE_REAL_BENCHMARK,
+)
 
 
 def _non_empty_text(value: Any) -> str:
@@ -50,12 +59,15 @@ def _model_names(plan: dict[str, Any]) -> list[str]:
         if isinstance(value, list):
             rows.extend(value)
     names: list[str] = []
+    seen: set[str] = set()
     for row in rows:
         if isinstance(row, dict):
             name = _non_empty_text(row.get("name") or row.get("hf_model") or row.get("model"))
         else:
             name = _non_empty_text(row)
-        if name:
+        key = name.lower()
+        if name and key not in seen:
+            seen.add(key)
             names.append(name)
     return names
 
@@ -92,10 +104,16 @@ def review_experiment_candidate(
     baseline_review = {
         "baseline_count": len(baselines),
         "baselines": baselines,
-        "strong_enough": len(baselines) >= 2,
+        "strong_enough": len(baselines) >= EXPERIMENT_FULL_BENCHMARK_MIN_BASELINES,
+        "minimum_required_for_paper": EXPERIMENT_FULL_BENCHMARK_MIN_BASELINES,
     }
     if len(baselines) < 2:
         blockers.append("Experimental plan lacks at least two explicit baselines.")
+    if EXPERIMENT_REQUIRE_REAL_BENCHMARK and len(baselines) < EXPERIMENT_FULL_BENCHMARK_MIN_BASELINES:
+        blockers.append(
+            f"Experimental plan has only {len(baselines)} baseline(s); "
+            f"paper-eligible full benchmarks require at least {EXPERIMENT_FULL_BENCHMARK_MIN_BASELINES}."
+        )
 
     scale_target = (
         plan.get("compute_budget", {}).get("total_gpu_hours")
@@ -115,7 +133,9 @@ def review_experiment_candidate(
         "method_definition_present": bool(_non_empty_text(method.get("definition"))),
         "dataset_count": len(datasets),
         "real_dataset_count": len(real_datasets),
+        "minimum_real_datasets_for_paper": EXPERIMENT_FULL_BENCHMARK_MIN_DATASETS,
         "model_targets": model_targets,
+        "minimum_models_for_paper": EXPERIMENT_FULL_BENCHMARK_MIN_MODELS,
         "primary_metric": primary_metric,
         "aligned": bool(datasets and primary_metric and _non_empty_text(method.get("definition"))),
     }
@@ -123,8 +143,37 @@ def review_experiment_candidate(
         blockers.append("Experimental plan is missing explicit datasets.")
     if EXPERIMENT_REQUIRE_REAL_BENCHMARK and not real_datasets:
         blockers.append("Experimental plan must name at least one real public benchmark dataset; synthetic/proxy datasets are not allowed.")
+    if EXPERIMENT_REQUIRE_REAL_BENCHMARK and len(real_datasets) < EXPERIMENT_FULL_BENCHMARK_MIN_DATASETS:
+        blockers.append(
+            f"Experimental plan has only {len(real_datasets)} real dataset(s); "
+            f"paper-eligible full benchmarks require at least {EXPERIMENT_FULL_BENCHMARK_MIN_DATASETS}."
+        )
     if EXPERIMENT_REQUIRE_REAL_BENCHMARK and not model_targets:
         blockers.append("Experimental plan must name at least one real model target.")
+    if EXPERIMENT_REQUIRE_REAL_BENCHMARK and len(model_targets) < EXPERIMENT_FULL_BENCHMARK_MIN_MODELS:
+        blockers.append(
+            f"Experimental plan has only {len(model_targets)} model target(s); "
+            f"paper-eligible full benchmarks require at least {EXPERIMENT_FULL_BENCHMARK_MIN_MODELS}."
+        )
+    seed_raw = plan.get("minimum_seeds") or plan.get("seeds") or EXPERIMENT_REAL_BENCHMARK_SEEDS
+    try:
+        planned_seed_count = len(seed_raw) if isinstance(seed_raw, list) else int(seed_raw)
+    except (TypeError, ValueError):
+        planned_seed_count = 0
+    if EXPERIMENT_REQUIRE_REAL_BENCHMARK and planned_seed_count < EXPERIMENT_REAL_BENCHMARK_SEEDS:
+        blockers.append(
+            f"Experimental plan has only {planned_seed_count} seed(s); "
+            f"paper-eligible full benchmarks require at least {EXPERIMENT_REAL_BENCHMARK_SEEDS}."
+        )
+    try:
+        planned_examples = int(plan.get("max_eval_examples") or plan.get("num_examples") or EXPERIMENT_REAL_BENCHMARK_MAX_EXAMPLES)
+    except (TypeError, ValueError):
+        planned_examples = 0
+    if EXPERIMENT_REQUIRE_REAL_BENCHMARK and planned_examples < EXPERIMENT_FULL_BENCHMARK_MIN_EXAMPLES:
+        blockers.append(
+            f"Experimental plan has only {planned_examples} planned examples; "
+            f"paper-eligible full benchmarks require at least {EXPERIMENT_FULL_BENCHMARK_MIN_EXAMPLES}."
+        )
     if EXPERIMENT_REQUIRE_REAL_BENCHMARK and plan.get("proxy_allowed") and not EXPERIMENT_ALLOW_SYNTHETIC_FALLBACK:
         blockers.append("Synthetic/proxy fallback is disabled for formal experiments.")
     recipe_blockers = plan.get("benchmark_recipe_blockers")

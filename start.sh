@@ -1,4 +1,4 @@
 #!/bin/bash
-cd /home/ec2-user/deepgraph
+cd "/root/hk/Deepgraph"
 set -a; source .env; set +a
-exec python3.12 main.py
+exec python3 main.py

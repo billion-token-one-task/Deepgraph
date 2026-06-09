@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 
 from agents.evidence_planner import summarize_evidence_plan
+from agents.paperorchestra.writing_standard import MANUSCRIPT_WRITING_STANDARD_TEXT
 from agents.stage_prompts import prompt_block
 from config import PROJECT_ROOT
 
@@ -89,6 +90,7 @@ def build_idea_md(state: dict, *, evidence_block: str) -> str:
         "",
         "## Problem Awareness Contract",
         "Every paper draft must answer, in order: what problem, what motivation, what method, what result, and what limitation.",
+        MANUSCRIPT_WRITING_STANDARD_TEXT,
         json.dumps(problem_awareness, indent=2, ensure_ascii=False)[:6000],
         "",
         "## Problem",
@@ -187,4 +189,6 @@ Problem-awareness spine: Abstract and Introduction must make clear what problem,
 Every major claim must be tied to completed evidence in the provided result packet.
 Do not present bootstrap probes, proxy-only runs, or synthetic smoke tests as full benchmark validation.
 Explicitly address reviewer objections, baseline fairness, ablation coverage, seed variance, and statistical tests.
-Figures should be generated from benchmark artifacts first; API-generated method diagrams may be requested only after experiment results and a manuscript draft exist."""
+Figures should be generated from benchmark artifacts first; API-generated method diagrams may be requested only after experiment results and a manuscript draft exist.
+
+""" + MANUSCRIPT_WRITING_STANDARD_TEXT

@@ -343,6 +343,7 @@ def process_single_paper(paper_id: str) -> dict:
                 {
                     "claim_count": len(extraction.get("claims", [])),
                     "result_count": len(extraction.get("results", [])),
+                    "research_facet_count": len(extraction.get("research_facets", [])),
                     **structured_record.event_payload(),
                 },
             )
@@ -360,6 +361,28 @@ def process_single_paper(paper_id: str) -> dict:
             active_stage = "graph_written"
             db.start_paper_stage(paper_id, active_stage)
 
+            # Reprocessing a paper should replace its structured extraction,
+            # not append another near-identical set of claims/results.
+            existing_claim_ids = [
+                row["id"] for row in db.fetchall("SELECT id FROM claims WHERE paper_id=?", (paper_id,))
+            ]
+            if existing_claim_ids:
+                placeholders = ",".join("?" * len(existing_claim_ids))
+                db.execute(
+                    f"DELETE FROM contradictions WHERE claim_a_id IN ({placeholders}) OR claim_b_id IN ({placeholders})",
+                    tuple(existing_claim_ids + existing_claim_ids),
+                )
+                db.execute(f"DELETE FROM claims WHERE id IN ({placeholders})", tuple(existing_claim_ids))
+            existing_result_ids = [
+                row["id"] for row in db.fetchall("SELECT id FROM results WHERE paper_id=?", (paper_id,))
+            ]
+            if existing_result_ids:
+                placeholders = ",".join("?" * len(existing_result_ids))
+                db.execute(f"DELETE FROM result_taxonomy WHERE result_id IN ({placeholders})", tuple(existing_result_ids))
+                db.execute(f"DELETE FROM results WHERE id IN ({placeholders})", tuple(existing_result_ids))
+            if existing_claim_ids or existing_result_ids:
+                db.commit()
+
             for tn in extraction.get("taxonomy_nodes", []):
                 node_id = tn.get("node_id", "")
                 confidence = tn.get("confidence", 1.0)
@@ -371,6 +394,10 @@ def process_single_paper(paper_id: str) -> dict:
             paper_overview = extraction.get("paper_overview")
             if isinstance(paper_overview, dict) and paper_overview:
                 db.upsert_paper_insight(paper_id, paper_overview)
+            facet_count = db.replace_paper_research_facets(
+                paper_id,
+                extraction.get("research_facets", []),
+            )
 
             claims = extraction.get("claims", [])
             for c in claims:
@@ -412,6 +439,7 @@ def process_single_paper(paper_id: str) -> dict:
                 "taxonomy_nodes": result["taxonomy_nodes"],
                 "claim_count": result["claims"],
                 "result_count": result["results"],
+                "research_facet_count": facet_count,
                 "graph_entities": result["graph_entities"],
                 "graph_relations": result["graph_relations"],
             }

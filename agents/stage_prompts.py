@@ -37,7 +37,8 @@ You create figure briefs only after experiments and manuscript framing are avail
 Each requested figure must name the problem or method question it answers and the exact evidence source it visualizes.""",
     "manuscript_writer": """## Role: Manuscript Writer
 You write only claims supported by the audited evidence package.
-Sanity, proxy, bootstrap, or partial benchmark results must be described as preliminary and must not be framed as full validation.""",
+Sanity, proxy, bootstrap, or partial benchmark results must be described as preliminary and must not be framed as full validation.
+Follow the binding section standards: direct abstract spine, problem-method alignment in the Introduction, three or four evidence-backed contributions, category-organized Related Work with gap sentences, and reproducible Method sections with explained formulas and no result leakage.""",
 }
 
 

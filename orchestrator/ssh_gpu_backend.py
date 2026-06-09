@@ -63,6 +63,38 @@ def _first_text(value: Any) -> str:
     return text
 
 
+def _looks_like_model_id(text: str) -> bool:
+    value = str(text or "").strip()
+    if not value or any(ch.isspace() for ch in value):
+        return False
+    if value.lower() in {"cpu", "gpu", "cuda", "transformers"}:
+        return False
+    return "/" in value or os.path.isabs(value)
+
+
+def _model_texts(value: Any) -> list[str]:
+    if isinstance(value, list):
+        out: list[str] = []
+        for item in value:
+            out.extend(_model_texts(item))
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for text in out:
+            key = text.lower()
+            if key not in seen:
+                seen.add(key)
+                deduped.append(text)
+        return deduped
+    if isinstance(value, dict):
+        for key in ("hf_model", "model", "id", "name"):
+            text = _first_text(value.get(key))
+            if _looks_like_model_id(text):
+                return [text]
+        return []
+    text = str(value or "").strip()
+    return [text] if _looks_like_model_id(text) else []
+
+
 def _int_text(value: Any) -> str:
     if isinstance(value, list):
         return str(len(value)) if value else ""
@@ -113,15 +145,17 @@ def benchmark_env_from_workdir(local_workdir: Path) -> dict[str, str]:
     if not isinstance(contract, dict):
         contract = {}
 
-    model = (
-        _first_text(full_stage.get("models"))
-        or _first_text(contract.get("required_models"))
-        or _first_text(manifest.get("models"))
-        or _first_text(sanity_stage.get("models"))
-        or _first_text(proxy.get("benchmark_model"))
+    models = (
+        _model_texts(full_stage.get("models"))
+        or _model_texts(contract.get("required_models"))
+        or _model_texts(manifest.get("models"))
+        or _model_texts(sanity_stage.get("models"))
+        or _model_texts(proxy.get("benchmark_model"))
     )
-    if model:
-        env["DEEPGRAPH_BENCHMARK_MODEL"] = model
+    if models:
+        env["DEEPGRAPH_BENCHMARK_MODEL"] = models[0]
+        if len(models) > 1:
+            env["DEEPGRAPH_BENCHMARK_MODELS"] = json.dumps(models)
 
     dataset = _first_text(proxy.get("benchmark_dataset"))
     if dataset:

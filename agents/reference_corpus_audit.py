@@ -12,6 +12,15 @@ SECTION_RE = re.compile(r"\\(?:sub)*section\*?\{([^}]+)\}", re.IGNORECASE)
 CITE_RE = re.compile(r"\\cite[tpa]?\{([^}]+)\}", re.IGNORECASE)
 COMMAND_RE = re.compile(r"\\[a-zA-Z]+\*?(?:\[[^\]]*\])?(?:\{[^}]*\})?")
 WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9\-']+")
+ABSTRACT_ENV_RE = re.compile(r"\\begin\{abstract\}(.*?)\\end\{abstract\}", re.IGNORECASE | re.DOTALL)
+
+ABSTRACT_FORBIDDEN_PHRASES = (
+    "this is the first",
+    "comprehensive experiments show",
+    "extensive experiments demonstrate",
+    "universal",
+    "general",
+)
 
 
 def _median(values: list[float]) -> float | None:
@@ -42,6 +51,20 @@ def _tex_plain_text(main_tex: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def _section_body(main_tex: str, section_name: str) -> str:
+    pattern = re.compile(
+        rf"\\section\*?\{{{re.escape(section_name)}\}}(.*?)(?=\\section\*?\{{|\\end\{{document\}})",
+        re.IGNORECASE | re.DOTALL,
+    )
+    match = pattern.search(main_tex or "")
+    return match.group(1) if match else ""
+
+
+def _abstract_body(main_tex: str) -> str:
+    match = ABSTRACT_ENV_RE.search(main_tex or "")
+    return match.group(1) if match else ""
+
+
 def generated_manuscript_profile(
     *,
     main_tex: str,
@@ -61,6 +84,7 @@ def generated_manuscript_profile(
         "figure_reference_count": int(figure_count or 0),
         "table_count": len(re.findall(r"\\begin\{table", main_tex or "", re.IGNORECASE)),
         "equation_count": len(re.findall(r"\\begin\{equation|\\\[", main_tex or "", re.IGNORECASE)),
+        "has_abstract_environment": bool(_abstract_body(main_tex)),
         "has_problem_motivation_spine": all(
             token in (main_tex or "").lower()
             for token in ("problem", "motivation", "method", "result")
@@ -167,6 +191,20 @@ def audit_against_reference_corpus(
         issues.append({"severity": "medium", "issue": "Bibliography is sparse relative to top-conference reference papers."})
     if generated["figure_reference_count"] < 1:
         issues.append({"severity": "medium", "issue": "Generated paper has no native experiment figure."})
+    abstract_lower = _tex_plain_text(_abstract_body(main_tex)).lower()
+    if not generated.get("has_abstract_environment"):
+        issues.append({"severity": "high", "issue": "Manuscript must use an abstract environment rather than a numbered Abstract section."})
+    forbidden_hits = [phrase for phrase in ABSTRACT_FORBIDDEN_PHRASES if phrase in abstract_lower]
+    if forbidden_hits:
+        issues.append({"severity": "medium", "issue": "Abstract contains overclaim-prone forbidden wording: " + ", ".join(forbidden_hits) + "."})
+    related_body = _section_body(main_tex, "Related Work")
+    citation_dumps: list[str] = []
+    for raw in CITE_RE.findall(related_body):
+        keys = [key.strip() for key in raw.split(",") if key.strip()]
+        if len(keys) >= 6:
+            citation_dumps.append(raw)
+    if citation_dumps:
+        issues.append({"severity": "medium", "issue": "Related Work contains large undifferentiated citation clusters; split citations by method category."})
     required_sections = ("introduction", "method", "experiment")
     section_text = " ".join(generated["sections"]).lower()
     missing = [name for name in required_sections if name not in section_text]

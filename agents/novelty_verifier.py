@@ -61,6 +61,26 @@ def _openai_compatible_route(
     }
 
 
+def _evosci_compatible_route(route: dict[str, str] | None) -> dict[str, str] | None:
+    """Adapt DeepGraph routes to EvoScientist's OpenAI client expectations.
+
+    DeepGraph talks to the local gateway via `/responses`, but EvoScientist's
+    custom-openai path is more reliable through the OpenAI-compatible
+    `/v1/chat/completions` endpoint. Keep DeepGraph's own protocol unchanged
+    while presenting EvoScientist with a chat-completions base URL.
+    """
+    if not route:
+        return None
+    out = dict(route)
+    if (out.get("protocol") or "").strip().lower() == "responses":
+        base = (out.get("base_url") or "").rstrip("/")
+        if not base.endswith("/v1"):
+            base = f"{base}/v1"
+        out["base_url"] = base
+        out["protocol"] = "chat_completions"
+    return out
+
+
 def _write_evosci_config(
     workdir: Path,
     custom_openai_route: dict[str, str],
@@ -78,6 +98,7 @@ def _write_evosci_config(
         f"custom_openai_base_url: {json.dumps(custom_openai_route['base_url'])}",
         f"openai_api_key: {json.dumps(openai_route['api_key'])}",
         f"use_responses_api: {json.dumps(use_responses_api)}",
+        "enable_async_subagents: false",
     ]
     reasoning_effort = _evosci_reasoning_effort(custom_openai_route)
     if reasoning_effort:
@@ -101,7 +122,7 @@ def _evosci_reasoning_effort(route: dict[str, str]) -> str:
 
 
 def _build_evosci_env(workdir: Path) -> dict[str, str]:
-    custom_openai_route = _openai_compatible_route(
+    custom_openai_route = _evosci_compatible_route(_openai_compatible_route(
         api_key=LLM_API_KEY,
         base_url=LLM_BASE_URL,
         model=LLM_MODEL,
@@ -111,16 +132,16 @@ def _build_evosci_env(workdir: Path) -> dict[str, str]:
         base_url=LLM_SECONDARY_BASE_URL,
         model=LLM_SECONDARY_MODEL,
         protocol=LLM_SECONDARY_PROTOCOL,
-    )
+    ))
     if not custom_openai_route:
         raise RuntimeError("No OpenAI-compatible EvoScientist credentials are configured.")
 
-    secondary_openai_route = _openai_compatible_route(
+    secondary_openai_route = _evosci_compatible_route(_openai_compatible_route(
         api_key=LLM_SECONDARY_API_KEY,
         base_url=LLM_SECONDARY_BASE_URL,
         model=LLM_SECONDARY_MODEL,
         protocol=LLM_SECONDARY_PROTOCOL,
-    )
+    ))
     openai_route = secondary_openai_route if secondary_openai_route and secondary_openai_route != custom_openai_route else custom_openai_route
 
     env = os.environ.copy()
@@ -141,6 +162,7 @@ def _build_evosci_env(workdir: Path) -> dict[str, str]:
     env["NO_COLOR"] = "1"
     env["RICH_NO_COLOR"] = "1"
     env["TERM"] = "dumb"
+    env.setdefault("TAVILY_API_KEY", "local-fallback")
     for key in ("EVOSCIENTIST_REASONING_EFFORT", "OPENAI_REASONING_EFFORT", "REASONING_EFFORT"):
         env.pop(key, None)
     reasoning_effort = _evosci_reasoning_effort(custom_openai_route)
@@ -194,8 +216,34 @@ def _recent_log_activity(log_path: Path, window_seconds: int = 180) -> bool:
 
 def _build_verification_prompt(insight: dict) -> str:
     """Build a focused search prompt for novelty verification."""
+    from agents.idea_taste import (
+        format_counterevidence_block,
+        format_frontier_block,
+        score_graph_novelty,
+        retrieve_graph_counterevidence,
+    )
+
     tier = insight.get("tier", 0)
     title = insight.get("title", "")
+    graph_context = ""
+    novelty = score_graph_novelty(insight)
+    counterevidence = retrieve_graph_counterevidence(insight)
+    node_ids = []
+    try:
+        node_ids = json.loads(insight.get("source_node_ids") or "[]")
+    except (json.JSONDecodeError, TypeError):
+        node_ids = []
+    if not isinstance(node_ids, list):
+        node_ids = []
+    graph_context = (
+        f"\n## DeepGraph Prior Assessment\n"
+        f"- graph_novelty_score: {novelty.get('score')}\n"
+        f"- graph_novelty_status: {novelty.get('status')}\n"
+    )
+    if novelty.get("reasons"):
+        graph_context += "- graph_reasons: " + "; ".join(novelty["reasons"][:3]) + "\n"
+    graph_context += format_counterevidence_block(counterevidence)
+    graph_context += format_frontier_block([str(node_id) for node_id in node_ids if node_id])
 
     if tier == 1:
         formal = insight.get("formal_structure") or ""
@@ -231,7 +279,7 @@ Write a file called `novelty_report.md` with:
 5. **What's New**: If partially exists, what specific aspect is still novel
 6. **Recommended Refinement**: If partially exists, how to sharpen the novelty
 
-Be thorough but fast. Search at least 5 different queries."""
+Be thorough but fast. Search at least 5 different queries.{graph_context}"""
 
     else:  # tier 2
         method = json.loads(insight["proposed_method"]) if insight.get("proposed_method") else {}
@@ -269,7 +317,7 @@ Write a file called `novelty_report.md` with:
 5. **What's New**: If partially exists, what specific aspect is novel
 6. **Technical Differentiation**: How to position against closest work
 
-Be thorough but fast. Search at least 5 different queries."""
+Be thorough but fast. Search at least 5 different queries.{graph_context}"""
 
 
 def launch_verification(insight_id: int, timeout_minutes: int = None) -> dict:
@@ -328,6 +376,8 @@ def launch_verification(insight_id: int, timeout_minutes: int = None) -> dict:
             evosci_bin,
             "--workdir", workdir,
             "--auto-approve",
+            "--auto-mode",
+            "--no-thinking",
             "--ui", "cli",
             "-p", prompt,
         ],
@@ -552,6 +602,8 @@ Write your findings to final_report.md."""
             evosci_bin,
             "--workdir", workdir,
             "--auto-approve",
+            "--auto-mode",
+            "--no-thinking",
             "--ui", "cli",
             "-p", prompt,
         ],

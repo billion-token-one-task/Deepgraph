@@ -1233,7 +1233,7 @@ function renderGaps(container, gaps) {
     `).join('')}</div>`;
 }
 
-// ── Papers Tab ───────────────────────────────────────────────────────
+// ── Manuscripts Tab ──────────────────────────────────────────────────
 
 async function loadPapers() {
     papersLoaded = true;
@@ -1241,7 +1241,7 @@ async function loadPapers() {
         allPapers = await api('/api/generated_papers?limit=200');
         renderPapers();
     } catch (e) {
-        console.error('Papers load error:', e);
+        console.error('Manuscripts load error:', e);
     }
 }
 
@@ -1264,14 +1264,14 @@ function renderPapers() {
     if (status) {
         filtered = filtered.filter(p => p.status === status);
     }
-    if (countBadge) countBadge.textContent = `${filtered.length} paper${filtered.length === 1 ? '' : 's'}`;
+    if (countBadge) countBadge.textContent = `${filtered.length} manuscript${filtered.length === 1 ? '' : 's'}`;
 
     if (filtered.length === 0) {
         list.innerHTML = '<p class="empty-msg">No generated manuscripts found.</p>';
         if (detail) {
             detail.innerHTML = `<div class="paper-reader-empty">
                 <div class="paper-reader-empty-title">No matching manuscripts</div>
-                <p>Adjust the search text or status filter to reopen the generated-paper reader.</p>
+                <p>Adjust the search text or status filter to reopen the manuscript reader.</p>
             </div>`;
         }
         return;
@@ -2123,7 +2123,7 @@ function renderMetaReport(meta) {
     body.innerHTML = html;
 }
 
-// ── Providers Tab ────────────────────────────────────────────────────
+// ── Config Tab ───────────────────────────────────────────────────────
 
 async function loadProviders() {
     providersLoaded = true;
@@ -2135,9 +2135,9 @@ async function loadProviders() {
         renderRuntimeConfig(runtime);
         renderProviders(providers);
     } catch (e) {
-        console.error('Providers load error:', e);
+        console.error('Config load error:', e);
         const panel = el('runtimeConfigPanel');
-        if (panel) panel.innerHTML = '<p class="empty-msg">Failed to load runtime configuration.</p>';
+        if (panel) panel.innerHTML = '<p class="empty-msg">Failed to load configuration.</p>';
         el('providersList').innerHTML = '<p class="empty-msg">Failed to load provider data.</p>';
     }
 }
@@ -2159,6 +2159,38 @@ function renderRuntimeMetric(label, value, hint = '') {
     </div>`;
 }
 
+function percentBar(value, color = '#3d8b5e') {
+    const n = Number(value);
+    const pct = Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : 0;
+    return `<div style="height:5px;background:var(--border);border-radius:999px;overflow:hidden;margin-top:6px;">
+        <div style="width:${pct}%;height:100%;background:${color};"></div>
+    </div>`;
+}
+
+function renderGpuEnvironment(gpuSnapshot) {
+    if (!gpuSnapshot || !gpuSnapshot.available) {
+        return '<p class="empty-msg">No NVIDIA GPU telemetry available.</p>';
+    }
+    const gpus = gpuSnapshot.gpus || [];
+    const processes = gpuSnapshot.processes || [];
+    const gpuCards = gpus.map(g => {
+        const memPct = g.memory_used_pct == null ? 0 : g.memory_used_pct;
+        const util = g.utilization_pct == null ? 0 : g.utilization_pct;
+        return `<div class="runtime-metric gpu-runtime-metric">
+            <div class="runtime-metric-label">GPU ${esc(g.index)} · ${esc(g.name || 'GPU')}</div>
+            <div class="runtime-metric-value">${runtimeValue(g.memory_used_mb, ' MB')} / ${runtimeValue(g.memory_total_mb, ' MB')}</div>
+            ${percentBar(memPct, memPct > 80 ? '#c4453a' : '#3d8b5e')}
+            <div class="runtime-metric-hint">mem ${runtimeValue(memPct, '%')} · util ${runtimeValue(util, '%')} · ${runtimeValue(g.temperature_c, ' C')} · ${runtimeValue(g.power_w, ' W')}</div>
+        </div>`;
+    }).join('') || '<p class="empty-msg">No GPU devices reported.</p>';
+    const processRows = processes.length
+        ? `<div style="margin-top:10px;display:flex;flex-direction:column;gap:4px;">${processes.slice(0, 8).map(proc => `
+            <div class="runtime-path">PID ${esc(proc.pid)} · ${esc(proc.process_name || 'process')} · ${runtimeValue(proc.used_memory_mb, ' MB')}</div>
+        `).join('')}</div>`
+        : '<div class="runtime-path">No active GPU compute processes reported by nvidia-smi.</div>';
+    return `<div class="runtime-metric-grid">${gpuCards}</div>${processRows}`;
+}
+
 function renderRuntimeConfig(config) {
     const panel = el('runtimeConfigPanel');
     if (!panel || !config) return;
@@ -2169,6 +2201,8 @@ function renderRuntimeConfig(config) {
     const limits = llm.limits || {};
     const runtime = config.runtime || {};
     const experiment = config.experiment || {};
+    const cpu = runtime.cpu || {};
+    const gpuSnapshot = experiment.gpu_snapshot || {};
     const dbInfo = runtime.database || {};
     const workspaceDisk = runtime.workspace_disk || {};
     const experimentDisk = experiment.experiment_disk || {};
@@ -2204,19 +2238,42 @@ function renderRuntimeConfig(config) {
                     <div class="runtime-metric-grid">
                         ${renderRuntimeMetric('Auto Research', runtimeBool(experiment.auto_research_enabled))}
                         ${renderRuntimeMetric('Pipeline', runtimeBool(experiment.auto_pipeline_enabled))}
-                        ${renderRuntimeMetric('GPU Mode', runtimeValue(experiment.gpu_mode), `${experiment.gpu_worker_slots || 0} slots · ${experiment.gpu_default_model || 'model?'}`)}
+                        ${renderRuntimeMetric('Concurrency', runtimeValue(experiment.pipeline_concurrency), 'paper processing workers')}
                         ${renderRuntimeMetric('Real Benchmark', runtimeBool(experiment.require_real_benchmark), experiment.benchmark_dataset || '')}
+                        ${renderRuntimeMetric('Experiment Model', runtimeValue(experiment.real_llm_model))}
+                        ${renderRuntimeMetric('Synthetic Fallback', runtimeBool(experiment.allow_synthetic_fallback))}
                     </div>
+                    <div class="runtime-path">${esc(experiment.experiment_workdir || '')}</div>
                 </div>
                 <div class="runtime-card">
-                    <div class="runtime-card-title">Machine Footprint</div>
+                    <div class="runtime-card-title">CPU / Memory</div>
                     <div class="runtime-metric-grid">
+                        ${renderRuntimeMetric('CPU Cores', runtimeValue(cpu.count || runtime.cpu_count))}
+                        ${renderRuntimeMetric('Load 1m', runtimeValue(cpu.load_1m), `${runtimeValue(cpu.load_pct_1m, '%')} of cores`)}
+                        ${renderRuntimeMetric('Load 5m', runtimeValue(cpu.load_5m))}
                         ${renderRuntimeMetric('Process RAM', runtimeValue(runtime.process_rss_mb, ' MB'))}
                         ${renderRuntimeMetric('System RAM', runtimeValue(runtime.total_memory_mb, ' MB'))}
-                        ${renderRuntimeMetric('Workspace Free', runtimeValue(workspaceDisk.free_gb, ' GB'))}
-                        ${renderRuntimeMetric('Experiment Free', runtimeValue(experimentDisk.free_gb, ' GB'))}
                     </div>
-                    <div class="runtime-path">${esc(dbInfo.backend || 'db')} · ${esc(dbInfo.target || '')}</div>
+                    <div class="runtime-path">${esc(runtime.platform || '')}</div>
+                </div>
+                <div class="runtime-card runtime-card-wide">
+                    <div class="runtime-card-title">GPU Environment</div>
+                    <div class="runtime-inline" style="margin-bottom:8px;">
+                        <span>${esc(experiment.gpu_mode || 'gpu mode?')}</span>
+                        <span>${runtimeValue(experiment.gpu_worker_slots)} slots</span>
+                        <span>${esc((experiment.gpu_visible_devices || []).join(',') || 'no visible devices')}</span>
+                    </div>
+                    ${renderGpuEnvironment(gpuSnapshot)}
+                </div>
+                <div class="runtime-card runtime-card-wide">
+                    <div class="runtime-card-title">Storage / Database</div>
+                    <div class="runtime-metric-grid">
+                        ${renderRuntimeMetric('Workspace Free', runtimeValue(workspaceDisk.free_gb, ' GB'), `${runtimeValue(workspaceDisk.used_gb, ' GB')} used`)}
+                        ${renderRuntimeMetric('Experiment Free', runtimeValue(experimentDisk.free_gb, ' GB'), `${runtimeValue(experimentDisk.used_gb, ' GB')} used`)}
+                        ${renderRuntimeMetric('DB Backend', runtimeValue(dbInfo.backend))}
+                        ${renderRuntimeMetric('PID', runtimeValue(runtime.pid))}
+                    </div>
+                    <div class="runtime-path">${esc(dbInfo.target || '')}</div>
                 </div>
             </div>
             <div class="runtime-config-form">
@@ -2715,7 +2772,7 @@ function init() {
         loadEvidenceForNode(e.target.value);
     });
 
-    // Papers filters
+    // Manuscripts filters
     el('papersSearch').addEventListener('input', () => {
         clearTimeout(el('papersSearch')._timer);
         el('papersSearch')._timer = setTimeout(renderPapers, 200);

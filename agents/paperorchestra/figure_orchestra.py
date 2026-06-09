@@ -1829,7 +1829,7 @@ def run_postwriting_api_figure_stage(
                 "objective": (
                     CONCEPT_REFERENCE_STYLE_NOTE
                     + " Create a high-information flat PPT-built motivation schematic, not a rendered illustration, poster scene, or plain process flow. "
-                    "Use three tidy comparison regions with a shared worked example. Use the paper's own domain entities as icons; for this DPC multi-agent setting, show five small agent/avatar icons A1-A5 producing answer bubbles A/A/A/B*/C, support counts, confidence chips, cost chips, token budget, and retained/lost marks. "
+                    "Use three tidy comparison regions with a shared worked example. Use the paper's own domain entities as icons; for this multi-agent reasoning setting, show five small agent/avatar icons A1-A5 producing answer bubbles A/A/A/B*/C, support counts, confidence chips, cost chips, token budget, and retained/lost marks. "
                     "Majority voting should visibly erase a high-confidence B* dissent; keep-all should visibly preserve B* but overrun token/latency budget; conditional retention should show a margin cue and a small rule card that keeps B* only when disagreement is meaningful. "
                     "Include concrete numeric cues such as conf=.95, cost=20, m=(3-1)/5, and a budget bar; include small icons only as annotations. "
                     "Use rounded hand-written or marker-like sans labels, not Times New Roman. "
@@ -1854,7 +1854,7 @@ def run_postwriting_api_figure_stage(
                 "objective": (
                     CONCEPT_REFERENCE_STYLE_NOTE
                     + " Create a mechanism-rich overview as a flat PPT-built structured academic schematic, not an input-output pipeline, decision-board dashboard, rendered illustration, or poster scene. "
-                    "Show a worked multi-agent trace: five small agent/avatar icons A1-A5 each emitting an answer bubble with answer, confidence, and cost; a compact trace table; a grouping zoom-in with A x3, B* x1 high-conf, C x1; a central DPC rule card with m=(3-1)/5 and s_g=sum c_i + lambda dissent bonus; a budget bar; retained agent traces {A,B*}; discarded agent trace C; selected answer. "
+                    "Show a worked multi-agent trace: five small agent/avatar icons A1-A5 each emitting an answer bubble with answer, confidence, and cost; a compact trace table; a grouping zoom-in with A x3, B* x1 high-conf, C x1; a central method rule card with a disagreement margin, confidence score, and budget score; a budget bar; retained agent traces {A,B*}; discarded agent trace C; selected answer. "
                     "Make the core mechanism visually central and content-rich with local zoom-ins, score tags, and small matrix/table elements. "
                     "Agent/avatar icons must be visible and relevant in this multi-agent paper: they are the sources of the candidate traces, with answer bubbles connected to them. They should be flat schematic avatars, not glossy mascots. "
                     "Use rounded hand-written or marker-like sans labels, not Times New Roman. "
@@ -1862,7 +1862,7 @@ def run_postwriting_api_figure_stage(
                     "Use very few arrows and no stage-chain layout. Do not use generic Module/Decision/Output labels, text-only card stacks, visible step numbers, numbered circle badges, large all-caps headings, isolated widgets, dashboard panels, rendered cartoon style, glossy objects, cast shadows, furniture, unrelated envelope/tray metaphors, or full-scene lab illustrations."
                 ),
                 "caption": (
-                    "Overview figure of Diversity-Preserving Consensus as a non-flow mechanism: candidate evidence, "
+                    "Overview figure of the proposed selection mechanism: candidate evidence, "
                     "consensus support, dissent evidence, and the selected answer are organized around the central selector."
                 ),
                 "data_source": "postwriting manuscript draft plus figure caption intent",

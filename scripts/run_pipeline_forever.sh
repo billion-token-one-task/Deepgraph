@@ -1,21 +1,27 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="/home/billion-token/Deepgraph"
-PYTHON="$ROOT/.venv/bin/python"
+ROOT="${DEEPGRAPH_ROOT:-/root/hf_models/hk_backup/Deepgraph}"
+PYTHON="${DEEPGRAPH_PYTHON:-/root/anaconda3/bin/python3}"
 LOG_DIR="$ROOT/logs"
 PROCESSOR_LOG="$LOG_DIR/processor.log"
-API_BASE="http://127.0.0.1:8080"
+API_BASE="${DEEPGRAPH_API_BASE:-http://127.0.0.1:8081}"
 MAX_PAPERS_PER_RUN="${DEEPGRAPH_FOREVER_BATCH_SIZE:-1000}"
-# Serialize runs: fixed_flow_read_only blocks POST /api/start, so we call run_continuous in-process.
 LOCK_FILE="/tmp/deepgraph-run_continuous.lock"
 
 mkdir -p "$LOG_DIR"
 
+if [[ -f "$ROOT/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$ROOT/.env"
+  set +a
+fi
+
 while true; do
   processing_json="$(curl -s --max-time 10 "$API_BASE/api/processing" || true)"
   if [[ -z "$processing_json" ]]; then
-    echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] web unavailable; retrying in 15s" >> "$PROCESSOR_LOG"
+    echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] web unavailable at $API_BASE; retrying in 15s" >> "$PROCESSOR_LOG"
     sleep 15
     continue
   fi
@@ -34,6 +40,6 @@ while true; do
     cd "$ROOT"
     "$PYTHON" -u -c "from orchestrator.pipeline import run_continuous; run_continuous(${MAX_PAPERS_PER_RUN})" >> "$PROCESSOR_LOG" 2>&1
   ) 200>"$LOCK_FILE" || true
-  printf '\n' >> "$PROCESSOR_LOG"
+  printf "\n" >> "$PROCESSOR_LOG"
   sleep 120
 done

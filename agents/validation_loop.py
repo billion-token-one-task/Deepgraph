@@ -9,6 +9,7 @@ Key difference from autoresearch:
   - Knows when to stop: hypothesis SUPPORTED, REFUTED, or TIMEOUT
   - Logs structured iteration data for the Result Interpreter
 """
+import itertools
 import json
 import os
 import re
@@ -24,6 +25,7 @@ from agents.benchmark_audit import (
     benchmark_diagnostic_notes,
     benchmark_fairness_warnings_from_diff,
     benchmark_semantic_warnings,
+    full_benchmark_evidence_blockers,
 )
 from agents import codex_executor
 from agents import experiment_supervisor
@@ -308,7 +310,8 @@ def _benchmark_package_complete(summary: dict, criteria: dict) -> bool:
         num_seeds = int(summary.get("num_seeds") or len(seed_results) or 0)
     except (TypeError, ValueError):
         num_seeds = 0
-    return bool(per_method and len(per_method) >= 2 and num_seeds >= minimum_seeds)
+    policy_blockers = full_benchmark_evidence_blockers(summary, criteria)
+    return bool(per_method and len(per_method) >= 2 and num_seeds >= minimum_seeds and not policy_blockers)
 
 
 def _named_requirements(values) -> list[str]:
@@ -487,6 +490,7 @@ def _benchmark_readiness_blockers(summary: dict, criteria: dict, verdict: str) -
         direction=direction,
     )
     blockers.extend(f"benchmark semantic warning: {warning}" for warning in semantic_warnings)
+    blockers.extend(f"full benchmark policy: {item}" for item in full_benchmark_evidence_blockers(summary, criteria))
 
     return blockers
 
@@ -667,6 +671,7 @@ def _benchmark_env_for_execution(workdir: Path, *, full_benchmark: bool = False)
     if full_benchmark or _env_truthy("DEEPGRAPH_BENCHMARK_FULL_RUN"):
         env["DEEPGRAPH_BENCHMARK_FULL_RUN"] = "1"
         env.setdefault("DEEPGRAPH_BENCHMARK_METHODS", "all")
+        env.setdefault("DEEPGRAPH_BENCHMARK_INCLUDE_TOP_VENUE_BASELINES", "1")
         return env
 
     env["DEEPGRAPH_BENCHMARK_MAX_EXAMPLES"] = _bounded_int_text(
@@ -684,6 +689,355 @@ def _benchmark_env_for_execution(workdir: Path, *, full_benchmark: bool = False)
     return env
 
 
+
+
+def _benchmark_model_list_from_env(env: dict[str, str]) -> list[str]:
+    raw = str(env.get("DEEPGRAPH_BENCHMARK_MODELS") or "").strip()
+    models: list[str] = []
+    if raw:
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            parsed = [part.strip() for part in raw.split(",")]
+        if isinstance(parsed, list):
+            for item in parsed:
+                text = str(item.get("hf_model") or item.get("model") or item.get("id") or item.get("name") if isinstance(item, dict) else item or "").strip()
+                if text and text not in models:
+                    models.append(text)
+    fallback = str(env.get("DEEPGRAPH_BENCHMARK_MODEL") or "").strip()
+    if fallback and fallback not in models:
+        models.insert(0, fallback)
+    return models
+
+
+def _safe_model_slug(model_id: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", str(model_id or "model")).strip("_") or "model"
+
+
+def _clean_benchmark_result_files(results_dir: Path) -> None:
+    names = (
+        "run_config.json",
+        "raw_predictions.jsonl",
+        "routing_decisions.jsonl",
+        "per_seed_results.json",
+        "per_dataset_results.json",
+        "main_results_table.json",
+        "cost_utility_tradeoff_table.json",
+        "quality_cost_frontier.json",
+        "route_rate_sweep_table.json",
+        "ablation_table.json",
+        "difficulty_breakdown_table.json",
+        "routing_analysis.json",
+        "latency_tokens_table.json",
+        "simple_case_degradation.json",
+        "calibration_reliability.json",
+        "bootstrap_ci.json",
+        "failure_cases.jsonl",
+        "artifact_manifest.json",
+        "environment_report.json",
+        "benchmark_summary.json",
+    )
+    for name in names:
+        path = results_dir / name
+        try:
+            if path.exists() and path.is_file():
+                path.unlink()
+        except OSError:
+            pass
+
+
+def _metric_from_row(row: dict, metric_name: str | None = None) -> float | None:
+    if not isinstance(row, dict):
+        return None
+    for key in (metric_name, "metric_value", "cost_adjusted_accuracy", "score"):
+        if not key:
+            continue
+        try:
+            return float(row.get(key))
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _upper_bound_name(name: str, row: dict | None = None) -> bool:
+    label = str(name or "").replace("-", "_").replace(" ", "_").lower()
+    return bool(isinstance(row, dict) and row.get("upper_bound")) or "oracle" in label or "upper_bound" in label
+
+
+def _weighted_merge_method_rows(rows: list[dict]) -> dict:
+    merged: dict = {}
+    total_count = 0
+    for row in rows:
+        try:
+            total_count += int(row.get("count") or 0)
+        except (TypeError, ValueError):
+            pass
+    total_count = max(1, total_count)
+    numeric_avg_keys = (
+        "score",
+        "exact",
+        "f1",
+        "avg_new_tokens",
+        "avg_latency_seconds",
+        "route_rate",
+        "cost_adjusted_accuracy",
+        "metric_value",
+    )
+    for key in numeric_avg_keys:
+        value = 0.0
+        seen = False
+        for row in rows:
+            try:
+                count = int(row.get("count") or 0)
+                value += float(row.get(key)) * max(1, count)
+                seen = True
+            except (TypeError, ValueError):
+                continue
+        if seen:
+            merged[key] = float(value / total_count)
+    merged["count"] = total_count
+    if any(row.get("upper_bound") for row in rows if isinstance(row, dict)):
+        merged["upper_bound"] = True
+    return merged
+
+
+def _paired_permutation_pvalue(candidate: list[float], baseline: list[float]) -> float | None:
+    pairs = [(float(c), float(b)) for c, b in zip(candidate, baseline)]
+    if not pairs:
+        return None
+    observed = abs(sum(c - b for c, b in pairs) / len(pairs))
+    count = 0
+    extreme = 0
+    for signs in itertools.product((-1, 1), repeat=len(pairs)):
+        diff = abs(sum(sign * (c - b) for sign, (c, b) in zip(signs, pairs)) / len(pairs))
+        count += 1
+        if diff >= observed - 1e-12:
+            extreme += 1
+    return float(extreme / max(1, count))
+
+
+def _bootstrap_ci(values: list[float]) -> list[float]:
+    if not values:
+        return [0.0, 0.0]
+    import random
+    rng = random.Random(12345)
+    means = []
+    for _ in range(2000):
+        sample = [values[rng.randrange(len(values))] for _ in values]
+        means.append(sum(sample) / max(1, len(sample)))
+    means.sort()
+    return [float(means[int(0.025 * (len(means) - 1))]), float(means[int(0.975 * (len(means) - 1))])]
+
+
+def _merge_model_benchmark_summaries(model_results: list[dict], criteria_metric_name: str) -> dict:
+    summaries = [row.get("benchmark_summary") for row in model_results if isinstance(row.get("benchmark_summary"), dict)]
+    if not summaries:
+        return {}
+    base = json.loads(json.dumps(summaries[0]))
+    metric_name = str(base.get("primary_metric") or base.get("metric_name") or criteria_metric_name or "metric_value")
+    candidate = str(base.get("candidate_method") or "").strip()
+    all_methods = sorted({name for summary in summaries for name in (summary.get("per_method") or {}).keys()})
+    per_method: dict = {}
+    for method in all_methods:
+        rows = [summary.get("per_method", {}).get(method) for summary in summaries]
+        rows = [row for row in rows if isinstance(row, dict)]
+        if rows:
+            per_method[method] = _weighted_merge_method_rows(rows)
+    seed_results = []
+    for model_result, summary in zip(model_results, summaries):
+        model = summary.get("model") if isinstance(summary.get("model"), dict) else {}
+        model_id = model_result.get("model_id") or model.get("id") or ""
+        for seed_row in summary.get("seed_results") or []:
+            if isinstance(seed_row, dict):
+                copied = json.loads(json.dumps(seed_row))
+                copied["model_id"] = model_id
+                seed_results.append(copied)
+    datasets = []
+    seen_datasets = set()
+    for summary in summaries:
+        for row in summary.get("datasets") or []:
+            if not isinstance(row, dict):
+                continue
+            key = str(row.get("name") or row.get("id") or row).lower()
+            if key and key not in seen_datasets:
+                seen_datasets.add(key)
+                datasets.append(row)
+    models = []
+    seen_models = set()
+    for model_result, summary in zip(model_results, summaries):
+        model = summary.get("model") if isinstance(summary.get("model"), dict) else {}
+        model_id = str(model_result.get("model_id") or model.get("id") or "").strip()
+        if model_id and model_id.lower() not in seen_models:
+            seen_models.add(model_id.lower())
+            models.append({**model, "id": model_id})
+    strongest_name = ""
+    strongest_value = None
+    higher = True
+    for name, row in per_method.items():
+        if name == candidate or _upper_bound_name(name, row):
+            continue
+        value = _metric_from_row(row, metric_name)
+        if value is None:
+            continue
+        if strongest_value is None or (value > strongest_value if higher else value < strongest_value):
+            strongest_name, strongest_value = name, value
+    candidate_values: list[float] = []
+    baseline_values: list[float] = []
+    if candidate and strongest_name:
+        for seed_row in seed_results:
+            methods = seed_row.get("methods") if isinstance(seed_row, dict) else {}
+            if not isinstance(methods, dict):
+                continue
+            cand = _metric_from_row(methods.get(candidate, {}), metric_name)
+            base_value = _metric_from_row(methods.get(strongest_name, {}), metric_name)
+            if cand is not None and base_value is not None:
+                candidate_values.append(cand)
+                baseline_values.append(base_value)
+    p_value = _paired_permutation_pvalue(candidate_values, baseline_values)
+    bootstrap = {
+        "candidate_method": candidate,
+        "baseline_method": strongest_name,
+        "candidate_ci95": _bootstrap_ci(candidate_values),
+        "baseline_ci95": _bootstrap_ci(baseline_values),
+        "paired_permutation_p": p_value,
+        "p_value": p_value,
+    }
+    for key in (
+        "ablation_table",
+        "ablation_results",
+        "cost_utility_tradeoff_table",
+        "quality_cost_frontier",
+        "route_rate_sweep",
+        "difficulty_breakdown_table",
+        "latency_tokens_table",
+        "calibration_reliability",
+    ):
+        rows = []
+        for model_result, summary in zip(model_results, summaries):
+            model = summary.get("model") if isinstance(summary.get("model"), dict) else {}
+            model_id = model_result.get("model_id") or model.get("id") or ""
+            for row in summary.get(key) or []:
+                if isinstance(row, dict):
+                    rows.append({"model_id": model_id, **row})
+        if rows:
+            base[key] = rows
+    base["per_method"] = per_method
+    base["seed_results"] = seed_results
+    base["num_seeds"] = max(int(summary.get("num_seeds") or 0) for summary in summaries)
+    base["datasets"] = datasets
+    base["dataset"] = datasets[0] if datasets else {}
+    base["models"] = models
+    base["model"] = {"ids": [row.get("id") for row in models], "backend": "transformers", "cuda": True}
+    base["load_failures"] = [failure for summary in summaries for failure in (summary.get("load_failures") or [])]
+    base["full_benchmark_completed"] = bool(all(summary.get("full_benchmark_completed") for summary in summaries) and not base["load_failures"])
+    base["duration_seconds"] = sum(float(summary.get("duration_seconds") or 0.0) for summary in summaries)
+    base["peak_vram_mb"] = max(float(summary.get("peak_vram_mb") or 0.0) for summary in summaries)
+    base["hardware"] = ", ".join(sorted({str(summary.get("hardware") or "") for summary in summaries if summary.get("hardware")}))
+    base["bootstrap_ci"] = bootstrap
+    if candidate and candidate in per_method:
+        base[metric_name] = _metric_from_row(per_method[candidate], metric_name) or 0.0
+    return base
+
+
+def _run_experiment_model_matrix(
+    workdir: Path,
+    code_dir: Path,
+    time_budget: int,
+    *,
+    baseline_command: str | None,
+    metric_name: str,
+    run_id: int | None,
+    execution_context: dict | None,
+    full_benchmark: bool,
+    benchmark_env: dict[str, str],
+    command_tokens: list[str],
+) -> dict:
+    models = _benchmark_model_list_from_env(benchmark_env)
+    results_dir = workdir / "results"
+    results_dir.mkdir(parents=True, exist_ok=True)
+    per_model_results: list[dict] = []
+    started = time.time()
+    per_model_budget = max(60, time_budget)
+    for model_id in models:
+        model_env = dict(benchmark_env)
+        model_env.pop("DEEPGRAPH_BENCHMARK_MODELS", None)
+        model_env["DEEPGRAPH_BENCHMARK_MODEL"] = model_id
+        _clean_benchmark_result_files(results_dir)
+        result = _run_experiment(
+            workdir,
+            code_dir,
+            per_model_budget,
+            baseline_command=baseline_command,
+            metric_name=metric_name,
+            run_id=run_id,
+            execution_context=execution_context,
+            full_benchmark=full_benchmark,
+            benchmark_env_override=model_env,
+            _disable_model_matrix=True,
+        )
+        result["model_id"] = model_id
+        safe = _safe_model_slug(model_id)
+        try:
+            if (workdir / "run.log").exists():
+                shutil.copy2(workdir / "run.log", workdir / f"run.{safe}.log")
+        except OSError:
+            pass
+        model_results_dir = results_dir / f"model_{safe}"
+        try:
+            if model_results_dir.exists():
+                shutil.rmtree(model_results_dir)
+            model_results_dir.mkdir(parents=True, exist_ok=True)
+            for item in results_dir.iterdir():
+                if item == model_results_dir or item.name.startswith("model_"):
+                    continue
+                if item.is_file():
+                    shutil.copy2(item, model_results_dir / item.name)
+        except OSError:
+            pass
+        per_model_results.append(result)
+        if result.get("status") != "ok":
+            merged_error = result.get("error") or result.get("failure_type") or f"model {model_id} failed"
+            return {
+                **result,
+                "status": "crash",
+                "duration": time.time() - started,
+                "error": merged_error,
+                "benchmark_env": benchmark_env,
+                "per_model_results": per_model_results,
+                "command_tokens": command_tokens,
+            }
+    merged = _merge_model_benchmark_summaries(per_model_results, metric_name)
+    (results_dir / "benchmark_summary.json").write_text(json.dumps(merged, indent=2), encoding="utf-8")
+    metric = None
+    candidate = str(merged.get("candidate_method") or "")
+    if candidate:
+        metric = _metric_from_row((merged.get("per_method") or {}).get(candidate, {}), str(merged.get("primary_metric") or merged.get("metric_name") or metric_name))
+    log_path = workdir / "run.log"
+    log_path.write_text(
+        "MODEL_MATRIX_RESULTS: " + json.dumps({"models": models, "per_model_status": [r.get("status") for r in per_model_results]}, ensure_ascii=False) + "\n"
+        + "FINAL_RESULTS: " + json.dumps(merged, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    return {
+        "status": "ok" if metric is not None else "crash",
+        "metric": metric,
+        "duration": time.time() - started,
+        "peak_memory_mb": max(float(r.get("peak_memory_mb") or 0.0) for r in per_model_results),
+        "command_tokens": command_tokens,
+        "log_path": str(log_path),
+        "benchmark_summary": merged,
+        "benchmark_metric_name": merged.get("primary_metric") or merged.get("metric_name"),
+        "benchmark_candidate_method": merged.get("candidate_method"),
+        "benchmark_baseline_metric": None,
+        "benchmark_num_seeds": merged.get("num_seeds"),
+        "benchmark_env": benchmark_env,
+        "per_model_results": per_model_results,
+        "backend": per_model_results[-1].get("backend") if per_model_results else None,
+        "worker_id": per_model_results[-1].get("worker_id") if per_model_results else None,
+        "visible_device": per_model_results[-1].get("visible_device") if per_model_results else None,
+        "final_results_present": bool(merged),
+    }
+
 def _run_experiment(
     workdir: Path,
     code_dir: Path,
@@ -694,6 +1048,8 @@ def _run_experiment(
     run_id: int | None = None,
     execution_context: dict | None = None,
     full_benchmark: bool = False,
+    benchmark_env_override: dict[str, str] | None = None,
+    _disable_model_matrix: bool = False,
 ) -> dict:
     """Run a single experiment iteration with time budget."""
     log_path = workdir / "run.log"
@@ -716,7 +1072,20 @@ def _run_experiment(
 
     start = time.time()
     worker = (execution_context or {}).get("worker") if execution_context else None
-    benchmark_env = _benchmark_env_for_execution(workdir, full_benchmark=full_benchmark)
+    benchmark_env = dict(benchmark_env_override) if benchmark_env_override is not None else _benchmark_env_for_execution(workdir, full_benchmark=full_benchmark)
+    if full_benchmark and not _disable_model_matrix and len(_benchmark_model_list_from_env(benchmark_env)) > 1:
+        return _run_experiment_model_matrix(
+            workdir,
+            code_dir,
+            time_budget,
+            baseline_command=baseline_command,
+            metric_name=metric_name,
+            run_id=run_id,
+            execution_context=execution_context,
+            full_benchmark=full_benchmark,
+            benchmark_env=benchmark_env,
+            command_tokens=command_tokens,
+        )
     try:
         if run_id is not None and ssh_gpu_backend.is_ssh_worker(worker):
             remote = ssh_gpu_backend.run_remote_experiment(
@@ -774,30 +1143,36 @@ def _run_experiment(
             visible_device = _local_worker_visible_device(worker)
             if visible_device is not None:
                 local_env["CUDA_VISIBLE_DEVICES"] = visible_device
-            proc = subprocess.run(
-                command_tokens,
-                cwd=str(code_dir),
-                timeout=time_budget + 60,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                env=local_env,
-            )
-            duration = time.time() - start
-            stdout = proc.stdout or ""
-            stderr = proc.stderr or ""
-
+            stderr = ""
             with open(log_path, "w", encoding="utf-8") as f:
-                f.write(stdout)
-                if stderr:
-                    f.write("\n--- STDERR ---\n")
-                    f.write(stderr)
+                proc = subprocess.Popen(
+                    command_tokens,
+                    cwd=str(code_dir),
+                    stdout=f,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    env=local_env,
+                    bufsize=1,
+                )
+                try:
+                    proc.wait(timeout=time_budget + 60)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+                    try:
+                        proc.wait(timeout=30)
+                    except subprocess.TimeoutExpired:
+                        pass
+                    raise
+            duration = time.time() - start
+            stdout = _safe_read_text(log_path)
+            returncode = int(proc.returncode or 0)
 
-            if proc.returncode != 0:
-                log_text = stdout + (("\n--- STDERR ---\n" + stderr) if stderr else "")
+            if returncode != 0:
+                log_text = stdout
                 diagnostics = _execution_diagnostics(
-                    returncode=proc.returncode,
+                    returncode=returncode,
                     log_text=log_text,
                     stderr=stderr,
                     duration=duration,
@@ -806,7 +1181,7 @@ def _run_experiment(
                 return {
                     "status": "crash",
                     "duration": duration,
-                    "error": stderr[-500:] if stderr else "nonzero exit",
+                    "error": stdout[-500:] if stdout else "nonzero exit",
                     **diagnostics,
                     "command_tokens": command_tokens,
                     "log_path": str(log_path),
@@ -819,9 +1194,10 @@ def _run_experiment(
                 "backend": "local",
                 "worker_id": worker.get("id") if worker else None,
                 "visible_device": visible_device,
-                "returncode": proc.returncode,
+                "returncode": returncode,
                 "benchmark_env": benchmark_env,
             }
+
     except subprocess.TimeoutExpired as exc:
         duration = time.time() - start
         try:

@@ -12,9 +12,16 @@ import json
 from dataclasses import asdict
 from agents.compute_profile import detect_compute_profile
 from agents.discovery_metadata import build_evidence_packet, enrich_deep_insight
+from agents.idea_taste import (
+    attach_graph_taste_to_insight,
+    format_frontier_block,
+    graph_novelty_gate,
+    signal_type_weight,
+)
 from agents.insight_validation import get_evosci_input_issue
 from agents.llm_client import call_llm_json, is_llm_auth_error, is_llm_provider_unavailable_error
 from agents.signal_harvester import get_tier2_signals
+from agents.tier2_review_refine import review_and_refine_tier2_idea
 from db import database as db
 
 
@@ -254,10 +261,30 @@ def _build_problem_prompt(signals: dict) -> str:
         compute_payload = vars(compute)
     sections.append("## LOCAL EXECUTION CONSTRAINTS")
     sections.append(json.dumps(compute_payload, ensure_ascii=False, default=str))
+
+    weighted_signals = []
+    for key in (
+        "contradiction_clusters",
+        "performance_plateaus",
+        "limitation_clusters",
+        "mechanism_mismatches",
+        "protocol_artifacts",
+        "negative_space_gaps",
+        "hidden_variable_bridges",
+        "claim_method_gaps",
+    ):
+        rows = signals.get(key) or []
+        if rows:
+            weighted_signals.append((signal_type_weight(key.rstrip("s")), key, len(rows)))
+    if weighted_signals:
+        weighted_signals.sort(reverse=True)
+        sections.append("\n## SIGNAL PRIORITY (meta-learned weights)")
+        for weight, key, count in weighted_signals[:6]:
+            sections.append(f"- {key}: weight={weight:.2f}, rows={count}")
     if not compute.gpu_allowed:
         sections.append(
             "Generate paper ideas that can be executed locally without GPU training: "
-            "training-free inference, controlled materialized traces, CPU-only analysis, "
+            "inference-time evaluation, controlled materialized traces, CPU-only analysis, "
             "evaluation protocols, lightweight ablations, or small public-data studies. "
             "Do not require fine-tuning, embedding model training, large ASR/vision training, "
             "or multi-GPU experiments. Prefer ideas whose evidence can be executed from "
@@ -341,6 +368,17 @@ def _build_problem_prompt(signals: dict) -> str:
             sections.append(f"  Prior score: {score}")
             sections.append("")
 
+    frontier_nodes = []
+    for cluster in signals.get("limitation_clusters") or []:
+        if cluster.get("node_id"):
+            frontier_nodes.append(cluster["node_id"])
+    for plateau in signals.get("performance_plateaus") or []:
+        if plateau.get("node_id"):
+            frontier_nodes.append(plateau["node_id"])
+    frontier_nodes = list(dict.fromkeys(frontier_nodes))[:4]
+    if frontier_nodes:
+        sections.append("\n" + format_frontier_block(frontier_nodes))
+
     for key, title in [
         ("mechanism_mismatches", "MECHANISM MISMATCHES"),
         ("protocol_artifacts", "PROTOCOL ARTIFACTS"),
@@ -366,7 +404,7 @@ def _build_method_prompt(problem: dict) -> str:
         compute_constraint = """
 ## Local Execution Constraint
 This machine has no usable local NVIDIA GPU and no configured remote GPU worker.
-Design a method that can be validated without GPU training: training-free inference,
+Design a method that can be validated without GPU training: inference-time evaluation,
 deterministic selection, CPU-only statistical analysis, materialized trace evaluation,
 or lightweight public-data experiments. Avoid methods whose core contribution requires
 fine-tuning, representation learning, large speech/vision training, or GPU-heavy sweeps.
@@ -574,10 +612,25 @@ def discover_paper_ideas(
             print(f"[PAPER_IDEA] No method produced for '{title[:50]}'", flush=True)
             continue
 
-        # Reject "apply X to Y" non-novel methods
         why_novel = method.get("why_novel", "").lower()
         if not why_novel or len(why_novel) < 30:
             print(f"[PAPER_IDEA] Rejected (no novelty argument): {method['name']}", flush=True)
+            continue
+
+        precheck = {
+            "title": title,
+            "problem_statement": problem.get("formal_statement", ""),
+            "proposed_method": json.dumps(method),
+            "source_node_ids": json.dumps(problem.get("related_node_ids", [])),
+            "mechanism_type": problem.get("mechanism_type", "mechanism_mismatch"),
+        }
+        gate = graph_novelty_gate(precheck)
+        if gate:
+            print(
+                f"[PAPER_IDEA] Rejected by graph novelty gate ({gate['graph_novelty']['score']}): "
+                f"{method['name']}",
+                flush=True,
+            )
             continue
 
         # Stage 3: Experimental Design
@@ -670,8 +723,21 @@ def discover_paper_ideas(
             )
             continue
 
-        deep_insights.append(enrich_deep_insight(deep_insight))
-        print(f"[PAPER_IDEA] Accepted: {method['name']} — {title[:60]}", flush=True)
+        print(f"[PAPER_IDEA] Pre-insert EvoScientist review + debate refinement for '{method['name']}'...", flush=True)
+        review_result = review_and_refine_tier2_idea(deep_insight)
+        if not review_result.get("accepted"):
+            print(
+                f"[PAPER_IDEA] Rejected after pre-insert review ({review_result.get('reason')}): {method['name']}",
+                flush=True,
+            )
+            continue
+
+        refined_insight = review_result.get("insight") or deep_insight
+        deep_insights.append(enrich_deep_insight(attach_graph_taste_to_insight(refined_insight)))
+        print(
+            f"[PAPER_IDEA] Accepted after review/refine: {method['name']} — {refined_insight.get('title', title)[:60]}",
+            flush=True,
+        )
 
     print(f"[PAPER_IDEA] Done: {len(deep_insights)} paper ideas from {len(problems)} problems. "
           f"Tokens: {total_tokens}, LLM calls: {total_calls}", flush=True)

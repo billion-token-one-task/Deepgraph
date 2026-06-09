@@ -37,6 +37,12 @@ from agents.workspace_layout import (
 from config import (
     EXPERIMENT_EARLY_STOP_THRESHOLD,
     EXPERIMENT_ALLOW_SYNTHETIC_FALLBACK,
+    EXPERIMENT_FULL_BENCHMARK_MIN_BASELINES,
+    EXPERIMENT_FULL_BENCHMARK_MIN_DATASETS,
+    EXPERIMENT_FULL_BENCHMARK_MIN_EXAMPLES,
+    EXPERIMENT_FULL_BENCHMARK_MIN_MODELS,
+    EXPERIMENT_FULL_BENCHMARK_REQUIRE_SIGNIFICANCE,
+    EXPERIMENT_FULL_BENCHMARK_REQUIRE_STRONGEST_WIN,
     EXPERIMENT_MAX_ITERATIONS,
     EXPERIMENT_PROXY_DATA_FRACTION,
     EXPERIMENT_PROXY_MAX_EPOCHS,
@@ -675,18 +681,42 @@ def _default_real_model_targets(parsed: dict, resource_class: str | None = None)
                 "load_in_4bit": False,
                 "requires_cuda": False,
                 "cpu_allowed": True,
-            }
+            },
+            {
+                "name": "Qwen2.5-0.5B CPU",
+                "hf_model": "Qwen/Qwen2.5-0.5B-Instruct",
+                "backend": "transformers",
+                "role": "secondary_model",
+                "load_in_4bit": False,
+                "requires_cuda": False,
+                "cpu_allowed": True,
+            },
         ]
-    return [
-        {
-            "name": EXPERIMENT_REAL_LLM_MODEL,
-            "hf_model": EXPERIMENT_REAL_LLM_MODEL,
-            "backend": "transformers",
-            "role": "candidate_base_model",
-            "load_in_4bit": True,
-            "requires_cuda": True,
-        }
+    primary = EXPERIMENT_REAL_LLM_MODEL
+    candidates = [
+        primary,
+        "Qwen/Qwen2.5-3B-Instruct",
+        "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
     ]
+    out = []
+    seen = set()
+    for idx, model_id in enumerate(candidates):
+        if not model_id or model_id.lower() in seen:
+            continue
+        seen.add(model_id.lower())
+        out.append(
+            {
+                "name": model_id,
+                "hf_model": model_id,
+                "backend": "transformers",
+                "role": "candidate_base_model" if idx == 0 else "secondary_model",
+                "load_in_4bit": True,
+                "requires_cuda": True,
+            }
+        )
+        if len(out) >= EXPERIMENT_FULL_BENCHMARK_MIN_MODELS:
+            break
+    return out
 
 
 def _real_benchmark_dataset_names(plan: dict) -> list[str]:
@@ -706,7 +736,7 @@ def _model_target_names(plan: dict) -> list[str]:
         value = plan.get(key)
         if isinstance(value, list):
             rows.extend(value)
-    return _unique_non_empty(_named_values(rows, keys=("name", "hf_model", "model")))
+    return _unique_non_empty(_named_values(rows, keys=("hf_model", "model", "name")))
 
 
 def _ensure_real_benchmark_plan(parsed: dict, method: dict, plan: dict, resource_class: str | None = None) -> dict:
@@ -753,16 +783,47 @@ def _ensure_real_benchmark_plan(parsed: dict, method: dict, plan: dict, resource
     normalized_models = []
     for row in model_targets:
         if isinstance(row, dict):
-            name = _non_empty_text(row.get("name") or row.get("hf_model") or row.get("model"))
+            name = _non_empty_text(row.get("hf_model") or row.get("model") or row.get("name"))
             if name and name.lower() not in {"toy", "dummy", "mock", "synthetic"}:
                 normalized_models.append(dict(row))
+    default_models = _default_real_model_targets(parsed, resource_class)
     if not normalized_models:
-        normalized_models = _default_real_model_targets(parsed, resource_class)
+        normalized_models = default_models
+    else:
+        seen_models = {
+            str(row.get("hf_model") or row.get("name") or row.get("model") or "").strip().lower()
+            for row in normalized_models
+            if isinstance(row, dict)
+        }
+        for row in default_models:
+            model_key = str(row.get("hf_model") or row.get("name") or row.get("model") or "").strip().lower()
+            if model_key and model_key not in seen_models:
+                normalized_models.append(dict(row))
+                seen_models.add(model_key)
+            if len(normalized_models) >= EXPERIMENT_FULL_BENCHMARK_MIN_MODELS:
+                break
+    normalized_models.sort(
+        key=lambda row: (
+            0 if bool(row.get("requires_cuda")) else 1,
+            0 if "/" in str(row.get("hf_model") or row.get("model") or row.get("name") or "") else 1,
+            0 if "qwen" in str(row.get("hf_model") or row.get("model") or row.get("name") or "").lower() else 1,
+        )
+    )
     plan["model_targets"] = normalized_models
     plan["real_benchmark_required"] = True
     plan["proxy_allowed"] = bool(EXPERIMENT_ALLOW_SYNTHETIC_FALLBACK)
     plan["minimum_seeds"] = max(int(plan.get("minimum_seeds") or 0), EXPERIMENT_REAL_BENCHMARK_SEEDS)
-    plan["max_eval_examples"] = int(plan.get("max_eval_examples") or EXPERIMENT_REAL_BENCHMARK_MAX_EXAMPLES)
+    try:
+        planned_examples = int(plan.get("max_eval_examples") or 0)
+    except (TypeError, ValueError):
+        planned_examples = 0
+    plan["max_eval_examples"] = max(planned_examples, EXPERIMENT_REAL_BENCHMARK_MAX_EXAMPLES)
+    for target in real_targets:
+        try:
+            target_examples = int(target.get("max_eval_examples") or 0)
+        except (TypeError, ValueError):
+            target_examples = 0
+        target["max_eval_examples"] = max(target_examples, EXPERIMENT_REAL_BENCHMARK_MAX_EXAMPLES)
     plan["requires_real_model"] = True
     plan["requires_real_dataset"] = True
     plan["generated_runner_supported"] = not recipe_blockers
@@ -843,6 +904,8 @@ def _benchmark_manifest(
         "per_dataset_results.json",
         "main_results_table.json",
         "cost_utility_tradeoff_table.json",
+        "quality_cost_frontier.json",
+        "route_rate_sweep_table.json",
         "ablation_table.json",
         "difficulty_breakdown_table.json",
         "routing_analysis.json",
@@ -898,6 +961,20 @@ def _benchmark_manifest(
             "seeds": seed_list,
             "primary_metric": metric,
             "secondary_metrics": secondary_metrics,
+            "min_examples_total": EXPERIMENT_FULL_BENCHMARK_MIN_EXAMPLES,
+            "min_datasets": EXPERIMENT_FULL_BENCHMARK_MIN_DATASETS,
+            "min_models": EXPERIMENT_FULL_BENCHMARK_MIN_MODELS,
+            "min_deployable_baselines": EXPERIMENT_FULL_BENCHMARK_MIN_BASELINES,
+            "must_beat_strongest_deployable_baseline": EXPERIMENT_FULL_BENCHMARK_REQUIRE_STRONGEST_WIN,
+            "must_report_significance": EXPERIMENT_FULL_BENCHMARK_REQUIRE_SIGNIFICANCE,
+            "required_analyses": [
+                "ablation_table",
+                "route_rate_or_budget_sweep_for_routing_methods",
+                "quality_cost_frontier",
+                "per_dataset_breakdown",
+                "difficulty_breakdown",
+                "pairwise_vs_strongest_deployable_baseline",
+            ],
             "statistical_tests": [
                 "paired_bootstrap_ci",
                 "paired_permutation_test",
@@ -946,7 +1023,7 @@ def _publication_evidence_contract(
     metrics = plan.get("metrics")
     if isinstance(metrics, dict):
         metric = _non_empty_text(metrics.get("primary") or metrics.get("name")) or metric
-    minimum_seeds = 3
+    minimum_seeds = max(3, int(EXPERIMENT_REAL_BENCHMARK_SEEDS or 3))
     seed_raw = plan.get("minimum_seeds") or plan.get("seeds")
     try:
         if isinstance(seed_raw, list):
@@ -954,7 +1031,7 @@ def _publication_evidence_contract(
         elif seed_raw not in (None, "", "unknown"):
             minimum_seeds = max(minimum_seeds, int(seed_raw))
     except (TypeError, ValueError):
-        minimum_seeds = 3
+        minimum_seeds = max(3, int(EXPERIMENT_REAL_BENCHMARK_SEEDS or 3))
 
     claim_route = classify_idea_route(
         {**parsed, "proposed_method": method},
@@ -992,6 +1069,9 @@ def _publication_evidence_contract(
     required_artifacts.append("ablation_table")
     required_artifacts.extend(
         [
+            "route_rate_sweep_table",
+            "quality_cost_frontier_figure",
+            "per_dataset_breakdown_table",
             "cost_utility_tradeoff_table",
             "difficulty_breakdown_table",
             "routing_analysis",
@@ -1069,6 +1149,20 @@ def _publication_evidence_contract(
             else "higher"
         ),
         "statistical_test": "paired bootstrap confidence interval plus paired permutation test across seeds/tasks",
+        "full_benchmark_min_examples": EXPERIMENT_FULL_BENCHMARK_MIN_EXAMPLES,
+        "full_benchmark_min_datasets": EXPERIMENT_FULL_BENCHMARK_MIN_DATASETS,
+        "full_benchmark_min_models": EXPERIMENT_FULL_BENCHMARK_MIN_MODELS,
+        "full_benchmark_min_baselines": EXPERIMENT_FULL_BENCHMARK_MIN_BASELINES,
+        "require_statistical_significance": EXPERIMENT_FULL_BENCHMARK_REQUIRE_SIGNIFICANCE,
+        "require_strongest_baseline_win": EXPERIMENT_FULL_BENCHMARK_REQUIRE_STRONGEST_WIN,
+        "required_analyses": [
+            "ablation_table",
+            "route_rate_or_budget_sweep_for_routing_methods",
+            "quality_cost_frontier",
+            "per_dataset_breakdown",
+            "difficulty_breakdown",
+            "pairwise_vs_strongest_deployable_baseline",
+        ],
         "required_artifacts": required_artifacts,
         "benchmark_manifest": manifest,
         "claim_route": claim_route,
@@ -1094,6 +1188,16 @@ def _publication_evidence_contract(
                 evidence_tier == "benchmark_plan" and paper_allowed
             ),
             "minimum_seeds": minimum_seeds,
+            "full_benchmark_min_examples": EXPERIMENT_FULL_BENCHMARK_MIN_EXAMPLES,
+            "full_benchmark_min_datasets": EXPERIMENT_FULL_BENCHMARK_MIN_DATASETS,
+            "full_benchmark_min_models": EXPERIMENT_FULL_BENCHMARK_MIN_MODELS,
+            "full_benchmark_min_baselines": EXPERIMENT_FULL_BENCHMARK_MIN_BASELINES,
+            "require_statistical_significance": EXPERIMENT_FULL_BENCHMARK_REQUIRE_SIGNIFICANCE,
+            "require_strongest_baseline_win": EXPERIMENT_FULL_BENCHMARK_REQUIRE_STRONGEST_WIN,
+            "requires_quality_cost_frontier": True,
+            "requires_route_rate_sweep_for_routing_methods": True,
+            "requires_per_dataset_breakdown": True,
+            "requires_difficulty_breakdown": True,
             "manuscript_allowed": not blocks_manuscript,
             "synthetic_fallback_allowed": bool(EXPERIMENT_ALLOW_SYNTHETIC_FALLBACK),
         },
@@ -1874,7 +1978,15 @@ def _real_benchmark_defaults(plan: dict) -> dict:
         )
     target = normalized_targets[0]
     models = plan.get("model_targets") if isinstance(plan.get("model_targets"), list) else []
-    model = next((row for row in models if isinstance(row, dict)), {})
+    valid_models = [row for row in models if isinstance(row, dict)]
+    valid_models.sort(
+        key=lambda row: (
+            0 if bool(row.get("requires_cuda")) else 1,
+            0 if "/" in str(row.get("hf_model") or row.get("model") or row.get("name") or "") else 1,
+            0 if "qwen" in str(row.get("hf_model") or row.get("model") or row.get("name") or "").lower() else 1,
+        )
+    )
+    model = valid_models[0] if valid_models else {}
     dataset_id = str(target.get("hf_dataset") or "").strip()
     if not dataset_id and target.get("direct_files"):
         first_direct = target.get("direct_files")[0] if target.get("direct_files") else {}
@@ -1897,6 +2009,7 @@ def _real_benchmark_defaults(plan: dict) -> dict:
         "question_field": target.get("question_field") or "question",
         "answer_field": target.get("answer_field") or "answer",
         "model_id": model_id,
+        "model_targets": valid_models or ([model] if model else []),
         "model_requires_cuda": bool(model.get("requires_cuda")),
         "model_cpu_allowed": bool(model.get("cpu_allowed") or not model.get("requires_cuda")),
         "model_load_in_4bit": bool(model.get("load_in_4bit")),
@@ -1960,6 +2073,7 @@ def _real_llm_benchmark_train_py(*, method_name: str, metric_name: str, plan: di
         "cggr_mode": cggr_mode,
         "metric_name": metric_name,
         "model_id": defaults["model_id"],
+        "model_targets": defaults.get("model_targets") or [],
         "model_requires_cuda": defaults.get("model_requires_cuda", True),
         "model_cpu_allowed": defaults.get("model_cpu_allowed", False),
         "model_load_in_4bit": defaults.get("model_load_in_4bit", True),
@@ -2504,6 +2618,44 @@ def _real_llm_benchmark_train_py(*, method_name: str, metric_name: str, plan: di
         return str(value or "").strip()
 
 
+    def _choice_map(row):
+        raw = None
+        if isinstance(row, dict):
+            raw = row.get("choices") or row.get("options") or row.get("candidates")
+        labels = []
+        texts = []
+        if isinstance(raw, dict):
+            labels = raw.get("label") or raw.get("labels") or raw.get("keys") or []
+            texts = raw.get("text") or raw.get("texts") or raw.get("choices") or raw.get("options") or []
+        elif isinstance(raw, list):
+            for item in raw:
+                if isinstance(item, dict):
+                    labels.append(item.get("label") or item.get("key") or item.get("id") or "")
+                    texts.append(item.get("text") or item.get("answer") or item.get("value") or item.get("option") or "")
+                else:
+                    texts.append(str(item))
+        if isinstance(labels, str):
+            labels = list(labels)
+        if isinstance(texts, str):
+            texts = [texts]
+        labels = [str(label or "").strip().upper() for label in labels]
+        texts = [str(item or "").strip() for item in texts]
+        if texts and (not labels or len(labels) != len(texts)):
+            labels = list("ABCDEFGHIJKLMNOPQRSTUVWXYZ"[: len(texts)])
+        out = {}
+        for label, value in zip(labels, texts):
+            if label and value:
+                out[label] = value
+        return out
+
+
+    def _question_with_choices(question, choices):
+        if not choices:
+            return question
+        lines = [f"{label}. {value}" for label, value in choices.items()]
+        return question + "\\nChoices:\\n" + "\\n".join(lines)
+
+
     def _difficulty_proxy(question, task_type="qa"):
         text = str(question)
         numbers = len(re.findall(r"\\d+", text))
@@ -2544,19 +2696,22 @@ def _real_llm_benchmark_train_py(*, method_name: str, metric_name: str, plan: di
                 continue
             question = _question_to_text(_field_value(row, q_candidates))
             answer = _answer_to_text(_field_value(row, a_candidates))
-            if not question or not answer:
+            choices = _choice_map(row)
+            question_for_prompt = _question_with_choices(question, choices)
+            if not question_for_prompt or not answer:
                 continue
             example_id = str(row.get("id") or row.get("qid") or row.get("question_id") or idx)
             examples.append({
                 "example_id": example_id,
-                "question": question,
+                "question": question_for_prompt,
                 "answer": answer,
+                "choices": choices,
                 "dataset_name": meta.get("name") or target.get("name"),
                 "dataset_id": meta.get("id"),
                 "dataset_config": meta.get("config"),
                 "split": meta.get("split"),
                 "task_type": target.get("task_type") or "qa",
-                "difficulty": _difficulty_proxy(question, target.get("task_type") or "qa"),
+                "difficulty": _difficulty_proxy(question_for_prompt, target.get("task_type") or "qa"),
             })
         if max_examples > 0:
             examples = examples[: max_examples * 4]
@@ -2708,11 +2863,59 @@ def _real_llm_benchmark_train_py(*, method_name: str, metric_name: str, plan: di
         return 2 * precision * recall / (precision + recall)
 
 
-    def _score_answer(prediction, gold, task_type):
+    def _extract_choice_label(final, choices):
+        if not choices:
+            return ""
+        raw = str(final or "").strip()
+        labels = set(str(label).upper() for label in choices)
+        compact = re.sub(r"[^A-Za-z]", "", raw).upper()
+        if len(compact) == 1 and compact in labels:
+            return compact
+        for pattern in (
+            r"(?i)\\b(?:option|choice|answer|final answer)\\s*[:#\\-]?\\s*([A-Z])\\b",
+            r"(?m)^\\s*([A-Z])\\s*[\\).:-]",
+        ):
+            match = re.search(pattern, raw)
+            if match:
+                label = match.group(1).upper()
+                if label in labels:
+                    return label
+        return ""
+
+
+    def _choice_discussion_labels(text, choices):
+        labels = []
+        raw = str(text or "")
+        for label in choices or {}:
+            pattern = r"(?i)\\b(?:choice|option)\\s*" + re.escape(str(label)) + r"\\b"
+            if re.search(pattern, raw):
+                labels.append(str(label).upper())
+        return set(labels)
+
+
+    def _score_answer(prediction, gold, task_type, choices=None):
+        choices = choices or {}
+        raw_prediction = str(prediction or "")
+        lowered_prediction = raw_prediction.lower()
+        has_answer_marker = any(marker in lowered_prediction for marker in ("final answer:", "answer:"))
         final = _extract_final_answer(prediction)
+        unmarked_reasoning_cue = bool(re.search(r"(?i)\\b(step\\s*\\d+|firstly|secondly|analy[sz]e|evaluate|therefore|because)\\b", final))
+        multi_choice_discussion = len(_choice_discussion_labels(final, choices)) > 1
+        short_unmarked_answer = (
+            (not has_answer_marker)
+            and final.count("\\n") <= 1
+            and len(final.split()) <= 24
+            and not unmarked_reasoning_cue
+            and not multi_choice_discussion
+        )
+        allow_choice_parse = has_answer_marker or short_unmarked_answer
         gold_text = _answer_to_text(gold)
+        gold_label = str(gold_text or "").strip().upper()
+        gold_choice_text = choices.get(gold_label, "") if isinstance(choices, dict) else ""
+        pred_label = _extract_choice_label(final, choices) if allow_choice_parse else ""
         pred_norm = _normalize_text(final)
         gold_norm = _normalize_text(gold_text)
+        gold_choice_norm = _normalize_text(gold_choice_text)
         pred_num = _extract_number(final)
         gold_num = _extract_number(gold_text)
         numeric_exact = 0.0
@@ -2724,16 +2927,23 @@ def _real_llm_benchmark_train_py(*, method_name: str, metric_name: str, plan: di
         bool_gold = gold_norm in {"yes", "no", "true", "false"}
         bool_pred = "yes" if re.search(r"\\byes\\b|\\btrue\\b", pred_norm) else "no" if re.search(r"\\bno\\b|\\bfalse\\b", pred_norm) else pred_norm
         exact = 1.0 if pred_norm == gold_norm else numeric_exact
+        if choices and gold_label:
+            if pred_label == gold_label:
+                exact = 1.0
+            elif gold_choice_norm and allow_choice_parse and (pred_norm == gold_choice_norm or gold_choice_norm in pred_norm):
+                exact = 1.0
         if bool_gold:
             exact = 1.0 if bool_pred in {gold_norm, "yes" if gold_norm == "true" else "no" if gold_norm == "false" else gold_norm} else 0.0
-        f1 = max(exact, _token_f1(final, gold_text))
-        primary = exact if task_type in {"math_qa", "boolean_qa"} else f1
+        f1 = max(exact, _token_f1(final, gold_text), _token_f1(final, gold_choice_text) if gold_choice_text else 0.0)
+        primary = exact if choices or task_type in {"math_qa", "boolean_qa"} else f1
         return {
             "exact": float(exact),
             "f1": float(f1),
             "primary_score": float(primary),
             "prediction_answer": final,
+            "prediction_label": pred_label,
             "gold_answer": gold_text,
+            "gold_choice_text": gold_choice_text,
         }
 
 
@@ -2759,7 +2969,7 @@ def _real_llm_benchmark_train_py(*, method_name: str, metric_name: str, plan: di
                 "Choose the smallest sufficient response. If the answer is clear, do not reason. "
                 "If deliberation is useful, use at most two concise reasoning sentences. "
                 "Use deliberate reasoning only when the question structure, counterfactual risk, or uncertainty justifies it. "
-                "End with exactly one line: 'Final answer: <answer>'. Do not repeat the final answer or add text after it."
+                "End with exactly one line: 'Final answer: <option label or concise answer>'. Do not repeat the final answer or add text after it."
                 "\\nQuestion: " + question + f"\\nDifficulty proxy: {difficulty:.3f}\\nSolution:"
             )
         return "Answer the question and end with 'Final answer: <answer>'.\\nQuestion: " + question + "\\nSolution:"
@@ -3062,7 +3272,7 @@ def _real_llm_benchmark_train_py(*, method_name: str, metric_name: str, plan: di
             reasoning_cost = float(os.getenv("DEEPGRAPH_VOC_REASONING_COST", "0.11"))
             simple_case_penalty = 0.10 if difficulty < 0.30 else 0.0
             expected_value = 0.52 * structure_signal - reasoning_cost - simple_case_penalty
-            threshold = float(os.getenv("DEEPGRAPH_VOC_THRESHOLD", "0.12"))
+            threshold = float(os.getenv("DEEPGRAPH_VOC_THRESHOLD", "0.18"))
             deliberate = expected_value >= threshold
             strategy = "fixed_cot" if deliberate else "direct"
             output, tokens = _route_with_strategy(
@@ -3268,7 +3478,7 @@ def _real_llm_benchmark_train_py(*, method_name: str, metric_name: str, plan: di
                         call_start = time.time()
                         try:
                             prediction, tokens, route = _run_single(model, tokenizer, ex, method_name, spec, seed=seed)
-                            score = _score_answer(prediction, ex["answer"], ex.get("task_type") or "")
+                            score = _score_answer(prediction, ex["answer"], ex.get("task_type") or "", ex.get("choices"))
                         except Exception as exc:
                             failure = {
                                 "stage": "generation_or_scoring",
@@ -3301,7 +3511,7 @@ def _real_llm_benchmark_train_py(*, method_name: str, metric_name: str, plan: di
                             prediction = ""
                             tokens = 0
                             route = {"error": str(exc), "error_type": type(exc).__name__, "error_repr": repr(exc)}
-                            score = {"exact": 0.0, "f1": 0.0, "primary_score": 0.0, "prediction_answer": "", "gold_answer": ex["answer"]}
+                            score = {"exact": 0.0, "f1": 0.0, "primary_score": 0.0, "prediction_answer": "", "prediction_label": "", "gold_answer": ex["answer"], "gold_choice_text": ""}
                         latency_seconds = time.time() - call_start
                         total_score += score["primary_score"]
                         total_exact += score["exact"]
@@ -3520,6 +3730,33 @@ def _real_llm_benchmark_train_py(*, method_name: str, metric_name: str, plan: di
                 "latency_saving_vs_always_reason": float(1.0 - (avg_latency / always_latency)) if always_latency > 0 else 0.0,
             })
         cost_utility_tradeoff_table = latency_tokens_table
+        quality_cost_frontier = sorted(
+            [
+                {
+                    "method": row["method"],
+                    "quality": row["accuracy"],
+                    "utility": row["metric_value"],
+                    "avg_new_tokens": row["avg_new_tokens"],
+                    "avg_latency_seconds": row["avg_latency_seconds"],
+                    "route_rate": row["route_rate"],
+                }
+                for row in latency_tokens_table
+            ],
+            key=lambda row: (row["avg_new_tokens"], -row["quality"]),
+        )
+        route_rate_sweep = [
+            {
+                "method": row["method"],
+                "route_rate": row["route_rate"],
+                "quality": row["accuracy"],
+                "utility": row["metric_value"],
+                "avg_new_tokens": row["avg_new_tokens"],
+                "avg_latency_seconds": row["avg_latency_seconds"],
+            }
+            for row in sorted(latency_tokens_table, key=lambda item: item["route_rate"])
+            if row["method"] == CANDIDATE_METHOD
+            or any(token in row["method"].lower() for token in ("gate", "routing", "route", "budget", "random", "chain-of-thought"))
+        ]
 
         difficulty_breakdown_table = []
         for method_name, buckets in difficulty_breakdown_acc.items():
@@ -3638,6 +3875,8 @@ def _real_llm_benchmark_train_py(*, method_name: str, metric_name: str, plan: di
             "per_dataset_results": _write_json("per_dataset_results.json", per_dataset_results),
             "main_results_table": _write_json("main_results_table.json", per_method),
             "cost_utility_tradeoff_table": _write_json("cost_utility_tradeoff_table.json", cost_utility_tradeoff_table),
+            "quality_cost_frontier": _write_json("quality_cost_frontier.json", quality_cost_frontier),
+            "route_rate_sweep": _write_json("route_rate_sweep_table.json", route_rate_sweep),
             "ablation_table": _write_json("ablation_table.json", ablation_table),
             "difficulty_breakdown_table": _write_json("difficulty_breakdown_table.json", difficulty_breakdown_table),
             "routing_analysis": _write_json("routing_analysis.json", routing_analysis),
@@ -3673,6 +3912,8 @@ def _real_llm_benchmark_train_py(*, method_name: str, metric_name: str, plan: di
             "ablation_results": ablation_table,
             "ablation_table": ablation_table,
             "cost_utility_tradeoff_table": cost_utility_tradeoff_table,
+            "quality_cost_frontier": quality_cost_frontier,
+            "route_rate_sweep": route_rate_sweep,
             "difficulty_breakdown_table": difficulty_breakdown_table,
             "routing_analysis": routing_analysis,
             "latency_tokens_table": latency_tokens_table,

@@ -353,6 +353,20 @@ def get_provider_stats() -> dict:
     return result
 
 
+def get_provider_models() -> list[dict]:
+    """Return configured provider names and models for explicit reviewer routing."""
+    _init_providers()
+    return [
+        {
+            "name": p.get("name"),
+            "model": p.get("model"),
+            "base_url": str(p.get("base_url") or "")[:80],
+            "protocol": p.get("protocol"),
+        }
+        for p in _providers
+    ]
+
+
 def _call_provider(provider: dict, system_prompt: str, user_prompt: str,
                    max_tokens: int) -> tuple[str, int, int, int]:
     """Call a specific provider. Returns (text, total_tokens, cached_tokens, input_tokens)."""
@@ -422,6 +436,8 @@ def _call_chat_completions(provider: dict, system_prompt: str, user_prompt: str,
         else:
             with client.stream("POST", f"{provider['base_url']}{endpoint}",
                                json=payload, headers=headers) as resp:
+                if resp.status_code >= 400:
+                    resp.read()
                 resp.raise_for_status()
                 for line in resp.iter_lines():
                     if line.startswith("data: "):
@@ -513,12 +529,12 @@ def _call_responses_api(provider: dict, system_prompt: str, user_prompt: str,
                         max_tokens: int) -> tuple[str, int, int, int]:
     """Call via OpenAI Responses API (for tabcode etc)."""
     input_items = [
-        {"role": "developer", "content": [{"type": "input_text", "text": system_prompt}]},
         {"role": "user", "content": [{"type": "input_text", "text": user_prompt}]},
     ]
 
     payload = {
         "model": provider["model"],
+        "instructions": system_prompt,
         "input": input_items,
         "stream": True,
         "max_output_tokens": max_tokens,
@@ -536,37 +552,62 @@ def _call_responses_api(provider: dict, system_prompt: str, user_prompt: str,
     cached_tokens = 0
     input_tokens = 0
 
-    with httpx.Client(timeout=_http_timeout()) as client:
-        with client.stream("POST", f"{provider['base_url']}/responses",
-                           json=payload, headers=headers) as resp:
-            resp.raise_for_status()
-            for line in resp.iter_lines():
-                if not line.startswith("data: "):
-                    continue
-                data_str = line[6:]
-                if data_str == "[DONE]":
-                    break
-                try:
-                    event = json.loads(data_str)
-                except json.JSONDecodeError:
-                    continue
+    def _stream_response(request_payload: dict) -> None:
+        nonlocal response_text, total_tokens, cached_tokens, input_tokens
+        with httpx.Client(timeout=_http_timeout()) as client:
+            with client.stream("POST", f"{provider['base_url']}/responses",
+                               json=request_payload, headers=headers) as resp:
+                resp.raise_for_status()
+                for line in resp.iter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    data_str = line[6:]
+                    if data_str == "[DONE]":
+                        break
+                    try:
+                        event = json.loads(data_str)
+                    except json.JSONDecodeError:
+                        continue
 
-                event_type = event.get("type", "")
-                if event_type == "response.output_text.delta":
-                    response_text += event.get("delta", "")
-                elif event_type == "response.completed":
-                    response_obj = event.get("response", {})
-                    if not response_text:
-                        response_text = _extract_responses_output_text(response_obj)
-                    usage = response_obj.get("usage", {})
-                    total_tokens = usage.get("total_tokens", 0)
-                    input_tokens = usage.get("input_tokens", 0)
-                    # OpenAI cache: usage.input_tokens_details.cached_tokens
-                    itd = usage.get("input_tokens_details") or {}
-                    cached_tokens = itd.get("cached_tokens", 0)
+                    event_type = event.get("type", "")
+                    if event_type == "response.output_text.delta":
+                        response_text += event.get("delta", "")
+                    elif event_type == "response.completed":
+                        response_obj = event.get("response", {})
+                        if not response_text:
+                            response_text = _extract_responses_output_text(response_obj)
+                        usage = response_obj.get("usage", {})
+                        total_tokens = usage.get("total_tokens", 0)
+                        input_tokens = usage.get("input_tokens", 0)
+                        # OpenAI cache: usage.input_tokens_details.cached_tokens
+                        itd = usage.get("input_tokens_details") or {}
+                        cached_tokens = itd.get("cached_tokens", 0)
+
+    try:
+        _stream_response(payload)
+    except httpx.HTTPStatusError as exc:
+        body = ""
+        if exc.response is not None:
+            try:
+                exc.response.read()
+            except Exception:
+                pass
+            try:
+                body = exc.response.text
+            except Exception:
+                body = ""
+        if exc.response is None or exc.response.status_code != 400:
+            raise
+        compat_payload = dict(payload)
+        compat_payload.pop("max_output_tokens", None)
+        compat_payload.pop("reasoning", None)
+        response_text = ""
+        total_tokens = 0
+        cached_tokens = 0
+        input_tokens = 0
+        _stream_response(compat_payload)
 
     return response_text, total_tokens, cached_tokens, input_tokens
-
 
 def _is_rate_limit_error(exc: Exception) -> bool:
     """Check if an exception is an HTTP 429 rate limit error."""
@@ -761,6 +802,70 @@ def call_llm(system_prompt: str, user_prompt: str, temperature: float = 0.0,
     raise RuntimeError(f"All {len(_providers)} providers failed. Last error: {last_error}")
 
 
+def call_llm_with_provider(
+    system_prompt: str,
+    user_prompt: str,
+    *,
+    provider_name: str | None = None,
+    provider_index: int | None = None,
+    temperature: float = 0.0,
+    max_tokens: int = None,
+) -> tuple[str, int, dict]:
+    """Call one selected provider, used when reviewer roles should be model-routed.
+
+    Falls back to provider index 0 when the requested provider is unavailable.
+    Temperature is accepted for API parity; provider routes currently use their
+    configured deterministic settings.
+    """
+    del temperature
+    max_tokens = max_tokens or LLM_MAX_OUTPUT_TOKENS
+    _init_providers()
+    if not _providers:
+        raise LLMProviderUnavailableError("No LLM providers configured.")
+
+    provider = None
+    if provider_name:
+        for candidate in _providers:
+            if candidate.get("name") == provider_name:
+                provider = candidate
+                break
+    if provider is None and provider_index is not None and 0 <= provider_index < len(_providers):
+        provider = _providers[provider_index]
+    if provider is None:
+        provider = _providers[0]
+
+    name = provider["name"]
+    limiter = _rate_limiters.get(name)
+    if limiter:
+        limiter.wait()
+    with _provider_lock:
+        _provider_stats[name]["in_flight"] = _provider_stats[name].get("in_flight", 0) + 1
+    start = time.time()
+    try:
+        text, tokens, cached_toks, input_toks = _call_provider(provider, system_prompt, user_prompt, max_tokens)
+        latency = time.time() - start
+        with _provider_lock:
+            stats = _provider_stats[name]
+            stats["calls"] += 1
+            stats["tokens"] += tokens
+            stats["total_latency"] += latency
+            stats["cached_tokens"] += cached_toks
+            stats["input_tokens"] += input_toks
+        if not text or len(text.strip()) < 10:
+            raise RuntimeError(f"{name} returned empty response")
+        return text, tokens, dict(provider)
+    except Exception:
+        latency = time.time() - start
+        with _provider_lock:
+            stats = _provider_stats[name]
+            stats["calls"] += 1
+            stats["errors"] += 1
+            stats["total_latency"] += latency
+        raise
+    finally:
+        _release_provider(name)
+
+
 def _first_balanced_json_slice(text: str, start: int) -> str | None:
     """Slice from start to matching top-level } or ]; respects JSON string rules."""
     if start < 0 or start >= len(text):
@@ -918,4 +1023,34 @@ def call_llm_json(system_prompt: str, user_prompt: str, temperature: float = 0.0
     except json.JSONDecodeError as e:
         preview = str(text).replace("\n", " ")[:320]
         print(f"[LLM_JSON] Parse failed: {e}; preview: {preview}...", flush=True)
+        raise
+
+
+def call_llm_json_with_provider(
+    system_prompt: str,
+    user_prompt: str,
+    *,
+    provider_name: str | None = None,
+    provider_index: int | None = None,
+    temperature: float = 0.0,
+) -> tuple[dict | list, int, dict]:
+    """Call a selected provider and parse the response as JSON."""
+    text, tokens, provider = call_llm_with_provider(
+        system_prompt,
+        user_prompt,
+        provider_name=provider_name,
+        provider_index=provider_index,
+        temperature=temperature,
+    )
+    if not text or not str(text).strip():
+        print(f"[LLM_JSON] WARNING: empty provider-routed response ({tokens} tokens)", flush=True)
+        return {}, tokens, provider
+    try:
+        parsed, how = parse_llm_json_text(text)
+        if how not in ("direct", "empty"):
+            print(f"[LLM_JSON] Parsed via {how} ({len(text)} chars)", flush=True)
+        return parsed, tokens, provider
+    except json.JSONDecodeError as e:
+        preview = str(text).replace("\n", " ")[:320]
+        print(f"[LLM_JSON] Provider-routed parse failed: {e}; preview: {preview}...", flush=True)
         raise

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from itertools import combinations
 
+from agents.idea_taste import compute_taste_score, enrich_candidate_with_graph_taste
 from db import database as db
 
 
@@ -52,7 +53,8 @@ def collect_candidate_pool(limit: int = 50) -> list[dict]:
     stored = db.fetchall(
         """
         SELECT id, title, mechanism_type, signal_mix, evidence_packet, evidence_summary,
-               source_node_ids, resource_class, adversarial_score
+               source_node_ids, resource_class, adversarial_score,
+               proposed_method, problem_statement
         FROM deep_insights
         ORDER BY created_at DESC
         LIMIT ?
@@ -61,7 +63,7 @@ def collect_candidate_pool(limit: int = 50) -> list[dict]:
     )
     for row in stored:
         packet = _json_load(row.get("evidence_packet"), {})
-        candidates.append(
+        candidate = enrich_candidate_with_graph_taste(
             {
                 "id": row["id"],
                 "source": "deep_insight",
@@ -73,9 +75,13 @@ def collect_candidate_pool(limit: int = 50) -> list[dict]:
                 "evidence_packet": packet,
                 "resource_class": row.get("resource_class") or "cpu",
                 "stored": True,
-                "support_score": float(row.get("adversarial_score") or 0),
-            }
+                "support_score": float(row.get("adversarial_score") or row.get("taste_score") or 0),
+                "proposed_method": row.get("proposed_method"),
+                "problem_statement": row.get("problem_statement"),
+            },
+            insight=dict(row),
         )
+        candidates.append(candidate)
 
     signal_sources = [
         ("protocol_artifact", "SELECT * FROM protocol_artifacts ORDER BY support_count DESC LIMIT 10"),
@@ -86,7 +92,9 @@ def collect_candidate_pool(limit: int = 50) -> list[dict]:
     ]
     for source, sql in signal_sources:
         for row in db.fetchall(sql):
-            candidates.append(_candidate_from_signal(row, source))
+            signal_candidate = _candidate_from_signal(row, source)
+            signal_candidate["taste_score"] = compute_taste_score(signal_candidate)["taste_score"]
+            candidates.append(signal_candidate)
 
     deduped = {}
     for candidate in candidates:
@@ -96,26 +104,24 @@ def collect_candidate_pool(limit: int = 50) -> list[dict]:
 
 
 def _quality(candidate: dict) -> float:
-    packet = candidate.get("evidence_packet") or {}
-    non_numeric = len(packet.get("non_numeric_evidence", []))
-    structural = len(packet.get("structural_evidence", []))
-    support = float(candidate.get("support_score") or 0)
-    mechanism_bonus = 1.0 if candidate.get("mechanism_type") not in {"plateau", "deep_insight"} else 0.3
-    gpu_penalty = 0.2 if candidate.get("resource_class") == "gpu_large" else 0.0
-    return (non_numeric * 1.8) + (structural * 1.2) + support + mechanism_bonus - gpu_penalty
+    if candidate.get("taste_score") is not None:
+        return float(candidate["taste_score"])
+    return compute_taste_score(candidate)["taste_score"]
 
 
 def rank_candidates(limit: int = 20) -> list[dict]:
-    candidates = collect_candidate_pool(limit=max(limit * 3, 20))
+    pool_limit = min(max(limit * 3, 20), 30)
+    candidates = collect_candidate_pool(limit=pool_limit)
     if not candidates:
         return []
 
+    quality_by_id = {str(candidate["id"]): _quality(candidate) for candidate in candidates}
     ratings = {str(candidate["id"]): 1000.0 for candidate in candidates}
     for left, right in combinations(candidates, 2):
         left_id = str(left["id"])
         right_id = str(right["id"])
-        q_left = _quality(left)
-        q_right = _quality(right)
+        q_left = quality_by_id[str(left["id"])]
+        q_right = quality_by_id[str(right["id"])]
         if q_left == q_right:
             score_left = 0.5
         else:
@@ -134,7 +140,7 @@ def rank_candidates(limit: int = 20) -> list[dict]:
                 **candidate,
                 "rank": idx,
                 "elo": round(ratings[str(candidate["id"])], 2),
-                "quality_score": round(_quality(candidate), 2),
+                "quality_score": round(quality_by_id[str(candidate["id"])], 2),
             }
         )
     return output

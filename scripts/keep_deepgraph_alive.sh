@@ -1,20 +1,40 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="/home/billion-token/Deepgraph"
+ROOT="${DEEPGRAPH_ROOT:-/root/hf_models/hk_backup/Deepgraph}"
 LOG_DIR="$ROOT/logs"
 KEEPER_LOG="$LOG_DIR/keeper.log"
 STARTER="$ROOT/start_background.sh"
+SCREEN_BIN="${SCREEN_BIN:-/usr/bin/screen}"
+START_PROCESSOR="${DEEPGRAPH_START_PROCESSOR:-0}"
+WEB_HEALTH_URL="${DEEPGRAPH_WEB_HEALTH_URL:-http://127.0.0.1:8081/api/meta}"
+WEB_HEALTH_TIMEOUT="${DEEPGRAPH_WEB_HEALTH_TIMEOUT:-5}"
 
 mkdir -p "$LOG_DIR"
 
 while true; do
-  web_count="$(pgrep -fc '/home/billion-token/Deepgraph/.venv/bin/python -u main.py' || true)"
-  tunnel_count="$(pgrep -fc '/home/billion-token/bin/cloudflared tunnel --url http://127.0.0.1:8080' || true)"
-  processor_count="$(pgrep -fc '/home/billion-token/Deepgraph/scripts/run_pipeline_forever.sh' || true)"
+  web_ok=0
+  web_health_ok=0
+  frpc_ok=0
+  processor_ok=1
+  "$SCREEN_BIN" -ls | grep -qE '[[:space:]][0-9]+\.deepgraph-web[[:space:]]' && web_ok=1 || true
+  if [[ "$web_ok" -eq 1 ]]; then
+    curl -fsS --max-time "$WEB_HEALTH_TIMEOUT" "$WEB_HEALTH_URL" >/dev/null 2>&1 && web_health_ok=1 || true
+  fi
+  "$SCREEN_BIN" -ls | grep -qE '[[:space:]][0-9]+\.deepgraph-frpc[[:space:]]' && frpc_ok=1 || true
+  if [[ "$START_PROCESSOR" == "1" ]]; then
+    processor_ok=0
+    "$SCREEN_BIN" -ls | grep -qE '[[:space:]][0-9]+\.deepgraph-processor[[:space:]]' && processor_ok=1 || true
+  fi
 
-  if [[ "${web_count:-0}" -lt 1 || "${tunnel_count:-0}" -lt 1 || "${processor_count:-0}" -lt 1 ]]; then
-    echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] keeper restart triggered web=$web_count tunnel=$tunnel_count processor=$processor_count" >> "$KEEPER_LOG"
+  if [[ "$web_ok" -eq 1 && "$web_health_ok" -ne 1 ]]; then
+    echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] keeper stopping unhealthy web screen url=$WEB_HEALTH_URL" >> "$KEEPER_LOG"
+    "$SCREEN_BIN" -S deepgraph-web -X quit >/dev/null 2>&1 || true
+    web_ok=0
+  fi
+
+  if [[ "$web_ok" -ne 1 || "$frpc_ok" -ne 1 || "$processor_ok" -ne 1 ]]; then
+    echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] keeper restart triggered web=$web_ok web_health=$web_health_ok frpc=$frpc_ok processor=$processor_ok" >> "$KEEPER_LOG"
     "$STARTER" >> "$KEEPER_LOG" 2>&1 || true
   fi
 

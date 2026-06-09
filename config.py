@@ -214,7 +214,7 @@ ARXIV_MAX_RESULTS_PER_QUERY = _env_int("DEEPGRAPH_ARXIV_MAX_RESULTS_PER_QUERY", 
 GROBID_BASE_URL = _env_str("DEEPGRAPH_GROBID_URL", "http://127.0.0.1:8070", "grobid.base_url")
 GROBID_REQUEST_TIMEOUT = _env_int("DEEPGRAPH_GROBID_TIMEOUT", 300, "grobid.request_timeout_seconds")
 # auto = GROBID then PyMuPDF fallback; grobid = GROBID only; pymupdf = legacy text layer only
-PDF_TEXT_BACKEND = _env_str("DEEPGRAPH_PDF_TEXT_BACKEND", "auto", "pdf.text_backend").lower()
+PDF_TEXT_BACKEND = _env_str("DEEPGRAPH_PDF_TEXT_BACKEND", "source_auto", "pdf.text_backend").lower()
 
 # Pipeline
 PIPELINE_CONCURRENCY = _env_int("DEEPGRAPH_PIPELINE_CONCURRENCY", 30, "pipeline.concurrency")
@@ -250,6 +250,11 @@ DISCOVERY_TIER2_PROBLEMS = _env_int("DEEPGRAPH_TIER2_PROBLEMS", 8, "discovery.ti
 DISCOVERY_TIER2_PAPERS = _env_int("DEEPGRAPH_TIER2_PAPERS", 5, "discovery.tier2_papers")
 DISCOVERY_MIN_TIER2_BACKLOG = _env_int("DEEPGRAPH_DISCOVERY_MIN_TIER2_BACKLOG", 3, "discovery.min_tier2_backlog")
 DISCOVERY_AUTO_TRIGGER_PAPERS = _env_int("DEEPGRAPH_DISCOVERY_AUTO_TRIGGER", 200, "discovery.auto_trigger_papers")
+# Paper reading / idea review gates
+MULTI_AGENT_EXTRACTION_ENABLED = _env_bool("DEEPGRAPH_MULTI_AGENT_EXTRACTION", True, "extraction.multi_agent_enabled")
+TIER2_EVOSCI_PREINSERT_REVIEW = _env_bool("DEEPGRAPH_TIER2_EVOSCI_PREINSERT_REVIEW", True, "discovery.tier2_evosci_preinsert_review")
+TIER2_EVOSCI_REVIEW_TIMEOUT_SECONDS = _env_int("DEEPGRAPH_TIER2_EVOSCI_REVIEW_TIMEOUT_SECONDS", 1200, "discovery.tier2_evosci_review_timeout_seconds")
+TIER2_DEBATE_ROUNDS = _env_int("DEEPGRAPH_TIER2_DEBATE_ROUNDS", 10, "discovery.tier2_debate_rounds")
 # Bulk/on-demand full pass: wider SQL signals + more LLM slots
 DISCOVERY_BULK_TIER1_CANDIDATES = _env_int("DEEPGRAPH_BULK_TIER1_CANDIDATES", 12, "discovery.bulk_tier1_candidates")
 DISCOVERY_BULK_TIER1_OVERLAPS = _env_int("DEEPGRAPH_BULK_TIER1_OVERLAPS", 80, "discovery.bulk_tier1_overlaps")
@@ -275,8 +280,14 @@ EXPERIMENT_ALLOW_SYNTHETIC_FALLBACK = _env_bool("DEEPGRAPH_ALLOW_SYNTHETIC_FALLB
 EXPERIMENT_REAL_LLM_MODEL = _env_str("DEEPGRAPH_REAL_LLM_MODEL", "Qwen/Qwen2.5-7B-Instruct", "experiment.real_llm_model")
 EXPERIMENT_REAL_BENCHMARK_DATASET = _env_str("DEEPGRAPH_REAL_BENCHMARK_DATASET", "openai/gsm8k", "experiment.real_benchmark_dataset")
 EXPERIMENT_REAL_BENCHMARK_DATASET_CONFIG = _env_str("DEEPGRAPH_REAL_BENCHMARK_DATASET_CONFIG", "main", "experiment.real_benchmark_dataset_config")
-EXPERIMENT_REAL_BENCHMARK_MAX_EXAMPLES = _env_int("DEEPGRAPH_REAL_BENCHMARK_MAX_EXAMPLES", 64, "experiment.real_benchmark_max_examples")
-EXPERIMENT_REAL_BENCHMARK_SEEDS = _env_int("DEEPGRAPH_REAL_BENCHMARK_SEEDS", 3, "experiment.real_benchmark_seeds")
+EXPERIMENT_REAL_BENCHMARK_MAX_EXAMPLES = _env_int("DEEPGRAPH_REAL_BENCHMARK_MAX_EXAMPLES", 1000, "experiment.real_benchmark_max_examples")
+EXPERIMENT_REAL_BENCHMARK_SEEDS = _env_int("DEEPGRAPH_REAL_BENCHMARK_SEEDS", 5, "experiment.real_benchmark_seeds")
+EXPERIMENT_FULL_BENCHMARK_MIN_EXAMPLES = _env_int("DEEPGRAPH_FULL_BENCHMARK_MIN_EXAMPLES", 1000, "experiment.full_benchmark_min_examples")
+EXPERIMENT_FULL_BENCHMARK_MIN_DATASETS = _env_int("DEEPGRAPH_FULL_BENCHMARK_MIN_DATASETS", 2, "experiment.full_benchmark_min_datasets")
+EXPERIMENT_FULL_BENCHMARK_MIN_MODELS = _env_int("DEEPGRAPH_FULL_BENCHMARK_MIN_MODELS", 2, "experiment.full_benchmark_min_models")
+EXPERIMENT_FULL_BENCHMARK_MIN_BASELINES = _env_int("DEEPGRAPH_FULL_BENCHMARK_MIN_BASELINES", 6, "experiment.full_benchmark_min_baselines")
+EXPERIMENT_FULL_BENCHMARK_REQUIRE_SIGNIFICANCE = _env_bool("DEEPGRAPH_FULL_BENCHMARK_REQUIRE_SIGNIFICANCE", True, "experiment.full_benchmark_require_significance")
+EXPERIMENT_FULL_BENCHMARK_REQUIRE_STRONGEST_WIN = _env_bool("DEEPGRAPH_FULL_BENCHMARK_REQUIRE_STRONGEST_WIN", True, "experiment.full_benchmark_require_strongest_win")
 EXPERIMENT_REAL_BENCHMARK_TIME_BUDGET = _env_int("DEEPGRAPH_REAL_BENCHMARK_TIME_BUDGET", 3600, "experiment.real_benchmark_time_budget_seconds")
 # Closed-loop validation should prove the real runner and compare methods on a
 # bounded real-data slice. Full publication evidence is scheduled separately and

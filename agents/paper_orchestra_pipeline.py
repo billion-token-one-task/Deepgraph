@@ -20,6 +20,9 @@ from agents.paper_completeness import (
     audit_evidence_completeness,
     latex_sanity_check,
 )
+from agents.benchmark_audit import full_benchmark_evidence_blockers
+from agents.plain_manuscript_reviewer import review_manuscript_plain
+from agents.tex_code_agent import repair_latex_bundle
 from agents.reference_corpus_audit import audit_against_reference_corpus
 from agents.manuscript_pipeline import (
     _bundle_manifest,
@@ -125,15 +128,15 @@ def _figure_assets(orchestrated: dict) -> list[dict]:
 def _default_figure_caption(figure_id: str, fallback: str) -> str:
     if figure_id == "fig_motivation_symbolic":
         return (
-            "Motivation for diversity-preserving aggregation: majority voting can erase useful "
-            "high-confidence dissent, whereas retaining every candidate increases token cost; DPC "
-            "targets conditional retention under meaningful disagreement."
+            "Motivation for the proposed reasoning policy: fixed aggregation can discard useful "
+            "minority evidence, while retaining every candidate spends unnecessary tokens; the "
+            "method targets evidence-aware selection under a compute budget."
         )
     if figure_id == "fig_overview_symbolic":
         return (
-            "Overview of Diversity-Preserving Consensus. Candidate answers are grouped with "
-            "confidence and cost evidence, consensus margin identifies stable cases, and "
-            "confidence-weighted dissent scoring decides which minority answers remain under budget."
+            "Overview of the proposed method. Candidate traces are organized with confidence, "
+            "cost, and disagreement evidence, and a budget-aware selector decides which reasoning "
+            "paths to retain before producing the final answer."
         )
     return fallback
 
@@ -312,10 +315,10 @@ def _trim_intro_related_sections(fragment: str) -> str:
 
 
 def _inject_problem_spine(intro_related: str, problem_spine: str) -> str:
-    """Add the explicit problem/motivation/method/result spine after the Introduction heading."""
+    """Add a natural problem/motivation/method/result paragraph after the Introduction heading."""
     if not problem_spine.strip():
         return intro_related
-    if r"\paragraph{Question.}" in intro_related:
+    if "This paper studies" in intro_related or "We study" in intro_related[:1200]:
         return intro_related
     related_match = re.search(r"\\section\*?\{Related Work[s]?\}", intro_related, flags=re.IGNORECASE)
     if related_match:
@@ -346,14 +349,21 @@ def assemble_main_tex(state: dict, orchestrated: dict, bundle_format: str) -> st
         f"verdict: {state.get('verdict')}."
     )
     problem_awareness = state.get("problem_awareness") if isinstance(state.get("problem_awareness"), dict) else {}
-    problem_spine = "\n".join(
-        [
-            r"\paragraph{Question.} " + _latex_escape(problem_awareness.get("central_question") or state.get("problem_statement") or ""),
-            r"\paragraph{Motivation.} " + _latex_escape(problem_awareness.get("motivation") or state.get("existing_weakness") or ""),
-            r"\paragraph{Answer.} " + _latex_escape(problem_awareness.get("method_answer") or state.get("method_summary") or ""),
-            r"\paragraph{Result.} " + _latex_escape(problem_awareness.get("result_claim") or results_line),
-        ]
-    )
+    central_problem = str(problem_awareness.get("central_question") or state.get("problem_statement") or "").strip().replace("?", ".")
+    central_problem = re.sub(r"^(?:can|could|does|do|should|is|are)\b", "whether", central_problem, flags=re.IGNORECASE)
+    motivation = str(problem_awareness.get("motivation") or state.get("existing_weakness") or "").strip().replace("?", ".")
+    method_answer = str(problem_awareness.get("method_answer") or state.get("method_summary") or "").strip().replace("?", ".")
+    result_claim = str(problem_awareness.get("result_claim") or results_line).strip().replace("?", ".")
+    spine_sentences = []
+    if central_problem:
+        spine_sentences.append("This paper studies " + central_problem[0].lower() + central_problem[1:] if central_problem[:1].isupper() else "This paper studies " + central_problem)
+    if motivation:
+        spine_sentences.append("The motivation is that " + motivation[0].lower() + motivation[1:] if motivation[:1].isupper() else "The motivation is that " + motivation)
+    if method_answer:
+        spine_sentences.append("We address this setting with " + method_answer[0].lower() + method_answer[1:] if method_answer[:1].isupper() else "We address this setting with " + method_answer)
+    if result_claim:
+        spine_sentences.append("The completed evidence shows " + result_claim[0].lower() + result_claim[1:] if result_claim[:1].isupper() else "The completed evidence shows " + result_claim)
+    problem_spine = " ".join(_latex_escape(x.rstrip(".")) + "." for x in spine_sentences if x.strip())
     if "\\section{" in related:
         intro_related = _inject_problem_spine(related, problem_spine)
     else:
@@ -368,7 +378,6 @@ def assemble_main_tex(state: dict, orchestrated: dict, bundle_format: str) -> st
 \input{{math_commands.tex}}
 \usepackage{{graphicx}}
 \usepackage{{booktabs}}
-\usepackage[table]{{xcolor}}
 \usepackage{{array}}
 \usepackage{{tabularx}}
 \usepackage{{amsmath,amssymb}}
@@ -405,7 +414,6 @@ def assemble_main_tex(state: dict, orchestrated: dict, bundle_format: str) -> st
 \usepackage{{graphicx}}
 \usepackage{{hyperref}}
 \usepackage{{booktabs}}
-\usepackage[table]{{xcolor}}
 \usepackage{{array}}
 \usepackage{{tabularx}}
 \usepackage[font=normalsize,labelfont=bf]{{caption}}
@@ -454,7 +462,19 @@ def _ensure_iclr2026_preamble(source: str) -> str:
         )
     if "math_commands.tex" not in preamble:
         preamble = preamble.rstrip() + "\n" + r"\input{math_commands.tex}" + "\n"
-    for package in ("graphicx", "booktabs", "xcolor", "array", "tabularx", "amsmath,amssymb", "hyperref", "url"):
+    if "iclr2026_conference" in preamble and re.search(r"\\usepackage(?:\[[^\]]*\])?\{xcolor\}", preamble):
+        preamble = re.sub(r"\\usepackage(?:\[[^\]]*\])?\{xcolor\}\s*", "", preamble)
+        if r"\PassOptionsToPackage{table}{xcolor}" not in preamble:
+            preamble = re.sub(
+                r"(\\documentclass(?:\[[^\]]*\])?\{[^}]+\}\s*)",
+                r"\1\PassOptionsToPackage{table}{xcolor}" + "\n",
+                preamble,
+                count=1,
+            )
+    packages = ["graphicx", "booktabs", "array", "tabularx", "amsmath,amssymb", "hyperref", "url"]
+    if "iclr2026_conference" not in preamble:
+        packages.insert(2, "xcolor")
+    for package in packages:
         first_pkg = package.split(",", 1)[0]
         if first_pkg not in preamble:
             if package == "xcolor":
@@ -867,6 +887,222 @@ def _page_count_from_log(bundle_dir: Path) -> int | None:
     return None
 
 
+
+def _plain_tex_word_count(tex: str) -> int:
+    body = (tex or "").split(r"\bibliographystyle")[0].split(r"\bibliography")[0]
+    body = re.sub(r"%.*", " ", body)
+    body = re.sub(r"\\(?:section|subsection|subsubsection|paragraph)\*?\{([^}]*)\}", r" \1 ", body)
+    body = re.sub(r"\\cite[a-zA-Z*]*\{[^}]*\}", " ", body)
+    body = re.sub(r"\\[a-zA-Z]+(?:\[[^]]*\])?(?:\{[^}]*\})?", " ", body)
+    body = re.sub(r"[{}$&_#^~]", " ", body)
+    return len(re.findall(r"\b[A-Za-z][A-Za-z0-9-]*\b", body))
+
+
+def _extract_abstract(tex: str) -> str:
+    match = re.search(r"\\begin\{abstract\}([\s\S]*?)\\end\{abstract\}", tex or "", re.I)
+    return match.group(1) if match else ""
+
+
+def _guide_issue(severity: str, standard: str, issue: str, evidence: str = "", fix: str = "") -> dict[str, str]:
+    out = {"severity": severity, "standard": standard, "issue": issue}
+    if evidence:
+        out["evidence"] = evidence
+    if fix:
+        out["fix"] = fix
+    return out
+
+
+
+def _section_body(main_tex: str, section_name: str) -> str:
+    pattern = rf"\\section\*?\{{{re.escape(section_name)}\}}"
+    match = re.search(pattern, main_tex or "", flags=re.IGNORECASE)
+    if not match:
+        return ""
+    rest = (main_tex or "")[match.end():]
+    next_match = re.search(r"\\section\*?\{[^}]+\}", rest)
+    return rest[: next_match.start()] if next_match else rest
+
+
+def _normalise_caption_text(text: str) -> str:
+    text = re.sub(r"\\[a-zA-Z]+(?:\[[^]]*\])?(?:\{[^}]*\})?", " ", text or "")
+    text = re.sub(r"[^a-z0-9]+", " ", text.lower())
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _figure_captions(main_tex: str) -> list[str]:
+    return re.findall(r"\\caption\{([\s\S]*?)\}", main_tex or "")
+
+
+def _experiment_figure_roles(main_tex: str, includes: list[str]) -> dict[str, list[str]]:
+    captions = _figure_captions(main_tex)
+    joined = "\n".join(captions)
+    roles: dict[str, list[str]] = {
+        "main_benchmark": [],
+        "ablation": [],
+        "cost_latency_frontier": [],
+        "subset_or_difficulty": [],
+        "calibration_or_uncertainty": [],
+    }
+    for idx, raw in enumerate(includes):
+        stem = Path(raw).stem.lower()
+        if stem in {"fig_motivation_symbolic", "fig_overview_symbolic"}:
+            continue
+        caption = captions[idx] if idx < len(captions) else ""
+        text = f"{stem} {_normalise_caption_text(caption)}"
+        if any(term in text for term in ("benchmark", "main", "comparison", "score", "accuracy", "acc", "method panel")):
+            roles["main_benchmark"].append(raw)
+        if any(term in text for term in ("ablation", "component", "remove", "without", "field", "packet field")):
+            roles["ablation"].append(raw)
+        if any(term in text for term in ("cost", "token", "latency", "budget", "frontier", "pareto", "tradeoff", "trade off")):
+            roles["cost_latency_frontier"].append(raw)
+        if any(term in text for term in ("subset", "difficulty", "bucket", "disagreement", "margin", "route", "routing", "gate")):
+            roles["subset_or_difficulty"].append(raw)
+        if any(term in text for term in ("calibration", "uncertainty", "confidence", "entropy", "distortion")):
+            roles["calibration_or_uncertainty"].append(raw)
+    return roles
+
+
+def _raw_float_examples(main_tex: str, limit: int = 8) -> list[str]:
+    examples: list[str] = []
+    for match in re.finditer(r"(?<![A-Za-z0-9_])[-−]?\d+\.\d{5,}(?![A-Za-z0-9_])", main_tex or ""):
+        value = match.group(0)
+        if value not in examples:
+            examples.append(value)
+        if len(examples) >= limit:
+            break
+    return examples
+
+def _manuscript_guideline_audit(*, main_tex: str, sections: list[str], includes: list[str], page_count: int | None, manuscript_state: dict | None, compile_ok: bool) -> dict:
+    state = manuscript_state or {}
+    packet = state.get("result_packet") if isinstance(state.get("result_packet"), dict) else {}
+    summary = packet.get("benchmark_summary") if isinstance(packet.get("benchmark_summary"), dict) else {}
+    contract = state.get("publication_evidence_contract") if isinstance(state.get("publication_evidence_contract"), dict) else {}
+    paper_intent = state.get("paper_intent") if isinstance(state.get("paper_intent"), dict) else {}
+    problem_awareness = state.get("problem_awareness") if isinstance(state.get("problem_awareness"), dict) else {}
+    quality_gates = state.get("quality_gates") if isinstance(state.get("quality_gates"), dict) else {}
+    required = state.get("required_evidence") if isinstance(state.get("required_evidence"), dict) else {}
+    method_name = str(state.get("method_name") or summary.get("candidate_method") or "")
+    method_lower = method_name.lower()
+    tex_lower = (main_tex or "").lower()
+    abstract = _extract_abstract(main_tex)
+    abstract_lower = abstract.lower()
+    abstract_env_count = len(re.findall(r"\\begin\{abstract\}", main_tex or "", flags=re.IGNORECASE))
+    abstract_section_count = len([x for x in sections if str(x).strip().lower() == "abstract"])
+    raw_float_values = _raw_float_examples(main_tex)
+    captions = _figure_captions(main_tex)
+    normalised_captions = [_normalise_caption_text(x) for x in captions if _normalise_caption_text(x)]
+    duplicate_captions = sorted({x for x in normalised_captions if normalised_captions.count(x) > 1})
+    non_concept_includes = [x for x in includes if Path(x).stem not in {"fig_motivation_symbolic", "fig_overview_symbolic"}]
+    duplicate_includes = sorted({Path(x).name for x in includes if includes.count(x) > 1})
+    figure_roles = _experiment_figure_roles(main_tex, includes)
+    covered_figure_roles = [name for name, rows in figure_roles.items() if rows]
+    intro_body = _section_body(main_tex, "Introduction")
+    results_body = _section_body(main_tex, "Results")
+    discussion_body = _section_body(main_tex, "Discussion")
+    issues = []
+    word_count = _plain_tex_word_count(main_tex)
+    duplicate_sections = sorted({x for x in sections if sections.count(x) > 1})
+    expected_sections = ["Introduction", "Related Work", "Method", "Experiments", "Results", "Discussion"]
+    missing_sections = [name for name in expected_sections if name not in sections]
+    section_order = [x for x in sections if x in expected_sections]
+    expected_order = [x for x in expected_sections if x in section_order]
+    if not compile_ok:
+        issues.append(_guide_issue("high", "Submission/format", "PDF compilation must pass before a bundle can be ready.", fix="Repair LaTeX/PDF compilation."))
+    if duplicate_sections:
+        issues.append(_guide_issue("high", "Writing structure", "The manuscript contains duplicate top-level sections.", ", ".join(duplicate_sections), "Deduplicate and merge repeated sections."))
+    if missing_sections:
+        issues.append(_guide_issue("high", "Writing structure", "The manuscript is missing required conference-paper sections.", ", ".join(missing_sections), "Add missing sections with evidence-grounded content."))
+    if abstract_env_count + abstract_section_count != 1:
+        issues.append(_guide_issue("high", "Abstract/title cleanup", "The manuscript must contain exactly one abstract and must not repeat an Abstract section.", f"abstract_env_count={abstract_env_count} abstract_section_count={abstract_section_count}", "Keep one abstract environment after maketitle and remove duplicate generated abstracts."))
+    if section_order != expected_order:
+        issues.append(_guide_issue("medium", "Problem-motivation-method-result spine", "Section order does not follow the required paper narrative.", " -> ".join(sections[:10]), "Use Introduction -> Related Work -> Method -> Experiments -> Results -> Discussion/Limitations."))
+    if raw_float_values:
+        issues.append(_guide_issue("high", "Table standard / numeric formatting", "Raw unrounded floating-point values remain in the manuscript.", ", ".join(raw_float_values), "Round metrics and costs for paper tables, typically 3 decimals for rates/accuracy and 1--2 decimals for token or latency costs."))
+    if re.search(r"training[- ]free", main_tex or "", flags=re.IGNORECASE):
+        issues.append(_guide_issue("high", "Writing guide / banned wording", "The manuscript uses the banned phrase 'training-free'.", "training-free", "Describe the actual scope as inference-time evaluation or no model-weight updates only when necessary."))
+    if re.search(r"\\paragraph\{(?:Question|Motivation|Answer|Result)\.\}", main_tex or "") or re.search(r"(?m)^\s*(?:Question|Motivation|Answer|Result)\.", main_tex or ""):
+        issues.append(_guide_issue("high", "Introduction style", "The manuscript contains forced Question/Motivation/Answer/Result mini-headings.", "Question/Motivation/Answer/Result", "Integrate the problem, motivation, method answer, and result as normal Introduction prose."))
+    if re.search(r"\\item\s+\\(?:textbf|textit)\{[^}]{1,48}\}", main_tex or ""):
+        issues.append(_guide_issue("medium", "Contribution standard", "Contribution bullets use small bold/italic labels instead of direct contribution statements.", fix="Write plain bullets beginning with We identify/formulate/propose/evaluate, without mini labels."))
+    if re.search(r"\b(?:can|could|does|do|should|is|are)\b[^.?]{10,180}\?", (abstract + "\n" + intro_body[:1800]), flags=re.IGNORECASE):
+        issues.append(_guide_issue("medium", "Introduction style", "The abstract or introduction frames the contribution as a rhetorical question.", fix="State the research problem and contribution directly rather than asking the reader a question."))
+    if results_body and _plain_tex_word_count(results_body) < 120:
+        issues.append(_guide_issue("high", "Results section", "Results section is too thin to support a full-paper claim.", f"results_words={_plain_tex_word_count(results_body)}", "Discuss the main table, strongest baseline comparison, statistical uncertainty, cost/latency, and failure cases."))
+    if discussion_body and _plain_tex_word_count(discussion_body) < 180:
+        issues.append(_guide_issue("medium", "Discussion section", "Discussion section is too short for a complete manuscript.", f"discussion_words={_plain_tex_word_count(discussion_body)}", "Add evidence-bounded interpretation, limitations, deployment scope, and threats to validity."))
+    if "certified" in tex_lower and not re.search(r"\b(theorem|proof|formal guarantee|violation rate|coverage|calibration error|distortion bound)\b", tex_lower):
+        issues.append(_guide_issue("medium", "Claim calibration", "The title/method uses 'Certified' without enough formal or empirical certification evidence.", "Certified", "Rename or weaken the claim unless the paper proves or measures what is certified."))
+    if duplicate_includes:
+        issues.append(_guide_issue("high", "Figure/experiment presentation", "The same figure asset is included more than once.", ", ".join(duplicate_includes), "Remove duplicate figure blocks or replace them with distinct evidence."))
+    if duplicate_captions:
+        issues.append(_guide_issue("high", "Figure/experiment presentation", "Figure captions are duplicated or near-identical.", duplicate_captions[0][:180], "Rewrite captions and replace repeated plots with distinct analyses."))
+    if word_count < 4500:
+        issues.append(_guide_issue("high", "篇幅 / full-paper length", "The main manuscript is too short for the binding full-paper writing guide.", f"word_count={word_count}", "Expand method, experiment setup, baseline analysis, ablations, limitations, and related work."))
+    if page_count is not None and page_count < 8:
+        issues.append(_guide_issue("medium", "篇幅 / ICLR-style length", "Compiled paper is short relative to full conference papers.", f"page_count={page_count}", "Target a complete main paper rather than a thin technical note."))
+    required_story = problem_awareness.get("required_story_order") or paper_intent.get("required_story_order") or ["problem", "motivation", "method", "result", "limitations"]
+    for key in required_story:
+        key_l = str(key).lower()
+        if key_l in {"problem", "motivation", "method", "result", "limitations"} and key_l not in tex_lower:
+            issues.append(_guide_issue("medium", "Problem-awareness contract", f"Required story component is not explicit in the manuscript: {key}.", fix="Make the problem, motivation, method answer, result, and limitations explicit."))
+    if not abstract:
+        issues.append(_guide_issue("high", "Abstract standard", "The manuscript is missing an abstract."))
+    elif not any(token in abstract_lower for token in ("problem", "challenge", "bottleneck")):
+        issues.append(_guide_issue("medium", "Abstract standard", "Abstract does not clearly state the concrete problem."))
+    per_method = summary.get("per_method") if isinstance(summary.get("per_method"), dict) else {}
+    candidate_name = str(summary.get("candidate_method") or method_name)
+    candidate_metric = per_method.get(candidate_name, {}).get("metric_value") if isinstance(per_method.get(candidate_name), dict) else None
+    oracle_metric = None
+    for name, row in per_method.items():
+        if "oracle" in str(name).lower() and isinstance(row, dict):
+            oracle_metric = row.get("metric_value")
+            break
+    if abstract and oracle_metric is not None and candidate_metric is not None:
+        try:
+            if str(round(float(oracle_metric), 6)) in abstract and str(round(float(candidate_metric), 6)) not in abstract:
+                issues.append(_guide_issue("high", "Result-grounding", "Abstract appears to report an oracle/upper-bound metric instead of the candidate method metric.", f"oracle={oracle_metric}, candidate={candidate_metric}", "Rewrite abstract with candidate, strongest baseline, and limitation metrics."))
+        except (TypeError, ValueError):
+            pass
+    if len(includes) < 3:
+        issues.append(_guide_issue("high", "Figure/experiment presentation", "The manuscript has too few figures for full-paper evidence presentation.", f"figure_count={len(includes)}", "Include at least main benchmark comparison, ablation, and cost/quality or subset-analysis figures/tables."))
+    if len(non_concept_includes) < 3:
+        issues.append(_guide_issue("high", "Figure/experiment presentation", "Concept/overview diagrams cannot substitute for experiment evidence figures.", f"experiment_figure_count={len(non_concept_includes)}", "Add at least three distinct experiment figures beyond motivation/overview diagrams."))
+    if non_concept_includes and len(covered_figure_roles) < 3:
+        issues.append(_guide_issue("high", "Figure/experiment diversity", "Experiment figures do not cover enough distinct evidence types.", f"covered_roles={covered_figure_roles}", "Use different evidence displays: main benchmark, ablation, cost/latency frontier, subset/difficulty analysis, or calibration/uncertainty."))
+    table_count = len(re.findall(r"\\begin\{table\*?\}", main_tex or "")) + len(re.findall(r"\\begin\{tabular", main_tex or ""))
+    if table_count < 2:
+        issues.append(_guide_issue("high", "Table standard / experiments", "The manuscript lacks enough numeric experiment tables.", f"table_count={table_count}", "Add main results and ablation/cost tables using the table standard."))
+    required_ablations = required.get("ablations") or contract.get("required_ablations") or []
+    has_ablation_artifact = bool(summary.get("ablation_table") or summary.get("ablation_results") or summary.get("ablations"))
+    if required_ablations and (not has_ablation_artifact or "ablation" not in tex_lower):
+        issues.append(_guide_issue("high", "Ablation requirement", "Required ablations are not presented in the manuscript.", f"required_ablations={len(required_ablations)} artifact_present={has_ablation_artifact}", "Add an ablation subsection/table grounded in ablation_table.json."))
+    required_baselines = contract.get("required_baselines") or []
+    if len(per_method) < max(4, len(required_baselines)):
+        issues.append(_guide_issue("high", "Benchmark/baseline requirement", "Benchmark comparison does not cover the required baseline set.", f"per_method_count={len(per_method)} required_baselines={len(required_baselines)}", "Run or present all required baselines, or block full-paper claims."))
+    if any(marker in method_lower or marker in tex_lower for marker in ("routing", "gate", "packet", "consensus")):
+        for artifact_key, prose_key, label in (("latency_tokens_table", "latency", "latency/token-cost analysis"), ("cost_utility_tradeoff_table", "cost", "quality-cost tradeoff"), ("routing_analysis", "route", "routing analysis"), ("difficulty_breakdown_table", "difficulty", "difficulty/subset breakdown")):
+            if not summary.get(artifact_key) and prose_key not in tex_lower:
+                issues.append(_guide_issue("medium", "Routing/gating evidence", f"Missing {label} required by the writing guide."))
+    if "disagreement" not in tex_lower and not summary.get("subset_analysis"):
+        issues.append(_guide_issue("medium", "Disagreement subset analysis", "Motivation depends on disagreement/dissent, but the manuscript lacks a disagreement subset analysis."))
+    stale_terms = []
+    if "diversity-preserving" in tex_lower and "diversity-preserving" not in method_lower:
+        stale_terms.append("Diversity-Preserving")
+    if re.search(r"\bDPC\b", main_tex or "") and "dpc" not in method_lower:
+        stale_terms.append("DPC")
+    if stale_terms:
+        issues.append(_guide_issue("high", "Terminology consistency", "Manuscript contains stale/cross-paper terminology.", ", ".join(stale_terms), "Remove cross-paper leftovers and regenerate captions/figures for the current method."))
+    if packet.get("full_benchmark_completed") is not True and not summary.get("full_benchmark_completed"):
+        issues.append(_guide_issue("high", "Evidence gate", "Full benchmark evidence is not complete; manuscript cannot be bundle_ready."))
+    if quality_gates.get("requires_full_benchmark_package") and not summary.get("full_benchmark_completed"):
+        issues.append(_guide_issue("high", "Evidence gate", "Quality gate requires full benchmark package, but summary is not marked complete."))
+    decision = "bundle_ready"
+    if any(x.get("severity") == "high" for x in issues):
+        decision = "manuscript_blocked"
+    elif any(x.get("severity") == "medium" for x in issues):
+        decision = "needs_revision"
+    return {"schema_version": "deepgraph_writing_guideline_audit_v1", "status": "pass" if not issues else "fail", "decision": decision, "word_count": word_count, "page_count": page_count, "sections": sections, "duplicate_sections": duplicate_sections, "figure_count": len(includes), "table_count": table_count, "standard_sources": ["agents/paperorchestra/writing_standard.py", "agents/paperorchestra/table_standard.py", "agents/paperorchestra/figure_standard.py", "docs/top_venue_manuscript_chain.md", "paper_intent.json/problem_awareness/publication_evidence_contract"], "issues": issues, "next_actions": [x.get("fix") or x.get("issue") for x in issues[:12]]}
+
 def _paper_quality_report(
     *,
     bundle_dir: Path,
@@ -931,8 +1167,11 @@ def _paper_quality_report(
         issues.append({"severity": "low", "issue": "The compiled paper is short relative to full conference papers."})
     scientific_review = _scientific_review_gate(main_tex, manuscript_state or {})
     for issue in scientific_review.get("issues") or []:
-        if isinstance(issue, dict) and issue not in issues:
-            issues.append(issue)
+        if isinstance(issue, dict):
+            enriched = dict(issue)
+            enriched.setdefault("standard", "Scientific review gate")
+            if enriched not in issues:
+                issues.append(enriched)
     reference_corpus_audit = audit_against_reference_corpus(
         main_tex=main_tex,
         page_count=page_count,
@@ -943,6 +1182,56 @@ def _paper_quality_report(
     for issue in reference_corpus_audit.get("issues") or []:
         if isinstance(issue, dict) and issue not in issues:
             issues.append(issue)
+    writing_guideline_audit = _manuscript_guideline_audit(
+        main_tex=main_tex,
+        sections=sections,
+        includes=includes,
+        page_count=page_count,
+        manuscript_state=manuscript_state or {},
+        compile_ok=bool(compile_result.get("ok")),
+    )
+    for issue in writing_guideline_audit.get("issues") or []:
+        if isinstance(issue, dict) and issue not in issues:
+            issues.append(issue)
+
+    plain_reviewer = review_manuscript_plain(
+        bundle_dir=bundle_dir,
+        main_tex=main_tex,
+        quality_context={
+            "compile_ok": bool(compile_result.get("ok")),
+            "page_count": page_count,
+            "section_count": len(sections),
+            "figure_reference_count": len(includes),
+            "citation_count": len(cited),
+            "scientific_review_gate": scientific_review,
+            "writing_guideline_audit": writing_guideline_audit,
+        },
+    )
+    for issue in plain_reviewer.get("issues") or []:
+        if isinstance(issue, dict):
+            merged = {
+                "severity": issue.get("severity") or "medium",
+                "issue": issue.get("issue") or "Plain final reviewer raised a manuscript-quality concern.",
+            }
+            if issue.get("area"):
+                merged["standard"] = "Plain final reviewer / " + str(issue.get("area"))
+            else:
+                merged["standard"] = "Plain final reviewer"
+            if issue.get("evidence"):
+                merged["evidence"] = issue.get("evidence")
+            if issue.get("fix"):
+                merged["fix"] = issue.get("fix")
+            if merged not in issues:
+                issues.append(merged)
+    if plain_reviewer.get("can_deliver") is False:
+        blocker = {
+            "severity": "high",
+            "standard": "Plain final reviewer",
+            "issue": "Plain final reviewer says the manuscript is not deliverable yet.",
+            "evidence": str(plain_reviewer.get("summary") or plain_reviewer.get("recommendation") or ""),
+        }
+        if blocker not in issues:
+            issues.append(blocker)
 
     return {
         "reference_corpus_dir": str(REFERENCE_PDF_CORPUS_DIR),
@@ -975,6 +1264,8 @@ def _paper_quality_report(
             if isinstance(asset, dict)
         ],
         "scientific_review_gate": scientific_review,
+        "writing_guideline_audit": writing_guideline_audit,
+        "plain_manuscript_reviewer": plain_reviewer,
         "internal_audit_wording_hits": internal_audit_hits,
         "issues": issues,
         "recommendations": [
@@ -1091,6 +1382,21 @@ def _scientific_review_gate(main_tex: str, state: dict) -> dict:
     )
     routing = summary.get("routing_analysis") if isinstance(summary.get("routing_analysis"), dict) else {}
 
+    def _route_rate(row: dict) -> float | None:
+        if not isinstance(row, dict):
+            return None
+        for key in ("route_rate", "routing_rate", "escalation_rate", "routed_fraction", "trigger_rate"):
+            parsed = _as_float(row.get(key))
+            if parsed is not None:
+                return parsed
+        return None
+
+    candidate_route_rate = _route_rate(candidate_row if isinstance(candidate_row, dict) else {})
+    if candidate_route_rate is None:
+        candidate_route_rate = _route_rate(summary)
+    if candidate_route_rate is None and isinstance(routing, dict):
+        candidate_route_rate = _route_rate(routing.get(candidate_name) if isinstance(routing.get(candidate_name), dict) else routing)
+
     def _payload_text(*keys: str) -> str:
         payload = {key: summary.get(key) for key in keys if summary.get(key)}
         return json.dumps(payload, ensure_ascii=False).lower() if payload else ""
@@ -1131,16 +1437,22 @@ def _scientific_review_gate(main_tex: str, state: dict) -> dict:
     issues: list[dict[str, str]] = []
     if total_examples and total_examples < 100:
         issues.append({"severity": "high", "issue": f"Scientific evidence is too small for a top-tier claim: only {total_examples} evaluation examples."})
+    elif total_examples and total_examples < 1000:
+        issues.append({"severity": "medium", "issue": f"Evaluation scale is thin for a top-tier empirical paper: only {total_examples} examples."})
     if p_value is not None and p_value >= 0.05:
         issues.append({"severity": "high", "issue": f"Core empirical result is not statistically significant at 0.05: p={p_value:.4g}."})
     if num_seeds and num_seeds < 5:
         issues.append({"severity": "medium", "issue": f"Seed coverage is thin for a top-tier empirical paper: {num_seeds} seed(s)."})
     if len(missing_baselines) >= 2:
         issues.append({"severity": "high", "issue": "Baseline coverage is weak for a selector/routing paper: missing " + ", ".join(missing_baselines[:5]) + "."})
+    if strongest_name and strongest_gap is not None and strongest_gap <= 0:
+        issues.append({"severity": "high", "issue": f"Candidate does not beat the strongest deployable baseline {strongest_name}: metric gap {strongest_gap:+.4f}."})
     if strongest_name and "confidence" in strongest_name.lower() and not has_strongest_pairwise:
         issues.append({"severity": "high", "issue": f"Strongest practical baseline is {strongest_name}; missing pairwise significance/trade-off test against it."})
     elif strongest_name and strongest_gap is not None and strongest_gap < 0.02 and not has_strongest_pairwise:
         issues.append({"severity": "medium", "issue": f"Gain over strongest practical baseline {strongest_name} is small ({strongest_gap:+.4f}) and lacks pairwise uncertainty."})
+    if candidate_route_rate is not None and candidate_route_rate < 0.02 and any(token in (candidate_name + " " + main_tex).lower() for token in ("route", "routing", "gate", "packet", "residual", "selector")):
+        issues.append({"severity": "high", "issue": f"Candidate route/gate trigger rate is nearly zero ({candidate_route_rate:.4f}), so the mechanism appears almost inactive."})
     if strongest_name and strongest_token_delta is not None and strongest_token_delta > 0 and not has_frontier:
         issues.append({"severity": "medium", "issue": f"Candidate spends {strongest_token_delta:.2f} more tokens than strongest practical baseline {strongest_name}; missing quality-cost frontier evidence."})
     if any(token in (main_tex or "").lower() for token in ("dissent", "disagreement", "consensus")) and not has_disagreement_subset:
@@ -1195,6 +1507,7 @@ def _scientific_review_gate(main_tex: str, state: dict) -> dict:
         "candidate_method": candidate_name,
         "candidate_metric": candidate_metric,
         "candidate_tokens": candidate_tokens,
+        "candidate_route_rate": candidate_route_rate,
         "strongest_practical_baseline": {
             "name": strongest_name,
             "metric": strongest_metric,
@@ -1278,12 +1591,18 @@ def _submission_blockers_from_state(state: dict, error: str = "") -> list[str]:
         or benchmark_summary.get("ablation_table")
     ):
         blockers.append("Required ablation table/results are missing.")
-    if packet.get("p_value") is not None:
-        try:
-            if float(packet.get("p_value")) >= 0.05:
-                blockers.append(f"Statistical evidence is weak for top-tier claims: p={float(packet.get('p_value')):.4g}.")
-        except (TypeError, ValueError):
-            pass
+    benchmark_policy_criteria = {
+        "publication_evidence_contract": publication_contract,
+        "quality_gates": quality_gates,
+        "metric_name": benchmark_summary.get("primary_metric") or publication_contract.get("primary_metric"),
+        "metric_direction": publication_contract.get("metric_direction"),
+    }
+    blockers.extend(
+        f"full benchmark policy: {item}"
+        for item in full_benchmark_evidence_blockers(benchmark_summary, benchmark_policy_criteria)
+    )
+    # Weak statistical evidence should shape the manuscript claim strength, not
+    # prevent a complete benchmark-backed technical report from being generated.
     if packet.get("crash_count"):
         blockers.append(f"Experiment loop had {packet.get('crash_count')} crash(es); repair/stability report should be included.")
     return _dedupe_strings(blockers)
@@ -1489,7 +1808,7 @@ def _write_blocked_current_marker(layout: dict, report: dict) -> None:
     current_root = Path(layout["paper_current_root"])
     current_root.mkdir(parents=True, exist_ok=True)
     marker = {
-        "status": "manuscript_blocked",
+        "status": report.get("status") or "manuscript_blocked",
         "run_id": report.get("run_id"),
         "deep_insight_id": report.get("deep_insight_id"),
         "error": report.get("error"),
@@ -1503,7 +1822,7 @@ def _write_blocked_current_marker(layout: dict, report: dict) -> None:
             [
                 "# Do Not Submit",
                 "",
-                "This current manuscript directory is stale or blocked by the evidence gate.",
+                "This current manuscript directory is stale, blocked, or requires revision before submission.",
                 f"Run: {marker.get('run_id')}",
                 f"Error: {marker.get('error') or 'manuscript blocked'}",
                 "",
@@ -1738,6 +2057,13 @@ def generate_bundle_paper_orchestra(
     preferred_bundle_dir: Path | None = None
     for bundle_format in bundle_formats:
         bundle_dir = paper_bundle_root(int(run["deep_insight_id"]), bundle_format, insight=insight)
+        if bundle_dir.exists():
+            for child in sorted(bundle_dir.iterdir()):
+                if child.is_dir():
+                    shutil.rmtree(child)
+                else:
+                    child.unlink()
+        _ensure_dirs(bundle_dir)
         figures_dir = bundle_dir / "figures"
         _ensure_dirs(figures_dir)
         copied_template_files = _copy_iclr2026_template_files(bundle_dir) if bundle_format == "conference" else []
@@ -1767,6 +2093,10 @@ def generate_bundle_paper_orchestra(
             metric_name=run.get("baseline_metric_name") or "metric",
         )
         main_tex = _prefer_vector_figure_references(bundle_dir, main_tex)
+        _write(bundle_dir / "main.tex", main_tex)
+        tex_code_pre_report = repair_latex_bundle(bundle_dir, stage="pre_compile_structure")
+        if tex_code_pre_report.get("changed"):
+            main_tex = (bundle_dir / "main.tex").read_text(encoding="utf-8", errors="replace")
         latex_sanity_report = latex_sanity_check(main_tex)
         _write(bundle_dir / "main.tex", main_tex)
         _write(
@@ -1986,6 +2316,20 @@ def generate_bundle_paper_orchestra(
         )
         compile_result = _compile_main_pdf(bundle_dir)
         if not compile_result.get("ok"):
+            tex_code_compile_report = repair_latex_bundle(
+                bundle_dir,
+                stage="post_compile_error",
+                compile_result=compile_result,
+            )
+            if tex_code_compile_report.get("changed"):
+                main_tex = (bundle_dir / "main.tex").read_text(encoding="utf-8", errors="replace")
+                latex_sanity_report = latex_sanity_check(main_tex)
+                _write(
+                    bundle_dir / "latex_sanity_report.json",
+                    json.dumps(latex_sanity_report, indent=2, ensure_ascii=False, default=str),
+                )
+                compile_result = _compile_main_pdf(bundle_dir)
+        if not compile_result.get("ok"):
             _write(
                 bundle_dir / "pdf_compile_status.json",
                 json.dumps(compile_result, indent=2, ensure_ascii=False, default=str),
@@ -2018,6 +2362,114 @@ def generate_bundle_paper_orchestra(
             bundle_dir / "paper_quality_report.json",
             json.dumps(quality_report, indent=2, ensure_ascii=False, default=str),
         )
+        writing_guideline_audit = quality_report.get("writing_guideline_audit") or {}
+        guide_decision = str(writing_guideline_audit.get("decision") or "")
+        quality_issues = [issue for issue in (quality_report.get("issues") or []) if isinstance(issue, dict)]
+        if guide_decision not in {"manuscript_blocked", "needs_revision"}:
+            if any(issue.get("severity") == "high" for issue in quality_issues):
+                guide_decision = "manuscript_blocked"
+            else:
+                gate_medium = False
+                for issue in quality_issues:
+                    source = str(issue.get("standard") or "")
+                    if issue.get("severity") == "medium" and source.startswith(("Scientific review gate", "Plain final reviewer")):
+                        gate_medium = True
+                        break
+                if gate_medium:
+                    guide_decision = "needs_revision"
+        if guide_decision in {"manuscript_blocked", "needs_revision"}:
+            blockers = [
+                f"{issue.get('standard') or issue.get('severity')}: {issue.get('issue')}"
+                for issue in quality_issues
+            ]
+            next_actions = [
+                issue.get("fix") or issue.get("issue")
+                for issue in quality_issues
+                if issue.get("fix") or issue.get("issue")
+            ][:16]
+            block_report = {
+                "run_id": run_id,
+                "deep_insight_id": run["deep_insight_id"],
+                "status": guide_decision,
+                "error": "Manuscript quality gate failed",
+                "blockers": blockers,
+                "next_actions": next_actions or writing_guideline_audit.get("next_actions") or [],
+                "paper_current_root": str(manuscript_root),
+                "bundle_dir": str(bundle_dir),
+                "quality_report": str(bundle_dir / "paper_quality_report.json"),
+                "writing_standard_sources": writing_guideline_audit.get("standard_sources") or [],
+            }
+            _write(
+                bundle_dir / "MANUSCRIPT_BLOCKED.json",
+                json.dumps(block_report, indent=2, ensure_ascii=False, default=str),
+            )
+            _write(
+                bundle_dir / "DO_NOT_SUBMIT.md",
+                "\n".join(
+                    [
+                        "# Do Not Submit",
+                        "",
+                        "This manuscript does not satisfy the final quality gates, so it was not marked bundle_ready.",
+                        f"Status: {guide_decision}",
+                        f"Run: {run_id}",
+                        "",
+                        "Blockers:",
+                        *[f"- {item}" for item in blockers],
+                        "",
+                        "Next actions:",
+                        *[f"- {item}" for item in block_report.get("next_actions") or []],
+                    ]
+                ),
+            )
+            for child in sorted(manuscript_root.iterdir()):
+                if child == shared_fig:
+                    continue
+                if child.is_dir():
+                    shutil.rmtree(child)
+                else:
+                    child.unlink()
+            for path in sorted(bundle_dir.rglob("*")):
+                if not path.is_file():
+                    continue
+                target = manuscript_root / path.relative_to(bundle_dir)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(path, target)
+            _write_blocked_current_marker(layout, block_report)
+            db.execute(
+                "UPDATE manuscript_runs SET status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (guide_decision, manuscript_run_id),
+            )
+            db.execute(
+                "UPDATE deep_insights SET submission_status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (guide_decision, run["deep_insight_id"]),
+            )
+            db.execute(
+                "UPDATE experiment_runs SET status=?, error_message=? WHERE id=?",
+                (guide_decision, "Manuscript quality gate failed", run_id),
+            )
+            db.commit()
+            write_latest_status(
+                int(run["deep_insight_id"]),
+                {
+                    "stage": guide_decision,
+                    "status": guide_decision,
+                    "manuscript_run_id": manuscript_run_id,
+                    "paper_current_root": str(manuscript_root),
+                    "bundle_dir": str(bundle_dir),
+                    "quality_report": str(bundle_dir / "paper_quality_report.json"),
+                    "blockers": blockers[:20],
+                },
+                run_id=run_id,
+            )
+            return {
+                "error": "Manuscript quality gate failed",
+                "status": guide_decision,
+                "submission_blockers": blockers,
+                "writing_guideline_audit": writing_guideline_audit,
+                "manuscript_run_id": manuscript_run_id,
+                "workdir": str(manuscript_root),
+                "backend": "paper_orchestra",
+            }
         manifest = _bundle_manifest(bundle_dir)
         _write(bundle_dir / "artifact_manifest.json", json.dumps(manifest, indent=2))
         if preferred_bundle_dir is None or bundle_format == "conference":

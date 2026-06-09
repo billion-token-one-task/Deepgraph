@@ -214,6 +214,7 @@ class AutoResearchSchedulingTests(unittest.TestCase):
         with (
             mock.patch.object(auto_research.db, "fetchall", return_value=[job]),
             mock.patch.object(auto_research.db, "fetchone", return_value=run),
+            mock.patch.object(auto_research, "_is_execution_live_in_process", return_value=True),
             mock.patch.object(auto_research, "_upsert_job", side_effect=_capture_upsert),
         ):
             auto_research._refresh_running_jobs()
@@ -222,6 +223,76 @@ class AutoResearchSchedulingTests(unittest.TestCase):
         self.assertEqual(upserts[-1][1]["status"], "running_gpu")
         self.assertEqual(upserts[-1][1]["stage"], "hypothesis_testing")
         self.assertIn("best=1.5", upserts[-1][1]["last_note"])
+        self.assertFalse(upserts[-1][1].get("touch_updated_at", True))
+
+    def test_recover_stale_execution_jobs_requeues_zombie_running_cpu(self):
+        job = {
+            "deep_insight_id": 6,
+            "status": "running_cpu",
+            "experiment_run_id": 6,
+            "run_status": "testing",
+        }
+        upserts = []
+
+        def _capture_upsert(insight_id, **fields):
+            upserts.append((insight_id, fields))
+
+        with (
+            mock.patch.object(auto_research, "_active_execution_run_id", return_value=None),
+            mock.patch.object(auto_research.db, "fetchall", return_value=[job]),
+            mock.patch.object(auto_research, "_upsert_job", side_effect=_capture_upsert),
+            mock.patch.object(auto_research, "log_event"),
+        ):
+            recovered = auto_research.recover_stale_execution_jobs()
+
+        self.assertEqual(recovered, 1)
+        self.assertEqual(upserts[-1][0], 6)
+        self.assertEqual(upserts[-1][1]["status"], "queued")
+        self.assertEqual(upserts[-1][1]["stage"], "execution_retry")
+        self.assertEqual(upserts[-1][1]["experiment_run_id"], 6)
+
+    def test_recover_stale_execution_jobs_skips_active_in_process_run(self):
+        job = {
+            "deep_insight_id": 12,
+            "status": "running_cpu",
+            "experiment_run_id": 14,
+            "run_status": "reproducing",
+        }
+
+        with (
+            mock.patch.object(auto_research, "_active_execution_run_id", return_value=14),
+            mock.patch.object(auto_research.db, "fetchall", return_value=[job]),
+            mock.patch.object(auto_research, "_requeue_stale_execution_job") as requeue,
+        ):
+            recovered = auto_research.recover_stale_execution_jobs()
+
+        self.assertEqual(recovered, 0)
+        requeue.assert_not_called()
+
+    def test_refresh_running_jobs_requeues_interrupted_testing_run(self):
+        job = {
+            "deep_insight_id": 16,
+            "status": "running_cpu",
+            "experiment_run_id": 9,
+        }
+        run = {
+            "id": 9,
+            "status": "testing",
+            "phase": "hypothesis_testing",
+            "best_metric_value": 0.0,
+            "baseline_metric_value": 0.0,
+        }
+
+        with (
+            mock.patch.object(auto_research.db, "fetchall", return_value=[job]),
+            mock.patch.object(auto_research.db, "fetchone", return_value=run),
+            mock.patch.object(auto_research, "_is_execution_live_in_process", return_value=False),
+            mock.patch.object(auto_research, "_requeue_stale_execution_job") as requeue,
+        ):
+            auto_research._refresh_running_jobs()
+
+        requeue.assert_called_once()
+        self.assertIn("interrupted", requeue.call_args.args[1])
 
     def test_process_candidate_runs_cpu_validation_for_smoke_only_forge(self):
         candidate = {"id": 21, "tier": 2, "novelty_status": "novel"}
