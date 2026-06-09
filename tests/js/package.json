@@ -1,0 +1,14 @@
+{
+  "name": "deepgraph-dashboard-e2e",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "Node test harness for the dashboard responsiveness acceptance gates (Acceptance A).",
+  "scripts": {
+    "perf": "node taxonomy_dropdown_perf.mjs",
+    "e2e": "node responsiveness_e2e.mjs"
+  },
+  "dependencies": {
+    "playwright": "^1.49.0"
+  }
+}

@@ -416,11 +416,19 @@ header#topBar {
     opacity: 0;
     visibility: hidden;
     transition: opacity 0.25s ease, visibility 0s 0.25s;
+    /* Inactive panels are visibility:hidden but, being position:absolute, would
+       otherwise still be laid out — so every tab's hundreds of cards stayed in
+       the layout at once, making any reflow (e.g. a language switch) scan all of
+       them. content-visibility:hidden drops the inactive subtree from layout and
+       rendering entirely (it stays in the DOM, unlike display:none, so switching
+       back is cheap). */
+    content-visibility: hidden;
 }
 .tab-panel.active {
     opacity: 1;
     visibility: visible;
     transition: opacity 0.25s ease, visibility 0s 0s;
+    content-visibility: visible;
 }
 
 .tab-scroll {
@@ -1887,4 +1895,21 @@ header#topBar {
     font-style: italic;
     margin-bottom: 8px;
     line-height: 1.5;
+}
+
+/* ── Responsiveness: skip layout/restyle for off-screen list cards ──────────
+   The overview tabs render hundreds of these cards. Without containment, the
+   browser lays them all out the moment a tab is shown (display:none → block)
+   and restyles every one when the document is restyled (e.g. on language
+   switch), producing multi-hundred-ms main-thread tasks that froze the page.
+   content-visibility:auto lets the browser skip rendering work for cards that
+   are off-screen, turning those whole-list passes into viewport-sized ones.
+   contain-intrinsic-size gives an off-screen placeholder height so the
+   scrollbar stays stable. */
+.insight-card,
+.paper-row,
+.opp-card,
+.paper-flow-item {
+    content-visibility: auto;
+    contain-intrinsic-size: auto 160px;
 }

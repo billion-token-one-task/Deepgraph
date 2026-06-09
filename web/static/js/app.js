@@ -885,11 +885,22 @@ async function loadTaxonomyDropdown() {
     taxonomyLoaded = true;
     try {
         taxonomyFlat = await api('/api/taxonomy');
-        const sel = el('evidenceNodeSelect');
-        sel.innerHTML = `<option value="">${esc(tr('evidence.option'))}</option>`;
+        // Populate the <datalist> backing the evidence node typeahead. Build
+        // every <option> via the DOM into one DocumentFragment and attach it
+        // ONCE. Appending to innerHTML per node re-parsed the whole list on
+        // each iteration \u2014 O(n^2) over ~3300 nodes, which froze the main thread
+        // for seconds. A fragment is O(n); option.value carries the node id and
+        // option.label the human-readable "id \u2014 name", so no manual escaping is
+        // needed and the input's committed value is always a clean node id.
+        const dl = el('evidenceNodeOptions');
+        const frag = document.createDocumentFragment();
         for (const n of taxonomyFlat) {
-            sel.innerHTML += `<option value="${esc(n.id)}">${esc(n.id)} \u2014 ${esc(n.name)}</option>`;
+            const opt = document.createElement('option');
+            opt.value = n.id;
+            opt.label = `${n.id} \u2014 ${n.name}`;
+            frag.appendChild(opt);
         }
+        dl.replaceChildren(frag);
     } catch (e) {
         taxonomyLoaded = false;
         console.error('Taxonomy dropdown error:', e);
@@ -1061,7 +1072,7 @@ function renderPapers() {
         return;
     }
 
-    list.innerHTML = filtered.map(p => {
+    setListHtmlChunked(list, filtered.map(p => {
         const sc = p.status ? 's-' + p.status : '';
         return `<div class="paper-row" data-paper-id="${esc(p.id)}" onclick="window._dg.togglePaper(this)">
             <div class="paper-row-top">
@@ -1074,7 +1085,7 @@ function renderPapers() {
                 <div class="paper-detail-loading">${esc(tr('common.loadingDetails'))}</div>
             </div>
         </div>`;
-    }).join('');
+    }));
 }
 
 // ── Paper Progress Tabs ─────────────────────────────────────────────
@@ -1127,7 +1138,7 @@ function renderPaperPipelineRows(rows) {
         list.innerHTML = `<p class="empty-msg">${esc(tr('empty.paperProgress'))}</p>`;
         return;
     }
-    list.innerHTML = papers.map(item => `
+    setListHtmlChunked(list, papers.map(item => `
         <div class="paper-flow-item">
             <div class="paper-flow-head">
                 <div class="paper-flow-title">${esc(trunc(item.title || item.id || tr('common.untitledPaper'), 120))}</div>
@@ -1140,7 +1151,7 @@ function renderPaperPipelineRows(rows) {
             </div>
             ${item.stage_last_error ? `<div class="paper-flow-note paper-flow-error">${esc(trunc(item.stage_last_error, 240))}</div>` : ''}
         </div>
-    `).join('');
+    `));
 }
 
 function renderPaperGenerationRows(jobs, manuscripts) {
@@ -1254,7 +1265,7 @@ function renderGeneratedPapers(manuscripts) {
         list.innerHTML = `<p class="empty-msg">${esc(tr('empty.generated'))}</p>`;
         return;
     }
-    list.innerHTML = rows.map(row => {
+    setListHtmlChunked(list, rows.map(row => {
         const preview = row.deep_insight_id ? paperPreviewHref(row.deep_insight_id, 'index') : '';
         return `
             <div class="paper-flow-item">
@@ -1279,7 +1290,7 @@ function renderGeneratedPapers(manuscripts) {
                 </div>
             </div>
         `;
-    }).join('');
+    }));
 }
 
 async function loadGeneratedPapersTab() {
@@ -1385,7 +1396,7 @@ async function loadInsightsTab() {
             return;
         }
 
-        list.innerHTML = insights.map(ins => {
+        setListHtmlChunked(list, insights.map(ins => {
             const color = typeColors[ins.insight_type] || '#888';
             let papers = [];
             try { papers = JSON.parse(ins.supporting_papers || '[]'); } catch(e) {}
@@ -1415,7 +1426,7 @@ async function loadInsightsTab() {
                     <button class="btn-preview" onclick="window._dg.previewProposal(${ins.id})">${esc(tr('label.previewProposal'))}</button>
                 </div>
             </div>`;
-        }).join('');
+        }));
     } catch (e) {
         insightsLoaded = false;
         console.error('Insights tab error:', e);
@@ -1558,7 +1569,7 @@ function renderDiscoveries(discoveries) {
         return;
     }
 
-    list.innerHTML = visible.map(d => {
+    setListHtmlChunked(list, visible.map(d => {
         const isTier1 = d.tier === 1;
         const tierColor = isTier1 ? '#c4453a' : '#2e86ab';
         const tierLabel = isTier1 ? tr('discoveries.tier1') : tr('discoveries.tier2');
@@ -1657,7 +1668,7 @@ function renderDiscoveries(discoveries) {
             ${d.evidence_summary ? `<div class="insight-evidence"><span class="insight-label">${esc(tr('label.evidence'))}</span> ${esc(trunc(d.evidence_summary, 250))}</div>` : ''}
             <div class="insight-impact"><span class="insight-label">${esc(tr('label.mode'))}</span> ${esc(tr('label.fixedAutomaticPipeline'))}</div>
         </div>`;
-    }).join('');
+    }));
 }
 
 // ── Experiments Tab ───────────────────────────────────────────────────
@@ -1941,7 +1952,7 @@ function renderExperimentGroupsV2(groups) {
         return;
     }
 
-    list.innerHTML = groups.map(group => {
+    setListHtmlChunked(list, groups.map(group => {
         const insight = group.insight || {};
         const auto = group.auto_job || {};
         const currentRun = group.canonical_run || group.latest_run || null;
@@ -2002,7 +2013,7 @@ function renderExperimentGroupsV2(groups) {
                 ${previewUrl ? `<button class="btn-preview" onclick="window.open('${esc(previewUrl)}','_blank')">${esc(tr('experiments.openManuscript'))}</button>` : ''}
             </div>
         </div>`;
-    }).join('');
+    }));
 }
 
 function jsonPreview(obj, emptyText = 'None') {
@@ -2168,19 +2179,46 @@ function runWhenIdle(fn, timeout = 700) {
     }
 }
 
+// Render a large list of pre-built HTML strings without janking the main
+// thread. A single `container.innerHTML = parts.join('')` of a few hundred
+// complex cards parses/builds the whole subtree in one ~hundreds-of-ms task;
+// during the idle prefetch several such renders ran back-to-back and made the
+// page feel frozen. Here we drop the first chunk in synchronously (so the tab
+// is not empty) and append the rest across idle callbacks. insertAdjacentHTML
+// only parses the appended slice, so total work stays O(n) — never the O(n^2)
+// of `innerHTML +=`. Items use inline onclick handlers, so no post-render
+// event binding is needed.
+function setListHtmlChunked(container, parts, chunk = 25) {
+    container.innerHTML = '';
+    if (!parts || !parts.length) return;
+    // Cancel any still-pending chunked render of an earlier call (e.g. when a
+    // filter re-renders the same list before the previous run finished).
+    const token = (container._chunkToken || 0) + 1;
+    container._chunkToken = token;
+    container.insertAdjacentHTML('beforeend', parts.slice(0, chunk).join(''));
+    let i = chunk;
+    const step = () => {
+        if (container._chunkToken !== token) return; // superseded
+        container.insertAdjacentHTML('beforeend', parts.slice(i, i + chunk).join(''));
+        i += chunk;
+        if (i < parts.length) runWhenIdle(step, 50);
+    };
+    if (i < parts.length) runWhenIdle(step, 50);
+}
+
 async function prefetchInactiveTabs() {
     if (inactiveTabsPrefetched) return;
     inactiveTabsPrefetched = true;
 
+    // Only prewarm cheap things during idle. Eagerly rendering every tab here
+    // built ~25k DOM nodes with zero user interaction, which is exactly the
+    // "loaded then frozen" symptom: each heavy list render is a long main-thread
+    // task, and the resulting giant DOM makes later layout/restyle slow too.
+    // The heavy tabs already lazy-load on first activation (onTabActivated), and
+    // their renders are chunked, so deferring them keeps idle responsive and the
+    // DOM small until a tab is actually viewed.
     const tasks = [
-        () => loadTaxonomyDropdown(),
-        () => loadGeneratedPapersTab(),
-        () => loadInsightsTab(),
-        () => loadPapers(),
-        () => loadPaperProgressTab(),
-        () => loadDiscoveriesTab(),
-        () => loadExperimentsTab(),
-        () => loadProviders(),
+        () => loadTaxonomyDropdown(), // builds a <datalist> (~30ms); keeps Evidence instant
     ];
 
     for (const task of tasks) {
