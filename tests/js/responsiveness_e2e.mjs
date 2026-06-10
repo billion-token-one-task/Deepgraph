@@ -124,16 +124,26 @@ try {
     check(statValues[id] && statValues[id] !== "0", `${id} not a real number: ${JSON.stringify(statValues[id])}`);
   }
 
-  // ── 1b) tooltips (Acceptance B): every stat card has a real, visible
-  //        hover explanation rendered into its title attribute. ─────────────
-  const tooltips = await page.$$eval(".stat-card[data-i18n-title]", (cards) =>
-    cards.map((c) => ({ key: c.getAttribute("data-i18n-title"), title: (c.getAttribute("title") || "").trim() }))
+  // ── 1b) tooltips (Acceptance B): every stat card carries a tooltip key and
+  //        hovering one shows the custom tooltip (DGTooltip replaces the native
+  //        `title` with a styled #tooltip element, so we assert that, not the
+  //        removed native attribute). ─────────────────────────────────────────
+  const tipKeys = await page.$$eval(".stat-card[data-i18n-title]", (cards) =>
+    cards.map((c) => c.getAttribute("data-i18n-title"))
   );
-  check(tooltips.length === 9, `expected 9 stat-card tooltips, found ${tooltips.length}`);
-  for (const t of tooltips) {
-    check(t.title.length > 0, `stat card ${t.key} has no visible title tooltip`);
+  check(tipKeys.length === 9, `expected 9 stat-card tooltip keys, found ${tipKeys.length}`);
+  const firstCard = await page.$(".stat-card[data-i18n-title]");
+  if (firstCard) {
+    await firstCard.hover();
+    await page.waitForTimeout(150);
+    const tipVisible = await page.evaluate(() => {
+      const tip = document.getElementById("tooltip");
+      return !!tip && tip.classList.contains("visible") && tip.textContent.trim().length > 0;
+    });
+    check(tipVisible, "custom tooltip did not show on hovering a stat card");
+    await page.mouse.move(5, 5);
   }
-  report(`stat-card tooltips rendered: ${tooltips.length}/9 (e.g. ${JSON.stringify(tooltips[0])})`);
+  report(`stat-card tooltips: ${tipKeys.length}/9 keys present, custom hover tooltip shown`);
 
   // ── 2a) idle (lets the idle prefetch build the 3300-node dropdown) ─────
   await setPhase("idle-prefetch");

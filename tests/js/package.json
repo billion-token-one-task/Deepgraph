@@ -8,7 +8,11 @@
     "test:adapter": "node graph_adapter.test.mjs",
     "test:renderer": "node graph_renderer_perf.mjs",
     "test:unit": "node graph_adapter.test.mjs && node graph_renderer_perf.mjs",
-    "test:e2e": "node graph_e2e.mjs"
+    "test:e2e": "node graph_e2e.mjs",
+    "test:dashboard": "node dashboard_e2e.mjs",
+    "test:render-perf": "node dashboard_render_perf.mjs",
+    "test:responsiveness": "node responsiveness_e2e.mjs",
+    "test:dropdown-perf": "node taxonomy_dropdown_perf.mjs"
   },
   "dependencies": {
     "d3": "^7.9.0",

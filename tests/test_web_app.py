@@ -305,6 +305,98 @@ class DashboardRefreshTests(unittest.TestCase):
         self.assertEqual(app_py.count("def _planned_tracks("), 1)
         self.assertNotIn('label": "主实验"', app_py)
         self.assertNotIn("function renderExperimentGroups(groups)", app_js)
+        # The unreachable "opportunities" rendering path (no DOM target exists;
+        # loadOpportunities was never called) is removed, not just orphaned.
+        for dead in (
+            "function loadOpportunities",
+            "function renderOpportunities",
+            "const insightTypeColors",
+            "function insightTypeLabel",
+            "allOpportunities",
+            "oppsLoaded",
+        ):
+            self.assertNotIn(dead, app_js, f"dead opportunities symbol still present: {dead}")
+
+    def test_evidence_matrix_is_a_heatmap(self):
+        """Acceptance B — the benchmark matrix shades filled cells by value.
+
+        The old matrix gave every filled cell one flat class (`.cell-filled`,
+        a single background). A heatmap must compute a per-cell background from
+        the cell's value via a colour scale. We pin to source: a value→colour
+        builder exists, the cell markup carries an inline `background:` derived
+        from it, and the scale endpoints live in :root as CSS variables. The
+        "more than one distinct fill colour" wall-clock proof lives in the
+        Playwright gate (dashboard_e2e.mjs) and the perf microbench.
+        """
+        app_js = _read("web/static/js/app.js")
+        css = _read("web/static/css/style.css")
+        self.assertIn("function buildMatrixHeat(", app_js)
+        body = re.search(
+            r"function renderMatrix\(container, matrix\)\s*\{(?P<body>.*?)\n\}",
+            app_js,
+            re.S,
+        )
+        self.assertIsNotNone(body, "renderMatrix not found")
+        fn = body.group("body")
+        # A filled cell's background is computed from the heat scale, inline.
+        self.assertRegex(fn, r"heat\(", "renderMatrix must colour cells via the heat scale")
+        self.assertRegex(fn, r"background:\$\{", "filled cells must carry an inline heat background")
+        # Switching the metric must recolour, not just relabel.
+        update = re.search(
+            r"function updateMatrixMetric\(selectEl\)\s*\{(?P<body>.*?)\n\}",
+            app_js,
+            re.S,
+        )
+        self.assertIsNotNone(update, "updateMatrixMetric not found")
+        self.assertRegex(update.group("body"), r"buildMatrixHeat\(|heat\(",
+                         "updateMatrixMetric must recompute the heat colours")
+        # Scale endpoints are themeable CSS variables.
+        self.assertIn("--heat-lo:", css)
+        self.assertIn("--heat-hi:", css)
+
+    def test_style_scales_exist_and_are_applied(self):
+        """Acceptance B — :root carries spacing / type / shadow scales and the
+        scattered hard-coded values are pulled into them (not left inline)."""
+        css = _read("web/static/css/style.css")
+        # Scales are defined.
+        for token in ("--space-8:", "--space-12:", "--space-16:",
+                      "--text-sm:", "--text-base:", "--text-lg:",
+                      "--shadow-sm:", "--shadow-lg:", "--shadow-focus:"):
+            self.assertIn(token, css, f"missing scale token {token}")
+        # Scales are actually applied (not just declared).
+        self.assertGreaterEqual(css.count("var(--space-"), 50)
+        self.assertGreaterEqual(css.count("var(--text-"), 20)
+        self.assertGreaterEqual(css.count("var(--shadow-"), 4)
+        # The hard-coded elevation shadows are collected into tokens: no raw
+        # `box-shadow: 0 <n>px ...` literals remain outside the :root scale.
+        root = re.search(r":root\s*\{.*?\n\}", css, re.S)
+        css_outside_root = css.replace(root.group(0), "") if root else css
+        self.assertIsNone(
+            re.search(r"box-shadow:\s*0\s+\d+px", css_outside_root),
+            "a hard-coded box-shadow literal still lives outside the shadow scale",
+        )
+
+    def test_heavy_list_renders_are_chunked_not_one_shot(self):
+        """Acceptance A — lists that grow with data are built AND inserted in
+        chunks, so no single synchronous task scales with the list length.
+
+        The old helper chunked only the DOM insertion; the card HTML (parsing
+        several JSON fields per row on ~0.6–0.7 MB payloads) was still built in
+        one synchronous `items.map(...)`. The new renderListChunked takes
+        (container, items, renderItem) and builds each chunk lazily. We pin to
+        source; the wall-clock proof is the perf microbench + the E2E.
+        """
+        app_js = _read("web/static/js/app.js")
+        self.assertIn("function renderListChunked(container, items, renderItem", app_js)
+        # No O(n^2) `innerHTML +=` anywhere in the frontend bundle.
+        self.assertIsNone(re.search(r"\.innerHTML\s*\+=", app_js),
+                          "`innerHTML +=` (O(n^2)) must not appear in app.js")
+        # The heavy tabs render through the chunked builder, not one-shot
+        # `list.innerHTML = X.map(...).join('')`.
+        for fn_name in ("loadDiscoveriesTab", "loadInsightsTab",
+                        "renderExperiments", "renderAutoResearchJobs"):
+            self.assertIn(fn_name, app_js)
+        self.assertGreaterEqual(app_js.count("renderListChunked(list"), 6)
 
     def test_taxonomy_dropdown_build_is_not_quadratic(self):
         """Regression guard for the main-thread freeze (Acceptance A).

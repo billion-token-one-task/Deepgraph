@@ -37,6 +37,7 @@ database.DB_PATH = Path(_TMPDIR) / "e2e.db"
 database.init_db()
 
 TAXONOMY_NODES = 3300
+BENCH_NODE = "ml.bench"   # deterministic leaf with a real method x dataset matrix
 PAPERS_PROCESSED = 1500   # status in extracted/abstracted/reasoned
 PAPERS_UNPROCESSED = 700  # status ingested  -> total 2200, processed 1500
 RESULTS = 800
@@ -64,12 +65,15 @@ def seed():
     from collections import deque
     db.execute("INSERT INTO taxonomy_nodes (id, name, parent_id, depth, sort_order) VALUES (?,?,?,?,?)",
                ("ml", "Machine Learning", None, 0, 0))
+    # Reserve one slot for a deterministic *leaf* benchmark node ("ml.bench")
+    # so the Evidence E2E can navigate to a node that actually has a
+    # method x dataset matrix to render (and exercise the heatmap).
     created, counter, fanout = 1, 0, 12
     q = deque([("ml", 0)])
-    while created < TAXONOMY_NODES and q:
+    while created < TAXONOMY_NODES - 1 and q:
         parent, depth = q.popleft()
         for k in range(fanout):
-            if created >= TAXONOMY_NODES:
+            if created >= TAXONOMY_NODES - 1:
                 break
             nid = f"{parent}.n{k}"
             db.execute("INSERT INTO taxonomy_nodes (id, name, parent_id, depth, sort_order) VALUES (?,?,?,?,?)",
@@ -77,6 +81,8 @@ def seed():
             q.append((nid, depth + 1))
             created += 1
             counter += 1
+    db.execute("INSERT INTO taxonomy_nodes (id, name, parent_id, depth, sort_order) VALUES (?,?,?,?,?)",
+               (BENCH_NODE, "Benchmark Leaf", "ml", 1, 99))
 
     # Papers: processed (counted by the 文献 card) + unprocessed (NOT counted).
     for i in range(PAPERS_PROCESSED):
@@ -87,12 +93,42 @@ def seed():
         db.execute("INSERT INTO papers (id, title, status, token_cost) VALUES (?,?,?,?)",
                    (f"raw-{i}", f"Ingested-only paper {i}", "ingested", 0))
 
-    # Results (基准结果).
-    for i in range(RESULTS):
+    # Results (基准结果). Lay them out as a dense method x dataset grid on the
+    # BENCH_NODE leaf, with *varied* metric values across two metrics so the
+    # Evidence matrix renders a real heatmap (cell shade follows the value).
+    # Every result is linked to BENCH_NODE via result_taxonomy (the table the
+    # matrix builder actually joins on).
+    METHODS, DATASETS, METRICS = 30, 14, ("accuracy", "f1")
+    rid = 0
+    for mi in range(METHODS):
+        for di in range(DATASETS):
+            for metric in METRICS:
+                if rid >= RESULTS:
+                    break
+                # Spread values widely (40–99) and deterministically so the
+                # heatmap has many distinct shades, not one flat fill.
+                val = 40 + ((mi * 7 + di * 13 + (0 if metric == "accuracy" else 5)) % 60)
+                is_sota = 1 if (mi == di % METHODS and metric == "accuracy") else 0
+                db.execute(
+                    "INSERT INTO results (paper_id, node_id, method_name, dataset_name, "
+                    "metric_name, metric_value, is_sota) VALUES (?,?,?,?,?,?,?)",
+                    (f"proc-{rid % PAPERS_PROCESSED}", BENCH_NODE,
+                     f"Method {mi:02d}", f"Dataset {di:02d}", metric, float(val), is_sota))
+                db.execute("INSERT INTO result_taxonomy (result_id, node_id) VALUES (?,?)",
+                           (rid + 1, BENCH_NODE))
+                rid += 1
+            if rid >= RESULTS:
+                break
+        if rid >= RESULTS:
+            break
+    # Top up to the exact RESULTS count (keeps the overview metric stable) with
+    # a few extra rows that are not part of the displayed grid.
+    while rid < RESULTS:
         db.execute(
             "INSERT INTO results (paper_id, node_id, method_name, dataset_name, metric_name, metric_value) "
             "VALUES (?,?,?,?,?,?)",
-            (f"proc-{i % PAPERS_PROCESSED}", "ml", f"method{i}", f"dataset{i % 50}", "accuracy", 0.9))
+            (f"proc-{rid % PAPERS_PROCESSED}", "ml", f"extra_method{rid}", "extra_ds", "accuracy", 0.9))
+        rid += 1
 
     # Claims + contradictions (矛盾).
     for i in range(CONTRADICTIONS * 2):
@@ -102,16 +138,55 @@ def seed():
         db.execute("INSERT INTO contradictions (claim_a_id, claim_b_id, description) VALUES (?,?,?)",
                    (2 * i + 1, 2 * i + 2, f"conflict {i}"))
 
-    # Insights (研究洞见  -> insights table).
+    # Insights (研究洞见  -> insights table). Heavy, realistic rows so the
+    # Insights tab renders production-weight cards (long hypotheses/experiments
+    # plus a JSON-encoded supporting_papers list the frontend parses per card).
+    _LOREM = ("We hypothesize that the observed gains stem from a previously "
+              "unmodeled interaction between the gating mechanism and the "
+              "normalization schedule, which compounds across depth. ") * 4
+    _types = ("contradiction_analysis", "method_transfer", "assumption_challenge",
+              "ignored_limitation", "paradigm_exhaustion", "cross_domain_bridge")
     for i in range(INSIGHTS):
+        papers = json.dumps([f"2401.{1000 + ((i * 7 + k) % 9000):05d}" for k in range(8)])
         db.execute(
-            "INSERT INTO insights (node_id, insight_type, title, hypothesis) VALUES (?,?,?,?)",
-            ("ml", "cross_domain_bridge", f"Insight {i}", f"hypothesis {i}"))
+            "INSERT INTO insights (node_id, insight_type, title, hypothesis, evidence, "
+            "experiment, impact, novelty_score, feasibility_score, supporting_papers) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            ("ml", _types[i % len(_types)], f"Research Insight {i}: {_LOREM[:60]}",
+             _LOREM, _LOREM, _LOREM, _LOREM, 1 + (i % 5), 1 + ((i + 2) % 5), papers))
 
-    # Deep insights (深度发现 -> deep_insights table).
+    # Deep insights (深度发现 -> deep_insights table). Heavy + *displayable*
+    # (problem_statement / proposed_method / experimental_plan present) so the
+    # Discoveries tab renders real, production-weight cards. Each row carries
+    # several JSON fields the frontend parses per card — this is the ~746KB
+    # /api/deep_insights?limit=50 payload that drove the main-thread long tasks.
+    method_json = json.dumps({
+        "name": "Adaptive Gated Mixture", "type": "architecture",
+        "one_line": _LOREM[:120],
+        "definition": _LOREM * 2,
+    })
+    plan_json = json.dumps({
+        "baselines": [{"name": f"Baseline {b}"} for b in range(6)],
+        "datasets": [{"name": f"Dataset {d:02d}"} for d in range(8)],
+        "compute_budget": {"total_gpu_hours": 512},
+        "ablations": [{"name": f"ablation_{a}", "detail": _LOREM[:200]} for a in range(5)],
+    })
+    preds_json = json.dumps([{"statement": _LOREM[:140]} for _ in range(4)])
+    crit_json = json.dumps({"strongest_attack": _LOREM, "rebuttals": [_LOREM] * 3})
+    fielda_json = json.dumps({"node_id": "ml", "name": "Source Field"})
+    fieldb_json = json.dumps({"node_id": BENCH_NODE, "name": "Target Field"})
     for i in range(DEEP_INSIGHTS):
-        db.execute("INSERT INTO deep_insights (tier, status, title) VALUES (?,?,?)",
-                   (1 + (i % 2), "discovered", f"Discovery {i}"))
+        tier = 1 + (i % 2)
+        db.execute(
+            "INSERT INTO deep_insights (tier, status, title, novelty_status, "
+            "adversarial_score, formal_structure, transformation, field_a, field_b, "
+            "predictions, adversarial_critique, problem_statement, existing_weakness, "
+            "proposed_method, experimental_plan, evidence_summary) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (tier, "discovered", f"Discovery {i}: {_LOREM[:50]}",
+             ("novel", "partially_exists", "exists")[i % 3], 6.0 + (i % 4),
+             _LOREM, _LOREM, fielda_json, fieldb_json, preds_json, crit_json,
+             _LOREM, _LOREM, method_json, plan_json, _LOREM * 2))
 
     # Experiment runs (实验运行).
     for i in range(EXPERIMENT_RUNS):
