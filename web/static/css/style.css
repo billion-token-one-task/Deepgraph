@@ -298,7 +298,7 @@ header#topBar {
 }
 .search-result-item:hover { background: var(--bg-elevated); }
 .search-result-item .sr-title { color: var(--text-primary); font-weight: 600; }
-.search-result-item .sr-meta { color: var(--text-dim); font-size: 0.68rem; margin-top: 2px; }
+.search-result-item .sr-meta { color: var(--text-dim); font-size: var(--text-xs); margin-top: 2px; }
 
 /* ── App Shell Layout ─────────────────────────────────────────────── */
 
@@ -937,7 +937,7 @@ header#topBar {
     transition: border-color var(--transition);
 }
 .select-input { padding: 8px 12px; }
-.select-input-sm { padding: 6px 10px; font-size: 0.75rem; }
+.select-input-sm { padding: 6px 10px; font-size: var(--text-md); }
 .select-input:focus, .select-input-sm:focus { border-color: var(--accent); }
 
 .matrix-wrap { overflow: auto; max-height: calc(100vh - 320px); }
@@ -959,7 +959,7 @@ header#topBar {
     font-size: var(--text-base);
     font-family: var(--font);
 }
-.matrix-info { color: var(--text-dim); margin-left: auto; font-size: 0.72rem; font-weight: 500; }
+.matrix-info { color: var(--text-dim); margin-left: auto; font-size: var(--text-sm); font-weight: 500; }
 
 .matrix-scroll { overflow: auto; max-height: 500px; }
 
@@ -1000,7 +1000,7 @@ header#topBar {
     color: var(--text-secondary);
     min-width: 160px;
 }
-.dataset-header { min-width: 70px; font-size: 0.68rem; }
+.dataset-header { min-width: 70px; font-size: var(--text-xs); }
 .matrix-cell { min-width: 70px; font-variant-numeric: tabular-nums; }
 .cell-filled { background: rgba(196,112,75,0.06); color: var(--accent); }
 .cell-sota { background: var(--green-dim); color: var(--green); font-weight: 700; }
@@ -1676,7 +1676,7 @@ header#topBar {
 /* Custom tooltip content (graph nodes + metric cards) */
 .tip-title { color: var(--accent); font-weight: 700; margin-bottom: 5px; }
 .tip-body { color: var(--text-secondary); margin-bottom: 6px; line-height: 1.5; }
-.tip-stats { display: flex; gap: 12px; color: var(--text-dim); font-size: 0.72rem; }
+.tip-stats { display: flex; gap: 12px; color: var(--text-dim); font-size: var(--text-sm); }
 .tip-hint { color: var(--text-muted); margin-top: 6px; font-size: 0.65rem; }
 
 /* In-graph "domain → gap → discovery" story panel (acceptance A2) */
@@ -1697,11 +1697,11 @@ header#topBar {
 }
 @keyframes storyIn { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
 .story-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
-.story-head h4 { margin: 2px 0 0; font-size: 1rem; color: var(--text-primary); }
-.story-kicker { font-size: 0.62rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-dim); }
+.story-head h4 { margin: 2px 0 0; font-size: var(--text-2xl); color: var(--text-primary); }
+.story-kicker { font-size: var(--text-2xs); letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-dim); }
 .story-close {
     border: none; background: var(--bg-elevated); color: var(--text-secondary);
-    width: 26px; height: 26px; border-radius: 50%; cursor: pointer; font-size: 1rem; line-height: 1;
+    width: 26px; height: 26px; border-radius: 50%; cursor: pointer; font-size: var(--text-2xl); line-height: 1;
 }
 .story-close:hover { background: var(--border-hover); }
 .story-flow { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
@@ -1728,7 +1728,7 @@ header#topBar {
     padding: 7px 9px; border-radius: var(--radius-sm); background: var(--bg-elevated);
     border-left: 3px solid var(--border-hover);
 }
-.story-item .story-sub { display: block; font-size: 0.68rem; color: var(--text-dim); margin-top: 2px; }
+.story-item .story-sub { display: block; font-size: var(--text-xs); color: var(--text-dim); margin-top: 2px; }
 .story-gap { border-left-color: var(--green); }
 .story-contra { border-left-color: var(--red); cursor: pointer; }
 .story-disc { border-left-color: var(--accent); cursor: pointer; }
