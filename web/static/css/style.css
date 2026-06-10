@@ -945,7 +945,6 @@ header#topBar {
 .matrix-controls {
     display: flex;
     align-items: center;
-    flex-wrap: wrap;
     gap: var(--space-12);
     margin-bottom: var(--space-12);
     font-size: var(--text-base);
@@ -1006,37 +1005,6 @@ header#topBar {
 .cell-filled { background: rgba(196,112,75,0.06); color: var(--accent); }
 .cell-sota { background: var(--green-dim); color: var(--green); font-weight: 700; }
 .cell-empty { background: var(--bg-base); color: var(--text-muted); }
-
-/* ── Heatmap colour-scale legend ──────────────────────────────────── */
-.matrix-legend {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-6);
-    font-size: var(--text-2xs);
-    color: var(--text-dim);
-}
-.matrix-legend .legend-label { font-weight: 600; }
-.matrix-legend .legend-min, .matrix-legend .legend-max { font-variant-numeric: tabular-nums; }
-.matrix-legend .legend-bar {
-    width: 72px;
-    height: 9px;
-    border-radius: var(--radius-sm);
-    border: 1px solid var(--border);
-    background: linear-gradient(to right, var(--heat-lo), var(--heat-hi));
-}
-.matrix-legend .legend-sota {
-    display: inline-flex;
-    align-items: center;
-    gap: var(--space-4);
-    margin-left: var(--space-6);
-}
-.matrix-legend .legend-sota-dot {
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-    background: var(--green-dim);
-    border: 1.5px solid var(--green);
-}
 
 /* ── Gaps in Evidence tab ─────────────────────────────────────────── */
 

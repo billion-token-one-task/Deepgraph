@@ -170,28 +170,6 @@ try {
   check(heat.distinct > 1, `matrix is not a heatmap: only ${heat.distinct} distinct fill colour(s)`);
   ok(`heatmap rendered in ${matrixMs}ms: ${heat.filled} filled cells, ${heat.distinct} distinct colours (e.g. ${JSON.stringify(heat.sample)})`);
 
-  // the heatmap is self-explanatory: a colour-scale legend with a gradient
-  // bar, the metric's min/max, a scale label and the SOTA marker.
-  const legend = await page.evaluate(() => {
-    const l = document.querySelector(".matrix-legend");
-    if (!l) return null;
-    return {
-      label: (l.querySelector(".legend-label")?.textContent || "").trim(),
-      min: (l.querySelector(".legend-min")?.textContent || "").trim(),
-      max: (l.querySelector(".legend-max")?.textContent || "").trim(),
-      hasBar: !!l.querySelector(".legend-bar"),
-      sota: (l.querySelector(".legend-sota")?.textContent || "").trim(),
-    };
-  });
-  check(!!legend, "heatmap legend missing");
-  if (legend) {
-    check(legend.label.length > 0, "legend has no scale label");
-    check(legend.hasBar, "legend has no gradient bar");
-    check(/^\d/.test(legend.min) && /^\d/.test(legend.max), `legend min/max not numeric: ${legend.min}/${legend.max}`);
-    check(legend.sota.length > 0, "legend has no SOTA marker label");
-    ok(`heatmap legend: "${legend.label}" ${legend.min}→${legend.max}, bar + SOTA marker present`);
-  }
-
   // switch the metric and confirm it stays a heatmap (updateMatrixMetric path)
   const hasSelect = await page.$(".matrix-metric-select");
   if (hasSelect) {
