@@ -18,13 +18,11 @@ let events          = [];        // max 50
 let activePapers    = {};        // paper_id -> {title, step, startTime}
 let statsCache      = null;
 let allPapers       = [];
-let allOpportunities = [];
 let taxonomyFlat    = [];        // flat list for Evidence dropdown
 let searchTimer     = null;
 let statsTimer      = null;
 let providerTimer   = null;
 let papersLoaded    = false;
-let oppsLoaded      = false;
 let providersLoaded = false;
 let taxonomyLoaded  = false;
 let paperProgressLoaded = false;
@@ -959,6 +957,47 @@ async function loadEvidenceForNode(nodeId) {
     }
 }
 
+// ── Heatmap colour scale ──────────────────────────────────────────────
+// The benchmark matrix shades every filled (non-SOTA) cell by its value, so
+// the table reads as a real heatmap instead of one flat fill. The two scale
+// endpoints live in :root as CSS variables (--heat-lo / --heat-hi) so the
+// palette stays themeable; we read them once and lerp in RGB space. SOTA cells
+// keep their distinct green styling untouched — the only visible change is the
+// gradient on ordinary filled cells.
+function _hexToRgb(hex) {
+    const h = String(hex).trim().replace('#', '');
+    const s = h.length === 3 ? h.split('').map(c => c + c).join('') : h;
+    const n = parseInt(s, 16);
+    return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+function _lerpRgb(a, b, t) {
+    return `rgb(${Math.round(a[0] + (b[0] - a[0]) * t)}, ${Math.round(a[1] + (b[1] - a[1]) * t)}, ${Math.round(a[2] + (b[2] - a[2]) * t)})`;
+}
+// Build a value→background-colour mapper for one metric. Computes min/max over
+// the filled, non-SOTA cells of that metric in a single O(cells) pass so a
+// large matrix never costs more than its size.
+function buildMatrixHeat(matrix, metric) {
+    const cs = getComputedStyle(document.documentElement);
+    const lo = _hexToRgb((cs.getPropertyValue('--heat-lo').trim() || '#faf1ea'));
+    const hi = _hexToRgb((cs.getPropertyValue('--heat-hi').trim() || '#e0a883'));
+    let min = Infinity, max = -Infinity;
+    const suffix = `|||${metric}`;
+    for (const key in matrix.cells) {
+        if (!key.endsWith(suffix)) continue;
+        const c = matrix.cells[key];
+        if (c.is_sota || c.value == null) continue;
+        const v = Number(c.value);
+        if (v < min) min = v;
+        if (v > max) max = v;
+    }
+    const span = max - min;
+    return (value) => {
+        if (value == null) return '';
+        const t = span > 0 ? (Number(value) - min) / span : 0.5;
+        return _lerpRgb(lo, hi, Math.max(0, Math.min(1, t)));
+    };
+}
+
 function renderMatrix(container, matrix) {
     if (!matrix.methods.length || !matrix.datasets.length) {
         container.innerHTML = `<p class="empty-msg">${esc(tr('empty.resultData'))}</p>`;
@@ -973,6 +1012,7 @@ function renderMatrix(container, matrix) {
     }
     const metrics = Object.keys(metricCounts).sort((a, b) => metricCounts[b] - metricCounts[a]);
     const defaultMetric = metrics[0] || '';
+    const heat = buildMatrixHeat(matrix, defaultMetric);
 
     let html = '<div class="matrix-controls">';
     html += `<label>${esc(tr('common.metric'))}</label>`;
@@ -1000,7 +1040,9 @@ function renderMatrix(container, matrix) {
             if (cell) {
                 const cls = cell.is_sota ? 'cell-sota' : 'cell-filled';
                 const val = cell.value != null ? Number(cell.value).toFixed(1) : '-';
-                html += `<td class="matrix-cell ${cls}" title="${esc(tr('common.onDataset', { method, dataset: ds }))}: ${val}${cell.paper_id ? ' (' + esc(cell.paper_id) + ')' : ''}">${val}</td>`;
+                const bg = (!cell.is_sota && cell.value != null) ? heat(cell.value) : '';
+                const style = bg ? ` style="background:${bg}"` : '';
+                html += `<td class="matrix-cell ${cls}"${style} title="${esc(tr('common.onDataset', { method, dataset: ds }))}: ${val}${cell.paper_id ? ' (' + esc(cell.paper_id) + ')' : ''}">${val}</td>`;
             } else {
                 html += `<td class="matrix-cell cell-empty" title="${esc(tr('common.noData'))}">-</td>`;
             }
@@ -1019,6 +1061,7 @@ function updateMatrixMetric(selectEl) {
     if (!matrix) return;
 
     const metric = selectEl.value;
+    const heat = buildMatrixHeat(matrix, metric);
     const rows = container.querySelectorAll('tbody tr');
 
     rows.forEach((row, mi) => {
@@ -1032,10 +1075,12 @@ function updateMatrixMetric(selectEl) {
                 const val = cell.value != null ? Number(cell.value).toFixed(1) : '-';
                 td.textContent = val;
                 td.className = 'matrix-cell ' + (cell.is_sota ? 'cell-sota' : 'cell-filled');
+                td.style.background = (!cell.is_sota && cell.value != null) ? heat(cell.value) : '';
                 td.title = `${tr('common.onDataset', { method, dataset: ds })}: ${val}`;
             } else {
                 td.textContent = '-';
                 td.className = 'matrix-cell cell-empty';
+                td.style.background = '';
                 td.title = tr('common.noData');
             }
         });
@@ -1087,7 +1132,7 @@ function renderPapers() {
         return;
     }
 
-    setListHtmlChunked(list, filtered.map(p => {
+    renderListChunked(list, filtered, p => {
         const sc = p.status ? 's-' + p.status : '';
         return `<div class="paper-row" data-paper-id="${esc(p.id)}" onclick="window._dg.togglePaper(this)">
             <div class="paper-row-top">
@@ -1100,7 +1145,7 @@ function renderPapers() {
                 <div class="paper-detail-loading">${esc(tr('common.loadingDetails'))}</div>
             </div>
         </div>`;
-    }));
+    });
 }
 
 // ── Paper Progress Tabs ─────────────────────────────────────────────
@@ -1153,7 +1198,7 @@ function renderPaperPipelineRows(rows) {
         list.innerHTML = `<p class="empty-msg">${esc(tr('empty.paperProgress'))}</p>`;
         return;
     }
-    setListHtmlChunked(list, papers.map(item => `
+    renderListChunked(list, papers, item => `
         <div class="paper-flow-item">
             <div class="paper-flow-head">
                 <div class="paper-flow-title">${esc(trunc(item.title || item.id || tr('common.untitledPaper'), 120))}</div>
@@ -1166,7 +1211,7 @@ function renderPaperPipelineRows(rows) {
             </div>
             ${item.stage_last_error ? `<div class="paper-flow-note paper-flow-error">${esc(trunc(item.stage_last_error, 240))}</div>` : ''}
         </div>
-    `));
+    `);
 }
 
 function renderPaperGenerationRows(jobs, manuscripts) {
@@ -1280,7 +1325,7 @@ function renderGeneratedPapers(manuscripts) {
         list.innerHTML = `<p class="empty-msg">${esc(tr('empty.generated'))}</p>`;
         return;
     }
-    setListHtmlChunked(list, rows.map(row => {
+    renderListChunked(list, rows, row => {
         const preview = row.deep_insight_id ? paperPreviewHref(row.deep_insight_id, 'index') : '';
         return `
             <div class="paper-flow-item">
@@ -1305,7 +1350,7 @@ function renderGeneratedPapers(manuscripts) {
                 </div>
             </div>
         `;
-    }));
+    });
 }
 
 async function loadGeneratedPapersTab() {
@@ -1411,7 +1456,7 @@ async function loadInsightsTab() {
             return;
         }
 
-        setListHtmlChunked(list, insights.map(ins => {
+        renderListChunked(list, insights, ins => {
             const color = typeColors[ins.insight_type] || '#888';
             let papers = [];
             try { papers = JSON.parse(ins.supporting_papers || '[]'); } catch(e) {}
@@ -1441,113 +1486,11 @@ async function loadInsightsTab() {
                     <button class="btn-preview" onclick="window._dg.previewProposal(${ins.id})">${esc(tr('label.previewProposal'))}</button>
                 </div>
             </div>`;
-        }));
+        });
     } catch (e) {
         insightsLoaded = false;
         console.error('Insights tab error:', e);
     }
-}
-
-async function loadOpportunities() {
-    oppsLoaded = true;
-    try {
-        // Load deep research insights
-        const insights = await api('/api/insights?limit=100');
-        allOpportunities = insights;
-        allOpportunities.sort((a, b) =>
-            ((b.novelty_score||0) + (b.feasibility_score||0)) - ((a.novelty_score||0) + (a.feasibility_score||0))
-        );
-        renderOpportunities();
-    } catch (e) {
-        console.error('Opportunities load error:', e);
-    }
-}
-
-const insightTypeColors = {
-    contradiction_analysis: { color: '#c4453a', labelKey: 'insights.type.contradiction' },
-    method_transfer:        { color: '#c4704b', labelKey: 'insights.type.methodTransfer' },
-    assumption_challenge:   { color: '#a8842a', labelKey: 'insights.type.assumptionChallenge' },
-    ignored_limitation:     { color: '#7c5cbf', labelKey: 'insights.type.ignoredLimitation' },
-    paradigm_exhaustion:    { color: '#9a9088', labelKey: 'insights.type.paradigmExhaustion' },
-    cross_domain_bridge:    { color: '#2e86ab', labelKey: 'insights.type.crossDomainBridge' },
-};
-
-function insightTypeLabel(type) {
-    const meta = insightTypeColors[type] || {};
-    return meta.labelKey ? tr(meta.labelKey) : String(type || '').replace(/_/g, ' ');
-}
-
-function renderOpportunities() {
-    const list = el('oppList');
-    const typeFilter = el('oppTypeFilter').value;
-
-    // Rebuild filter dropdown with actual insight types
-    const select = el('oppTypeFilter');
-    const currentVal = select.value;
-    if (select.options.length <= 1 && allOpportunities.length > 0) {
-        // Clear old hardcoded options
-        select.innerHTML = `<option value="">${esc(tr('insights.allTypes'))}</option>`;
-        const types = [...new Set(allOpportunities.map(o => o.insight_type))].filter(Boolean).sort();
-        for (const t of types) {
-            const meta = insightTypeColors[t] || {};
-            const opt = document.createElement('option');
-            opt.value = t;
-            opt.textContent = insightTypeLabel(t);
-            select.appendChild(opt);
-        }
-        if (currentVal) select.value = currentVal;
-    }
-
-    let filtered = allOpportunities;
-    if (typeFilter) {
-        filtered = filtered.filter(o => o.insight_type === typeFilter);
-    }
-
-    if (filtered.length === 0) {
-        list.innerHTML = `<p class="empty-msg">${esc(tr('empty.opportunities'))}</p>`;
-        return;
-    }
-
-    list.innerHTML = filtered.map(ins => {
-        const meta = insightTypeColors[ins.insight_type] || { color: '#888' };
-        // Parse supporting papers for links
-        let papers = [];
-        try { papers = JSON.parse(ins.supporting_papers || '[]'); } catch(e) {}
-        const paperLinks = papers.map(pid =>
-            `<a class="paper-cite" href="https://arxiv.org/abs/${esc(pid)}" target="_blank">${esc(pid)}</a>`
-        ).join(' ');
-
-        return `<div class="opp-card" style="border-left: 3px solid ${meta.color};">
-            <div class="opp-type-badge" style="background:${meta.color}22;color:${meta.color};">${esc(insightTypeLabel(ins.insight_type))}</div>
-            <div class="opp-header">
-                <div class="opp-title">${esc(ins.title)}</div>
-                <div class="opp-score-group">
-                    <span class="opp-score-item" title="${esc(tr('insights.novelty'))}" style="color:${(ins.novelty_score||0) >= 4 ? '#ffaa33' : '#6a7a8a'};">N:${ins.novelty_score || '?'}/5</span>
-                    <span class="opp-score-item" title="${esc(tr('insights.feasibility'))}" style="color:${(ins.feasibility_score||0) >= 4 ? '#44dd88' : '#6a7a8a'};">F:${ins.feasibility_score || '?'}/5</span>
-                </div>
-            </div>
-            ${paperLinks ? `<div class="opp-papers">${paperLinks}</div>` : ''}
-            ${ins.evidence ? `<div class="opp-section">
-                <div class="opp-section-label">${esc(tr('label.evidence').replace(/:$/, ''))}</div>
-                <div class="opp-evidence">${esc(ins.evidence)}</div>
-            </div>` : ''}
-            <div class="opp-section">
-                <div class="opp-section-label">${esc(tr('label.hypothesis').replace(/:$/, ''))}</div>
-                <div class="opp-desc">${esc(ins.hypothesis)}</div>
-            </div>
-            ${ins.experiment ? `<div class="opp-section">
-                <div class="opp-section-label">${esc(tr('label.proposedExperiment'))}</div>
-                <div class="opp-experiment">${esc(ins.experiment)}</div>
-            </div>` : ''}
-            ${ins.impact ? `<div class="opp-section">
-                <div class="opp-section-label">${esc(tr('label.potentialImpact'))}</div>
-                <div class="opp-impact">${esc(ins.impact)}</div>
-            </div>` : ''}
-            <div class="opp-footer">
-                <span class="opp-source" onclick="switchTab('explore');navigateTo('${esc(ins.node_id)}')" style="cursor:pointer;">${esc(ins.node_id)}</span>
-            </div>
-        </div>`;
-    }).join('');
 }
 
 // ── Discoveries Tab (Tier 1 + Tier 2) ────────────────────────────────
@@ -1584,7 +1527,7 @@ function renderDiscoveries(discoveries) {
         return;
     }
 
-    setListHtmlChunked(list, visible.map(d => {
+    renderListChunked(list, visible, d => {
         const isTier1 = d.tier === 1;
         const tierColor = isTier1 ? '#c4453a' : '#2e86ab';
         const tierLabel = isTier1 ? tr('discoveries.tier1') : tr('discoveries.tier2');
@@ -1683,7 +1626,7 @@ function renderDiscoveries(discoveries) {
             ${d.evidence_summary ? `<div class="insight-evidence"><span class="insight-label">${esc(tr('label.evidence'))}</span> ${esc(trunc(d.evidence_summary, 250))}</div>` : ''}
             <div class="insight-impact"><span class="insight-label">${esc(tr('label.mode'))}</span> ${esc(tr('label.fixedAutomaticPipeline'))}</div>
         </div>`;
-    }));
+    });
 }
 
 // ── Experiments Tab ───────────────────────────────────────────────────
@@ -1848,7 +1791,7 @@ function renderAutoResearchJobs(jobs) {
         failed: '#c4453a',
     };
 
-    list.innerHTML = jobs.map(j => {
+    renderListChunked(list, jobs, j => {
         const color = colors[j.status] || '#888';
         const cpu = j.cpu_eligible == null
             ? tr('status.cpu.unchecked')
@@ -1874,7 +1817,7 @@ function renderAutoResearchJobs(jobs) {
             ${j.last_note ? `<div class="insight-experiment"><span class="insight-label">${esc(tr('common.latest'))}</span> ${esc(trunc(j.last_note, 220))}</div>` : ''}
             ${j.last_error ? `<div class="insight-impact" style="color:#c4453a;"><span class="insight-label">${esc(tr('common.error'))}</span> ${esc(trunc(j.last_error, 220))}</div>` : ''}
         </div>`;
-    }).join('');
+    });
 }
 
 function renderExperiments(runs) {
@@ -1884,14 +1827,14 @@ function renderExperiments(runs) {
         return;
     }
 
-    list.innerHTML = runs.map(r => {
-        const statusColors = {
-            pending: '#9a9088', scaffolding: '#a8842a', reproducing: '#2e86ab',
-            testing: '#c4704b', completed: '#3d8b5e', failed: '#c4453a'
-        };
-        const verdictColors = {
-            confirmed: '#3d8b5e', refuted: '#c4453a', inconclusive: '#a8842a'
-        };
+    const statusColors = {
+        pending: '#9a9088', scaffolding: '#a8842a', reproducing: '#2e86ab',
+        testing: '#c4704b', completed: '#3d8b5e', failed: '#c4453a'
+    };
+    const verdictColors = {
+        confirmed: '#3d8b5e', refuted: '#c4453a', inconclusive: '#a8842a'
+    };
+    renderListChunked(list, runs, r => {
         const color = statusColors[r.status] || '#888';
         const vColor = verdictColors[r.hypothesis_verdict] || '#888';
 
@@ -1918,7 +1861,7 @@ function renderExperiments(runs) {
                 <button class="btn-preview" onclick="window._dg.viewExperiment(${r.id})">${esc(tr('common.viewDetails'))}</button>
             </div>
         </div>`;
-    }).join('');
+    });
 }
 
 function experimentStatusColor(status) {
@@ -1967,7 +1910,7 @@ function renderExperimentGroupsV2(groups) {
         return;
     }
 
-    setListHtmlChunked(list, groups.map(group => {
+    renderListChunked(list, groups, group => {
         const insight = group.insight || {};
         const auto = group.auto_job || {};
         const currentRun = group.canonical_run || group.latest_run || null;
@@ -2028,7 +1971,7 @@ function renderExperimentGroupsV2(groups) {
                 ${previewUrl ? `<button class="btn-preview" onclick="window.open('${esc(previewUrl)}','_blank')">${esc(tr('experiments.openManuscript'))}</button>` : ''}
             </div>
         </div>`;
-    }));
+    });
 }
 
 function jsonPreview(obj, emptyText = 'None') {
@@ -2194,31 +2137,40 @@ function runWhenIdle(fn, timeout = 700) {
     }
 }
 
-// Render a large list of pre-built HTML strings without janking the main
-// thread. A single `container.innerHTML = parts.join('')` of a few hundred
-// complex cards parses/builds the whole subtree in one ~hundreds-of-ms task;
-// during the idle prefetch several such renders ran back-to-back and made the
-// page feel frozen. Here we drop the first chunk in synchronously (so the tab
-// is not empty) and append the rest across idle callbacks. insertAdjacentHTML
-// only parses the appended slice, so total work stays O(n) — never the O(n^2)
-// of `innerHTML +=`. Items use inline onclick handlers, so no post-render
-// event binding is needed.
-function setListHtmlChunked(container, parts, chunk = 25) {
+// Render a large list of cards without janking the main thread. A single
+// `container.innerHTML = items.map(renderItem).join('')` does TWO O(n) bursts of
+// work in one synchronous task: it builds every card's HTML string (often
+// parsing several JSON fields per row — the production /api/deep_insights and
+// /api/insights payloads are ~0.6–0.7 MB) AND parses the whole subtree into the
+// DOM. On real data that single task ran into the hundreds of ms. Here we build
+// AND insert one chunk at a time: the first chunk synchronously (so the tab is
+// never empty), the rest across idle callbacks. Each step is O(chunk), so no
+// step is a long task, and insertAdjacentHTML only parses the appended slice so
+// total work stays O(n) — never the O(n²) of `innerHTML +=`. `renderItem(item,
+// i)` returns the card HTML; items use inline onclick handlers, so no
+// post-render event binding is needed.
+function renderListChunked(container, items, renderItem, chunk = 25) {
     container.innerHTML = '';
-    if (!parts || !parts.length) return;
+    if (!items || !items.length) return;
     // Cancel any still-pending chunked render of an earlier call (e.g. when a
     // filter re-renders the same list before the previous run finished).
     const token = (container._chunkToken || 0) + 1;
     container._chunkToken = token;
-    container.insertAdjacentHTML('beforeend', parts.slice(0, chunk).join(''));
+    const buildSlice = (start) => {
+        let html = '';
+        const end = Math.min(start + chunk, items.length);
+        for (let i = start; i < end; i++) html += renderItem(items[i], i);
+        return html;
+    };
+    container.insertAdjacentHTML('beforeend', buildSlice(0));
     let i = chunk;
     const step = () => {
         if (container._chunkToken !== token) return; // superseded
-        container.insertAdjacentHTML('beforeend', parts.slice(i, i + chunk).join(''));
+        container.insertAdjacentHTML('beforeend', buildSlice(i));
         i += chunk;
-        if (i < parts.length) runWhenIdle(step, 50);
+        if (i < items.length) runWhenIdle(step, 50);
     };
-    if (i < parts.length) runWhenIdle(step, 50);
+    if (i < items.length) runWhenIdle(step, 50);
 }
 
 async function prefetchInactiveTabs() {
