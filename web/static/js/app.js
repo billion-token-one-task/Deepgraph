@@ -991,11 +991,28 @@ function buildMatrixHeat(matrix, metric) {
         if (v > max) max = v;
     }
     const span = max - min;
-    return (value) => {
+    const map = (value) => {
         if (value == null) return '';
         const t = span > 0 ? (Number(value) - min) / span : 0.5;
         return _lerpRgb(lo, hi, Math.max(0, Math.min(1, t)));
     };
+    // Expose the range so the legend can label the gradient endpoints.
+    map.min = min;
+    map.max = max;
+    return map;
+}
+
+// The colour-scale legend that makes the heatmap self-explanatory: a low→high
+// gradient bar tagged with the metric's actual min/max, plus the SOTA marker.
+function matrixHeatLegendHtml(heat) {
+    const hasRange = isFinite(heat.min) && isFinite(heat.max);
+    return `<span class="matrix-legend">
+        <span class="legend-label">${esc(tr('evidence.heatScale'))}</span>
+        <span class="legend-min">${hasRange ? heat.min.toFixed(1) : ''}</span>
+        <span class="legend-bar" aria-hidden="true"></span>
+        <span class="legend-max">${hasRange ? heat.max.toFixed(1) : ''}</span>
+        <span class="legend-sota"><span class="legend-sota-dot" aria-hidden="true"></span>${esc(tr('evidence.heatSota'))}</span>
+    </span>`;
 }
 
 function renderMatrix(container, matrix) {
@@ -1022,6 +1039,7 @@ function renderMatrix(container, matrix) {
     }
     html += '</select>';
     html += `<span class="matrix-info">${esc(tr('common.methodsCount', { count: matrix.methods.length }))} x ${esc(tr('common.datasetsCount', { count: matrix.datasets.length }))}</span>`;
+    html += matrixHeatLegendHtml(heat);
     html += '</div>';
 
     html += '<div class="matrix-scroll"><table class="matrix-table">';
@@ -1062,6 +1080,16 @@ function updateMatrixMetric(selectEl) {
 
     const metric = selectEl.value;
     const heat = buildMatrixHeat(matrix, metric);
+
+    // Keep the legend's gradient endpoints in sync with the selected metric.
+    const minEl = container.querySelector('.matrix-legend .legend-min');
+    const maxEl = container.querySelector('.matrix-legend .legend-max');
+    if (minEl && maxEl) {
+        const hasRange = isFinite(heat.min) && isFinite(heat.max);
+        minEl.textContent = hasRange ? heat.min.toFixed(1) : '';
+        maxEl.textContent = hasRange ? heat.max.toFixed(1) : '';
+    }
+
     const rows = container.querySelectorAll('tbody tr');
 
     rows.forEach((row, mi) => {
