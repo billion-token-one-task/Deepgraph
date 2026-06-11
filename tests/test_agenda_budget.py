@@ -344,3 +344,37 @@ class BudgetRoutesTests(BudgetTestBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LedgerMigrationTest(BudgetTestBase):
+    """Existing DBs created before agenda_token_ledger must get the table
+    from _ensure_agenda_isolation_schema, not only from the schema files
+    (on Postgres the best-effort schema replay can be skipped when an
+    earlier statement aborts the transaction)."""
+
+    def test_ensure_schema_recreates_ledger_table(self):
+        db = self.db
+        db.execute("DROP TABLE agenda_token_ledger")
+        db.get_conn().commit()
+        rows = db.fetchall(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='agenda_token_ledger'"
+        )
+        self.assertEqual(rows, [])
+
+        db._ensure_agenda_isolation_schema()
+
+        rows = db.fetchall(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='agenda_token_ledger'"
+        )
+        self.assertEqual(len(rows), 1)
+
+        from agents import agenda_loader, agenda_budget
+
+        agenda = agenda_loader.parse_agenda(dict(SAMPLE_AGENDA))
+        agenda_id = agenda_loader.save_agenda(agenda)
+        agenda_budget.record_usage(agenda_id, "test_op", tokens=42)
+        total = db.fetchone(
+            "SELECT SUM(tokens) AS t FROM agenda_token_ledger WHERE agenda_id = ?",
+            (agenda_id,),
+        )
+        self.assertEqual(total["t"], 42)
