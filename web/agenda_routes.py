@@ -10,6 +10,12 @@ Endpoints (mounted under /api/research_agenda):
     POST   /api/research_agenda/selection/<id>/review     run reviewer
     POST   /api/research_agenda/selection/<id>/plan       build revision plan
     GET    /api/research_agenda/loop/<selection_id>       full end-to-end snapshot
+
+Multi-agenda isolation + budgets:
+    GET    /api/research_agenda/<id>/insights       insights tagged with this agenda
+    GET    /api/research_agenda/<id>/selections     selections of this agenda
+    POST   /api/research_agenda/<id>/resume         reactivate a budget-paused agenda
+    GET    /api/token_usage                         token ledger summary (all agendas)
 """
 
 from __future__ import annotations
@@ -19,13 +25,14 @@ import json
 import yaml  # type: ignore
 from flask import Blueprint, jsonify, request
 
-from agents import agenda_loader, agenda_orchestrator, agenda_selector, evidence_gate, reviewer_adapter, revision_planner
+from agents import agenda_budget, agenda_loader, agenda_orchestrator, agenda_selector, evidence_gate, reviewer_adapter, revision_planner
 from contracts.agenda import LoopInspectionSnapshot
 from contracts.base import ContractValidationError
 from db import database as db
 
 
 bp = Blueprint("research_agenda", __name__, url_prefix="/api/research_agenda")
+usage_bp = Blueprint("token_usage", __name__, url_prefix="/api")
 
 
 def _agenda_to_dict(agenda):
@@ -42,6 +49,10 @@ def _agenda_to_dict(agenda):
         "required_output": agenda.required_output,
         "is_active": agenda.is_active,
         "raw_config": agenda.raw_config,
+        "submitter": agenda.submitter,
+        "token_budget": agenda_budget.effective_budget(agenda.token_budget),
+        "token_spent": agenda.token_spent,
+        "status": agenda.status,
     }
 
 
@@ -96,6 +107,63 @@ def current_agenda():
     return jsonify({"agenda": _agenda_to_dict(agenda)})
 
 
+# ---------- multi-agenda isolation + budget ----------
+
+
+@bp.route("/<int:agenda_id>/insights", methods=["GET"])
+def agenda_insights(agenda_id: int):
+    """Insights produced for this agenda (tagged with agenda_id)."""
+    if agenda_loader.get_agenda(agenda_id) is None:
+        return jsonify({"error": "agenda_not_found", "agenda_id": agenda_id}), 404
+    limit = max(1, min(request.args.get("limit", default=100, type=int), 500))
+    rows = db.fetchall(
+        "SELECT id, tier, status, title, adversarial_score, novelty_status, "
+        "resource_class, experimentability, submission_status, outcome, created_at "
+        "FROM deep_insights WHERE agenda_id=? ORDER BY id DESC LIMIT ?",
+        (agenda_id, limit),
+    )
+    return jsonify({"agenda_id": agenda_id, "insights": rows})
+
+
+@bp.route("/<int:agenda_id>/selections", methods=["GET"])
+def agenda_selections(agenda_id: int):
+    """Selections belonging to this agenda only."""
+    if agenda_loader.get_agenda(agenda_id) is None:
+        return jsonify({"error": "agenda_not_found", "agenda_id": agenda_id}), 404
+    limit = max(1, min(request.args.get("limit", default=50, type=int), 500))
+    rows = db.fetchall(
+        "SELECT * FROM agenda_selections WHERE agenda_id=? "
+        "ORDER BY created_at DESC, id DESC LIMIT ?",
+        (agenda_id, limit),
+    )
+    return jsonify({
+        "agenda_id": agenda_id,
+        "selections": [agenda_selector._row_to_selection_dict(r) for r in rows],
+    })
+
+
+@bp.route("/<int:agenda_id>/resume", methods=["POST"])
+def resume_agenda_endpoint(agenda_id: int):
+    """Reactivate a budget-paused agenda; optionally raise its token budget."""
+    if agenda_loader.get_agenda(agenda_id) is None:
+        return jsonify({"error": "agenda_not_found", "agenda_id": agenda_id}), 404
+    body = request.get_json(silent=True) or {}
+    token_budget = body.get("token_budget")
+    if token_budget is not None:
+        if isinstance(token_budget, bool) or not isinstance(token_budget, int):
+            return jsonify({"error": "invalid_request", "message": "token_budget must be an integer"}), 400
+        if token_budget < 0:
+            return jsonify({"error": "invalid_request", "message": "token_budget must be >= 0"}), 400
+    state = agenda_budget.resume_agenda(agenda_id, token_budget=token_budget)
+    return jsonify({"agenda_id": agenda_id, "budget": state})
+
+
+@usage_bp.route("/token_usage", methods=["GET"])
+def token_usage():
+    """Local token accounting per agenda + totals (read-only)."""
+    return jsonify(agenda_budget.usage_summary())
+
+
 # ---------- selection ----------
 
 
@@ -104,6 +172,7 @@ def trigger_selection():
     body = request.get_json(silent=True) or {}
     agenda_id = body.get("agenda_id")
     dispatch_mode = body.get("dispatch_mode", "auto")
+    scoped = bool(body.get("scoped"))
     if dispatch_mode not in ("auto", "link", "enqueue", "bench", "none"):
         return (
             jsonify({"error": "invalid_dispatch_mode", "message": "must be auto|link|enqueue|bench|none"}),
@@ -118,7 +187,7 @@ def trigger_selection():
         if agenda is None:
             return jsonify({"error": "no_active_agenda"}), 404
 
-    selection = agenda_selector.select_and_persist(agenda)
+    selection = agenda_selector.select_and_persist(agenda, scope_to_agenda=scoped)
     dispatch_result = None
     dispatch_succeeded = None
     if dispatch_mode != "none" and selection.selected_insight_id:
@@ -350,3 +419,4 @@ def loop_inspection(selection_id: int):
 
 def register(app):
     app.register_blueprint(bp)
+    app.register_blueprint(usage_bp)

@@ -591,11 +591,36 @@ def is_llm_transient_provider_error(exc: Exception) -> bool:
     return any(marker in msg for marker in markers)
 
 
+def _agenda_budget_scope():
+    """Return the active agenda budget scope, if agenda accounting is in use.
+
+    Imported lazily: llm_client stays importable without the DB layer, and the
+    hook costs nothing for calls that run outside an agenda scope.
+    """
+    try:
+        from agents import agenda_budget
+    except Exception:  # pragma: no cover - defensive: accounting is optional
+        return None
+    return agenda_budget.current_scope()
+
+
 def call_llm(system_prompt: str, user_prompt: str, temperature: float = 0.0,
              max_tokens: int = None) -> tuple[str, int]:
-    """Call LLM with automatic provider selection, rate limiting, and failover."""
+    """Call LLM with automatic provider selection, rate limiting, and failover.
+
+    When running inside agents.agenda_budget.agenda_scope(...), the call is
+    metered against that agenda: budget is checked before contacting any
+    provider (raising AgendaBudgetExceededError without spending tokens) and
+    usage is recorded in the agenda token ledger afterwards.
+    """
     max_tokens = max_tokens or LLM_MAX_OUTPUT_TOKENS
     _init_providers()
+
+    budget_scope = _agenda_budget_scope()
+    if budget_scope is not None:
+        from agents import agenda_budget
+        # Raises AgendaBudgetExceededError before any provider request.
+        agenda_budget.check_budget(budget_scope[0])
 
     last_error = None
     tried = set()
@@ -642,6 +667,18 @@ def call_llm(system_prompt: str, user_prompt: str, temperature: float = 0.0,
                     stats["cached_tokens"] += cached_toks
                     stats["input_tokens"] += input_toks
                 _release_provider(provider["name"])
+                if budget_scope is not None and tokens:
+                    try:
+                        from agents import agenda_budget
+                        agenda_budget.record_usage(budget_scope[0], budget_scope[1], tokens)
+                    except Exception as acct_err:  # noqa: BLE001
+                        # Accounting failure must not discard a paid response;
+                        # log it so the ledger gap is visible.
+                        print(
+                            f"[LLM] WARNING: agenda token accounting failed "
+                            f"(agenda {budget_scope[0]}): {acct_err}",
+                            flush=True,
+                        )
                 return text, tokens
 
             except Exception as e:

@@ -8,9 +8,13 @@ Public API:
 - save_agenda(agenda) -> int                       # insert; returns agenda_id
 - update_agenda(agenda_id, agenda) -> None
 - get_agenda(agenda_id) -> ResearchAgenda | None
-- get_active_agenda() -> ResearchAgenda | None
+- get_active_agenda() -> ResearchAgenda | None     # newest active (several may be active)
 - list_agendas(*, only_active=False) -> list[ResearchAgenda]
-- set_active_agenda(agenda_id) -> None             # exclusive active flag
+- set_active_agenda(agenda_id) -> None             # mark one agenda active
+
+Multiple agendas may be active at the same time; callers that operate on a
+specific agenda should pass agenda_id explicitly. get_active_agenda() is kept
+as a convenience for single-agenda deployments and returns the newest active row.
 """
 
 from __future__ import annotations
@@ -54,6 +58,10 @@ def _row_to_agenda(row: Mapping[str, Any]) -> ResearchAgenda:
         required_output=ensure_dict(_decode("required_output_json", {})),
         raw_config=ensure_dict(raw_config_obj),
         is_active=bool(row.get("is_active", 1)),
+        submitter=str(row.get("submitter") or ""),
+        token_budget=row.get("token_budget"),
+        token_spent=int(row.get("token_spent") or 0),
+        status=str(row.get("status") or "active"),
     )
     agenda.validate()
     return agenda
@@ -75,6 +83,10 @@ def parse_agenda(payload: Mapping[str, Any], *, agenda_id: int | None = None) ->
         required_output=ensure_dict(payload.get("required_output") or {}),
         raw_config=dict(payload),
         is_active=bool(payload.get("is_active", True)),
+        submitter=str(payload.get("submitter") or "").strip(),
+        token_budget=payload.get("token_budget"),
+        token_spent=int(payload.get("token_spent") or 0),
+        status=str(payload.get("status") or "active"),
     )
     agenda.validate()
     return agenda
@@ -99,14 +111,19 @@ def load_agenda_from_file(path: str | Path) -> ResearchAgenda:
 
 
 def save_agenda(agenda: ResearchAgenda) -> int:
-    """Insert a new agenda. Returns the new agenda_id."""
+    """Insert a new agenda. Returns the new agenda_id.
+
+    Does not deactivate other agendas: several agendas may run concurrently,
+    each isolated by agenda_id and its own token budget.
+    """
     agenda.validate()
     new_id = db.insert_returning_id(
         """
         INSERT INTO research_agendas
             (version, name, description, focus_json, prefer_json, reject_json,
-             required_output_json, raw_config_json, is_active)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+             required_output_json, raw_config_json, is_active,
+             submitter, token_budget, token_spent, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         RETURNING id
         """,
         (
@@ -119,10 +136,12 @@ def save_agenda(agenda: ResearchAgenda) -> int:
             json.dumps(agenda.required_output, ensure_ascii=False),
             json.dumps(agenda.raw_config, ensure_ascii=False),
             1 if agenda.is_active else 0,
+            agenda.submitter or None,
+            agenda.token_budget,
+            int(agenda.token_spent or 0),
+            agenda.status,
         ),
     )
-    if agenda.is_active:
-        set_active_agenda(new_id)
     db.commit()
     agenda.agenda_id = new_id
     return new_id
@@ -136,7 +155,8 @@ def update_agenda(agenda_id: int, agenda: ResearchAgenda) -> None:
         UPDATE research_agendas
         SET version=?, name=?, description=?, focus_json=?, prefer_json=?,
             reject_json=?, required_output_json=?, raw_config_json=?,
-            is_active=?, updated_at=CURRENT_TIMESTAMP
+            is_active=?, submitter=?, token_budget=?, status=?,
+            updated_at=CURRENT_TIMESTAMP
         WHERE id=?
         """,
         (
@@ -149,11 +169,12 @@ def update_agenda(agenda_id: int, agenda: ResearchAgenda) -> None:
             json.dumps(agenda.required_output, ensure_ascii=False),
             json.dumps(agenda.raw_config, ensure_ascii=False),
             1 if agenda.is_active else 0,
+            agenda.submitter or None,
+            agenda.token_budget,
+            agenda.status,
             agenda_id,
         ),
     )
-    if agenda.is_active:
-        set_active_agenda(agenda_id)
     db.commit()
 
 
@@ -168,8 +189,13 @@ def get_agenda(agenda_id: int) -> ResearchAgenda | None:
 
 
 def get_active_agenda() -> ResearchAgenda | None:
+    """Return the newest active agenda.
+
+    Several agendas may be active at once; this helper exists for
+    single-agenda deployments and callers without an explicit agenda_id.
+    """
     row = db.fetchone(
-        "SELECT * FROM research_agendas WHERE is_active=1 ORDER BY created_at DESC LIMIT 1",
+        "SELECT * FROM research_agendas WHERE is_active=1 ORDER BY created_at DESC, id DESC LIMIT 1",
         (),
     )
     if not row:
@@ -192,13 +218,14 @@ def list_agendas(*, only_active: bool = False) -> list[ResearchAgenda]:
 
 
 def set_active_agenda(agenda_id: int) -> None:
-    """Mark a single agenda active; clear is_active on all others."""
+    """Mark an agenda active.
+
+    Historically this cleared is_active on every other agenda (single-active
+    model). Agendas are now isolated per agenda_id, so activating one no
+    longer deactivates the rest.
+    """
     db.execute(
-        "UPDATE research_agendas SET is_active=0 WHERE id<>?",
-        (agenda_id,),
-    )
-    db.execute(
-        "UPDATE research_agendas SET is_active=1 WHERE id=?",
+        "UPDATE research_agendas SET is_active=1, updated_at=CURRENT_TIMESTAMP WHERE id=?",
         (agenda_id,),
     )
     db.commit()

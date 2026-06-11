@@ -13,6 +13,11 @@ CREATE TABLE IF NOT EXISTS research_agendas (
     required_output_json TEXT NOT NULL DEFAULT '{}',
     raw_config_json TEXT,
     is_active INTEGER NOT NULL DEFAULT 1,
+    -- Multi-agenda isolation + token budgets (see schema_agenda.sql for docs)
+    submitter TEXT,
+    token_budget INTEGER,
+    token_spent INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'active',
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -88,3 +93,16 @@ CREATE INDEX IF NOT EXISTS idx_agenda_evidence_gates_selection
     ON agenda_evidence_gates(selection_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_agenda_evidence_gates_status
     ON agenda_evidence_gates(status);
+
+-- Per-agenda LLM token accounting (see schema_agenda.sql for docs)
+CREATE TABLE IF NOT EXISTS agenda_token_ledger (
+    id BIGSERIAL PRIMARY KEY,
+    agenda_id INTEGER NOT NULL,
+    operation TEXT NOT NULL,
+    tokens INTEGER NOT NULL DEFAULT 0,
+    cost_usd REAL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_agenda_token_ledger_agenda
+    ON agenda_token_ledger(agenda_id, created_at DESC);

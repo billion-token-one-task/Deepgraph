@@ -13,6 +13,15 @@ CREATE TABLE IF NOT EXISTS research_agendas (
     required_output_json TEXT NOT NULL DEFAULT '{}',
     raw_config_json TEXT,
     is_active INTEGER NOT NULL DEFAULT 1,
+    -- Multi-agenda isolation + token budgets:
+    -- submitter: who asked for this direction (nickname / email)
+    -- token_budget: max LLM tokens this agenda may spend (NULL -> config default)
+    -- token_spent: running total, maintained by agents.agenda_budget
+    -- status: 'active' | 'paused_budget' (budget exhausted, resume to continue)
+    submitter TEXT,
+    token_budget INTEGER,
+    token_spent INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'active',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -97,3 +106,18 @@ CREATE INDEX IF NOT EXISTS idx_agenda_evidence_gates_selection
     ON agenda_evidence_gates(selection_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_agenda_evidence_gates_status
     ON agenda_evidence_gates(status);
+
+-- Per-agenda LLM token accounting. One row per metered call; token_spent on
+-- research_agendas is the running aggregate (kept in sync by agents.agenda_budget).
+CREATE TABLE IF NOT EXISTS agenda_token_ledger (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    agenda_id INTEGER NOT NULL,
+    operation TEXT NOT NULL,
+    tokens INTEGER NOT NULL DEFAULT 0,
+    cost_usd REAL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (agenda_id) REFERENCES research_agendas(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_agenda_token_ledger_agenda
+    ON agenda_token_ledger(agenda_id, created_at DESC);

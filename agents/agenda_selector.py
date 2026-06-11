@@ -236,19 +236,70 @@ def evaluate_candidates(
 # ---------- persistence + DB-facing API ----------
 
 
-def _fetch_insight_pool(limit: int = 200) -> list[dict[str, Any]]:
-    rows = db.fetchall(
-        """
+def agenda_scope_keywords(agenda: ResearchAgenda) -> list[str]:
+    """Keywords that define the agenda's topical scope: focus + prefer.keywords."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for kw in list(agenda.focus or []) + ensure_string_list((agenda.prefer or {}).get("keywords")):
+        k = str(kw).strip().lower()
+        if k and k not in seen:
+            seen.add(k)
+            out.append(k)
+    return out
+
+
+_POOL_SELECT = """
         SELECT id, tier, status, title, problem_statement, formal_structure,
                existing_weakness, transformation, proposed_method,
                adversarial_score, novelty_status, resource_class, experimentability,
                submission_status, outcome
         FROM deep_insights
-        WHERE status IS NULL OR status NOT IN ('rejected', 'archived')
-        ORDER BY id DESC
-        LIMIT ?
-        """,
-        (int(limit),),
+"""
+
+
+def _fetch_insight_pool(
+    limit: int = 200,
+    agenda: ResearchAgenda | None = None,
+) -> list[dict[str, Any]]:
+    """Fetch candidate insights, optionally scoped to one agenda.
+
+    Without an agenda this is the original whole-table query (backward
+    compatible). With an agenda the pool is restricted to:
+      - insights tagged with this agenda_id (produced for this agenda), plus
+      - untagged insights (agenda_id IS NULL) whose text matches the agenda's
+        scope keywords (focus + prefer.keywords).
+    Insights tagged with a different agenda_id are always excluded.
+    """
+    status_filter = "(status IS NULL OR status NOT IN ('rejected', 'archived'))"
+    if agenda is None:
+        rows = db.fetchall(
+            f"{_POOL_SELECT} WHERE {status_filter} ORDER BY id DESC LIMIT ?",
+            (int(limit),),
+        )
+        return rows
+
+    keywords = agenda_scope_keywords(agenda)
+    clauses: list[str] = []
+    params: list[Any] = []
+    if agenda.agenda_id:
+        clauses.append("agenda_id = ?")
+        params.append(int(agenda.agenda_id))
+    if keywords:
+        likes = []
+        for kw in keywords:
+            likes.append(
+                "LOWER(COALESCE(title, '') || ' ' || COALESCE(problem_statement, '') "
+                "|| ' ' || COALESCE(formal_structure, '')) LIKE ?"
+            )
+            params.append(f"%{kw}%")
+        clauses.append(f"(agenda_id IS NULL AND ({' OR '.join(likes)}))")
+    else:
+        # No scope keywords: keep untagged insights visible (legacy data).
+        clauses.append("agenda_id IS NULL")
+    rows = db.fetchall(
+        f"{_POOL_SELECT} WHERE {status_filter} AND ({' OR '.join(clauses)}) "
+        "ORDER BY id DESC LIMIT ?",
+        (*params, int(limit)),
     )
     return rows
 
@@ -276,14 +327,26 @@ def select_and_persist(
     *,
     limit: int = 200,
     pool: list[Mapping[str, Any]] | None = None,
+    scope_to_agenda: bool = False,
 ) -> AgendaSelection:
-    """Run selection over the deep_insights table, persist result, return contract."""
+    """Run selection over the deep_insights table, persist result, return contract.
+
+    With scope_to_agenda=True the candidate pool is pre-filtered to the
+    agenda's own insights + keyword-matching untagged ones (see
+    _fetch_insight_pool); default False keeps the historical whole-pool
+    behavior where scoring alone decides.
+    """
     agenda.validate()
     if not agenda.agenda_id:
         raise ContractValidationError(
             "agenda must be persisted (have agenda_id) before running selection"
         )
-    insight_pool = list(pool) if pool is not None else _fetch_insight_pool(limit=limit)
+    if pool is not None:
+        insight_pool = list(pool)
+    else:
+        insight_pool = _fetch_insight_pool(
+            limit=limit, agenda=agenda if scope_to_agenda else None
+        )
     if not insight_pool:
         # persist an empty selection so the UI can see "no candidates"
         sel = AgendaSelection(

@@ -9,10 +9,11 @@ The bar: a senior researcher reads it and says "this is a real paper, let me imp
   Call 3: Experimental Design — complete plan with baselines, datasets, ablations
 """
 import json
+from agents.agenda_budget import AgendaBudgetExceededError
 from agents.discovery_metadata import build_evidence_packet, enrich_deep_insight
 from agents.insight_validation import get_evosci_input_issue
 from agents.llm_client import call_llm_json, is_llm_auth_error, is_llm_provider_unavailable_error
-from agents.signal_harvester import get_tier2_signals
+from agents.signal_harvester import agenda_taxonomy_node_ids, get_tier2_signals
 from db import database as db
 
 
@@ -398,11 +399,17 @@ def discover_paper_ideas(
     *,
     tier2_plateau_limit: int = 20,
     tier2_limitation_nodes: int = 15,
+    agenda=None,
 ) -> list[dict]:
     """Run the 3-stage paper idea discovery pipeline.
 
     Returns list of deep_insight dicts ready for storage.
     If max_papers is None, every sharpened problem (up to max_problems) is expanded.
+
+    With an agenda (contracts.agenda.ResearchAgenda), the signal scan is
+    circled to the matching taxonomy subgraph and produced ideas are tagged
+    with agenda_id. Budget exhaustion stops the loop cleanly, returning the
+    ideas accepted so far.
     """
     if max_papers is None:
         max_papers = max_problems
@@ -411,10 +418,25 @@ def discover_paper_ideas(
     total_tokens = 0
     total_calls = 0
 
-    # Stage 0: Gather signals
+    # Stage 0: Gather signals (scoped to the agenda's subgraph when known)
+    scope_node_ids = None
+    scope_keywords = None
+    if agenda is not None:
+        from agents.agenda_selector import agenda_scope_keywords
+
+        scope_keywords = agenda_scope_keywords(agenda) or None
+        scope_node_ids = agenda_taxonomy_node_ids(scope_keywords or []) or None
+        if scope_node_ids is None:
+            print(
+                f"[PAPER_IDEA] Agenda '{agenda.name}' matched no taxonomy nodes; "
+                "falling back to global signal scan",
+                flush=True,
+            )
     signals = get_tier2_signals(
         plateau_limit=tier2_plateau_limit,
         limitation_node_limit=tier2_limitation_nodes,
+        node_ids=scope_node_ids,
+        scope_keywords=scope_keywords,
     )
     has_signals = (
         signals["contradiction_clusters"]
@@ -438,6 +460,9 @@ def discover_paper_ideas(
         result1, tokens1 = call_llm_json(PROBLEM_SHARPENING_SYSTEM, problem_prompt)
         total_tokens += tokens1
         total_calls += 1
+    except AgendaBudgetExceededError as e:
+        print(f"[PAPER_IDEA] Stopped before problem sharpening: {e}", flush=True)
+        return []
     except Exception as e:
         if _llm_temporarily_unavailable(e):
             print(f"[PAPER_IDEA] Problem sharpening skipped: LLM unavailable ({e})", flush=True)
@@ -473,6 +498,9 @@ def discover_paper_ideas(
             result2, tokens2 = call_llm_json(METHOD_INVENTION_SYSTEM, method_prompt)
             total_tokens += tokens2
             total_calls += 1
+        except AgendaBudgetExceededError as e:
+            print(f"[PAPER_IDEA] Stopped at method invention: {e}", flush=True)
+            break
         except Exception as e:
             if _llm_temporarily_unavailable(e):
                 print(f"[PAPER_IDEA] Method invention paused: LLM unavailable ({e})", flush=True)
@@ -498,6 +526,9 @@ def discover_paper_ideas(
             result3, tokens3 = call_llm_json(EXPERIMENT_DESIGN_SYSTEM, exp_prompt)
             total_tokens += tokens3
             total_calls += 1
+        except AgendaBudgetExceededError as e:
+            print(f"[PAPER_IDEA] Stopped at experiment design: {e}", flush=True)
+            break
         except Exception as e:
             if _llm_temporarily_unavailable(e):
                 print(f"[PAPER_IDEA] Experiment design skipped: LLM unavailable ({e})", flush=True)
@@ -570,6 +601,7 @@ def discover_paper_ideas(
             "novelty_status": "unchecked",
             "generation_tokens": total_tokens,
             "llm_calls": total_calls,
+            "agenda_id": agenda.agenda_id if agenda is not None else None,
         }
 
         input_issue = get_evosci_input_issue(deep_insight, mode="verification")

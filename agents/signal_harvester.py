@@ -708,20 +708,80 @@ def harvest_all() -> dict:
     return stats
 
 
-def get_tier1_signals(top_overlaps: int = 20, top_patterns: int = 15) -> DiscoverySignalBundle:
-    """Assemble signals for Tier 1 (Paradigm Discovery) agent."""
-    overlaps = db.fetchall(
-        """SELECT * FROM node_entity_overlap
-           ORDER BY overlap_score DESC LIMIT ?""", (top_overlaps,))
+def agenda_taxonomy_node_ids(keywords: list[str]) -> list[str]:
+    """Circle the taxonomy subgraph matching the given scope keywords.
 
-    pattern_ms = db.fetchall("""
-        SELECT pm.*, pa.pattern_text as text_a, pa.pattern_type as type_a,
-               pb.pattern_text as text_b, pb.pattern_type as type_b
-        FROM pattern_matches pm
-        JOIN patterns pa ON pm.pattern_a_id = pa.id
-        JOIN patterns pb ON pm.pattern_b_id = pb.id
-        ORDER BY pm.similarity_score DESC LIMIT ?
-    """, (top_patterns,))
+    Deterministic SQL LIKE over taxonomy node name/description; used to
+    restrict Tier 1/2 signal queries to one agenda's topical area.
+    """
+    cleaned = [str(k).strip().lower() for k in (keywords or []) if str(k).strip()]
+    if not cleaned:
+        return []
+    likes = " OR ".join(
+        ["LOWER(name || ' ' || COALESCE(description, '')) LIKE ?"] * len(cleaned)
+    )
+    rows = db.fetchall(
+        f"SELECT id FROM taxonomy_nodes WHERE {likes} ORDER BY id",
+        tuple(f"%{kw}%" for kw in cleaned),
+    )
+    return [str(r["id"]) for r in rows]
+
+
+def _node_in_clause(columns: list[str], node_ids: list[str]) -> tuple[str, list[str]]:
+    """Build '(col_a IN (...) OR col_b IN (...))' + params for node scoping."""
+    placeholders = ", ".join(["?"] * len(node_ids))
+    clause = " OR ".join(f"{col} IN ({placeholders})" for col in columns)
+    params: list[str] = []
+    for _ in columns:
+        params.extend(node_ids)
+    return f"({clause})", params
+
+
+def get_tier1_signals(
+    top_overlaps: int = 20,
+    top_patterns: int = 15,
+    *,
+    node_ids: list[str] | None = None,
+) -> DiscoverySignalBundle:
+    """Assemble signals for Tier 1 (Paradigm Discovery) agent.
+
+    node_ids, when given, restricts entity overlaps and pattern matches to the
+    taxonomy subgraph (agenda scoping); default None keeps the global view.
+    """
+    if node_ids:
+        ov_clause, ov_params = _node_in_clause(["node_a_id", "node_b_id"], node_ids)
+        overlaps = db.fetchall(
+            f"""SELECT * FROM node_entity_overlap
+                WHERE {ov_clause}
+                ORDER BY overlap_score DESC LIMIT ?""",
+            (*ov_params, top_overlaps),
+        )
+        pm_clause, pm_params = _node_in_clause(["pm.node_a_id", "pm.node_b_id"], node_ids)
+        pattern_ms = db.fetchall(
+            f"""
+            SELECT pm.*, pa.pattern_text as text_a, pa.pattern_type as type_a,
+                   pb.pattern_text as text_b, pb.pattern_type as type_b
+            FROM pattern_matches pm
+            JOIN patterns pa ON pm.pattern_a_id = pa.id
+            JOIN patterns pb ON pm.pattern_b_id = pb.id
+            WHERE {pm_clause}
+            ORDER BY pm.similarity_score DESC LIMIT ?
+        """,
+            (*pm_params, top_patterns),
+        )
+    else:
+        overlaps = db.fetchall(
+            """SELECT * FROM node_entity_overlap
+               ORDER BY overlap_score DESC LIMIT ?""", (top_overlaps,))
+
+        pattern_ms = db.fetchall("""
+            SELECT pm.*, pa.pattern_text as text_a, pa.pattern_type as type_a,
+                   pb.pattern_text as text_b, pb.pattern_type as type_b
+            FROM pattern_matches pm
+            JOIN patterns pa ON pm.pattern_a_id = pa.id
+            JOIN patterns pb ON pm.pattern_b_id = pb.id
+            ORDER BY pm.similarity_score DESC LIMIT ?
+        """, (top_patterns,))
 
     clusters = db.fetchall(
         "SELECT * FROM contradiction_clusters WHERE cluster_size >= 2 ORDER BY cluster_size DESC")
@@ -760,44 +820,91 @@ def get_tier2_signals(
     *,
     plateau_limit: int = 20,
     limitation_node_limit: int = 15,
+    node_ids: list[str] | None = None,
+    scope_keywords: list[str] | None = None,
 ) -> DiscoverySignalBundle:
-    """Assemble signals for Tier 2 (Paper-Ready Ideas) agent."""
+    """Assemble signals for Tier 2 (Paper-Ready Ideas) agent.
+
+    node_ids / scope_keywords, when given, restrict node-keyed signals
+    (plateaus, limitation clusters) and tier-1 insight seeds to one agenda's
+    topical area; defaults keep the global view.
+    """
     clusters = db.fetchall(
         "SELECT * FROM contradiction_clusters ORDER BY cluster_size DESC")
 
-    plateaus = db.fetchall(
-        "SELECT * FROM performance_plateaus ORDER BY method_count DESC LIMIT ?",
-        (plateau_limit,),
-    )
-
-    limitation_clusters = db.fetchall(
-        """
-        SELECT node_id, COUNT(*) as lim_count,
-               GROUP_CONCAT(paper_id) as paper_ids
-        FROM (
-            SELECT pt.node_id, pi.paper_id
-            FROM paper_insights pi
-            JOIN paper_taxonomy pt ON pt.paper_id = pi.paper_id
-            WHERE pi.limitations IS NOT NULL AND pi.limitations != '[]'
+    if node_ids:
+        pl_clause, pl_params = _node_in_clause(["node_id"], node_ids)
+        plateaus = db.fetchall(
+            f"SELECT * FROM performance_plateaus WHERE {pl_clause} "
+            "ORDER BY method_count DESC LIMIT ?",
+            (*pl_params, plateau_limit),
         )
-        GROUP BY node_id
-        HAVING COUNT(*) >= 3
-        ORDER BY lim_count DESC
-        LIMIT ?
-    """,
-        (limitation_node_limit,),
-    )
+        lim_clause, lim_params = _node_in_clause(["node_id"], node_ids)
+        limitation_clusters = db.fetchall(
+            f"""
+            SELECT node_id, COUNT(*) as lim_count,
+                   GROUP_CONCAT(paper_id) as paper_ids
+            FROM (
+                SELECT pt.node_id, pi.paper_id
+                FROM paper_insights pi
+                JOIN paper_taxonomy pt ON pt.paper_id = pi.paper_id
+                WHERE pi.limitations IS NOT NULL AND pi.limitations != '[]'
+            )
+            WHERE {lim_clause}
+            GROUP BY node_id
+            HAVING COUNT(*) >= 3
+            ORDER BY lim_count DESC
+            LIMIT ?
+        """,
+            (*lim_params, limitation_node_limit),
+        )
+    else:
+        plateaus = db.fetchall(
+            "SELECT * FROM performance_plateaus ORDER BY method_count DESC LIMIT ?",
+            (plateau_limit,),
+        )
+
+        limitation_clusters = db.fetchall(
+            """
+            SELECT node_id, COUNT(*) as lim_count,
+                   GROUP_CONCAT(paper_id) as paper_ids
+            FROM (
+                SELECT pt.node_id, pi.paper_id
+                FROM paper_insights pi
+                JOIN paper_taxonomy pt ON pt.paper_id = pi.paper_id
+                WHERE pi.limitations IS NOT NULL AND pi.limitations != '[]'
+            )
+            GROUP BY node_id
+            HAVING COUNT(*) >= 3
+            ORDER BY lim_count DESC
+            LIMIT ?
+        """,
+            (limitation_node_limit,),
+        )
 
     try:
+        keyword_filter = ""
+        keyword_params: list[str] = []
+        cleaned_keywords = [
+            str(k).strip().lower() for k in (scope_keywords or []) if str(k).strip()
+        ]
+        if cleaned_keywords:
+            likes = " OR ".join(
+                ["LOWER(COALESCE(title, '') || ' ' || COALESCE(evidence_summary, '')) LIKE ?"]
+                * len(cleaned_keywords)
+            )
+            keyword_filter = f" AND ({likes})"
+            keyword_params = [f"%{kw}%" for kw in cleaned_keywords]
         high_insights = db.fetchall(
-            """
+            f"""
             SELECT id, title, mechanism_type, evidence_packet, adversarial_score,
                    evidence_summary, experimental_plan, signal_mix, resource_class
             FROM deep_insights
-            WHERE tier=1
+            WHERE tier=1{keyword_filter}
             ORDER BY COALESCE(adversarial_score, 0) DESC, created_at DESC
             LIMIT 10
-            """
+            """,
+            tuple(keyword_params),
         )
     except Exception:
         high_insights = []
