@@ -37,6 +37,36 @@ def _load_json(path: Path, default: Any) -> Any:
         return default
 
 
+def _patch_compact_crpp_direct(train_path: Path) -> bool:
+    """Inject a compact non-routed CRPP prompt into the copied shard code."""
+    text = train_path.read_text(encoding="utf-8")
+    if "compact_choice_direct" in text:
+        return False
+    direct_anchor = '    if kind == "direct":\n        return "Answer the question. Give only the final answer.\\nQuestion: " + question + "\\nAnswer:"\n'
+    compact_branch = (
+        direct_anchor
+        + '    if kind == "compact_choice_direct":\n'
+        + '        return (\n'
+        + '            "Return only the single best option letter, such as A, B, C, D, E, F, G, or H. "\n'
+        + '            "Do not include the option text, reasoning, punctuation, or any extra words."\n'
+        + '            "\\nQuestion: " + question + "\\nAnswer:"\n'
+        + '        )\n'
+    )
+    if direct_anchor not in text:
+        raise RuntimeError("could not locate direct prompt anchor for compact CRPP patch")
+    text = text.replace(direct_anchor, compact_branch, 1)
+    route_anchor = '        strategy = "voc_metareasoning" if deliberate else "direct"\n'
+    route_replacement = (
+        '        compact_direct = _env_flag("DEEPGRAPH_CRPP_COMPACT_DIRECT")\n'
+        '        strategy = "voc_metareasoning" if deliberate else ("compact_choice_direct" if compact_direct else "direct")\n'
+    )
+    if route_anchor not in text:
+        raise RuntimeError("could not locate VOC routing anchor for compact CRPP patch")
+    text = text.replace(route_anchor, route_replacement, 1)
+    train_path.write_text(text, encoding="utf-8")
+    return True
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source-run", type=Path, default=Path("/root/deepgraph_ideas/idea_8/experiments/main/runs/run_13"))
@@ -73,6 +103,10 @@ def main() -> int:
     _copytree_clean(source_code, code_dir)
     if source_spec.exists():
         _copytree_clean(source_spec, spec_dir)
+    compact_crpp_patch = os.getenv("DEEPGRAPH_CRPP_COMPACT_DIRECT", "").strip().lower() in {"1", "true", "yes", "on"}
+    compact_crpp_patch_applied = False
+    if compact_crpp_patch:
+        compact_crpp_patch_applied = _patch_compact_crpp_direct(code_dir / "train.py")
     if results_dir.exists():
         shutil.rmtree(results_dir)
     results_dir.mkdir(parents=True, exist_ok=True)
@@ -88,6 +122,17 @@ def main() -> int:
         "gpu": args.gpu,
         "timeout": args.timeout,
         "max_examples": args.max_examples,
+        "policy_env": {
+            key: os.getenv(key)
+            for key in (
+                "DEEPGRAPH_CRPP_COMPACT_DIRECT",
+                "DEEPGRAPH_VOC_THRESHOLD",
+                "DEEPGRAPH_VOC_REASONING_COST",
+                "DEEPGRAPH_VOC_DELIBERATE_MAX_NEW_TOKENS",
+            )
+            if os.getenv(key) is not None
+        },
+        "compact_crpp_patch_applied": compact_crpp_patch_applied,
         "created_at": time.time(),
     }
     (spec_dir / "shard_config.json").parent.mkdir(parents=True, exist_ok=True)
