@@ -475,7 +475,7 @@ def discover_experiment_plot_references_or_raise(
     for query in queries:
         hits: list[dict[str, Any]] = []
         try:
-            hits = search_papers(query, limit=per_query_limit, api_key=api_key)
+            hits = search_papers(query, limit=per_query_limit, api_key=api_key, timeout=18.0)
             for hit in hits:
                 if isinstance(hit, dict):
                     hit.setdefault("_source", "semantic_scholar")
