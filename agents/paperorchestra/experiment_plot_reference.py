@@ -164,6 +164,58 @@ def _query_pool(domains: list[dict[str, Any]], state: dict[str, Any], metric_nam
     return deduped[:10]
 
 
+def _abstract_from_openalex_inverted(index: Any, max_words: int = 220) -> str:
+    if not isinstance(index, dict):
+        return ""
+    positions: list[tuple[int, str]] = []
+    for word, offsets in index.items():
+        if not isinstance(offsets, list):
+            continue
+        for offset in offsets:
+            try:
+                positions.append((int(offset), str(word)))
+            except (TypeError, ValueError):
+                continue
+    positions.sort(key=lambda item: item[0])
+    return " ".join(word for _, word in positions[:max_words])
+
+
+def _search_openalex(query: str, *, limit: int = 8, timeout: float = 30.0) -> list[dict[str, Any]]:
+    import httpx
+
+    params = {
+        "search": query,
+        "per-page": min(max(1, limit), 25),
+        "select": "id,display_name,publication_year,authorships,abstract_inverted_index,primary_location,cited_by_count",
+    }
+    with httpx.Client(timeout=timeout) as client:
+        response = client.get("https://api.openalex.org/works", params=params)
+        response.raise_for_status()
+        data = response.json()
+    rows: list[dict[str, Any]] = []
+    for item in data.get("results") or []:
+        if not isinstance(item, dict):
+            continue
+        source = ((item.get("primary_location") or {}).get("source") or {}) if isinstance(item.get("primary_location"), dict) else {}
+        rows.append(
+            {
+                "paperId": "openalex:" + str(item.get("id") or "").rsplit("/", 1)[-1],
+                "title": item.get("display_name") or "Untitled",
+                "year": item.get("publication_year"),
+                "venue": source.get("display_name") or "OpenAlex",
+                "citationCount": item.get("cited_by_count") or 0,
+                "abstract": _abstract_from_openalex_inverted(item.get("abstract_inverted_index")),
+                "authors": [
+                    {"name": ((auth.get("author") or {}).get("display_name") or "")}
+                    for auth in (item.get("authorships") or [])[:20]
+                    if isinstance(auth, dict)
+                ],
+                "_source": "openalex",
+            }
+        )
+    return rows
+
+
 def _infer_chart_tags(paper: dict[str, Any], domains: list[dict[str, Any]]) -> list[str]:
     text = " ".join(str(paper.get(k) or "") for k in ("title", "abstract", "venue")).lower()
     tags: list[str] = []
@@ -195,6 +247,7 @@ def _style_reference_row(paper: dict[str, Any], domains: list[dict[str, Any]]) -
         "year": paper_year(paper),
         "venue": paper.get("venue") or "",
         "citation_count": paper.get("citationCount") or 0,
+        "source": paper.get("_source") or "semantic_scholar",
         "chart_tags": _infer_chart_tags(paper, domains),
     }
 
@@ -420,10 +473,20 @@ def discover_experiment_plot_references_or_raise(
     errors: list[str] = []
     papers: list[dict[str, Any]] = []
     for query in queries:
+        hits: list[dict[str, Any]] = []
         try:
-            papers.extend(search_papers(query, limit=per_query_limit, api_key=api_key))
+            hits = search_papers(query, limit=per_query_limit, api_key=api_key)
+            for hit in hits:
+                if isinstance(hit, dict):
+                    hit.setdefault("_source", "semantic_scholar")
         except Exception as exc:  # noqa: BLE001
-            errors.append(f"{query}: {exc}")
+            errors.append(f"Semantic Scholar {query}: {exc}")
+        if not hits:
+            try:
+                hits = _search_openalex(query, limit=per_query_limit)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"OpenAlex {query}: {exc}")
+        papers.extend(hits)
     style_refs = _dedupe_references([_style_reference_row(paper, domains) for paper in papers if isinstance(paper, dict)])
     flags = _evidence_flags(state or {})
     plan = _build_plot_plan(metric_name, style_refs, flags, domains)
