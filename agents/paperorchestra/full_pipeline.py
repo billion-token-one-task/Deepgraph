@@ -1,10 +1,9 @@
-"""PaperOrchestra §4 full pipeline: Step1 → parallel(Step2,Step3) → Step4 → Step5 (AgentReview loop)."""
+"""PaperOrchestra full pipeline: outline → literature/reference gates → experiment plotting → writing/refinement."""
 
 from __future__ import annotations
 
 import json
 import re
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -22,9 +21,19 @@ from agents.paperorchestra.briefing import (
     evidence_brief_markdown,
 )
 from agents.paperorchestra.literature_discovery import run_literature_discovery
+from agents.paperorchestra.reference_manager import (
+    DEFAULT_REFERENCE_TARGET,
+    ReferenceExpansionError,
+    expand_references_or_raise,
+)
+from agents.paperorchestra.experiment_plot_reference import (
+    ExperimentPlotReferenceError,
+    discover_experiment_plot_references_or_raise,
+)
 from agents.paperorchestra.figure_orchestra import run_postwriting_api_figure_stage
 from agents.paperorchestra.plotting_orchestra import default_paperbanana_cmd, run_plotting_stage
 from agents.paperorchestra.table_standard import table_policy_manifest
+from agents.paperorchestra.venue_policy import infer_submission_target
 from agents.paperorchestra.tracing import (
     PaperGenerationTrace,
     call_json_traced,
@@ -38,9 +47,11 @@ from agents.paperorchestra.tracing import (
 from agents.paperorchestra.writing_standard import (
     MANUSCRIPT_WRITING_STANDARD_TEXT,
     section_style_rules,
+    build_paper_contract,
 )
 from config import (
     PAPERBANANA_CMD,
+    MANUSCRIPT_LATEX_TEMPLATE,
     PAPERORCHESTRA_REFINEMENT_ITERS,
     SEMANTIC_SCHOLAR_API_KEY,
 )
@@ -82,7 +93,7 @@ Return LaTeX only."""
 COMPACT_REFINEMENT_SYSTEM = """PaperOrchestra refinement writer, compact mode.
 Revise the supplied LaTeX for clarity, calibration, citation integrity, and evidence coverage.
 Preserve exact numeric claims from the evidence brief and keep unsupported reviewer requests out of the paper.
-Keep the document compilable, maintain the ICLR-style structure, and use only supplied citation keys and figure files.
+Keep the document compilable, maintain the selected venue structure, and use only supplied citation keys and figure files.
 Return the revised LaTeX only."""
 
 
@@ -422,6 +433,12 @@ def run_paperorchestra_full(
         metric_name=metric_name,
     )
     evidence_brief_md = evidence_brief_markdown(evidence_brief, max_chars=16000)
+    venue_target = infer_submission_target(state, configured_template=MANUSCRIPT_LATEX_TEMPLATE)
+    state.setdefault("venue_target", venue_target.to_dict())
+    if not isinstance(state.get("paper_contract"), dict):
+        state["paper_contract"] = build_paper_contract(state, venue_target.to_dict())
+    write_json_checkpoint(root, "paper_contract.json", state.get("paper_contract") or {})
+    write_json_checkpoint(root, "venue_target.json", venue_target.to_dict())
     write_json_checkpoint(root, "evidence_brief.json", evidence_brief)
     write_text_checkpoint(root, "evidence_brief.md", evidence_brief_md)
     trace.log(
@@ -432,8 +449,8 @@ def run_paperorchestra_full(
     )
 
     exp_log_md = build_experimental_log_md(state, [dict(x) for x in iterations])
-    template_tex = build_minimal_template_tex(state)
-    guidelines = build_conference_guidelines()
+    template_tex = build_minimal_template_tex(state, venue_target)
+    guidelines = build_conference_guidelines(state, venue_target)
 
     # ── Step 1: Deterministic Outline ─────────────────────────────────────
     # The original PaperOrchestra outline call was the largest and least
@@ -456,25 +473,6 @@ def run_paperorchestra_full(
 
     pb_cmd = (PAPERBANANA_CMD or "").strip() or default_paperbanana_cmd()
 
-    def _job_plot():
-        cached = read_json_checkpoint(root, "plotting.json")
-        if isinstance(cached, dict):
-            trace.log("plotting", "cached", generated_count=len(cached.get("assets") or []))
-            return cached
-        trace.log("plotting", "started")
-        out = run_plotting_stage(
-            o,
-            state,
-            [dict(x) for x in iterations],
-            figures_dir,
-            baseline=baseline,
-            metric_name=metric_name,
-            paperbanana_cmd=pb_cmd,
-        )
-        write_json_checkpoint(root, "plotting.json", out)
-        trace.log("plotting", "ok", generated_count=len(out.get("assets") or []))
-        return out
-
     def _job_lit():
         cached = read_json_checkpoint(root, "literature_discovery.json")
         if isinstance(cached, dict):
@@ -492,12 +490,144 @@ def run_paperorchestra_full(
         trace.log("literature_discovery", "ok", collected_count=len(out.get("collected_papers") or []))
         return out
 
-    # ── Step 2 & 3 in parallel ────────────────────────────────────────────
-    with ThreadPoolExecutor(max_workers=2) as ex:
-        fut_p = ex.submit(_job_plot)
-        fut_l = ex.submit(_job_lit)
-        plot_out = fut_p.result()
-        lit_out = fut_l.result()
+    # Literature and reference expansion must precede experiment plotting so
+    # plot styles can be grounded in searched related papers.
+    lit_out = _job_lit()
+
+    reference_target = DEFAULT_REFERENCE_TARGET
+    cached_reference_managed = read_json_checkpoint(root, "reference_manager_literature.json")
+    if (
+        isinstance(cached_reference_managed, dict)
+        and len(cached_reference_managed.get("bib_keys") or []) >= reference_target
+    ):
+        lit_out = cached_reference_managed
+        trace.log(
+            "reference_manager",
+            "cached",
+            final_count=len(lit_out.get("bib_keys") or []),
+            target_count=reference_target,
+        )
+    else:
+        trace.log(
+            "reference_manager",
+            "started",
+            initial_count=len(lit_out.get("bib_keys") or []),
+            target_count=reference_target,
+        )
+        try:
+            lit_out = expand_references_or_raise(
+                lit_out,
+                o,
+                state,
+                evidence_brief,
+                cutoff_year=cutoff_y,
+                api_key=SEMANTIC_SCHOLAR_API_KEY or None,
+                target_count=reference_target,
+            )
+        except ReferenceExpansionError as exc:
+            partial = exc.expanded_literature or {}
+            write_json_checkpoint(root, "reference_manager_literature.json", partial)
+            write_json_checkpoint(root, "reference_manager_report.json", exc.report)
+            if partial.get("bibtex"):
+                (root / "references.bib").write_text(str(partial.get("bibtex") or ""), encoding="utf-8")
+            if partial.get("collected_papers") is not None:
+                (root / "citation_registry.json").write_text(
+                    json.dumps(partial.get("collected_papers") or [], indent=2, ensure_ascii=False, default=str),
+                    encoding="utf-8",
+                )
+            trace.log(
+                "reference_manager",
+                "blocked",
+                final_count=exc.report.get("final_count"),
+                target_count=exc.report.get("target_count"),
+                blockers=exc.report.get("blockers") or [],
+            )
+            raise
+        write_json_checkpoint(root, "reference_manager_literature.json", lit_out)
+        write_json_checkpoint(root, "reference_manager_report.json", lit_out.get("reference_manager") or {})
+        (root / "references.bib").write_text(str(lit_out.get("bibtex") or ""), encoding="utf-8")
+        (root / "citation_registry.json").write_text(
+            json.dumps(lit_out.get("collected_papers") or [], indent=2, ensure_ascii=False, default=str),
+            encoding="utf-8",
+        )
+        trace.log(
+            "reference_manager",
+            "ok",
+            final_count=len(lit_out.get("bib_keys") or []),
+            target_count=reference_target,
+        )
+
+    cached_plot_reference = read_json_checkpoint(root, "experiment_plot_reference.json")
+    if (
+        isinstance(cached_plot_reference, dict)
+        and cached_plot_reference.get("status") == "ok"
+        and len(cached_plot_reference.get("plotting_plan") or []) >= 3
+    ):
+        experiment_plot_reference = cached_plot_reference
+        trace.log(
+            "experiment_plot_reference",
+            "cached",
+            style_reference_count=experiment_plot_reference.get("style_reference_count"),
+            planned_count=len(experiment_plot_reference.get("plotting_plan") or []),
+        )
+    else:
+        trace.log("experiment_plot_reference", "started")
+        try:
+            experiment_plot_reference = discover_experiment_plot_references_or_raise(
+                o,
+                state,
+                evidence_brief,
+                metric_name=metric_name,
+                api_key=SEMANTIC_SCHOLAR_API_KEY or None,
+            )
+        except ExperimentPlotReferenceError as exc:
+            write_json_checkpoint(root, "experiment_plot_reference.json", exc.report)
+            trace.log(
+                "experiment_plot_reference",
+                "blocked",
+                blockers=exc.report.get("blockers") or [],
+                style_reference_count=exc.report.get("style_reference_count"),
+            )
+            raise
+        write_json_checkpoint(root, "experiment_plot_reference.json", experiment_plot_reference)
+        trace.log(
+            "experiment_plot_reference",
+            "ok",
+            style_reference_count=experiment_plot_reference.get("style_reference_count"),
+            planned_count=len(experiment_plot_reference.get("plotting_plan") or []),
+            families=experiment_plot_reference.get("distinct_chart_families") or [],
+        )
+
+    cached_plot = read_json_checkpoint(root, "plotting.json")
+    cached_plot_ref = cached_plot.get("experiment_plot_reference") if isinstance(cached_plot, dict) else {}
+    if (
+        isinstance(cached_plot, dict)
+        and isinstance(cached_plot_ref, dict)
+        and cached_plot_ref.get("schema_version") == experiment_plot_reference.get("schema_version")
+        and len(cached_plot.get("assets") or []) >= 3
+    ):
+        plot_out = cached_plot
+        trace.log("plotting", "cached", generated_count=len(plot_out.get("assets") or []))
+    else:
+        trace.log("plotting", "started", planned_count=len(experiment_plot_reference.get("plotting_plan") or []))
+        plot_out = run_plotting_stage(
+            o,
+            state,
+            [dict(x) for x in iterations],
+            figures_dir,
+            baseline=baseline,
+            metric_name=metric_name,
+            paperbanana_cmd=pb_cmd,
+            experiment_plot_plan=experiment_plot_reference.get("plotting_plan") or [],
+            experiment_plot_reference=experiment_plot_reference,
+        )
+        write_json_checkpoint(root, "plotting.json", plot_out)
+        trace.log(
+            "plotting",
+            "ok",
+            generated_count=len(plot_out.get("assets") or []),
+            families=plot_out.get("experiment_chart_families") or [],
+        )
 
     collected = lit_out["collected_papers"]
     bibtex = lit_out["bibtex"]
@@ -524,7 +654,9 @@ def run_paperorchestra_full(
     pplan = plot_out.get("plotting_plan_used") or (o.get("plotting_plan") if isinstance(o, dict) else None)
     plotting_assets = plot_out.get("assets") or []
     captions_cached = read_json_checkpoint(root, "figure_captions.json")
-    if isinstance(captions_cached, list):
+    planned_caption_ids = {str(fig.get("figure_id") or "") for fig in (pplan or []) if isinstance(fig, dict) and fig.get("figure_id")}
+    cached_caption_ids = {str(row.get("figure_id") or "") for row in (captions_cached or []) if isinstance(row, dict)} if isinstance(captions_cached, list) else set()
+    if isinstance(captions_cached, list) and planned_caption_ids.issubset(cached_caption_ids):
         captions = [row for row in captions_cached if isinstance(row, dict)]
         trace.log("figure_captions", "cached", count=len(captions))
     else:
@@ -581,24 +713,32 @@ def run_paperorchestra_full(
             captions.append({"figure_id": "fig_metric", "caption": (cap_text or "").strip()})
         write_json_checkpoint(root, "figure_captions.json", captions)
 
-    p_meta = {"figure_captions": captions, "plotting_executor": plot_out, "plotting_plan": pplan}
+    p_meta = {
+        "figure_captions": captions,
+        "plotting_executor": plot_out,
+        "plotting_plan": pplan,
+        "experiment_plot_reference": experiment_plot_reference,
+    }
 
     # ── Step 4: Literature Review Agent (Intro + Related in LaTeX) ─────────
     n_papers = len(collected)
-    min_cite = min(max(1, n_papers), max(3, min(8, n_papers)))
+    citation_prompt_limit = min(max(reference_target + 10, 60), max(0, n_papers))
+    min_cite = min(n_papers, reference_target)
     lit_sys = (
         DEEPGRAPH_WRITING_GUARD
         + "\n\n"
         + COMPACT_LITERATURE_SYSTEM
-        + f"\nCutoff date: {cutoff}. Cite at least {min_cite} verified papers when enough are relevant."
+        + f"\nCutoff date: {cutoff}. Cite at least {min_cite} verified papers when enough are relevant; a complete paper needs 50 bibliography entries and 50 distinct cited entries."
     )
     intro_rw = o.get("intro_related_work_plan") if isinstance(o, dict) else {}
-    lit_registry_small = _compact_citation_registry(citation_registry_prompt, limit=28, abstract_chars=650)
-    lit_registry_tiny = _compact_citation_registry(citation_registry_prompt, limit=12, abstract_chars=320)
-    lit_claim_map_small = _compact_claim_citation_map(claim_citation_map, limit=16)
+    lit_registry_small = _compact_citation_registry(citation_registry_prompt, limit=citation_prompt_limit, abstract_chars=420)
+    lit_registry_tiny = _compact_citation_registry(citation_registry_prompt, limit=min(30, citation_prompt_limit), abstract_chars=220)
+    lit_claim_map_small = _compact_claim_citation_map(claim_citation_map, limit=32)
     lit_user = (
         "--- template.tex ---\n"
         + template_tex
+        + "\n--- conference_guidelines.md ---\n"
+        + guidelines
         + "\n--- evidence_brief.md ---\n"
         + evidence_brief_markdown(evidence_brief, max_chars=12000)
         + "\n--- intro_related_work_plan.json ---\n"
@@ -606,29 +746,31 @@ def run_paperorchestra_full(
         + "\n--- citation_checklist.json ---\n"
         + _short_json(
             {
-                "allowed_cite_keys": bib_keys[:28],
-                "rule": "Only cite keys listed here. Do not invent any new citation key.",
+                "allowed_cite_keys": bib_keys[:citation_prompt_limit],
+                "rule": "Only cite keys listed here. Do not invent any new citation key. Place most citations in Introduction, Related Work, and Method; never cite in Abstract or contribution bullets.",
             },
             3000,
         )
         + "\n--- claim_citation_map.json ---\n"
         + _short_json(lit_claim_map_small, 8000)
         + "\n--- collected_papers.json ---\n"
-        + _short_json(lit_registry_small, 14000)
+        + _short_json(lit_registry_small, 22000)
         + "\n--- writing_standard ---\n"
         + section_style_rules("Introduction Related Work")
     )
     lit_user_fallback = (
         "--- template.tex ---\n"
         + template_tex
+        + "\n--- conference_guidelines.md ---\n"
+        + guidelines
         + "\n--- evidence_brief.md ---\n"
         + evidence_brief_markdown(evidence_brief, max_chars=7000)
         + "\n--- intro_related_work_plan.json ---\n"
         + _short_json(intro_rw, 3500)
         + "\n--- citation_checklist.json ---\n"
-        + _short_json({"allowed_cite_keys": bib_keys[:12], "rule": "Only cite these exact keys."}, 1500)
+        + _short_json({"allowed_cite_keys": bib_keys[:min(30, citation_prompt_limit)], "rule": "Only cite these exact keys; no Abstract or contribution citations."}, 3500)
         + "\n--- collected_papers.json ---\n"
-        + _short_json(lit_registry_tiny, 7000)
+        + _short_json(lit_registry_tiny, 9000)
         + "\n--- writing_standard ---\n"
         + section_style_rules("Introduction Related Work")
     )
@@ -662,8 +804,8 @@ def run_paperorchestra_full(
         )
     if not fig_list:
         fig_list = [{"figure_id": str(c.get("figure_id") or ""), "file": "", "caption": str(c.get("caption") or "")} for c in captions]
-    citation_map_small = {k: citation_map.get(k, {}) for k in bib_keys[:18]}
-    citation_registry_small = _compact_citation_registry(citation_registry_prompt, limit=18, abstract_chars=500)
+    citation_map_small = {k: citation_map.get(k, {}) for k in bib_keys[:min(36, citation_prompt_limit)]}
+    citation_registry_small = _compact_citation_registry(citation_registry_prompt, limit=min(36, citation_prompt_limit), abstract_chars=360)
     deterministic_fragments = _default_section_fragments(
         state=state,
         evidence_brief=evidence_brief,
@@ -760,13 +902,13 @@ def run_paperorchestra_full(
                 "motivation": _clip_text(problem.get("motivation"), 420),
                 "limitation": _clip_text(problem.get("limitation"), 360),
             },
-            "allowed_cite_keys": bib_keys[:10],
+            "allowed_cite_keys": bib_keys[:citation_prompt_limit],
             "citation_map": {
                 key: {
                     "title": _clip_text((citation_map.get(key) or {}).get("title"), 160),
                     "abstract": _clip_text((citation_map.get(key) or {}).get("abstract"), 260),
                 }
-                for key in bib_keys[:10]
+                for key in bib_keys[:min(36, citation_prompt_limit)]
                 if key in citation_map
             },
             "figures_list": fig_list[:4],
@@ -816,8 +958,10 @@ def run_paperorchestra_full(
         return (
             "--- section_task_card.json ---\n"
             + _short_json(_section_task_card(section_title), 7600)
+            + "\n--- conference_guidelines.md ---\n"
+            + guidelines
             + "\n--- style_rules ---\n"
-            + "ICLR-style concise LaTeX. Use booktabs if creating tables. Use only allowed citation keys and listed figures. "
+            + "Venue-targeted concise LaTeX. Use booktabs if creating tables. Use only allowed citation keys and listed figures. "
             + "Keep this fragment 700-1200 words unless tables require more.\n"
             + section_style_rules(section_title)
             + "\n"
@@ -836,6 +980,8 @@ def run_paperorchestra_full(
         return (
             "--- compact_section_task_card.json ---\n"
             + _short_json(card, 4200)
+            + "\n--- conference_guidelines.md ---\n"
+            + guidelines
             + "\n--- style_rules ---\n"
             + section_style_rules(section_title)
             + "\nWrite the requested LaTeX fragment only."
@@ -943,6 +1089,8 @@ def run_paperorchestra_full(
             + prev_tex[:9000]
             + "\n--- evidence_brief.md ---\n"
             + evidence_brief_markdown(evidence_brief, max_chars=5000)
+            + "\n--- conference_guidelines.md ---\n"
+            + guidelines
             + "\n--- compact_contract.json ---\n"
             + _short_json(
                 {
@@ -961,11 +1109,11 @@ def run_paperorchestra_full(
                 3000,
             )
             + "\n--- citation_map.json ---\n"
-            + _short_json({k: citation_map.get(k, {}) for k in bib_keys[:10]}, 3000)
+            + _short_json({k: citation_map.get(k, {}) for k in bib_keys[:min(36, citation_prompt_limit)]}, 7000)
             + "\n--- claim_citation_map.json ---\n"
-            + _short_json(_compact_claim_citation_map(claim_citation_map, limit=10), 2500)
+            + _short_json(_compact_claim_citation_map(claim_citation_map, limit=32), 5000)
             + "\n--- citation_registry.json ---\n"
-            + _short_json(_compact_citation_registry(citation_registry_prompt, limit=10, abstract_chars=300), 3500)
+            + _short_json(_compact_citation_registry(citation_registry_prompt, limit=citation_prompt_limit, abstract_chars=160), 12000)
             + "\n--- figures_list ---\n"
             + _short_json(fig_list[:6], 2500)
             + "\n--- writing_standard ---\n"

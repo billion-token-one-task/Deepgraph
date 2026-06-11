@@ -11,8 +11,10 @@ from pathlib import Path
 
 from agents.evidence_planner import summarize_evidence_plan
 from agents.paperorchestra.writing_standard import MANUSCRIPT_WRITING_STANDARD_TEXT
+from agents.paper_title_policy import TITLE_NAMING_STANDARD_TEXT
+from agents.paperorchestra.venue_policy import generic_template_tex, infer_submission_target
 from agents.stage_prompts import prompt_block
-from config import PROJECT_ROOT
+from config import MANUSCRIPT_LATEX_TEMPLATE, PROJECT_ROOT
 
 PROMPT_DIR = PROJECT_ROOT / "prompts" / "paper_orchestra"
 
@@ -150,10 +152,12 @@ def build_experimental_log_md(state: dict, iterations: list[dict]) -> str:
     return "# Experimental log\n\n```json\n" + json.dumps(body, indent=2, ensure_ascii=False)[:24000] + "\n```\n"
 
 
-def build_minimal_template_tex(state: dict) -> str:
-    """Tiny ICLR 2026 skeleton listing section commands (per outline agent requirement)."""
+def build_minimal_template_tex(state: dict, venue_target=None) -> str:
+    """Tiny venue-aware skeleton listing section commands."""
+    target = venue_target or infer_submission_target(state, configured_template=MANUSCRIPT_LATEX_TEMPLATE)
     title = (state.get("title") or "Title").replace("&", r"\&")
-    return rf"""\documentclass{{article}}
+    if target.template == "iclr2026":
+        return rf"""\documentclass{{article}}
 \usepackage{{iclr2026_conference,times}}
 \input{{math_commands.tex}}
 \usepackage{{graphicx}}
@@ -177,18 +181,29 @@ def build_minimal_template_tex(state: dict) -> str:
 \bibliography{{references}}
 \end{{document}}
 """
+    return generic_template_tex(state, target)
 
 
-def build_conference_guidelines() -> str:
-    return """Target: ICLR 2026 main conference submission.
-Use the official ICLR 2026 LaTeX files: iclr2026_conference.sty and iclr2026_conference.bst.
-Main paper: strict 9 pages for initial submission main text, with unlimited references.
-Submission mode: double blind; do not reveal DeepGraph operators or author identities in the paper source.
+def build_conference_guidelines(state: dict | None = None, venue_target=None) -> str:
+    target = venue_target or infer_submission_target(state or {}, configured_template=MANUSCRIPT_LATEX_TEMPLATE)
+    anonymity = "double blind; do not reveal DeepGraph operators or author identities" if target.double_blind else "follow the selected journal identity policy"
+    guideline_sources = ", ".join(target.guideline_files) if target.guideline_files else "none configured"
+    return f"""Target: {target.label}.
+Routing key: {target.key}.
+Routing reason: {target.route_reason}.
+Template policy: {target.template}; bibliography style: {target.bibliography_style}.
+Page policy: {target.page_limit}.
+Guideline source files: {guideline_sources}.
+Submission mode: {anonymity}.
+Venue-specific rules: {target.guidelines}
 Use PDFLaTeX; embed vector figures when possible.
 Problem-awareness spine: Abstract and Introduction must make clear what problem, what motivation, what method, and what result.
 Every major claim must be tied to completed evidence in the provided result packet.
 Do not present bootstrap probes, proxy-only runs, or synthetic smoke tests as full benchmark validation.
 Explicitly address reviewer objections, baseline fairness, ablation coverage, seed variance, and statistical tests.
 Figures should be generated from benchmark artifacts first; API-generated method diagrams may be requested only after experiment results and a manuscript draft exist.
+Paper Contract is binding: paper_contract.json fixes target, evidence scope, claims, metrics, terminology, and banned expressions.
+Title policy is binding: do not use raw hypothesis sentences as titles; use a symbolic/acronym title plus a descriptive subtitle.
+{TITLE_NAMING_STANDARD_TEXT}
 
 """ + MANUSCRIPT_WRITING_STANDARD_TEXT

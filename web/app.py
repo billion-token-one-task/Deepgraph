@@ -626,7 +626,7 @@ def _current_work_snapshot() -> dict[str, list[dict]]:
                arj.updated_at, di.title
         FROM auto_research_jobs arj
         JOIN deep_insights di ON di.id = arj.deep_insight_id
-        WHERE arj.status IN ('queued', 'eligible', 'review_pending', 'smoke_only')
+        WHERE arj.status IN ('queued', 'eligible', 'review_pending', 'smoke_only', 'harness_required')
            OR arj.stage LIKE '%review%'
            OR arj.stage LIKE '%forge%'
            OR arj.stage LIKE '%formal%'
@@ -969,6 +969,155 @@ def api_runtime_config():
         })
     except Exception as exc:
         return _api_failure("runtime_config", exc)
+
+
+def _office_clip(value: Any, limit: int = 110) -> str:
+    text = "" if value is None else " ".join(str(value).split())
+    if len(text) <= limit:
+        return text
+    return text[:max(0, limit - 1)] + "..."
+
+
+def _office_leaf(path: str) -> str:
+    leaf = str(path or "").split(".")[-1]
+    leaf = leaf.replace("_", " ").replace("-", " ").strip()
+    if leaf.startswith("run "):
+        leaf = leaf[4:]
+    return leaf.title() or "Agent"
+
+
+def _office_item(title, status="working", detail="", kind="task") -> dict:
+    return {
+        "title": _office_clip(title, 92),
+        "status": _office_clip(status, 32) or "working",
+        "detail": _office_clip(detail, 130),
+        "kind": kind,
+    }
+
+
+def _office_department_state(items: list[dict], service_running: bool = False) -> str:
+    statuses = " ".join(str(item.get("status") or "") for item in items).lower()
+    if any(token in statuses for token in ("blocked", "error", "failed", "stale")):
+        return "blocked"
+    if service_running or items:
+        return "working"
+    return "idle"
+
+
+@app.route("/api/agent_office")
+def api_agent_office():
+    """Lightweight agent registry plus current work for the overview office."""
+    try:
+        from agents.agent_registry import iter_agent_boundaries
+        from orchestrator import auto_research, paper_worker
+
+        work = _current_work_snapshot()
+        paper_worker_status = _safe_service_payload("paper_worker", paper_worker.get_status)
+        auto_research_status = _safe_service_payload("auto_research", auto_research.get_status)
+        gpu_counts = _service_counts("gpu_jobs")
+        manuscript_counts = _service_counts("manuscript_runs")
+
+        pipeline_events = work.get("pipeline") or []
+        stage_markers = {
+            "paper_extraction": ("ingest", "prefetch", "download", "extract", "paper_"),
+            "graph_construction": ("graph", "taxonomy", "node_", "opportunity", "signal", "abstraction", "bridge"),
+            "idea_generation": ("reasoning", "contradiction", "insight", "novelty", "idea", "research"),
+        }
+
+        items_by_key = {key: [] for key in (
+            "paper_extraction", "graph_construction", "idea_generation",
+            "experiment_planning", "experiment_execution", "manuscript_generation", "orchestration"
+        )}
+
+        for paper in (work.get("papers") or [])[:5]:
+            detail = "{} | {}".format(paper.get("id") or "", paper.get("processing_stage") or paper.get("status") or "")
+            items_by_key["paper_extraction"].append(_office_item(paper.get("title") or paper.get("id"), paper.get("status") or "processing", detail, "paper"))
+
+        for event in pipeline_events[:8]:
+            stage = str(event.get("stage") or event.get("title") or "pipeline")
+            status = str(event.get("status") or "step")
+            detail = event.get("last_note") or event.get("updated_at") or ""
+            lowered = stage.lower()
+            placed = False
+            for key, markers in stage_markers.items():
+                if any(marker in lowered for marker in markers):
+                    items_by_key[key].append(_office_item(event.get("title") or stage, status, detail, "pipeline"))
+                    placed = True
+                    break
+            if not placed:
+                items_by_key["orchestration"].append(_office_item(event.get("title") or stage, status, detail, "pipeline"))
+
+        for plan in (work.get("experiment_plans") or [])[:5]:
+            detail = plan.get("last_note") or plan.get("last_error") or plan.get("updated_at") or ""
+            items_by_key["experiment_planning"].append(_office_item(plan.get("title"), plan.get("stage") or plan.get("status"), detail, "plan"))
+
+        for run in (work.get("experiments") or [])[:5]:
+            detail = "run {} | {}".format(run.get("id") or "", run.get("phase") or run.get("status") or "")
+            items_by_key["experiment_execution"].append(_office_item(run.get("title") or run.get("deep_insight_id"), run.get("status") or "running", detail, "experiment"))
+
+        running_gpu = int(gpu_counts.get("running", 0) or 0)
+        queued_gpu = int(gpu_counts.get("queued", 0) or 0)
+        if running_gpu or queued_gpu:
+            items_by_key["experiment_execution"].append(_office_item("GPU scheduler", "running", "{} running, {} queued".format(running_gpu, queued_gpu), "gpu"))
+
+        for manuscript in (work.get("manuscripts") or [])[:5]:
+            detail = "run {} | {}".format(manuscript.get("id") or "", manuscript.get("updated_at") or "")
+            items_by_key["manuscript_generation"].append(_office_item(manuscript.get("title") or manuscript.get("deep_insight_id"), manuscript.get("status") or "manuscript", detail, "manuscript"))
+
+        if manuscript_counts:
+            blocked = int(manuscript_counts.get("manuscript_blocked", 0) or 0)
+            drafting = int(manuscript_counts.get("drafting", 0) or 0)
+            if blocked or drafting:
+                items_by_key["manuscript_generation"].append(_office_item("PaperOrchestra", "blocked" if blocked else "drafting", "{} drafting, {} blocked".format(drafting, blocked), "service"))
+
+        if paper_worker_status.get("running"):
+            items_by_key["orchestration"].append(_office_item("Paper worker", "running", "batch {} every {}s".format(paper_worker_status.get("batch_size") or "?", paper_worker_status.get("interval_seconds") or "?"), "service"))
+        if auto_research_status.get("running"):
+            items_by_key["orchestration"].append(_office_item("Auto research", "running", "review {} | blocked {} | completed {}".format(auto_research_status.get("review_pending") or 0, auto_research_status.get("blocked") or 0, auto_research_status.get("completed") or 0), "service"))
+
+        service_running = {
+            "paper_extraction": bool(paper_worker_status.get("running")) or bool(items_by_key["paper_extraction"]),
+            "idea_generation": bool(auto_research_status.get("running")) and bool((auto_research_status.get("researching") or 0) or (auto_research_status.get("verifying") or 0)),
+            "experiment_planning": bool(auto_research_status.get("review_pending") or 0),
+            "experiment_execution": bool(running_gpu or queued_gpu),
+            "manuscript_generation": bool(manuscript_counts.get("drafting", 0) or manuscript_counts.get("manuscript_blocked", 0)),
+            "orchestration": bool(paper_worker_status.get("running") or auto_research_status.get("running")),
+        }
+
+        accents = ["blue", "green", "gold", "purple", "red", "cyan", "slate"]
+        departments = []
+        total_sub_agents = 0
+        for index, boundary in enumerate(iter_agent_boundaries()):
+            sub_agents = []
+            for module in boundary.modules:
+                sub_agents.append({"name": _office_leaf(module), "path": module, "kind": "module"})
+            for script in boundary.scripts:
+                sub_agents.append({"name": _office_leaf(script), "path": script, "kind": "script"})
+            total_sub_agents += len(sub_agents)
+            items = items_by_key.get(boundary.key, [])[:8]
+            departments.append({
+                "key": boundary.key,
+                "title": boundary.title.replace(" Agent", ""),
+                "responsibility": boundary.responsibility,
+                "accent": accents[index % len(accents)],
+                "status": _office_department_state(items, service_running.get(boundary.key, False)),
+                "sub_agents": sub_agents,
+                "items": items,
+                "item_count": len(items_by_key.get(boundary.key, [])),
+            })
+
+        return jsonify({
+            "departments": departments,
+            "summary": {
+                "departments": len(departments),
+                "sub_agents": total_sub_agents,
+                "working": sum(1 for dep in departments if dep["status"] == "working"),
+                "blocked": sum(1 for dep in departments if dep["status"] == "blocked"),
+            },
+            "updated_at": time.time(),
+        })
+    except Exception as exc:
+        return _api_failure("agent_office", exc)
 
 
 @app.route("/api/processing")

@@ -30,3 +30,9 @@ workspace/pdfs/
 workspace/tmp/
 
 .DS_Store
+
+# Local backups and macOS resource fork files
+._*
+**/._*
+.env.backup.*
+*.backup.*

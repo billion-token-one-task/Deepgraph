@@ -154,5 +154,42 @@ class IdempotencyAndEventTests(TempDbCase):
 
         rollback.assert_called_once()
 
+class PipelineTextPrefetchTests(TempDbCase):
+    def test_prefetch_paper_texts_updates_text_ready_concurrently(self):
+        from orchestrator import pipeline
+
+        for idx in range(3):
+            database.insert_paper(
+                {
+                    "id": f"2401.0000{idx}",
+                    "title": f"Paper {idx}",
+                    "authors": ["A"],
+                    "abstract": "short abstract",
+                    "categories": ["cs.LG"],
+                    "published_date": "2024-01-01",
+                    "pdf_url": f"https://example.com/{idx}.pdf",
+                }
+            )
+
+        def fake_text(arxiv_id, pdf_url="", abstract=""):
+            return ("main text for " + arxiv_id + " ") * 80, "appendix"
+
+        with (
+            mock.patch.object(pipeline, "PAPER_TEXT_PREFETCH_CONCURRENCY", 3),
+            mock.patch.object(pipeline, "get_paper_text_parts", side_effect=fake_text) as get_text,
+        ):
+            results = pipeline._prefetch_paper_texts([f"2401.0000{idx}" for idx in range(3)])
+
+        self.assertEqual(sum(1 for row in results if row.get("ok")), 3)
+        self.assertEqual(get_text.call_count, 3)
+        for idx in range(3):
+            row = database.fetchone("SELECT full_text, appendix_text, processing_stage FROM papers WHERE id=?", (f"2401.0000{idx}",))
+            self.assertIn(f"2401.0000{idx}", row["full_text"])
+            self.assertEqual(row["appendix_text"], "appendix")
+            self.assertEqual(row["processing_stage"], "text_ready")
+            checkpoint = database.get_paper_checkpoint(f"2401.0000{idx}", "text_ready")
+            self.assertTrue(checkpoint["payload"].get("prefetched"))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -103,6 +103,43 @@ class ValidationMetricParsingTests(unittest.TestCase):
         self.assertEqual(result["failure_type"], "missing_final_results")
         self.assertIn("model_ready", result["last_benchmark_stage"])
 
+    def test_formal_runner_guard_blocks_smoke_script_and_json_literals(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workdir = Path(tmpdir)
+            code_dir = workdir / "code"
+            spec_dir = workdir / "spec"
+            code_dir.mkdir()
+            spec_dir.mkdir()
+            (spec_dir / "success_criteria.json").write_text(
+                json.dumps(
+                    {
+                        "metric_name": "accuracy",
+                        "publication_evidence_contract": {
+                            "evidence_tier": "benchmark_plan",
+                            "required_real_benchmarks": ["GSM8K"],
+                            "quality_gates": {"requires_full_benchmark_package": True},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (code_dir / "train.py").write_text(
+                "import json\nprint('tiny smoke baseline')\nprint('FINAL_RESULTS: ' + json.dumps({'accuracy': 0.0}, sort_keys=true))\n",
+                encoding="utf-8",
+            )
+
+            result = validation_loop._run_experiment(
+                workdir,
+                code_dir,
+                30,
+                baseline_command=f'"{sys.executable}" train.py',
+                metric_name="accuracy",
+            )
+
+        self.assertEqual(result["status"], "crash")
+        self.assertEqual(result["failure_type"], "contract_violation")
+        self.assertIn("sort_keys=true", result["error"])
+
     def test_validation_benchmark_env_preserves_paper_grade_contract_budget(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             workdir = Path(tmpdir)
@@ -125,7 +162,8 @@ class ValidationMetricParsingTests(unittest.TestCase):
 
         self.assertEqual(env["DEEPGRAPH_BENCHMARK_MAX_EXAMPLES"], "128")
         self.assertEqual(env["DEEPGRAPH_BENCHMARK_SEEDS"], "5")
-        self.assertIn("CGGR", env["DEEPGRAPH_BENCHMARK_METHODS"])
+        self.assertEqual(env["DEEPGRAPH_BENCHMARK_MAX_EXAMPLES_CAP"], "64")
+        self.assertEqual(env["DEEPGRAPH_BENCHMARK_SEEDS_CAP"], "3")
         self.assertNotIn("DEEPGRAPH_BENCHMARK_FULL_RUN", env)
 
     def test_full_benchmark_env_preserves_contract_budget(self):
@@ -232,7 +270,25 @@ class ValidationMetricParsingTests(unittest.TestCase):
                     "oracle_router": {"utility": 0.52, "upper_bound": True},
                 },
                 "seed_results": [{"seed": 1}, {"seed": 2}, {"seed": 3}],
-                "datasets": ["real"],
+                "datasets": [{"name": "real", "num_materialized_examples": 12}],
+            }
+            protocol = {
+                "schema_version": "benchmark_protocol_v1",
+                "dataset_protocols": [
+                    {
+                        "name": "real",
+                        "sample_policy": {
+                            "paper_evaluation": "use_official_or_materialized_full_split",
+                            "requires_materialized_count": True,
+                        },
+                    }
+                ],
+                "seed_policy": {"minimum_repeats": 3},
+                "full_benchmark_requirements": {
+                    "required_dataset_names": ["real"],
+                    "required_artifacts": [],
+                    "global_numeric_thresholds_allowed": False,
+                },
             }
 
             path, full_completed = validation_loop._write_benchmark_artifact_manifest(
@@ -240,7 +296,15 @@ class ValidationMetricParsingTests(unittest.TestCase):
                 run_id=1,
                 metric_name="utility",
                 benchmark_summary=summary,
-                criteria={"metric_direction": "higher", "publication_evidence_contract": {"minimum_seeds": 3}},
+                criteria={
+                    "metric_direction": "higher",
+                    "publication_evidence_contract": {
+                        "minimum_seeds": 3,
+                        "benchmark_protocol": protocol,
+                        "require_strongest_baseline_win": False,
+                        "require_statistical_significance": False,
+                    },
+                },
                 verdict="confirmed",
                 validation_summary_path=workdir / "validation_summary.json",
             )

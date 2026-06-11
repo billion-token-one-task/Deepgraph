@@ -117,6 +117,15 @@ def _minimum_seeds(plan: dict[str, Any]) -> int:
         return 0
 
 
+def _required_seed_count(plan: dict[str, Any]) -> int:
+    protocol = plan.get("benchmark_protocol") if isinstance(plan.get("benchmark_protocol"), dict) else {}
+    seed_policy = protocol.get("seed_policy") if isinstance(protocol.get("seed_policy"), dict) else {}
+    try:
+        return max(1, int(seed_policy.get("minimum_repeats") or 1))
+    except (TypeError, ValueError):
+        return 1
+
+
 def _novelty_band(insight: dict[str, Any]) -> str:
     related = _as_dict(insight.get("related_work_positioning"))
     raw = (
@@ -188,6 +197,7 @@ def classify_idea_route(
     )
     metric = _metric_name(plan)
     seeds = _minimum_seeds(plan)
+    required_seeds = _required_seed_count(plan)
     resource_class = _text(insight.get("resource_class") or plan.get("resource_class") or "cpu").lower()
     corpus = " ".join(
         [
@@ -217,8 +227,8 @@ def classify_idea_route(
         missing.append("real_model_target")
     if len(ablations) < 2:
         missing.append("mechanism_ablations")
-    if seeds < 3:
-        missing.append("three_or_more_seeds")
+    if seeds < required_seeds:
+        missing.append("benchmark_protocol_seed_repeats")
     if not metric:
         missing.append("primary_metric")
     if plan.get("generated_runner_supported") is False:
@@ -288,7 +298,7 @@ def classify_idea_route(
             "minimum_real_datasets": 1,
             "minimum_models": 1 if requires_model else 0,
             "minimum_ablations": 2,
-            "minimum_seeds": 3,
+            "minimum_seeds": required_seeds,
         },
         "decision_inputs": {
             "novelty": novelty,
@@ -298,6 +308,7 @@ def classify_idea_route(
             "model_count": len(models),
             "ablation_count": len(ablations),
             "minimum_seeds": seeds,
+            "required_seeds": required_seeds,
             "requires_model": requires_model,
             "gpu_allowed": gpu_allowed,
             "gpu_block_reason": gpu_block_reason,

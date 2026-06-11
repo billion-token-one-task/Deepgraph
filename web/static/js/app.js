@@ -16,6 +16,7 @@ let exploreData     = null;      // cached /api/taxonomy/<id> response
 let eventSource     = null;
 let events          = [];        // max 50
 let activePapers    = {};        // paper_id -> {title, step, startTime}
+let agentOfficeData = null;       // /api/agent_office snapshot
 let statsCache      = null;
 let allPapers       = [];
 let selectedPaperId = null;
@@ -40,16 +41,18 @@ function fmt(n) {
 }
 
 function esc(str) {
-    if (!str) return '';
-    const d = document.createElement('div');
-    d.textContent = str;
+    if (str == null) return "";
+    const d = document.createElement("div");
+    d.textContent = String(str);
     return d.innerHTML;
 }
 
 function trunc(str, max) {
-    if (!str) return '';
-    return str.length > max ? str.slice(0, max - 1) + '\u2026' : str;
+    if (str == null) return "";
+    str = String(str);
+    return str.length > max ? str.slice(0, max - 1) + "\u2026" : str;
 }
+
 
 function $(sel) { return document.querySelector(sel); }
 function $$(sel) { return document.querySelectorAll(sel); }
@@ -60,6 +63,177 @@ async function api(path, opts) {
     if (!r.ok) throw new Error(`API ${path} returned ${r.status}`);
     return r.json();
 }
+
+function mathJaxConfig() {
+    return {
+        tex: {
+            inlineMath: [["\\(", "\\)"], ["$", "$"]],
+            displayMath: [["\\[", "\\]"], ["$$", "$$"]],
+            processEscapes: true,
+            processEnvironments: true
+        },
+        options: {
+            skipHtmlTags: ["script", "noscript", "style", "textarea", "pre", "code"]
+        },
+        startup: {
+            typeset: false,
+            ready: () => {
+                window.MathJax.startup.defaultReady();
+                if (window._dgTypesetMath) window._dgTypesetMath(document.body);
+            }
+        }
+    };
+}
+
+function ensureMathJax() {
+    const existingScript = document.getElementById("MathJax-script") || document.querySelector('script[src*="mathjax"]');
+    if (!window.MathJax) window.MathJax = mathJaxConfig();
+    if (window.MathJax.typesetPromise || existingScript || window.MathJax._dgLoading) return;
+    window.MathJax._dgLoading = true;
+    const script = document.createElement("script");
+    script.id = "MathJax-script";
+    script.defer = true;
+    script.src = "/static/vendor/mathjax/tex-svg.js";
+    document.head.appendChild(script);
+}
+
+const LATEX_OVERESCAPED_TOKEN = /\\\\([()\[\]]|[A-Za-z]+|[%#$&_{}])/g;
+
+function normalizeLatexEscapes(text) {
+    return String(text || "").replace(LATEX_OVERESCAPED_TOKEN, "\\$1");
+}
+
+function normalizeLatexInNode(root) {
+    const skipSelector = "script,noscript,style,textarea,pre,code";
+    const normalizeTextNode = node => {
+        if (!node || !node.nodeValue || !node.nodeValue.includes("\\\\")) return;
+        const parent = node.parentElement;
+        if (parent && parent.closest(skipSelector)) return;
+        const next = normalizeLatexEscapes(node.nodeValue);
+        if (next !== node.nodeValue) node.nodeValue = next;
+    };
+    if (root.nodeType === Node.TEXT_NODE) {
+        normalizeTextNode(root);
+        return;
+    }
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    let node = walker.nextNode();
+    while (node) {
+        normalizeTextNode(node);
+        node = walker.nextNode();
+    }
+}
+
+const EXISTING_MATH_DELIM = /(\\\[[\s\S]*?\\\]|\\\([\s\S]*?\\\)|\$\$[\s\S]*?\$\$|\$[^$\n]+\$)/g;
+const BARE_LATEX_MARKER = /\\[A-Za-z]+|\\[%#$&_{}]/g;
+const BARE_SUBSCRIPT_MARKER = /[A-Za-zΑ-Ωα-ω]+_\{?[A-Za-z0-9Α-Ωα-ω]+\}?/;
+const BARE_SUBSCRIPT_RUN = /(^|[\s([{,;])((?:[A-Za-zΑ-Ωα-ω]+_\{?[A-Za-z0-9Α-Ωα-ω]+\}?)(?:\s*,\s*(?:\.\.\.,\s*)?[A-Za-zΑ-Ωα-ω]+_\{?[A-Za-z0-9Α-Ωα-ω]+\}?)*)/g;
+const BARE_LATEX_BOUNDARY = /^(\s+(?:over|under|where|which|while|when|after|before|with|without|for|from|to|by|as|that|because|rather|than|and|or|is|are|be|uses|construct|decode|chosen|emphasizes|computed|obtains|remains|subject|stop|let|then|else)\b|[,;:]\s+(?:where|which|while|when|after|before|with|without|for|from|to|by|as|that|because|rather|than|and|or|construct|decode|chosen|emphasizes|computed|subject|stop|let|then|else)\b|\.\s+[A-Z])/;
+
+function latexFragmentLeft(segment, markerIndex, floor) {
+    let start = markerIndex;
+    while (start > floor && !/\s/.test(segment[start - 1]) && !/[;:]/.test(segment[start - 1])) start -= 1;
+    return start;
+}
+
+function latexFragmentRight(segment, markerEnd) {
+    let end = markerEnd;
+    while (end < segment.length) {
+        const rest = segment.slice(end);
+        if (BARE_LATEX_BOUNDARY.test(rest)) break;
+        if (segment[end] === "\n") break;
+        end += 1;
+    }
+    return end;
+}
+
+function wrapBareLatexSegment(segment) {
+    let out = "";
+    let pos = 0;
+    BARE_LATEX_MARKER.lastIndex = 0;
+    let match;
+    while ((match = BARE_LATEX_MARKER.exec(segment)) !== null) {
+        if (match.index < pos) continue;
+        const start = latexFragmentLeft(segment, match.index, pos);
+        const end = latexFragmentRight(segment, match.index + match[0].length);
+        const fragment = segment.slice(start, end).trim();
+        if (!fragment || fragment.length < 2) continue;
+        out += segment.slice(pos, start);
+        const leading = segment.slice(start, end).match(/^\s*/)[0];
+        const trailing = segment.slice(start, end).match(/\s*$/)[0];
+        const core = segment.slice(start + leading.length, end - trailing.length);
+        out += leading + "\\(" + core + "\\)" + trailing;
+        pos = end;
+        BARE_LATEX_MARKER.lastIndex = pos;
+    }
+    return out + segment.slice(pos);
+}
+
+function isExistingMathPart(part) {
+    EXISTING_MATH_DELIM.lastIndex = 0;
+    const yes = EXISTING_MATH_DELIM.test(part);
+    EXISTING_MATH_DELIM.lastIndex = 0;
+    return yes;
+}
+
+function splitOutsideExistingMath(value, transform) {
+    return String(value || "").split(EXISTING_MATH_DELIM).map(part => {
+        if (!part || isExistingMathPart(part)) return part;
+        return transform(part);
+    }).join("");
+}
+
+function wrapBareSubscriptRuns(segment) {
+    BARE_SUBSCRIPT_RUN.lastIndex = 0;
+    return String(segment || "").replace(BARE_SUBSCRIPT_RUN, (match, prefix, core) => `${prefix}\\(${core}\\)`);
+}
+
+function wrapBareInlineLatex(text) {
+    const value = String(text || "");
+    if (!(/\\[A-Za-z]+|\\[%#$&_{}]/.test(value) || BARE_SUBSCRIPT_MARKER.test(value))) return value;
+    const latexWrapped = splitOutsideExistingMath(value, part => wrapBareLatexSegment(part));
+    return splitOutsideExistingMath(latexWrapped, part => wrapBareSubscriptRuns(part));
+}
+
+function wrapBareInlineLatexInNode(root) {
+    const skipSelector = "script,noscript,style,textarea,pre,code,mjx-container";
+    const mathTextSelector = ".paper-reader-section,.paper-claim-list,.insight-card,.opp-card,.proposal-body";
+    const wrapTextNode = node => {
+        if (!node || !node.nodeValue) return;
+        if (!node.nodeValue.includes("\\") && !BARE_SUBSCRIPT_MARKER.test(node.nodeValue)) return;
+        const parent = node.parentElement;
+        if (parent && (parent.closest(skipSelector) || !parent.closest(mathTextSelector))) return;
+        const next = wrapBareInlineLatex(node.nodeValue);
+        if (next !== node.nodeValue) node.nodeValue = next;
+    };
+    if (root.nodeType === Node.TEXT_NODE) {
+        wrapTextNode(root);
+        return;
+    }
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    let node = walker.nextNode();
+    while (node) {
+        wrapTextNode(node);
+        node = walker.nextNode();
+    }
+}
+
+function typesetMath(root) {
+    if (!root) return;
+    normalizeLatexInNode(root);
+    wrapBareInlineLatexInNode(root);
+    const mj = window.MathJax;
+    if (!mj || !mj.typesetPromise) {
+        ensureMathJax();
+        return;
+    }
+    window.clearTimeout(root._dgMathTimer);
+    root._dgMathTimer = window.setTimeout(() => {
+        mj.typesetPromise([root]).catch(err => console.warn("MathJax typeset failed:", err));
+    }, 0);
+}
+window._dgTypesetMath = typesetMath;
+ensureMathJax();
 
 function timeAgo(ts) {
     if (!ts) return '';
@@ -93,6 +267,16 @@ function switchTab(tab) {
 
 function onTabActivated(tab) {
     switch (tab) {
+        case 'overview':
+            if (!providersLoaded) loadProviders();
+            startProviderRefresh();
+            break;
+        case 'office':
+            loadProcessingPapers();
+            window.requestAnimationFrame(() => {
+                if (agentOfficeRenderer) agentOfficeRenderer.rebuildForCurrentSize();
+            });
+            break;
         case 'explore':
             // Navigate to current explore node if not yet loaded
             if (!exploreData) navigateTo(exploreNodeId);
@@ -108,10 +292,6 @@ function onTabActivated(tab) {
             break;
         case 'experiments':
             loadExperimentsTab();
-            break;
-        case 'providers':
-            if (!providersLoaded) loadProviders();
-            startProviderRefresh();
             break;
     }
 }
@@ -226,7 +406,8 @@ function trackPaperEvent(ev) {
 
 async function loadProcessingPapers() {
     try {
-        const data = await api('/api/processing');
+        const [data, office] = await Promise.all([api("/api/processing"), api("/api/agent_office").catch(() => null)]);
+        if (office && Array.isArray(office.departments)) agentOfficeData = office;
         const rows = data.papers || data;
         if (data.pipeline_running != null) pipelineRunning = data.pipeline_running;
 
@@ -265,33 +446,886 @@ async function loadProcessingPapers() {
     } catch (e) { /* ignore */ }
 }
 
-function renderProcessingList() {
-    const listEl = el('processingList');
-    const countEl = el('processingCount');
-    const entries = Object.entries(activePapers);
-    const activeCount = entries.filter(([, info]) => !info.done).length;
-    countEl.textContent = activeCount || entries.length;
+const OFFICE_ASSET_BASE = "/static/vendor/pixel-agents/assets";
 
-    if (entries.length === 0) {
-        listEl.innerHTML = '<p class="empty-msg">Idle</p>';
-        return;
-    }
+const OFFICE_CHARACTER_COUNT = 6;
+const OFFICE_FRAME_W = 16;
+const OFFICE_FRAME_H = 32;
 
-    listEl.innerHTML = entries.map(([pid, info]) => {
-        const elapsed = Math.round((Date.now() - info.startTime) / 1000);
-        const doneClass = info.done ? ' proc-done' : '';
-        const stepLabel = info.done
-            ? (info.step === 'error' ? 'error' : `done (${elapsed}s)`)
-            : `${info.step} (${elapsed}s)`;
-        return `<div class="proc-item${doneClass}">
-            <span class="proc-id">${esc(pid)}</span>
-            <span class="proc-title">${esc(trunc(info.title, 50))}</span>
-            <span class="proc-step">${esc(stepLabel)}</span>
-        </div>`;
-    }).join('');
+function officeAsset(path) {
+    return `${OFFICE_ASSET_BASE}/${path}`;
 }
 
-// ── Feed ─────────────────────────────────────────────────────────────
+const OFFICE_FALLBACK_DEPARTMENTS = [
+    { key: "paper_extraction", title: "Paper Extraction", accent: "blue", status: "working", responsibility: "Discover papers, parse PDFs, extract claims, and audit completeness.", sub_agents: [], items: [] },
+    { key: "graph_construction", title: "Graph Construction", accent: "green", status: "idle", responsibility: "Maintain taxonomy, evidence graph, and opportunity signals.", sub_agents: [], items: [] },
+    { key: "idea_generation", title: "Idea Generation", accent: "gold", status: "idle", responsibility: "Generate, rank, route, and verify research ideas.", sub_agents: [], items: [] },
+    { key: "experiment_planning", title: "Experiment Planning", accent: "purple", status: "idle", responsibility: "Turn ideas into benchmark contracts and reviewed plans.", sub_agents: [], items: [] },
+    { key: "experiment_execution", title: "Experiment Execution", accent: "red", status: "idle", responsibility: "Run validation loops, code agents, GPU jobs, and merge watchers.", sub_agents: [], items: [] },
+    { key: "manuscript_generation", title: "Manuscript Generation", accent: "cyan", status: "idle", responsibility: "Draft, audit, refine, and bundle manuscripts.", sub_agents: [], items: [] },
+    { key: "orchestration", title: "Orchestration", accent: "slate", status: "working", responsibility: "Coordinate workers, schedules, web service, and deployment hooks.", sub_agents: [], items: [] }
+];
+
+function officeFallbackSnapshot() {
+    const activeEntries = Object.entries(activePapers).filter(([, info]) => !info.done);
+    const departments = OFFICE_FALLBACK_DEPARTMENTS.map(dep => ({ ...dep, sub_agents: dep.sub_agents || [], items: [] }));
+    if (activeEntries.length) {
+        departments[0].items = activeEntries.slice(0, 4).map(([pid, info]) => ({
+            title: info.title || pid,
+            status: info.step || "processing",
+            detail: pid,
+            kind: "paper"
+        }));
+        departments[0].status = "working";
+    }
+    const activeCount = departments.filter(dep => dep.status === "working").length;
+    return { departments, summary: { departments: departments.length, sub_agents: 0, working: activeCount, blocked: 0 } };
+}
+
+function officeSnapshot() {
+    if (agentOfficeData && Array.isArray(agentOfficeData.departments)) return agentOfficeData;
+    return officeFallbackSnapshot();
+}
+
+function officeStatusLabel(status) {
+    if (status === "blocked") return "needs attention";
+    if (status === "working") return "active";
+    return "idle";
+}
+
+function officeLeadText(dep) {
+    const items = Array.isArray(dep.items) ? dep.items : [];
+    if (items.length) {
+        const lead = items[0];
+        return `${lead.status || dep.status}: ${lead.title || dep.title}`;
+    }
+    if (dep.status === "blocked") return "waiting on a repair path";
+    if (dep.status === "working") return "coordinating background work";
+    return "standing by";
+}
+
+function officeAgentAction(agent, dep, index) {
+    const name = `${agent.name || agent.path || ""} ${agent.path || ""}`.toLowerCase();
+    const status = dep.status || "idle";
+    if (status === "blocked") return "blocked";
+    if (name.includes("reader") || name.includes("extract") || name.includes("pdf") || name.includes("paper")) return "reading";
+    if (name.includes("writer") || name.includes("manuscript") || name.includes("orchestra") || name.includes("figure")) return "typing";
+    if (name.includes("experiment") || name.includes("forge") || name.includes("gpu") || name.includes("benchmark")) return "typing";
+    if (name.includes("graph") || name.includes("taxonomy") || name.includes("map") || name.includes("route")) return "walking";
+    return status === "working" ? (index % 3 === 0 ? "typing" : "walking") : "idle";
+}
+
+function officeActionVerb(action, depStatus) {
+    if (depStatus === "blocked") return "needs review";
+    if (action === "typing") return "drafting";
+    if (action === "reading") return "reading";
+    if (action === "walking") return "routing";
+    return "resting";
+}
+
+function officeAccentColor(accent) {
+    return {
+        blue: "#3a76b8",
+        green: "#3d8b5e",
+        gold: "#a8842a",
+        purple: "#7c5cbf",
+        red: "#c4453a",
+        cyan: "#2f8c99",
+        slate: "#6f6256"
+    }[accent || ""] || "#c4704b";
+}
+
+function officeHash(value) {
+    let h = 2166136261;
+    const s = String(value || "");
+    for (let i = 0; i < s.length; i++) {
+        h ^= s.charCodeAt(i);
+        h = Math.imul(h, 16777619);
+    }
+    return h >>> 0;
+}
+
+function canvasRoundRect(ctx, x, y, w, h, r) {
+    const rr = Math.max(0, Math.min(r, w / 2, h / 2));
+    ctx.beginPath();
+    ctx.moveTo(x + rr, y);
+    ctx.lineTo(x + w - rr, y);
+    ctx.quadraticCurveTo(x + w, y, x + w, y + rr);
+    ctx.lineTo(x + w, y + h - rr);
+    ctx.quadraticCurveTo(x + w, y + h, x + w - rr, y + h);
+    ctx.lineTo(x + rr, y + h);
+    ctx.quadraticCurveTo(x, y + h, x, y + h - rr);
+    ctx.lineTo(x, y + rr);
+    ctx.quadraticCurveTo(x, y, x + rr, y);
+}
+
+function canvasFillRoundRect(ctx, x, y, w, h, r, fill, stroke, lineWidth) {
+    canvasRoundRect(ctx, x, y, w, h, r);
+    if (fill) {
+        ctx.fillStyle = fill;
+        ctx.fill();
+    }
+    if (stroke) {
+        ctx.lineWidth = lineWidth || 1;
+        ctx.strokeStyle = stroke;
+        ctx.stroke();
+    }
+}
+
+function canvasTextFit(ctx, text, x, y, maxWidth) {
+    let value = String(text || "");
+    if (!value) return;
+    if (ctx.measureText(value).width <= maxWidth) {
+        ctx.fillText(value, x, y);
+        return;
+    }
+    while (value.length > 1 && ctx.measureText(value + "...").width > maxWidth) {
+        value = value.slice(0, -1);
+    }
+    ctx.fillText(value + "...", x, y);
+}
+
+function canvasWrapText(ctx, text, x, y, maxWidth, lineHeight, maxLines) {
+    const words = String(text || "").split(/\s+/).filter(Boolean);
+    let line = "";
+    let lines = 0;
+    for (const word of words) {
+        const test = line ? `${line} ${word}` : word;
+        if (ctx.measureText(test).width > maxWidth && line) {
+            canvasTextFit(ctx, line, x, y + lines * lineHeight, maxWidth);
+            lines += 1;
+            line = word;
+            if (lines >= maxLines) return;
+        } else {
+            line = test;
+        }
+    }
+    if (line && lines < maxLines) canvasTextFit(ctx, line, x, y + lines * lineHeight, maxWidth);
+}
+
+function loadOfficeImage(src) {
+    return new Promise(resolve => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = () => resolve(null);
+        img.src = src;
+    });
+}
+
+function renderProcessingList() {
+    const listEl = el("processingList");
+    const countEl = el("processingCount");
+    if (!listEl || !countEl) return;
+
+    const data = officeSnapshot();
+    const departments = Array.isArray(data.departments) ? data.departments : [];
+    const summary = data.summary || {};
+    const working = summary.working || departments.filter(dep => dep.status === "working").length;
+    const blocked = summary.blocked || departments.filter(dep => dep.status === "blocked").length;
+    const totalAgents = summary.sub_agents || departments.reduce((n, dep) => n + ((dep.sub_agents || []).length), 0);
+    countEl.textContent = `${working} active / ${totalAgents} agents`;
+
+    if (!el("agentOfficeCanvas")) {
+        listEl.innerHTML = `<div class="agent-office-map">
+            <div class="office-hud">
+                <div><span>Departments</span><strong id="officeDeptCount">0</strong></div>
+                <div><span>Sub-agents</span><strong id="officeAgentCount">0</strong></div>
+                <div><span>Active</span><strong id="officeActiveCount">0</strong></div>
+                <div><span>Blocked</span><strong id="officeBlockedCount">0</strong></div>
+            </div>
+            <div class="office-nowline" id="officeNowline"></div>
+            <div class="office-stage"><canvas id="agentOfficeCanvas" aria-label="DeepGraph agent office"></canvas></div>
+        </div>`;
+    }
+
+    const deptEl = el("officeDeptCount");
+    const agentEl = el("officeAgentCount");
+    const activeEl = el("officeActiveCount");
+    const blockedEl = el("officeBlockedCount");
+    if (deptEl) deptEl.textContent = departments.length;
+    if (agentEl) agentEl.textContent = totalAgents;
+    if (activeEl) activeEl.textContent = working;
+    if (blockedEl) blockedEl.textContent = blocked;
+
+    const nowItems = departments.flatMap(dep => (dep.items || []).slice(0, 1).map(item => ({ dep: dep.title, item }))).slice(0, 5);
+    const nowLineEl = el("officeNowline");
+    if (nowLineEl) {
+        nowLineEl.innerHTML = nowItems.length
+            ? nowItems.map(({ dep, item }) => `<span><b>${esc(dep)}</b>: ${esc(trunc(item.title || item.status || "working", 56))}</span>`).join("")
+            : `<span><b>System</b>: waiting for the next scheduled job</span>`;
+    }
+
+    syncAgentOfficeCanvas(data);
+}
+
+let agentOfficeRenderer = null;
+
+function syncAgentOfficeCanvas(data) {
+    const canvas = el("agentOfficeCanvas");
+    if (!canvas) return;
+    if (!agentOfficeRenderer || agentOfficeRenderer.canvas !== canvas) {
+        agentOfficeRenderer = new AgentOfficeCanvas(canvas);
+    }
+    agentOfficeRenderer.setData(data);
+}
+
+function AgentOfficeCanvas(canvas) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext("2d");
+    this.assets = {};
+    this.ready = false;
+    this.data = null;
+    this.scene = { rooms: [], agents: [], world: { w: 1800, h: 1160 } };
+    this.hovered = null;
+    this.mouse = null;
+    this.lastLayoutWidth = 0;
+    this.raf = null;
+    this.t = 0;
+    this.assetPromise = this.loadAssets();
+    this.bind();
+    this.start();
+}
+
+AgentOfficeCanvas.prototype.loadAssets = async function() {
+    const paths = {
+        floor: officeAsset("floors/floor_0.png"),
+        wall: officeAsset("walls/wall_0.png"),
+        desk: officeAsset("furniture/DESK/DESK_FRONT.png"),
+        pcOn1: officeAsset("furniture/PC/PC_FRONT_ON_1.png"),
+        pcOn2: officeAsset("furniture/PC/PC_FRONT_ON_2.png"),
+        pcOn3: officeAsset("furniture/PC/PC_FRONT_ON_3.png"),
+        pcOff: officeAsset("furniture/PC/PC_FRONT_OFF.png"),
+        board: officeAsset("furniture/WHITEBOARD/WHITEBOARD.png"),
+        shelf: officeAsset("furniture/BOOKSHELF/BOOKSHELF.png"),
+        plant: officeAsset("furniture/PLANT/PLANT.png"),
+        table: officeAsset("furniture/COFFEE_TABLE/COFFEE_TABLE.png"),
+        cooler: officeAsset("furniture/WATER_COOLER/WATER_COOLER.png")
+    };
+    for (let i = 0; i < OFFICE_CHARACTER_COUNT; i++) paths[`char${i}`] = officeAsset(`characters/char_${i}.png`);
+    const loaded = await Promise.all(Object.entries(paths).map(async ([key, src]) => [key, await loadOfficeImage(src)]));
+    for (const [key, img] of loaded) this.assets[key] = img;
+    this.ready = true;
+    this.draw();
+};
+
+AgentOfficeCanvas.prototype.bind = function() {
+    this.canvas.addEventListener("mousemove", evt => {
+        const rect = this.canvas.getBoundingClientRect();
+        const world = this.scene.world;
+        this.mouse = {
+            x: (evt.clientX - rect.left) * (world.w / Math.max(1, rect.width)),
+            y: (evt.clientY - rect.top) * (world.h / Math.max(1, rect.height)),
+            clientX: evt.clientX,
+            clientY: evt.clientY
+        };
+        this.hovered = this.hitAgent(this.mouse.x, this.mouse.y);
+        this.updateTooltip(evt);
+    });
+    this.canvas.addEventListener("mouseleave", () => {
+        this.mouse = null;
+        this.hovered = null;
+        const tip = el("tooltip");
+        if (tip) tip.classList.remove("visible");
+    });
+    window.addEventListener("resize", () => this.rebuildForCurrentSize());
+};
+
+AgentOfficeCanvas.prototype.setData = function(data) {
+    this.data = data || officeFallbackSnapshot();
+    this.scene = this.buildScene(this.data);
+    this.draw();
+};
+
+AgentOfficeCanvas.prototype.availableWidth = function() {
+    const parent = this.canvas.parentElement;
+    const parentWidth = parent ? Math.floor(parent.clientWidth || parent.getBoundingClientRect().width || 0) : 0;
+    if (parentWidth >= 360) return parentWidth;
+    const map = this.canvas.closest(".agent-office-map");
+    const mapWidth = map ? Math.floor(map.clientWidth || map.getBoundingClientRect().width || 0) : 0;
+    if (mapWidth >= 420) return Math.max(360, mapWidth - 24);
+    const content = el("mainContent");
+    const contentWidth = content ? Math.floor(content.clientWidth || content.getBoundingClientRect().width || 0) : 0;
+    if (contentWidth >= 520) return Math.max(360, contentWidth - 60);
+    return Math.max(360, Math.min(1440, (window.innerWidth || 1200) - 360));
+};
+
+AgentOfficeCanvas.prototype.layoutFor = function(total) {
+    const available = Math.max(360, this.availableWidth() - 4);
+    const margin = available < 760 ? 18 : 26;
+    const gap = available < 1120 ? 26 : 34;
+    const minTwoColRoom = 620;
+    const cols = available >= margin * 2 + gap + minTwoColRoom * 2 ? 2 : 1;
+    const roomW = Math.floor((available - margin * 2 - (cols - 1) * gap) / cols);
+    const roomH = Math.round(Math.max(cols === 1 ? 470 : 440, Math.min(cols === 1 ? 620 : 520, roomW * 0.62)));
+    const rows = Math.ceil(Math.max(1, total) / cols);
+    return { available, cols, roomW, roomH, gap, margin, rows };
+};
+
+AgentOfficeCanvas.prototype.rebuildForCurrentSize = function() {
+    if (!this.data) {
+        this.draw();
+        return;
+    }
+    this.scene = this.buildScene(this.data);
+    this.draw();
+};
+
+AgentOfficeCanvas.prototype.rebuildIfLayoutChanged = function() {
+    if (!this.data) return;
+    const width = this.availableWidth();
+    if (Math.abs(width - this.lastLayoutWidth) < 18) return;
+    this.scene = this.buildScene(this.data);
+};
+
+AgentOfficeCanvas.prototype.start = function() {
+    if (this.raf) return;
+    const tick = ts => {
+        this.t = ts / 1000;
+        this.draw();
+        this.raf = window.requestAnimationFrame(tick);
+    };
+    this.raf = window.requestAnimationFrame(tick);
+};
+
+const OFFICE_PIPELINE_ORDER = [
+    "paper_extraction",
+    "graph_construction",
+    "idea_generation",
+    "experiment_planning",
+    "experiment_execution",
+    "manuscript_generation",
+    "orchestration"
+];
+
+function officeItemText(item) {
+    if (!item) return "";
+    return `${item.kind || ""} ${item.status || ""} ${item.title || ""} ${item.detail || ""}`.toLowerCase();
+}
+
+function officeRankAgentsForWork(agents, dep, items) {
+    const taskText = `${dep.key || ""} ${dep.title || ""} ${dep.responsibility || ""} ${(items || []).map(officeItemText).join(" ")}`.toLowerCase();
+    return agents.map((agent, index) => {
+        const path = `${agent.name || ""} ${agent.path || ""}`.toLowerCase();
+        let score = 0;
+        for (const token of path.split(/[^a-z0-9]+/).filter(t => t.length > 2)) {
+            if (taskText.includes(token)) score += 3;
+        }
+        if (/paper|pdf|arxiv|extract|claim|reference/.test(taskText) && /paper|pdf|arxiv|extract|claim|reference|completeness/.test(path)) score += 12;
+        if (/graph|taxonomy|signal|opportunity/.test(taskText) && /graph|taxonomy|signal|opportunity|summary|knowledge/.test(path)) score += 12;
+        if (/idea|insight|novelty|reason|discovery/.test(taskText) && /idea|insight|novelty|reason|discovery|paradigm/.test(path)) score += 12;
+        if (/review|plan|benchmark|contract|audit/.test(taskText) && /review|plan|benchmark|audit|forge|result|requirement/.test(path)) score += 12;
+        if (/gpu|run|experiment|validation|scheduler|shard/.test(taskText) && /gpu|experiment|validation|executor|scheduler|tracking|ssh|benchmark/.test(path)) score += 12;
+        if (/manuscript|paperorchestra|draft|bundle|figure|reference/.test(taskText) && /manuscript|orchestra|figure|literature|semantic|refinement|plotting/.test(path)) score += 12;
+        if (/worker|pipeline|recovery|orchestration|service/.test(taskText) && /worker|pipeline|scheduler|watchdog|workspace|web|auto|forever/.test(path)) score += 12;
+        score += Math.max(0, 6 - index) * 0.1;
+        return { index, score };
+    }).sort((a, b) => b.score - a.score || a.index - b.index).map(x => x.index);
+}
+
+function officeActiveSlotCount(dep, agents, items, workstationCount) {
+    if ((dep.status || "idle") === "idle" || !agents.length) return 0;
+    const itemCount = Math.max(1, (items || []).length);
+    const baseline = dep.status === "blocked" ? 2 : 2;
+    return Math.min(agents.length, workstationCount, Math.max(baseline, Math.min(workstationCount, itemCount)));
+}
+
+function officeWorkingAction(agent, dep) {
+    const text = `${agent.name || ""} ${agent.path || ""} ${dep.key || ""} ${dep.title || ""}`.toLowerCase();
+    if (/reader|read|pdf|extract|arxiv|reference|semantic|literature/.test(text)) return "reading";
+    return "typing";
+}
+
+AgentOfficeCanvas.prototype.buildScene = function(data) {
+    const departments = Array.isArray(data.departments) ? data.departments : [];
+    const total = Math.max(1, departments.length);
+    const layout = this.layoutFor(total);
+    const { cols, roomW, roomH, gap, margin, rows } = layout;
+    this.lastLayoutWidth = this.availableWidth();
+    const world = {
+        w: margin * 2 + cols * roomW + (cols - 1) * gap,
+        h: margin * 2 + rows * roomH + (rows - 1) * gap
+    };
+    const positions = cols === 2 && departments.length === 7
+        ? [{c:0,r:0},{c:1,r:0},{c:0,r:1},{c:1,r:1},{c:0,r:2},{c:1,r:2},{c:0.5,r:3}]
+        : departments.map((_, i) => ({ c: i % cols, r: Math.floor(i / cols) }));
+    const rooms = [];
+    const sceneAgents = [];
+    departments.forEach((dep, index) => {
+        const pos = positions[index] || { c: index % cols, r: Math.floor(index / cols) };
+        const room = {
+            index,
+            dep,
+            x: margin + pos.c * (roomW + gap),
+            y: margin + pos.r * (roomH + gap),
+            w: roomW,
+            h: roomH,
+            accent: officeAccentColor(dep.accent),
+            agents: [],
+            items: Array.isArray(dep.items) ? dep.items : []
+        };
+        room.workstations = this.makeWorkstations(room);
+        const agents = Array.isArray(dep.sub_agents) ? dep.sub_agents : [];
+        const activeCount = officeActiveSlotCount(dep, agents, room.items, room.workstations.length);
+        const activeOrder = new Set(officeRankAgentsForWork(agents, dep, room.items).slice(0, activeCount));
+        const restSlots = this.makeRestSlots(room, Math.max(0, agents.length - activeCount));
+        let workCursor = 0;
+        let restCursor = 0;
+        agents.forEach((agent, agentIndex) => {
+            const seed = officeHash(`${dep.key || dep.title}:${agent.path || agent.name}:${agentIndex}`) / 4294967295;
+            const isWorking = activeOrder.has(agentIndex);
+            const workstation = isWorking ? room.workstations[workCursor % room.workstations.length] : null;
+            const task = isWorking && room.items.length ? room.items[workCursor % room.items.length] : null;
+            const restSlot = restSlots[restCursor % Math.max(1, restSlots.length)] || { x: room.x + room.w / 2, y: room.y + room.h / 2 };
+            const slot = workstation ? { x: workstation.seatX, y: workstation.seatY } : restSlot;
+            const action = isWorking ? officeWorkingAction(agent, dep) : "idle";
+            const spriteIndex = agentIndex % OFFICE_CHARACTER_COUNT;
+            const entry = {
+                agent,
+                dep,
+                room,
+                index: agentIndex,
+                action,
+                spriteIndex,
+                seed,
+                baseX: slot.x,
+                baseY: slot.y,
+                x: slot.x,
+                y: slot.y,
+                bounds: null,
+                working: isWorking,
+                workstation,
+                task,
+                roleLabel: isWorking ? officeActionVerb(action, dep.status) : "resting"
+            };
+            if (isWorking) workCursor += 1;
+            else restCursor += 1;
+            room.agents.push(entry);
+            sceneAgents.push(entry);
+        });
+        rooms.push(room);
+    });
+    return { world, rooms, agents: sceneAgents };
+};
+
+AgentOfficeCanvas.prototype.makeWorkstations = function(room) {
+    const count = room.w < 560 ? 2 : room.w < 720 ? 3 : 4;
+    const deskW = room.w < 560 ? 100 : room.w < 720 ? 108 : 116;
+    const deskH = 72;
+    const sidePad = room.w < 560 ? 46 : 74;
+    const gap = (room.w - sidePad * 2 - count * deskW) / Math.max(1, count - 1);
+    const deskY = room.y + room.h - 118;
+    const stations = [];
+    for (let i = 0; i < count; i++) {
+        const deskX = room.x + sidePad + i * (deskW + Math.max(18, gap));
+        stations.push({
+            deskX,
+            deskY,
+            deskW,
+            deskH,
+            pcX: deskX + deskW / 2 - 18,
+            pcY: deskY - 36,
+            seatX: deskX + deskW / 2,
+            seatY: deskY - 8,
+            labelX: deskX + 4,
+            labelY: deskY - 58
+        });
+    }
+    return stations;
+};
+
+AgentOfficeCanvas.prototype.makeRestSlots = function(room, count) {
+    const slots = [];
+    const cols = Math.min(6, Math.max(2, Math.ceil(Math.sqrt(Math.max(1, count) * 1.2))));
+    const rows = Math.max(1, Math.ceil(Math.max(1, count) / cols));
+    const left = room.x + 78;
+    const right = room.x + room.w - 78;
+    const top = room.y + 230;
+    const bottom = room.y + room.h - 170;
+    const usableW = Math.max(120, right - left);
+    const usableH = Math.max(72, bottom - top);
+    for (let i = 0; i < Math.max(1, count); i++) {
+        const c = i % cols;
+        const r = Math.floor(i / cols);
+        slots.push({
+            x: left + usableW * (c + 0.5) / cols + (((i * 31) % 15) - 7),
+            y: top + usableH * (r + 0.5) / rows + (((i * 17) % 13) - 6)
+        });
+    }
+    return slots;
+};
+
+AgentOfficeCanvas.prototype.resize = function() {
+    const world = this.scene.world || { w: 1200, h: 1200 };
+    const maxWidth = this.availableWidth();
+    const cssW = Math.max(360, maxWidth || world.w || 1200);
+    const cssH = Math.max(560, Math.round(cssW * world.h / world.w));
+    const dpr = window.devicePixelRatio || 1;
+    if (this.canvas.width !== Math.round(cssW * dpr) || this.canvas.height !== Math.round(cssH * dpr)) {
+        this.canvas.width = Math.round(cssW * dpr);
+        this.canvas.height = Math.round(cssH * dpr);
+        this.canvas.style.width = `${cssW}px`;
+        this.canvas.style.height = `${cssH}px`;
+    }
+    const scale = cssW / world.w;
+    this.ctx.setTransform(dpr * scale, 0, 0, dpr * scale, 0, 0);
+    this.ctx.imageSmoothingEnabled = false;
+    return { dpr, scale, cssW, cssH };
+};
+
+AgentOfficeCanvas.prototype.draw = function() {
+    if (!this.ctx || !this.scene) return;
+    this.rebuildIfLayoutChanged();
+    const ctx = this.ctx;
+    const world = this.scene.world;
+    this.resize();
+    ctx.clearRect(0, 0, world.w, world.h);
+    this.drawOfficeBase(ctx);
+    this.drawPipelineFlow(ctx, true);
+    for (const room of this.scene.rooms) this.drawRoomBase(ctx, room);
+    for (const room of this.scene.rooms) this.drawRoomFurniture(ctx, room);
+    const sorted = [...this.scene.agents].sort((a, b) => a.y - b.y);
+    for (const ag of sorted) this.drawAgent(ctx, ag);
+    for (const room of this.scene.rooms) this.drawRoomOverlays(ctx, room);
+    this.drawPipelineFlow(ctx, false);
+    if (this.hovered) this.drawHoverLabel(ctx, this.hovered);
+};
+
+AgentOfficeCanvas.prototype.drawOfficeBase = function(ctx) {
+    const { w, h } = this.scene.world;
+    ctx.fillStyle = "#e7ddcc";
+    ctx.fillRect(0, 0, w, h);
+    this.tileImage(ctx, this.assets.floor, 0, 0, w, h, 2);
+    ctx.fillStyle = "rgba(67,55,45,0.08)";
+    ctx.fillRect(0, 0, w, 30);
+    ctx.strokeStyle = "rgba(67,55,45,0.18)";
+    ctx.lineWidth = 8;
+    ctx.strokeRect(10, 10, w - 20, h - 20);
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = "rgba(255,255,255,0.45)";
+    ctx.strokeRect(18, 18, w - 36, h - 36);
+};
+
+AgentOfficeCanvas.prototype.drawPipelineFlow = function(ctx, underlay) {
+    const byKey = new Map(this.scene.rooms.map(room => [room.dep.key, room]));
+    ctx.save();
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
+    for (let i = 0; i < OFFICE_PIPELINE_ORDER.length - 1; i++) {
+        const from = byKey.get(OFFICE_PIPELINE_ORDER[i]);
+        const to = byKey.get(OFFICE_PIPELINE_ORDER[i + 1]);
+        if (!from || !to) continue;
+        const active = from.dep.status !== "idle" || to.dep.status !== "idle";
+        const p1 = this.roomEdgeToward(from, to);
+        const p2 = this.roomEdgeToward(to, from);
+        const midX = (p1.x + p2.x) / 2;
+        const midY = (p1.y + p2.y) / 2;
+        const bend = p1.y === p2.y ? 0 : (p2.x > p1.x ? 60 : -60);
+        ctx.strokeStyle = underlay ? "rgba(67,55,45,0.16)" : (active ? "rgba(196,112,75,0.72)" : "rgba(67,55,45,0.25)");
+        ctx.lineWidth = underlay ? 10 : 3;
+        ctx.setLineDash(underlay ? [] : [12, 10]);
+        ctx.beginPath();
+        ctx.moveTo(p1.x, p1.y);
+        ctx.quadraticCurveTo(midX + bend, midY, p2.x, p2.y);
+        ctx.stroke();
+        if (!underlay) {
+            this.drawArrowHead(ctx, p1, p2, active ? "rgba(196,112,75,0.85)" : "rgba(67,55,45,0.35)");
+            if (active) {
+                const phase = (this.t * 0.18 + i * 0.13) % 1;
+                const packet = this.quadPoint(p1, { x: midX + bend, y: midY }, p2, phase);
+                this.drawPacket(ctx, packet.x, packet.y, from.accent, `${i + 1}`);
+            }
+        }
+    }
+    ctx.restore();
+};
+
+AgentOfficeCanvas.prototype.roomEdgeToward = function(room, targetRoom) {
+    const cx = room.x + room.w / 2;
+    const cy = room.y + room.h / 2;
+    const tx = targetRoom.x + targetRoom.w / 2;
+    const ty = targetRoom.y + targetRoom.h / 2;
+    const dx = tx - cx;
+    const dy = ty - cy;
+    if (Math.abs(dx) > Math.abs(dy)) {
+        return { x: dx > 0 ? room.x + room.w + 2 : room.x - 2, y: cy };
+    }
+    return { x: cx, y: dy > 0 ? room.y + room.h + 2 : room.y - 2 };
+};
+
+AgentOfficeCanvas.prototype.quadPoint = function(p0, p1, p2, t) {
+    const a = (1 - t) * (1 - t);
+    const b = 2 * (1 - t) * t;
+    const c = t * t;
+    return { x: a * p0.x + b * p1.x + c * p2.x, y: a * p0.y + b * p1.y + c * p2.y };
+};
+
+AgentOfficeCanvas.prototype.drawArrowHead = function(ctx, from, to, color) {
+    const angle = Math.atan2(to.y - from.y, to.x - from.x);
+    const size = 12;
+    ctx.save();
+    ctx.fillStyle = color;
+    ctx.translate(to.x, to.y);
+    ctx.rotate(angle);
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(-size, -size * 0.55);
+    ctx.lineTo(-size, size * 0.55);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+};
+
+AgentOfficeCanvas.prototype.drawPacket = function(ctx, x, y, color, label) {
+    canvasFillRoundRect(ctx, x - 16, y - 11, 32, 22, 5, "rgba(255,253,248,0.95)", color, 2);
+    ctx.font = "800 10px Source Code Pro, monospace";
+    ctx.fillStyle = color;
+    ctx.textAlign = "center";
+    ctx.fillText(label, x, y + 4);
+    ctx.textAlign = "left";
+};
+
+AgentOfficeCanvas.prototype.drawRoomBase = function(ctx, room) {
+    const dep = room.dep;
+    ctx.save();
+    canvasFillRoundRect(ctx, room.x, room.y, room.w, room.h, 8, "rgba(246,239,226,0.94)", "rgba(67,55,45,0.25)", 3);
+    this.tileImage(ctx, this.assets.floor, room.x + 4, room.y + 70, room.w - 8, room.h - 74, 2);
+    ctx.fillStyle = "rgba(255,253,248,0.9)";
+    ctx.fillRect(room.x + 4, room.y + 4, room.w - 8, 72);
+    ctx.fillStyle = room.accent;
+    ctx.fillRect(room.x + 18, room.y + 24, 18, 18);
+    if (dep.status === "working") {
+        ctx.globalAlpha = 0.55 + 0.35 * Math.sin(this.t * 4 + room.index);
+        ctx.fillRect(room.x + 18, room.y + 24, 18, 18);
+        ctx.globalAlpha = 1;
+    }
+    ctx.font = "800 28px Source Sans 3, system-ui, sans-serif";
+    ctx.fillStyle = "#2b2520";
+    canvasTextFit(ctx, dep.title || "Department", room.x + 48, room.y + 42, room.w - 250);
+    ctx.font = "800 12px Source Code Pro, monospace";
+    ctx.fillStyle = room.accent;
+    const label = officeStatusLabel(dep.status || "idle").toUpperCase();
+    const labelW = Math.min(180, Math.max(78, ctx.measureText(label).width + 24));
+    canvasFillRoundRect(ctx, room.x + room.w - labelW - 18, room.y + 18, labelW, 32, 6, "rgba(255,255,255,0.92)", "rgba(67,55,45,0.12)", 1);
+    ctx.fillText(label, room.x + room.w - labelW - 6, room.y + 39);
+    ctx.font = "700 15px Source Sans 3, system-ui, sans-serif";
+    ctx.fillStyle = "#8d8177";
+    canvasWrapText(ctx, dep.responsibility || "", room.x + 48, room.y + 66, room.w - 96, 17, 2);
+    ctx.strokeStyle = dep.status === "blocked" ? "rgba(196,69,58,0.62)" : dep.status === "working" ? `${room.accent}aa` : "rgba(67,55,45,0.16)";
+    ctx.lineWidth = dep.status === "idle" ? 2 : 5;
+    canvasRoundRect(ctx, room.x + 2, room.y + 2, room.w - 4, room.h - 4, 8);
+    ctx.stroke();
+    ctx.restore();
+};
+
+AgentOfficeCanvas.prototype.drawRoomFurniture = function(ctx, room) {
+    const dep = room.dep;
+    const active = dep.status !== "idle";
+    this.drawImage(ctx, this.assets.shelf, room.x + 24, room.y + 156, 42, 64);
+    this.drawImage(ctx, this.assets.board, room.x + room.w - 112, room.y + 114, 82, 45);
+    this.drawImage(ctx, this.assets.plant, room.x + room.w - 66, room.y + room.h - 72, 36, 50);
+    if (room.index % 2 === 0) this.drawImage(ctx, this.assets.cooler, room.x + 30, room.y + room.h - 92, 34, 68);
+    this.drawTaskBoard(ctx, room);
+
+    for (let i = 0; i < room.workstations.length; i++) {
+        const station = room.workstations[i];
+        this.drawImage(ctx, this.assets.desk, station.deskX, station.deskY, station.deskW, station.deskH);
+        const occupied = room.agents.some(ag => ag.working && ag.workstation === station);
+        const pc = occupied || active ? this.assets[`pcOn${(Math.floor(this.t * 2 + i) % 3) + 1}`] : this.assets.pcOff;
+        this.drawImage(ctx, pc, station.pcX, station.pcY, 36, 72);
+    }
+    this.drawImage(ctx, this.assets.table, room.x + room.w / 2 - 56, room.y + room.h - 70, 112, 56);
+};
+
+AgentOfficeCanvas.prototype.drawTaskBoard = function(ctx, room) {
+    const dep = room.dep;
+    const items = Array.isArray(dep.items) ? dep.items : [];
+    const bx = room.x + 88;
+    const by = room.y + 100;
+    const bw = room.w - 240;
+    const bh = 104;
+    canvasFillRoundRect(ctx, bx, by, bw, bh, 7, "rgba(43,37,32,0.84)", "rgba(255,255,255,0.28)", 1);
+    ctx.font = "800 12px Source Code Pro, monospace";
+    const task = items[0];
+    if (task) {
+        ctx.fillStyle = room.accent;
+        canvasTextFit(ctx, String(task.status || "working").toUpperCase(), bx + 14, by + 22, 190);
+        ctx.fillStyle = "#fffdf8";
+        ctx.font = "800 18px Source Sans 3, system-ui, sans-serif";
+        canvasWrapText(ctx, task.title || "Current work", bx + 14, by + 48, bw - 28, 21, 2);
+        if (task.detail) {
+            ctx.font = "700 12px Source Code Pro, monospace";
+            ctx.fillStyle = "rgba(255,253,248,0.72)";
+            canvasTextFit(ctx, task.detail, bx + 14, by + 91, bw - 28);
+        }
+        if (items.length > 1) {
+            ctx.font = "800 11px Source Code Pro, monospace";
+            ctx.fillStyle = "rgba(255,253,248,0.58)";
+            ctx.fillText(`+${items.length - 1} queued`, bx + bw - 86, by + 22);
+        }
+    } else {
+        ctx.fillStyle = "rgba(255,253,248,0.78)";
+        ctx.font = "800 17px Source Sans 3, system-ui, sans-serif";
+        canvasTextFit(ctx, "No active job in this department", bx + 14, by + 45, bw - 28);
+        ctx.font = "700 13px Source Sans 3, system-ui, sans-serif";
+        canvasTextFit(ctx, "Agents are in the lounge and will move to desks when work arrives.", bx + 14, by + 72, bw - 28);
+    }
+};
+
+AgentOfficeCanvas.prototype.drawRoomOverlays = function(ctx, room) {
+    const workingAgents = room.agents.filter(ag => ag.working);
+    for (const ag of workingAgents) this.drawDeskBadge(ctx, ag);
+    if (!workingAgents.length) return;
+    const speaker = workingAgents[Math.floor(this.t / 4 + room.index) % workingAgents.length];
+    const lead = speaker.task ? (speaker.task.title || speaker.task.status) : officeLeadText(room.dep);
+    this.drawSpeech(ctx, speaker.x, speaker.y - 68, `${speaker.roleLabel}: ${trunc(lead, 44)}`, room);
+};
+
+AgentOfficeCanvas.prototype.drawDeskBadge = function(ctx, ag) {
+    const station = ag.workstation;
+    if (!station) return;
+    const name = trunc(ag.agent.name || ag.agent.path || "Agent", 18);
+    const status = ag.task ? trunc(ag.task.status || "working", 18) : ag.roleLabel;
+    const x = station.labelX;
+    const y = station.labelY;
+    canvasFillRoundRect(ctx, x, y, 128, 34, 5, "rgba(255,253,248,0.92)", "rgba(67,55,45,0.14)", 1);
+    ctx.font = "800 11px Source Sans 3, system-ui, sans-serif";
+    ctx.fillStyle = ag.room.accent;
+    canvasTextFit(ctx, status, x + 7, y + 14, 114);
+    ctx.font = "800 11px Source Sans 3, system-ui, sans-serif";
+    ctx.fillStyle = "#4f453d";
+    canvasTextFit(ctx, name, x + 7, y + 28, 114);
+};
+
+AgentOfficeCanvas.prototype.drawAgent = function(ctx, ag) {
+    const depStatus = ag.dep.status || "idle";
+    const action = ag.action;
+    const phase = this.t + ag.seed * 8;
+    let dx = 0;
+    let dy = 0;
+    if (ag.working) {
+        dy = Math.sin(phase * 5) * 0.8;
+    } else {
+        dy = Math.sin(phase * 1.1) * 1.2;
+    }
+    ag.x = ag.baseX + dx;
+    ag.y = ag.baseY + dy;
+    const scale = ag.working ? 2.05 : 1.85;
+    const drawW = OFFICE_FRAME_W * scale;
+    const drawH = OFFICE_FRAME_H * scale;
+    const frame = this.frameFor(action, depStatus, phase);
+    const img = this.assets[`char${ag.spriteIndex}`];
+    const drawX = Math.round(ag.x - drawW / 2);
+    const drawY = Math.round(ag.y - drawH);
+    ag.bounds = { x: drawX, y: drawY, w: drawW, h: drawH + 8 };
+    if (img) {
+        ctx.drawImage(img, frame.col * OFFICE_FRAME_W, frame.row * OFFICE_FRAME_H, OFFICE_FRAME_W, OFFICE_FRAME_H, drawX, drawY, drawW, drawH);
+    } else {
+        this.drawFallbackAgent(ctx, drawX, drawY, drawW, drawH, ag.room.accent);
+    }
+};
+
+AgentOfficeCanvas.prototype.frameFor = function(action, depStatus, phase) {
+    if (depStatus === "blocked") return { row: 0, col: Math.floor(phase * 2) % 2 ? 5 : 6 };
+    if (action === "typing") return { row: 0, col: Math.floor(phase * 3) % 2 ? 3 : 4 };
+    if (action === "reading") return { row: 0, col: Math.floor(phase * 2) % 2 ? 5 : 6 };
+    return { row: 0, col: 0 };
+};
+
+AgentOfficeCanvas.prototype.drawHoverLabel = function(ctx, ag) {
+    const label = ag.agent.name || ag.agent.path || "Agent";
+    const detail = ag.agent.path || "";
+    const task = ag.task ? `${ag.task.status || "working"}: ${ag.task.title || "task"}` : ag.roleLabel;
+    const x = Math.max(ag.room.x + 12, Math.min(ag.x - 100, ag.room.x + ag.room.w - 230));
+    const y = Math.max(ag.room.y + 82, ag.y - 112);
+    canvasFillRoundRect(ctx, x, y, 220, 62, 5, "rgba(43,37,32,0.94)", "rgba(255,255,255,0.22)", 1);
+    ctx.font = "800 14px Source Sans 3, system-ui, sans-serif";
+    ctx.fillStyle = "#fffdf8";
+    canvasTextFit(ctx, label, x + 10, y + 19, 198);
+    ctx.font = "700 10px Source Code Pro, monospace";
+    ctx.fillStyle = "rgba(255,253,248,0.68)";
+    canvasTextFit(ctx, detail, x + 10, y + 36, 198);
+    ctx.font = "800 11px Source Sans 3, system-ui, sans-serif";
+    ctx.fillStyle = ag.room.accent;
+    canvasTextFit(ctx, task, x + 10, y + 53, 198);
+};
+
+AgentOfficeCanvas.prototype.drawSpeech = function(ctx, x, y, text, room) {
+    ctx.font = "800 13px Source Sans 3, system-ui, sans-serif";
+    const w = Math.min(320, Math.max(116, ctx.measureText(text).width + 26));
+    const h = 34;
+    const bx = Math.max(room.x + 16, Math.min(x - w / 2, room.x + room.w - w - 16));
+    const by = Math.max(room.y + 90, y - h);
+    canvasFillRoundRect(ctx, bx, by, w, h, 6, "rgba(255,255,255,0.94)", "rgba(67,55,45,0.14)", 2);
+    ctx.fillStyle = room.accent;
+    canvasTextFit(ctx, text, bx + 12, by + 22, w - 24);
+    ctx.beginPath();
+    ctx.moveTo(Math.min(Math.max(x, bx + 18), bx + w - 18), by + h);
+    ctx.lineTo(Math.min(Math.max(x + 7, bx + 24), bx + w - 12), by + h + 9);
+    ctx.lineTo(Math.min(Math.max(x - 7, bx + 12), bx + w - 24), by + h);
+    ctx.closePath();
+    ctx.fillStyle = "rgba(255,255,255,0.94)";
+    ctx.fill();
+};
+
+AgentOfficeCanvas.prototype.hitAgent = function(x, y) {
+    for (let i = this.scene.agents.length - 1; i >= 0; i--) {
+        const b = this.scene.agents[i].bounds;
+        if (b && x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) return this.scene.agents[i];
+    }
+    return null;
+};
+
+AgentOfficeCanvas.prototype.updateTooltip = function(evt) {
+    const tip = el("tooltip");
+    if (!tip) return;
+    if (!this.hovered) {
+        tip.classList.remove("visible");
+        return;
+    }
+    const ag = this.hovered;
+    const task = ag.task ? `${ag.task.status || "working"}: ${ag.task.title || "task"}` : ag.roleLabel;
+    tip.innerHTML = `<strong>${esc(ag.agent.name || "Agent")}</strong><br>${esc(ag.agent.path || "")}<br>${esc(ag.dep.title || "Department")} - ${esc(task)}`;
+    tip.style.left = `${evt.clientX + 14}px`;
+    tip.style.top = `${evt.clientY + 14}px`;
+    tip.classList.add("visible");
+};
+
+AgentOfficeCanvas.prototype.drawImage = function(ctx, img, x, y, w, h) {
+    if (!img) return;
+    ctx.drawImage(img, Math.round(x), Math.round(y), Math.round(w), Math.round(h));
+};
+
+AgentOfficeCanvas.prototype.tileImage = function(ctx, img, x, y, w, h, scale) {
+    if (!img) {
+        ctx.fillStyle = "rgba(255,255,255,0.2)";
+        ctx.fillRect(x, y, w, h);
+        return;
+    }
+    const tw = img.width * scale;
+    const th = img.height * scale;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x, y, w, h);
+    ctx.clip();
+    for (let yy = y; yy < y + h; yy += th) {
+        for (let xx = x; xx < x + w; xx += tw) {
+            ctx.drawImage(img, Math.round(xx), Math.round(yy), tw, th);
+        }
+    }
+    ctx.restore();
+};
+
+AgentOfficeCanvas.prototype.drawFallbackAgent = function(ctx, x, y, w, h, accent) {
+    ctx.fillStyle = "#d8a173";
+    ctx.fillRect(x + w * 0.35, y + h * 0.05, w * 0.3, h * 0.18);
+    ctx.fillStyle = accent;
+    ctx.fillRect(x + w * 0.25, y + h * 0.28, w * 0.5, h * 0.42);
+    ctx.fillStyle = "#51453b";
+    ctx.fillRect(x + w * 0.22, y + h * 0.78, w * 0.2, h * 0.16);
+    ctx.fillRect(x + w * 0.58, y + h * 0.78, w * 0.2, h * 0.16);
+};
+
+// ── Feed
 
 function appendFeedEvent(ev) {
     const feed = el('eventFeed');
@@ -340,6 +1374,7 @@ function scrollFeedToBottom() {
 // ── Recently Discovered (Overview) ───────────────────────────────────
 
 async function loadRecentlyDiscovered() {
+    if (!el("recentlyGrid")) return;
     try {
         const [data, insights] = await Promise.all([
             api('/api/recent_discoveries?limit=8'),
@@ -353,6 +1388,7 @@ async function loadRecentlyDiscovered() {
 
 function renderRecentlyDiscovered(data, insights) {
     const grid = el('recentlyGrid');
+    if (!grid) return;
     let items = [];
 
     // Prioritize real insights over old opportunities
@@ -1371,6 +2407,7 @@ async function renderPaperDetail(pid) {
                     ${assetRows ? `<table class="paper-results-table"><thead><tr><th>Asset</th><th>Type</th><th>Size</th></tr></thead><tbody>${assetRows}</tbody></table>` : '<p class="empty-msg">No manuscript assets found yet.</p>'}
                 </section>
             </div>`;
+        typesetMath(detail);
     } catch (e) {
         detail.innerHTML = '<p class="empty-msg" style="padding:18px;">Failed to load paper details.</p>';
     }
@@ -1495,7 +2532,9 @@ function renderOpportunities() {
             </div>
         </div>`;
     }).join('');
+    typesetMath(list);
 }
+
 
 // ── Discoveries Tab (Tier 1 + Tier 2 Deep Insights) ──────────────────
 
@@ -1657,7 +2696,9 @@ function renderDiscoveries(discoveries) {
             <div class="insight-impact"><span class="insight-label">Mode:</span> Fixed automatic pipeline</div>
         </div>`;
     }).join('');
+    typesetMath(list);
 }
+
 
 // ── Experiments Tab (SciForge) ────────────────────────────────────────
 
@@ -2123,7 +3164,7 @@ function renderMetaReport(meta) {
     body.innerHTML = html;
 }
 
-// ── Config Tab ───────────────────────────────────────────────────────
+// ── Overview Config ───────────────────────────────────────────────────────
 
 async function loadProviders() {
     providersLoaded = true;
@@ -2138,7 +3179,8 @@ async function loadProviders() {
         console.error('Config load error:', e);
         const panel = el('runtimeConfigPanel');
         if (panel) panel.innerHTML = '<p class="empty-msg">Failed to load configuration.</p>';
-        el('providersList').innerHTML = '<p class="empty-msg">Failed to load provider data.</p>';
+        const providersPanel = el('providersList');
+        if (providersPanel) providersPanel.innerHTML = '<p class="empty-msg">Failed to load provider data.</p>';
     }
 }
 
@@ -2422,7 +3464,7 @@ function renderProviderCards(providers) {
 function startProviderRefresh() {
     if (providerTimer) clearInterval(providerTimer);
     providerTimer = setInterval(() => {
-        if (activeTab === 'providers') loadProviders();
+        if (activeTab === 'overview') loadProviders();
     }, 10000);
 }
 
@@ -2651,6 +3693,7 @@ window._dg = {
             modal.className = 'proposal-modal';
             modal.innerHTML = `<div class="proposal-overlay" onclick="this.parentElement.remove()"></div>${html}`;
             document.body.appendChild(modal);
+            typesetMath(modal);
         } catch (e) {
             alert('Failed to load idea history: ' + e.message);
         }
@@ -2702,6 +3745,7 @@ window._dg = {
             modal.className = 'proposal-modal';
             modal.innerHTML = `<div class="proposal-overlay" onclick="this.parentElement.remove()"></div>${html}`;
             document.body.appendChild(modal);
+            typesetMath(modal);
         } catch (e) {
             alert('Failed to load: ' + e.message);
         }
@@ -2742,6 +3786,7 @@ window._dg = {
                     <div class="proposal-body">${bodyHtml}</div>
                 </div>`;
             document.body.appendChild(modal);
+            typesetMath(modal);
         } catch (e) {
             alert('Failed to load proposal: ' + e.message);
         }
@@ -2785,7 +3830,8 @@ function init() {
 
     // Initial data loads
     refreshStats();
-    loadRecentlyDiscovered();
+    loadProviders();
+    startProviderRefresh();
     loadProcessingPapers();
     startSSE();
 
@@ -2795,8 +3841,6 @@ function init() {
     // Processing panel refresh every 3s (also fetches from API)
     setInterval(loadProcessingPapers, 3000);
 
-    // Periodically refresh recently discovered (every 30s)
-    setInterval(loadRecentlyDiscovered, 30000);
 
     setInterval(() => {
         if (activeTab === 'experiments') loadExperimentsTab();

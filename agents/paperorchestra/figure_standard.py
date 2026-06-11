@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 
-FIGURE_STANDARD_VERSION = "paperorchestra_figure_standard_v13_2026_05_30"
+FIGURE_STANDARD_VERSION = "paperorchestra_figure_standard_v15_2026_06_11"
 
 EXPERIMENT_FIGURE_RULES = {
     "renderer": "python_matplotlib_only",
@@ -29,7 +29,7 @@ EXPERIMENT_FIGURE_RULES = {
     "chart_diversity_contract": {
         "enabled": True,
         "rule": "A paper's experiment figure pack must diversify by visual family, not merely by 2D versus 3D variants.",
-        "minimum_distinct_visual_families_when_multiple_experiment_figures": 2,
+        "minimum_distinct_visual_families_when_multiple_experiment_figures": 3,
         "visual_family_examples": {
             "bar_family": ["2D bar", "grouped bar", "stacked bar", "3D bar"],
             "line_family": ["line plot", "rank line", "trend line", "calibration curve"],
@@ -51,7 +51,14 @@ EXPERIMENT_FIGURE_RULES = {
         ],
     },
     "style_reference_dir": "{project_root}/实验图例子",
+    "literature_style_reference_required": True,
+    "literature_style_reference_agent": "agents.paperorchestra.experiment_plot_reference",
+    "minimum_experiment_figures": 3,
     "style_reference_contract": [
+        "Before rendering experiment figures, run real literature search for the paper's field and record searched style references in experiment_plot_reference.json.",
+        "The experiment plot pack must contain at least three artifact-backed figures and at least three distinct chart families; motivation/overview diagrams do not count.",
+        "Choose field-specific figure types from searched related papers when the required artifacts exist, e.g. person Re-ID commonly uses t-SNE/UMAP embeddings, CMC/mAP curves, and retrieval/ranking examples, while LLM reasoning papers often need accuracy-cost/frontier, ablation, and calibration or routing-profile plots.",
+        "Do not fabricate field-specific plots: t-SNE, CMC, ranking examples, confusion matrices, or qualitative panels require real embedding, ranking, prediction, or per-class artifacts.",
         "Use compact conference-style multi-panel layouts when the evidence naturally has multiple metrics, conditions, datasets, or hyperparameters.",
         "Experiment figures should be multi-panel by default. Single-panel experiment figures are not allowed for ordinary result, ablation, sensitivity, or robustness plots.",
         "For single-column paper layouts, prefer 1x4 experiment figures when there are four datasets, metrics, conditions, difficulty buckets, or ablation facets.",
@@ -63,7 +70,7 @@ EXPERIMENT_FIGURE_RULES = {
         "Grouped bar figures should resemble a carefully formatted conference plot rather than a decorative infographic: no tinted panel backgrounds, no pictorial icons, no large empty margins.",
         "Do not reserve a large bottom gutter for legends. For wide 1x4 figures, use a compact shared legend directly below the axes so the caption sits close to the plotted area.",
         "Save experiment figures with tight bounding boxes and minimal bottom whitespace; LaTeX captions should sit directly under the figure, not after a blank legend band.",
-        "Do not use quality-cost scatter plots as the default main result; prefer grouped bars, difficulty panels, heatmaps, line plots with uncertainty bands, or 3D sensitivity bars when the evidence supports them.",
+        "Do not use quality-cost scatter plots as the sole main result; they are allowed as a separate experiment figure when the paper studies routing, inference-time compute, efficiency, latency, token cost, or deployment tradeoffs and the plotted coordinates come from verified artifacts.",
         "When a table is more informative than a plot, keep the table numeric and compact; move interpretation to prose.",
     ],
     "latex_spacing": {
@@ -79,6 +86,7 @@ EXPERIMENT_FIGURE_RULES = {
 }
 
 CONCEPT_FIGURE_RULES = {
+    "enabled": True,
     "required": True,
     "renderer": "gemini_native_paperbanana_postwriting_only",
     "scope": ["motivation", "overview", "mechanism"],
@@ -95,6 +103,8 @@ CONCEPT_FIGURE_RULES = {
             "Answer slips, confidence tags, token chips, group piles, margin score, retain/discard marks, and selected output should be arranged as a paper schematic, with local illustrations embedded inside modules.",
             "The figure should feel like a top-conference method/motivation schematic assembled in PowerPoint with dense technical semantics, not like an AI-made rendered illustration, poster, mascot scene, icon board, dashboard, isolated pictogram collage, or generic infographic.",
             "Use flat 2D shapes, thick clean outlines, subtle hatch/dashed boxes inside containers, crisp alignment, and little-to-no shading. Use a pure white canvas by default; only tiny local modules may use very pale tints. Avoid warm full-canvas backgrounds, yellow/cream wash, vignette, gradient, grid paper, graph paper, notebook lines, painterly lighting, volumetric objects, glossy highlights, cast shadows, scenic backgrounds, and rendered 3D depth.",
+            "Do not put LaTeX-style captions, Figure/Fig. numbering, standalone titles, explanatory paragraphs, line numbers, or panel numbers such as 1./2./3. inside the generated image; the LaTeX caption carries all figure numbering and long explanation.",
+            "Do not force a three-column motivation comparison. Prefer a compact tension map, a central mechanism schematic, or one worked-example composition with at most two small callouts.",
             "Choose icons adaptively from the paper domain. For multi-agent papers, agent/avatar/robot icons should be visible and semantically central as trace sources; for other domains, use the corresponding domain objects instead. Do not replace domain entities with unrelated office metaphors such as envelopes, inbox trays, or generic storage bins.",
         ],
         "strict_no_flowchart": {
@@ -116,7 +126,7 @@ CONCEPT_FIGURE_RULES = {
                 "isolated icon collage",
                 "decision board",
                 "dashboard full of gauges and cards",
-                "visible step numbers or numbered circle badges",
+                "visible step numbers, numbered panels, or numbered circle badges",
                 "card pile composition",
                 "full-scene cartoon poster",
                 "rendered cartoon illustration",
@@ -130,6 +140,9 @@ CONCEPT_FIGURE_RULES = {
                 "mascot-dominated illustration",
                 "large scenic laboratory illustration",
                 "single-room story illustration",
+                "three-column motivation comparison",
+                "internal Figure/Fig. labels or caption text",
+                "long explanatory paragraphs inside the image",
                 "cute character poster with sparse technical content",
                 "large furniture or environmental scenery",
             ],

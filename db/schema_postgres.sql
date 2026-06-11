@@ -655,6 +655,26 @@ CREATE TABLE IF NOT EXISTS claim_method_gaps (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS benchmark_harness_jobs (
+    id BIGSERIAL PRIMARY KEY,
+    deep_insight_id INTEGER NOT NULL UNIQUE REFERENCES deep_insights(id),
+    status TEXT DEFAULT 'harness_required',
+    harness_kind TEXT DEFAULT 'custom_benchmark_harness',
+    benchmark_name TEXT,
+    dataset_refs TEXT,
+    baseline_refs TEXT,
+    required_capabilities TEXT,
+    task_plan TEXT,
+    artifact_uri TEXT,
+    last_error TEXT,
+    last_note TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_benchmark_harness_jobs_status ON benchmark_harness_jobs(status);
+CREATE INDEX IF NOT EXISTS idx_benchmark_harness_jobs_insight ON benchmark_harness_jobs(deep_insight_id);
+
 -- GPU orchestration and artifact tracking
 CREATE TABLE IF NOT EXISTS gpu_workers (
     id TEXT PRIMARY KEY,

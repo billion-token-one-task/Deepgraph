@@ -29,11 +29,8 @@ pipeline changes that enforce it.
 
 ## Enforced Standard
 
-- All default submission bundles use the official ICLR 2026 template files from
-  `third_party\iclr2026\iclr2026`.
-- Conference bundles must copy `iclr2026_conference.sty`,
-  `iclr2026_conference.bst`, `math_commands.tex`, `natbib.sty`, and
-  `fancyhdr.sty`.
+- Submission bundles auto-route through `venue_target.json`; `manuscript.latex_template = "auto"` lets paper intent select the venue or journal.
+- ICLR targets copy the official files from `third_party\iclr2026\iclr2026`: `iclr2026_conference.sty`, `iclr2026_conference.bst`, `math_commands.tex`, `natbib.sty`, and `fancyhdr.sty`. Non-ICLR targets must not reuse the ICLR style marker.
 - Manuscript state carries a `problem_awareness` contract with:
   `central_question`, `motivation`, `method_answer`, `result_claim`, and
   `falsification_result`.
@@ -60,7 +57,7 @@ pipeline changes that enforce it.
   the problem-motivation-method-result spine during writing.
 - `paperorchestra/figure_orchestra.py`: separates early data figures from
   post-writing API diagrams.
-- `paper_orchestra_pipeline.py`: creates ICLR 2026 bundles and records quality
+- `paper_orchestra_pipeline.py`: creates venue-routed bundles and records quality
   reports against the local PDF corpus, including `reference_corpus_audit_v1`.
 - `reference_corpus_audit.py`: profiles local reference PDFs and generated TeX
   manuscripts so manuscript quality gates compare drafts to the real corpus

@@ -342,6 +342,48 @@ class ManuscriptWatchdogTests(unittest.TestCase):
         self.assertEqual(report["status"], "block")
         self.assertTrue(any("blank-result placeholders" in item["issue"] for item in report["issues"]))
 
+    def test_neurips_target_rejects_iclr_style(self):
+        bundle = self.tmpdir_path / "neurips_iclr_style_bundle"
+        bundle.mkdir()
+        for name in manuscript_watchdog.CONTRACT_FILES:
+            (bundle / name).write_text("{}", encoding="utf-8")
+        (bundle / "venue_target.json").write_text(json.dumps({"key": "neurips2026"}), encoding="utf-8")
+        (bundle / "main.pdf").write_bytes(b"%PDF-1.4\n")
+        body = " ".join(["evidence-backed claim with citation \\cite{a}."] * 400)
+        (bundle / "main.tex").write_text(
+            "\\documentclass{article}\n\\usepackage{iclr2026_conference}\n\\begin{document}\n"
+            + body
+            + "\\includegraphics{figures/a.png}\\includegraphics{figures/b.png}\\end{document}\n",
+            encoding="utf-8",
+        )
+
+        report = manuscript_watchdog.audit_bundle_path(bundle, bundle_format="conference")
+
+        self.assertEqual(report["status"], "block")
+        self.assertEqual(report["venue_target"]["key"], "neurips2026")
+        self.assertTrue(any("NeurIPS" in item["issue"] and "ICLR" in item["issue"] for item in report["issues"]))
+
+    def test_neurips_target_generic_article_passes_without_iclr_files(self):
+        bundle = self.tmpdir_path / "neurips_generic_bundle"
+        bundle.mkdir()
+        for name in manuscript_watchdog.CONTRACT_FILES:
+            (bundle / name).write_text("{}", encoding="utf-8")
+        (bundle / "venue_target.json").write_text(json.dumps({"key": "neurips2026"}), encoding="utf-8")
+        (bundle / "main.pdf").write_bytes(b"%PDF-1.4\n")
+        body = " ".join(["evidence-backed claim with citation \\cite{a}."] * 400)
+        (bundle / "main.tex").write_text(
+            "\\documentclass[10pt]{article}\n\\begin{document}\n"
+            + body
+            + "\\includegraphics{figures/a.png}\\includegraphics{figures/b.png}\\end{document}\n",
+            encoding="utf-8",
+        )
+
+        report = manuscript_watchdog.audit_bundle_path(bundle, bundle_format="conference")
+
+        self.assertEqual(report["status"], "pass")
+        self.assertEqual(report["venue_target"]["key"], "neurips2026")
+
+
     def test_reconcile_downgrades_existing_stale_manuscript_auto_job(self):
         database.execute("UPDATE manuscript_runs SET status='stale' WHERE id=1")
         database.commit()

@@ -21,6 +21,7 @@ import zipfile
 from pathlib import Path
 
 from agents.discovery_metadata import infer_resource_class
+from agents.benchmark_protocol import resolve_benchmark_protocol
 from agents.dataset_resolver import resolve_plan_datasets
 from agents.evosci_requirements import evosci_strict_gate_insight
 from agents.experiment_review import review_experiment_candidate
@@ -213,6 +214,256 @@ Prefer:
 If no suitable codebase exists, set url to "scratch" and provide setup commands for
 a generated real-benchmark runner. Do not recommend synthetic proxy experiments."""
 
+
+
+
+EXPERIMENT_REVIEW_REPAIR_SYSTEM = """You are the experiment design repair agent for DeepGraph.
+
+You receive a research idea, current proposed method, current experimental plan, and
+structured review blockers. Repair the experimental plan so it can pass formal
+benchmark review.
+
+Rules:
+- Do not downgrade to smoke/proxy/synthetic experiments.
+- Use real public benchmark datasets and concrete model targets/checkpoints.
+- Preserve the scientific claim when possible, but narrow the benchmark scope if the
+  current scope has no runnable public benchmark path.
+- Prefer official benchmark splits, official metrics, and benchmark-specific repeat
+  policies. If the official protocol is unknown, mark that dataset for dataset-card
+  inspection rather than inventing global thresholds.
+- Include at least two explicit baselines, concrete model targets, primary metric,
+  ablations, compute budget, and seed policy.
+- If a generated runner cannot support the requested benchmark, choose a compatible
+  public benchmark only when it still tests the same claim; otherwise explain that a
+  dedicated harness is required.
+
+Return one strict JSON object:
+{
+  "repair_summary": "what changed and why",
+  "experimental_plan_patch": {
+    "datasets": [{"name": "...", "split": "...", "why": "..."}],
+    "benchmark_targets": [{"name": "...", "hf_dataset": "...", "split": "...", "task_type": "..."}],
+    "model_targets": [{"name": "...", "hf_model": "...", "backend": "transformers|official_eval|custom_harness"}],
+    "baselines": [{"name": "...", "why": "..."}],
+    "metrics": {"primary": "...", "secondary": ["..."]},
+    "ablations": [{"name": "...", "removes": "..."}],
+    "compute_budget": {"total_gpu_hours": 0},
+    "minimum_seeds": 1,
+    "benchmark_repair_notes": ["..."]
+  }
+}
+"""
+
+
+def _merge_experiment_plan_patch(plan: dict, patch: dict) -> dict:
+    merged = dict(plan or {})
+    for key, value in (patch or {}).items():
+        if value in (None, "", [], {}):
+            continue
+        if key in {
+            "datasets",
+            "benchmark_targets",
+            "model_targets",
+            "models",
+            "baselines",
+            "ablations",
+            "benchmark_repair_notes",
+        } and isinstance(value, list):
+            merged[key] = value
+        elif key in {"metrics", "compute_budget", "benchmark_protocol"} and isinstance(value, dict):
+            base = dict(merged.get(key) or {}) if isinstance(merged.get(key), dict) else {}
+            base.update(value)
+            merged[key] = base
+        elif key in {"minimum_seeds", "max_eval_examples", "sanity_max_eval_examples"}:
+            merged[key] = value
+        elif key in {"procedure", "statistical_test", "benchmark_scope"}:
+            merged[key] = value
+    return merged
+
+
+
+def _finalize_repaired_experiment_plan(parsed: dict, method: dict, plan: dict) -> dict:
+    """Normalize a repaired plan without network dataset probing."""
+    plan = dict(plan or {})
+    resource_class = _non_empty_text(parsed.get("resource_class")) or infer_resource_class(
+        {**parsed, "proposed_method": method, "experimental_plan": plan}
+    )
+
+    if EXPERIMENT_REQUIRE_REAL_BENCHMARK:
+        targets = []
+        for row in plan.get("benchmark_targets") if isinstance(plan.get("benchmark_targets"), list) else []:
+            if isinstance(row, dict):
+                name = _non_empty_text(row.get("name") or row.get("hf_dataset") or row.get("dataset"))
+                if name and not _looks_like_synthetic_dataset(name):
+                    targets.append(_normalize_benchmark_target(row, parsed=parsed))
+        dataset_names = _unique_non_empty(_named_values(plan.get("datasets"), keys=("name", "dataset", "hf_dataset")))
+        for name in dataset_names:
+            if not _looks_like_synthetic_dataset(name) and not any(
+                target.get("name") == name or target.get("hf_dataset") == name for target in targets
+            ):
+                targets.append(_normalize_benchmark_target({"name": name}, parsed=parsed))
+        if not targets:
+            targets = _default_real_benchmark_targets({**parsed, "proposed_method": method})
+        recipe_blockers = []
+        normalized_targets = []
+        for target in targets:
+            target = _normalize_benchmark_target(target, parsed=parsed)
+            supported, reason = _generated_runner_support_reason(target)
+            target["generated_runner_supported"] = supported
+            if reason:
+                target["generated_runner_blocker"] = reason
+                recipe_blockers.append(
+                    {
+                        "name": target.get("name") or target.get("hf_dataset") or "benchmark",
+                        "reason": reason,
+                    }
+                )
+            normalized_targets.append(target)
+        plan["benchmark_targets"] = normalized_targets
+        plan["datasets"] = [
+            {
+                "name": row.get("name") or row.get("hf_dataset") or row.get("dataset"),
+                "split": row.get("split") or row.get("official_split") or "inspect_dataset_card",
+            }
+            for row in normalized_targets
+        ]
+        plan["real_benchmark_required"] = True
+        plan["requires_real_model"] = True
+        plan["requires_real_dataset"] = True
+        plan["proxy_allowed"] = bool(EXPERIMENT_ALLOW_SYNTHETIC_FALLBACK)
+        plan["generated_runner_supported"] = not recipe_blockers
+        if recipe_blockers:
+            plan["benchmark_recipe_blockers"] = recipe_blockers
+            plan["deferred_benchmark_targets"] = [item["name"] for item in recipe_blockers if item.get("name")]
+        else:
+            plan.pop("benchmark_recipe_blockers", None)
+            plan.pop("deferred_benchmark_targets", None)
+
+    models = _model_target_names(plan)
+    if not models:
+        plan["model_targets"] = _default_real_model_targets(parsed, resource_class)
+    baselines = _planned_baselines(plan)
+    if len(baselines) < 2:
+        method_name = _non_empty_text(method.get("name")) or "candidate_method"
+        baselines = _unique_non_empty(baselines + [f"{method_name}_reference_baseline", f"{method_name}_ablation"])
+    plan["baselines"] = [{"name": name} for name in baselines[:6]]
+
+    metrics = dict(plan.get("metrics") or {}) if isinstance(plan.get("metrics"), dict) else {}
+    if not _non_empty_text(metrics.get("primary")):
+        metrics["primary"] = _fallback_metric_name(parsed, plan)
+    plan["metrics"] = metrics
+
+    compute = dict(plan.get("compute_budget") or {}) if isinstance(plan.get("compute_budget"), dict) else {}
+    if not compute.get("total_gpu_hours"):
+        compute["total_gpu_hours"] = 0.0 if resource_class == "cpu" else (24.0 if resource_class == "gpu_large" else 4.0)
+    plan["compute_budget"] = compute
+
+    try:
+        planned_seeds = int(plan.get("minimum_seeds") or 0)
+    except (TypeError, ValueError):
+        planned_seeds = 0
+    plan["minimum_seeds"] = max(1, planned_seeds)
+    plan["ablations"] = [{"name": name} for name in _planned_ablations(method, plan)]
+
+    benchmark_protocol = resolve_benchmark_protocol(
+        plan,
+        method=method,
+        claim=parsed.get("hypothesis") or parsed.get("title") or parsed.get("problem_statement"),
+    )
+    protocol_seed_policy = benchmark_protocol.get("seed_policy") if isinstance(benchmark_protocol.get("seed_policy"), dict) else {}
+    try:
+        protocol_min_seeds = int(protocol_seed_policy.get("minimum_repeats") or 1)
+    except (TypeError, ValueError):
+        protocol_min_seeds = 1
+    plan["minimum_seeds"] = max(int(plan.get("minimum_seeds") or 1), protocol_min_seeds)
+    plan["benchmark_protocol"] = benchmark_protocol
+    publication_contract = _publication_evidence_contract(
+        {**parsed, "proposed_method": method},
+        plan,
+        evidence_plan=parsed.get("evidence_plan") if isinstance(parsed.get("evidence_plan"), dict) else {},
+        scaffold_kind="planned",
+    )
+    plan["publication_evidence_contract"] = publication_contract
+    plan["paper_intent"] = publication_contract.get("paper_intent", {})
+    return plan
+
+
+def repair_experiment_plan_from_review(
+    insight_id: int,
+    *,
+    judgement: dict | None = None,
+    attempt: int = 1,
+) -> dict:
+    """Repair a review-blocked experimental plan and persist it on deep_insights.
+
+    This is the automatic feedback loop from structured experiment review back
+    to experiment design. It never creates an experiment_run; the caller should
+    requeue the insight so forge/review runs again on the repaired contract.
+    """
+
+    insight = db.fetchone("SELECT * FROM deep_insights WHERE id=?", (insight_id,))
+    if not insight:
+        return {"error": f"Deep insight {insight_id} not found"}
+
+    parsed = _parse_insight_fields(dict(insight))
+    current_plan = parsed.get("experimental_plan") if isinstance(parsed.get("experimental_plan"), dict) else {}
+    method = parsed.get("proposed_method") if isinstance(parsed.get("proposed_method"), dict) else {}
+    method = _enrich_proposed_method(parsed, current_plan)
+    parsed["proposed_method"] = method
+    judgement = judgement or {}
+    blockers = judgement.get("blockers") if isinstance(judgement.get("blockers"), list) else []
+    warnings = judgement.get("warnings") if isinstance(judgement.get("warnings"), list) else []
+    summary = _non_empty_text(judgement.get("summary")) or "Experiment review blocked formalization."
+
+    prompt = {
+        "insight_id": insight_id,
+        "attempt": attempt,
+        "title": parsed.get("title"),
+        "problem_statement": parsed.get("problem_statement"),
+        "proposed_method": method,
+        "current_experimental_plan": current_plan,
+        "review_summary": summary,
+        "review_blockers": blockers,
+        "review_warnings": warnings,
+        "benchmark_protocol": current_plan.get("benchmark_protocol"),
+        "instruction": "Repair only the experiment design/benchmark contract; do not produce manuscript text.",
+    }
+
+    try:
+        repaired, _ = call_llm_json(EXPERIMENT_REVIEW_REPAIR_SYSTEM, json.dumps(prompt, ensure_ascii=False, indent=2))
+    except Exception as exc:
+        repaired = {"error": str(exc)}
+
+    patch = {}
+    repair_summary = "Deterministic enrichment only; LLM repair unavailable."
+    if isinstance(repaired, dict) and not repaired.get("error"):
+        patch = repaired.get("experimental_plan_patch") if isinstance(repaired.get("experimental_plan_patch"), dict) else {}
+        if not patch and isinstance(repaired.get("experimental_plan"), dict):
+            patch = repaired["experimental_plan"]
+        repair_summary = _non_empty_text(repaired.get("repair_summary")) or repair_summary
+    elif isinstance(repaired, dict) and repaired.get("error"):
+        repair_summary = f"LLM repair failed; persisted deterministic enrichment. Error: {repaired.get('error')}"
+
+    merged_plan = _merge_experiment_plan_patch(current_plan, patch)
+    merged_plan.setdefault("review_repair_history", [])
+    if isinstance(merged_plan["review_repair_history"], list):
+        merged_plan["review_repair_history"].append(
+            {
+                "attempt": attempt,
+                "summary": repair_summary,
+                "blockers": blockers,
+                "warnings": warnings,
+            }
+        )
+    parsed["experimental_plan"] = _finalize_repaired_experiment_plan(parsed, method, merged_plan)
+    _persist_enriched_insight(insight_id, parsed)
+    return {
+        "status": "repaired",
+        "attempt": attempt,
+        "repair_summary": repair_summary,
+        "llm_repair_used": bool(isinstance(repaired, dict) and not repaired.get("error") and patch),
+        "blocker_count": len(blockers),
+    }
 
 def _parse_insight_fields(insight: dict) -> dict:
     """Extract and parse JSON fields from a deep_insight row."""
@@ -576,9 +827,10 @@ def _normalize_benchmark_target(row, *, parsed: dict | None = None) -> dict:
         if text not in config_candidates:
             config_candidates.append(text)
     target["config_candidates"] = config_candidates or [""]
-    target["max_eval_examples"] = int(
-        target.get("max_eval_examples") or EXPERIMENT_REAL_BENCHMARK_MAX_EXAMPLES
-    )
+    try:
+        target["max_eval_examples"] = int(target.get("max_eval_examples"))
+    except (TypeError, ValueError):
+        target["max_eval_examples"] = 0
     if _non_empty_text(target.get("task_type")).lower() in {"", "benchmark"} and template.get("task_type"):
         target["task_type"] = template["task_type"]
     else:
@@ -635,7 +887,7 @@ def _default_real_benchmark_targets(parsed: dict) -> list[dict]:
                 "task_type": "code_generation",
                 "question_field": "text",
                 "answer_field": "code",
-                "max_eval_examples": EXPERIMENT_REAL_BENCHMARK_MAX_EXAMPLES,
+                "max_eval_examples": 0,
             }
         ]
     if any(token in corpus for token in ("vision", "image", "classification", "imagenet", "cifar")):
@@ -646,7 +898,7 @@ def _default_real_benchmark_targets(parsed: dict) -> list[dict]:
                 "config": "",
                 "split": "test",
                 "task_type": "image_classification",
-                "max_eval_examples": EXPERIMENT_REAL_BENCHMARK_MAX_EXAMPLES,
+                "max_eval_examples": 0,
             }
         ]
     return [
@@ -812,18 +1064,25 @@ def _ensure_real_benchmark_plan(parsed: dict, method: dict, plan: dict, resource
     plan["model_targets"] = normalized_models
     plan["real_benchmark_required"] = True
     plan["proxy_allowed"] = bool(EXPERIMENT_ALLOW_SYNTHETIC_FALLBACK)
-    plan["minimum_seeds"] = max(int(plan.get("minimum_seeds") or 0), EXPERIMENT_REAL_BENCHMARK_SEEDS)
     try:
-        planned_examples = int(plan.get("max_eval_examples") or 0)
+        planned_seed_count = int(plan.get("minimum_seeds") or 0)
+    except (TypeError, ValueError):
+        planned_seed_count = 0
+    if planned_seed_count > 0:
+        plan["minimum_seeds"] = planned_seed_count
+    else:
+        plan["minimum_seeds"] = 1
+    try:
+        planned_examples = int(plan.get("max_eval_examples"))
     except (TypeError, ValueError):
         planned_examples = 0
-    plan["max_eval_examples"] = max(planned_examples, EXPERIMENT_REAL_BENCHMARK_MAX_EXAMPLES)
+    plan["max_eval_examples"] = max(0, planned_examples)
     for target in real_targets:
         try:
-            target_examples = int(target.get("max_eval_examples") or 0)
+            target_examples = int(target.get("max_eval_examples"))
         except (TypeError, ValueError):
             target_examples = 0
-        target["max_eval_examples"] = max(target_examples, EXPERIMENT_REAL_BENCHMARK_MAX_EXAMPLES)
+        target["max_eval_examples"] = max(0, target_examples)
     plan["requires_real_model"] = True
     plan["requires_real_dataset"] = True
     plan["generated_runner_supported"] = not recipe_blockers
@@ -835,14 +1094,27 @@ def _ensure_real_benchmark_plan(parsed: dict, method: dict, plan: dict, resource
     else:
         plan.pop("benchmark_recipe_blockers", None)
         plan.pop("deferred_benchmark_targets", None)
+    benchmark_protocol = resolve_benchmark_protocol(
+        plan,
+        method=method,
+        claim=parsed.get("hypothesis") or parsed.get("title") or parsed.get("problem_statement"),
+    )
+    protocol_seed_policy = benchmark_protocol.get("seed_policy") if isinstance(benchmark_protocol.get("seed_policy"), dict) else {}
+    try:
+        protocol_min_seeds = int(protocol_seed_policy.get("minimum_repeats") or 1)
+    except (TypeError, ValueError):
+        protocol_min_seeds = 1
+    plan["minimum_seeds"] = max(int(plan.get("minimum_seeds") or 1), protocol_min_seeds)
+    plan["benchmark_protocol"] = benchmark_protocol
     plan["benchmark_execution"] = {
         "mode": "real_benchmark",
         "synthetic_fallback_allowed": bool(EXPERIMENT_ALLOW_SYNTHETIC_FALLBACK),
         "generated_runner_supported": plan["generated_runner_supported"],
+        "benchmark_protocol_status": benchmark_protocol.get("status"),
         "default_model": normalized_models[0].get("hf_model") or normalized_models[0].get("name"),
-            "default_dataset": real_targets[0].get("hf_dataset") or real_targets[0].get("name"),
-            "target_count": len(real_targets),
-        }
+        "default_dataset": real_targets[0].get("hf_dataset") or real_targets[0].get("name"),
+        "target_count": len(real_targets),
+    }
     return plan
 
 
@@ -885,16 +1157,26 @@ def _benchmark_manifest(
         secondary_metrics = metrics.get("secondary") if isinstance(metrics.get("secondary"), list) else []
     else:
         secondary_metrics = []
+    benchmark_protocol = resolve_benchmark_protocol(
+        plan,
+        method=method,
+        claim=parsed.get("hypothesis") or parsed.get("title") or parsed.get("problem_statement"),
+    )
+    protocol_seed_policy = benchmark_protocol.get("seed_policy") if isinstance(benchmark_protocol.get("seed_policy"), dict) else {}
+    try:
+        protocol_minimum_seeds = max(1, int(protocol_seed_policy.get("minimum_repeats") or 1))
+    except (TypeError, ValueError):
+        protocol_minimum_seeds = 1
     seed_raw = plan.get("minimum_seeds") or plan.get("seeds")
     try:
         if isinstance(seed_raw, list):
-            minimum_seeds = max(len(seed_raw), EXPERIMENT_REAL_BENCHMARK_SEEDS or 3)
+            minimum_seeds = max(len(seed_raw), protocol_minimum_seeds)
         elif seed_raw not in (None, "", "unknown"):
-            minimum_seeds = max(int(seed_raw), EXPERIMENT_REAL_BENCHMARK_SEEDS or 3)
+            minimum_seeds = max(int(seed_raw), protocol_minimum_seeds)
         else:
-            minimum_seeds = EXPERIMENT_REAL_BENCHMARK_SEEDS or 3
+            minimum_seeds = protocol_minimum_seeds
     except (TypeError, ValueError):
-        minimum_seeds = EXPERIMENT_REAL_BENCHMARK_SEEDS or 3
+        minimum_seeds = protocol_minimum_seeds
     seed_list = list(range(max(1, minimum_seeds)))
     full_artifacts = [
         "run_config.json",
@@ -924,6 +1206,7 @@ def _benchmark_manifest(
         "paper_claims_require_full_benchmark": True,
         "agent_roles": {
             "code_scout": "select repo/entrypoint only",
+            "benchmark_protocol_resolver": "resolve official splits, sample policy, metrics, and benchmark-specific completeness gates",
             "experiment_contract_architect": "freeze datasets/baselines/metrics/artifact gates",
             "sanity_runner_builder": "small real-data runner for environment and signal checks",
             "full_benchmark_compiler": "expand the locked contract into a job matrix",
@@ -931,7 +1214,9 @@ def _benchmark_manifest(
             "evidence_auditor": "audit artifacts before paper claims",
             "manuscript_writer": "write only audited claims",
         },
+        "benchmark_protocol": benchmark_protocol,
         "locked_fields": [
+            "benchmark_protocol",
             "datasets",
             "models",
             "baselines",
@@ -944,11 +1229,11 @@ def _benchmark_manifest(
         "sanity_stage": {
             "purpose": "Verify the runner, environment, real model loading, logging, and metric parsing.",
             "may_reduce_examples": True,
-            "max_examples_per_seed": int(plan.get("max_eval_examples") or EXPERIMENT_REAL_BENCHMARK_MAX_EXAMPLES),
+            "max_examples_per_seed": _optional_nonnegative_int(plan.get("sanity_max_eval_examples"), 0),
             "datasets": real_benchmarks[:1],
             "models": models[:1],
             "methods": ["baseline", "candidate"],
-            "seeds": seed_list[: min(len(seed_list), EXPERIMENT_REAL_BENCHMARK_SEEDS)],
+            "seeds": seed_list[:1],
             "allowed_claim": "pipeline_sanity_only",
         },
         "full_benchmark_stage": {
@@ -961,10 +1246,12 @@ def _benchmark_manifest(
             "seeds": seed_list,
             "primary_metric": metric,
             "secondary_metrics": secondary_metrics,
-            "min_examples_total": EXPERIMENT_FULL_BENCHMARK_MIN_EXAMPLES,
-            "min_datasets": EXPERIMENT_FULL_BENCHMARK_MIN_DATASETS,
-            "min_models": EXPERIMENT_FULL_BENCHMARK_MIN_MODELS,
-            "min_deployable_baselines": EXPERIMENT_FULL_BENCHMARK_MIN_BASELINES,
+            "examples_policy": "benchmark_specific_official_or_materialized_full_split",
+            "min_examples_total": None,
+            "min_datasets": len(benchmark_protocol.get("full_benchmark_requirements", {}).get("required_dataset_names", []) or real_benchmarks),
+            "min_models": len(benchmark_protocol.get("model_policy", {}).get("required_models", []) or models),
+            "min_deployable_baselines": len(benchmark_protocol.get("baseline_policy", {}).get("required_baselines", []) or baselines),
+            "global_numeric_thresholds_allowed": False,
             "must_beat_strongest_deployable_baseline": EXPERIMENT_FULL_BENCHMARK_REQUIRE_STRONGEST_WIN,
             "must_report_significance": EXPERIMENT_FULL_BENCHMARK_REQUIRE_SIGNIFICANCE,
             "required_analyses": [
@@ -979,7 +1266,7 @@ def _benchmark_manifest(
                 "paired_bootstrap_ci",
                 "paired_permutation_test",
             ],
-            "required_artifacts": full_artifacts,
+            "required_artifacts": benchmark_protocol.get("full_benchmark_requirements", {}).get("required_artifacts") or full_artifacts,
             "job_matrix_dimensions": [
                 "dataset",
                 "model",
@@ -1023,7 +1310,12 @@ def _publication_evidence_contract(
     metrics = plan.get("metrics")
     if isinstance(metrics, dict):
         metric = _non_empty_text(metrics.get("primary") or metrics.get("name")) or metric
-    minimum_seeds = max(3, int(EXPERIMENT_REAL_BENCHMARK_SEEDS or 3))
+    benchmark_protocol = resolve_benchmark_protocol(plan, method=method, claim=claim)
+    protocol_seed_policy = benchmark_protocol.get("seed_policy") if isinstance(benchmark_protocol.get("seed_policy"), dict) else {}
+    try:
+        minimum_seeds = max(1, int(protocol_seed_policy.get("minimum_repeats") or 1))
+    except (TypeError, ValueError):
+        minimum_seeds = 1
     seed_raw = plan.get("minimum_seeds") or plan.get("seeds")
     try:
         if isinstance(seed_raw, list):
@@ -1031,7 +1323,7 @@ def _publication_evidence_contract(
         elif seed_raw not in (None, "", "unknown"):
             minimum_seeds = max(minimum_seeds, int(seed_raw))
     except (TypeError, ValueError):
-        minimum_seeds = max(3, int(EXPERIMENT_REAL_BENCHMARK_SEEDS or 3))
+        pass
 
     claim_route = classify_idea_route(
         {**parsed, "proposed_method": method},
@@ -1063,6 +1355,8 @@ def _publication_evidence_contract(
 
     main_table_enabled = bool((evidence_plan.get("main_table") or {}).get("enabled", True))
     visualization_enabled = bool((evidence_plan.get("visualization") or {}).get("enabled", True))
+    protocol_requirements = benchmark_protocol.get("full_benchmark_requirements") if isinstance(benchmark_protocol.get("full_benchmark_requirements"), dict) else {}
+    protocol_artifacts = protocol_requirements.get("required_artifacts") if isinstance(protocol_requirements.get("required_artifacts"), list) else []
     required_artifacts = ["run_config", "raw_metrics_jsonl", "seed_variance_table"]
     if main_table_enabled:
         required_artifacts.insert(0, "main_results_table")
@@ -1082,6 +1376,7 @@ def _publication_evidence_contract(
     )
     if visualization_enabled:
         required_artifacts.append("metric_trajectory_figure")
+    required_artifacts = _unique_non_empty(required_artifacts + [str(item).removesuffix(".json").removesuffix(".jsonl") for item in protocol_artifacts])
 
     reviewer_objections = [
         "Are the datasets real benchmarks rather than synthetic probes?",
@@ -1136,6 +1431,7 @@ def _publication_evidence_contract(
         "publication_ready": False,
         "blocks_manuscript": blocks_manuscript,
         "minimum_seeds": minimum_seeds,
+        "benchmark_protocol": benchmark_protocol,
         "required_datasets": datasets,
         "required_real_benchmarks": real_datasets,
         "required_models": model_targets,
@@ -1148,11 +1444,13 @@ def _publication_evidence_contract(
             else "lower" if any(token in metric.lower() for token in ("loss", "error", "latency", "cost"))
             else "higher"
         ),
-        "statistical_test": "paired bootstrap confidence interval plus paired permutation test across seeds/tasks",
-        "full_benchmark_min_examples": EXPERIMENT_FULL_BENCHMARK_MIN_EXAMPLES,
-        "full_benchmark_min_datasets": EXPERIMENT_FULL_BENCHMARK_MIN_DATASETS,
-        "full_benchmark_min_models": EXPERIMENT_FULL_BENCHMARK_MIN_MODELS,
-        "full_benchmark_min_baselines": EXPERIMENT_FULL_BENCHMARK_MIN_BASELINES,
+        "statistical_test": "paired bootstrap confidence interval plus paired permutation test across seeds/tasks when required by the benchmark protocol",
+        "full_benchmark_examples_policy": "benchmark_specific_official_or_materialized_full_split",
+        "full_benchmark_min_examples": None,
+        "full_benchmark_min_datasets": len(protocol_requirements.get("required_dataset_names", []) or real_datasets),
+        "full_benchmark_min_models": len(protocol_requirements.get("required_model_names", []) or model_targets),
+        "full_benchmark_min_baselines": len(protocol_requirements.get("required_baseline_names", []) or baselines),
+        "global_numeric_thresholds_allowed": False,
         "require_statistical_significance": EXPERIMENT_FULL_BENCHMARK_REQUIRE_SIGNIFICANCE,
         "require_strongest_baseline_win": EXPERIMENT_FULL_BENCHMARK_REQUIRE_STRONGEST_WIN,
         "required_analyses": [
@@ -1188,10 +1486,13 @@ def _publication_evidence_contract(
                 evidence_tier == "benchmark_plan" and paper_allowed
             ),
             "minimum_seeds": minimum_seeds,
-            "full_benchmark_min_examples": EXPERIMENT_FULL_BENCHMARK_MIN_EXAMPLES,
-            "full_benchmark_min_datasets": EXPERIMENT_FULL_BENCHMARK_MIN_DATASETS,
-            "full_benchmark_min_models": EXPERIMENT_FULL_BENCHMARK_MIN_MODELS,
-            "full_benchmark_min_baselines": EXPERIMENT_FULL_BENCHMARK_MIN_BASELINES,
+            "benchmark_protocol": benchmark_protocol,
+            "full_benchmark_examples_policy": "benchmark_specific_official_or_materialized_full_split",
+            "full_benchmark_min_examples": None,
+            "full_benchmark_min_datasets": len(protocol_requirements.get("required_dataset_names", []) or real_datasets),
+            "full_benchmark_min_models": len(protocol_requirements.get("required_model_names", []) or model_targets),
+            "full_benchmark_min_baselines": len(protocol_requirements.get("required_baseline_names", []) or baselines),
+            "global_numeric_thresholds_allowed": False,
             "require_statistical_significance": EXPERIMENT_FULL_BENCHMARK_REQUIRE_SIGNIFICANCE,
             "require_strongest_baseline_win": EXPERIMENT_FULL_BENCHMARK_REQUIRE_STRONGEST_WIN,
             "requires_quality_cost_frontier": True,
@@ -1250,6 +1551,7 @@ def _normalize_success_criteria(success: dict, plan: dict, contract: dict) -> di
         "statistical_test",
         "required_artifacts",
         "benchmark_manifest",
+        "benchmark_protocol",
         "claim_route",
         "claim_strength",
         "reviewer_objections",
@@ -1599,11 +1901,20 @@ def _normalize_codebase_metadata(codebase: dict) -> dict:
 
 
 def scout_codebase(insight: dict) -> dict:
-    """Find the best codebase for implementing a hypothesis.
+    """Find the best codebase for implementing a hypothesis."""
+    try:
+        from agents.codebase_scout import scout_codebase_agentic
 
-    Uses LLM to suggest repos based on the method description and
-    knowledge graph context about what methods/datasets are involved.
-    """
+        result = scout_codebase_agentic(insight)
+        if isinstance(result, dict) and result.get("url"):
+            return result
+    except Exception as exc:
+        print(f"[FORGE] Agentic code scout failed: {exc}; falling back to single-shot scout.", flush=True)
+    return _scout_codebase_single_shot(insight)
+
+
+def _scout_codebase_single_shot(insight: dict) -> dict:
+    """Legacy single-shot LLM repo suggestion (fallback)."""
     parsed = _parse_insight_fields(insight)
     method = parsed.get("proposed_method", {})
     plan = _ensure_real_benchmark_plan(
@@ -1731,6 +2042,7 @@ def generate_scaffold(insight: dict, codebase: dict, workdir: Path) -> dict:
         codebase=codebase,
         scaffold_kind="planned",
     )
+    benchmark_protocol = publication_contract.get("benchmark_protocol") or benchmark_manifest.get("benchmark_protocol") or {}
 
     code_dir = workdir / "code"
     code_structure = ""
@@ -1778,6 +2090,11 @@ def generate_scaffold(insight: dict, codebase: dict, workdir: Path) -> dict:
     prompt_parts.append(json.dumps(publication_contract, ensure_ascii=False)[:2400])
     prompt_parts.append(
         "The scaffold must make this contract operational. Bootstrap/proxy evidence must be labeled as such."
+    )
+    prompt_parts.append(f"\n# Benchmark Protocol")
+    prompt_parts.append(json.dumps(benchmark_protocol, ensure_ascii=False)[:3000])
+    prompt_parts.append(
+        "This protocol is binding for paper evidence. If official benchmark instructions are unavailable, inspect/materialize the dataset and record the actual split and counts instead of applying global thresholds."
     )
     prompt_parts.append(f"\n# Benchmark Manifest")
     prompt_parts.append(json.dumps(benchmark_manifest, ensure_ascii=False)[:3000])
@@ -1906,6 +2223,7 @@ def generate_scaffold(insight: dict, codebase: dict, workdir: Path) -> dict:
         codebase=codebase,
         scaffold_kind=scaffold_kind,
     )
+    benchmark_protocol = publication_contract.get("benchmark_protocol") or benchmark_manifest.get("benchmark_protocol") or {}
     success = _normalize_success_criteria(success, plan, publication_contract)
 
     spec_dir = workdir / "spec"
@@ -1916,6 +2234,8 @@ def generate_scaffold(insight: dict, codebase: dict, workdir: Path) -> dict:
         json.dumps(success, indent=2), encoding="utf-8")
     (spec_dir / "benchmark_manifest.json").write_text(
         json.dumps(benchmark_manifest, indent=2), encoding="utf-8")
+    (spec_dir / "benchmark_protocol.json").write_text(
+        json.dumps(benchmark_protocol, indent=2), encoding="utf-8")
 
     code_dir = workdir / "code"
     code_dir.mkdir(parents=True, exist_ok=True)
@@ -1933,6 +2253,7 @@ def generate_scaffold(insight: dict, codebase: dict, workdir: Path) -> dict:
         "success_criteria": success,
         "publication_evidence_contract": publication_contract,
         "benchmark_manifest": benchmark_manifest,
+        "benchmark_protocol": benchmark_protocol,
         "claim_route": publication_contract.get("claim_route", {}),
         "train_py_written": bool(train_py and len(train_py) > 50),
         "baseline_command_override": baseline_command_override,
@@ -1952,6 +2273,14 @@ def _metric_name_from_success_or_plan(success: dict, plan: dict) -> str:
             return str(first["name"])
         return str(first)
     return "gpu_probe_score"
+
+
+def _optional_nonnegative_int(value, default: int = 0) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return int(default)
+    return max(0, parsed)
 
 
 def _real_benchmark_defaults(plan: dict) -> dict:
@@ -2013,8 +2342,8 @@ def _real_benchmark_defaults(plan: dict) -> dict:
         "model_requires_cuda": bool(model.get("requires_cuda")),
         "model_cpu_allowed": bool(model.get("cpu_allowed") or not model.get("requires_cuda")),
         "model_load_in_4bit": bool(model.get("load_in_4bit")),
-        "max_examples": int(plan.get("max_eval_examples") or target.get("max_eval_examples") or EXPERIMENT_REAL_BENCHMARK_MAX_EXAMPLES),
-        "seeds": int(plan.get("minimum_seeds") or EXPERIMENT_REAL_BENCHMARK_SEEDS),
+        "max_examples": _optional_nonnegative_int(plan.get("max_eval_examples"), _optional_nonnegative_int(target.get("max_eval_examples"), 0)),
+        "seeds": max(1, _optional_nonnegative_int(plan.get("minimum_seeds"), 1)),
         "baselines": _planned_baselines(plan),
         "ablations": _unique_non_empty(
             _named_values(plan.get("ablations"), keys=("name", "component", "factor"))
@@ -2957,13 +3286,20 @@ def _real_llm_benchmark_train_py(*, method_name: str, metric_name: str, plan: di
                 "Decompose the question into the smallest useful subquestions, solve them in order, "
                 "then write 'Final answer: <answer>'.\\nQuestion: " + question + "\\nSolution:"
             )
+        if kind == "voc_metareasoning":
+            return (
+                "Use the residual decision packet only as a private check. "
+                "Select exactly one answer option. "
+                "Output one line only: \"Final answer: <option label or concise answer>\". "
+                "Do not include reasoning, alternatives, multiple labels, uncertainty text, or any text after the final answer."
+                "\\nQuestion: " + question + f"\\nDifficulty proxy: {difficulty:.3f}\\nAnswer:"
+            )
         if kind.startswith("cggr") or kind in {
             "confidence_gate",
             "disagreement_gate",
             "random_budget_matched",
             "car_certainty_gate",
             "self_route_mode",
-            "voc_metareasoning",
         }:
             return (
                 "Choose the smallest sufficient response. If the answer is clear, do not reason. "
@@ -2989,7 +3325,7 @@ def _real_llm_benchmark_train_py(*, method_name: str, metric_name: str, plan: di
         if kind == "self_route_mode":
             return 192 if difficulty >= 0.46 else 56
         if kind == "voc_metareasoning":
-            return 192 if difficulty >= 0.44 else 56
+            return 64 if difficulty >= 0.44 else 48
         if kind == "cggr":
             return 224 if difficulty >= 0.42 else 64
         if kind == "cggr_ablate_counterfactual":
@@ -3143,6 +3479,20 @@ def _real_llm_benchmark_train_py(*, method_name: str, metric_name: str, plan: di
             if tokenizer.pad_token_id is None:
                 tokenizer.pad_token = tokenizer.eos_token
             model = AutoModelForCausalLM.from_pretrained(model_path, **load_kwargs)
+        if use_cuda:
+            device_map = getattr(model, "hf_device_map", {}) or {}
+            offloaded = {
+                name: str(device).lower()
+                for name, device in device_map.items()
+                if str(device).lower() in {"cpu", "disk"}
+            }
+            if offloaded and not _env_flag("DEEPGRAPH_ALLOW_CPU_OFFLOAD"):
+                sample = dict(list(offloaded.items())[:5])
+                raise RuntimeError(
+                    "Real GPU benchmark disallows CPU/disk offload; free GPU memory or set "
+                    "DEEPGRAPH_ALLOW_CPU_OFFLOAD=1 for non-paper diagnostics. Offloaded modules: "
+                    + json.dumps(sample, ensure_ascii=False)
+                )
         if not use_cuda:
             model.to("cpu")
         model.eval()
@@ -3272,21 +3622,22 @@ def _real_llm_benchmark_train_py(*, method_name: str, metric_name: str, plan: di
             reasoning_cost = float(os.getenv("DEEPGRAPH_VOC_REASONING_COST", "0.11"))
             simple_case_penalty = 0.10 if difficulty < 0.30 else 0.0
             expected_value = 0.52 * structure_signal - reasoning_cost - simple_case_penalty
-            threshold = float(os.getenv("DEEPGRAPH_VOC_THRESHOLD", "0.18"))
+            threshold = float(os.getenv("DEEPGRAPH_VOC_THRESHOLD", "0.28"))
             deliberate = expected_value >= threshold
-            strategy = "fixed_cot" if deliberate else "direct"
+            strategy = "voc_metareasoning" if deliberate else "direct"
+            max_new_tokens = _env_int("DEEPGRAPH_VOC_DELIBERATE_MAX_NEW_TOKENS", 64) if deliberate else 48
             output, tokens = _route_with_strategy(
                 model,
                 tokenizer,
                 example,
                 strategy,
                 difficulty=difficulty,
-                max_new_tokens=192 if deliberate else 56,
+                max_new_tokens=max_new_tokens,
             )
             return output, tokens, {
                 "difficulty": difficulty,
                 "kind": kind,
-                "max_new_tokens": 192 if deliberate else 56,
+                "max_new_tokens": max_new_tokens,
                 "routed_to_deliberation": deliberate,
                 "structure_signal": structure_signal,
                 "expected_value_of_computation": expected_value,
@@ -4284,13 +4635,15 @@ def build_proxy_config(plan: dict, codebase: dict | None = None, *, judgement=No
         "benchmark_model": EXPERIMENT_REAL_LLM_MODEL,
         "benchmark_dataset": EXPERIMENT_REAL_BENCHMARK_DATASET,
         "benchmark_dataset_config": EXPERIMENT_REAL_BENCHMARK_DATASET_CONFIG,
-        "benchmark_max_examples_per_seed": EXPERIMENT_REAL_BENCHMARK_MAX_EXAMPLES,
-        "benchmark_seeds": EXPERIMENT_REAL_BENCHMARK_SEEDS,
+        "benchmark_max_examples_per_seed": _optional_nonnegative_int(plan.get("max_eval_examples"), EXPERIMENT_REAL_BENCHMARK_MAX_EXAMPLES),
+        "benchmark_seeds": max(1, _optional_nonnegative_int(plan.get("minimum_seeds"), EXPERIMENT_REAL_BENCHMARK_SEEDS)),
         "benchmark_time_budget_seconds": EXPERIMENT_REAL_BENCHMARK_TIME_BUDGET,
     }
     publication_contract = plan.get("publication_evidence_contract") if isinstance(plan, dict) else {}
     if isinstance(publication_contract, dict) and publication_contract.get("benchmark_manifest"):
         proxy["benchmark_manifest"] = publication_contract["benchmark_manifest"]
+    if isinstance(publication_contract, dict) and publication_contract.get("benchmark_protocol"):
+        proxy["benchmark_protocol"] = publication_contract["benchmark_protocol"]
     if isinstance(publication_contract, dict) and publication_contract.get("claim_route"):
         proxy["claim_route"] = publication_contract["claim_route"]
         proxy["claim_strength"] = publication_contract.get("claim_strength")
@@ -4393,6 +4746,8 @@ def forge_experiment(insight_id: int) -> dict:
             "error": judgement.summary or "Experiment review blocked formalization",
             "judgement": judgement.to_dict(),
             "route": judgement.recommended_route,
+            "harness_required": bool((judgement.environment_review or {}).get("benchmark_harness_required")),
+            "harness_queue": (judgement.environment_review or {}).get("harness_queue") or "",
         }
     print(
         f"[FORGE] Review route={judgement.recommended_route} "
@@ -4410,6 +4765,7 @@ def forge_experiment(insight_id: int) -> dict:
         scaffold_kind="planned",
     )
     proxy["benchmark_manifest"] = proxy["publication_evidence_contract"].get("benchmark_manifest", {})
+    proxy["benchmark_protocol"] = proxy["publication_evidence_contract"].get("benchmark_protocol", {})
     proxy["paper_intent"] = proxy["publication_evidence_contract"].get("paper_intent", {})
     proxy["claim_route"] = proxy["publication_evidence_contract"].get("claim_route", {})
     proxy["claim_strength"] = proxy["publication_evidence_contract"].get("claim_strength")
@@ -4431,11 +4787,14 @@ def forge_experiment(insight_id: int) -> dict:
     if scaffold.get("publication_evidence_contract"):
         proxy["publication_evidence_contract"] = scaffold["publication_evidence_contract"]
         proxy["benchmark_manifest"] = scaffold["publication_evidence_contract"].get("benchmark_manifest", {})
+        proxy["benchmark_protocol"] = scaffold["publication_evidence_contract"].get("benchmark_protocol", {})
         proxy["paper_intent"] = scaffold["publication_evidence_contract"].get("paper_intent", {})
         proxy["claim_route"] = scaffold["publication_evidence_contract"].get("claim_route", {})
         proxy["claim_strength"] = scaffold["publication_evidence_contract"].get("claim_strength")
     if scaffold.get("benchmark_manifest"):
         proxy["benchmark_manifest"] = scaffold["benchmark_manifest"]
+    if scaffold.get("benchmark_protocol"):
+        proxy["benchmark_protocol"] = scaffold["benchmark_protocol"]
     if scaffold.get("baseline_command_override"):
         proxy["baseline_command"] = scaffold["baseline_command_override"]
         proxy["main_train_file"] = "train.py"
@@ -4451,6 +4810,7 @@ def forge_experiment(insight_id: int) -> dict:
             "success_criteria.json": success,
             "proxy_config.json": proxy,
             "benchmark_manifest.json": proxy.get("benchmark_manifest") or scaffold.get("benchmark_manifest") or {},
+            "benchmark_protocol.json": proxy.get("benchmark_protocol") or scaffold.get("benchmark_protocol") or {},
             "evidence_plan.json": evidence_plan,
             "experiment_judgement.json": judgement.to_dict(),
         },
@@ -4470,6 +4830,7 @@ def forge_experiment(insight_id: int) -> dict:
             "success_criteria": plan_paths["success_criteria.json"],
             "proxy_config": plan_paths["proxy_config.json"],
             "benchmark_manifest": plan_paths["benchmark_manifest.json"],
+            "benchmark_protocol": plan_paths["benchmark_protocol.json"],
             "evidence_plan": plan_paths["evidence_plan.json"],
             "experiment_judgement": plan_paths["experiment_judgement.json"],
         },

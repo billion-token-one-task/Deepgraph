@@ -9,6 +9,7 @@ Bibliography: Semantic Scholar–verified registry merged with evidence-graph pa
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -24,6 +25,10 @@ from agents.benchmark_audit import full_benchmark_evidence_blockers
 from agents.plain_manuscript_reviewer import review_manuscript_plain
 from agents.tex_code_agent import repair_latex_bundle
 from agents.reference_corpus_audit import audit_against_reference_corpus
+from agents.manuscript_length_auditor import audit_manuscript_length
+from agents.reference_auditor import audit_references
+from agents.visual_layout_auditor import audit_visual_layout
+from agents.llm_client import call_llm
 from agents.manuscript_pipeline import (
     _bundle_manifest,
     _ensure_dirs,
@@ -32,7 +37,11 @@ from agents.manuscript_pipeline import (
     build_manuscript_input_state,
 )
 from agents.workspace_layout import get_idea_workspace, paper_bundle_root, write_latest_status, write_plan_files
-from config import ICLR2026_TEMPLATE_DIR, ICLR2026_TEMPLATE_FILES, REFERENCE_PDF_CORPUS_DIR, SUBMISSION_BUNDLE_FORMATS
+from agents.paperorchestra.venue_policy import SubmissionTarget, generic_template_tex, infer_submission_target, target_from_key
+from agents.paperorchestra.writing_standard import build_paper_contract
+from agents.paperorchestra.reference_manager import ReferenceExpansionError
+from agents.paperorchestra.experiment_plot_reference import ExperimentPlotReferenceError
+from config import ICLR2026_TEMPLATE_DIR, ICLR2026_TEMPLATE_FILES, MANUSCRIPT_LATEX_TEMPLATE, REFERENCE_PDF_CORPUS_DIR, SUBMISSION_BUNDLE_FORMATS
 from db import database as db
 from db.insight_outcomes import OUTCOME_BECAME_MANUSCRIPT, set_outcome
 from orchestrator.tracking import log_artifact
@@ -326,8 +335,19 @@ def _inject_problem_spine(intro_related: str, problem_spine: str) -> str:
     return intro_related.rstrip() + "\n\n" + problem_spine
 
 
+def _venue_target_from_state(state: dict | None, bundle_format: str = "conference") -> SubmissionTarget:
+    payload = (state or {}).get("venue_target") if isinstance(state, dict) else None
+    if isinstance(payload, dict):
+        target = target_from_key(payload.get("key") or payload.get("template"))
+        if target is not None:
+            return target
+    return infer_submission_target(state or {}, bundle_format=bundle_format, configured_template=MANUSCRIPT_LATEX_TEMPLATE)
+
+
 def assemble_main_tex(state: dict, orchestrated: dict, bundle_format: str) -> str:
-    venue = "Conference submission draft" if bundle_format == "conference" else "Journal draft"
+    target = _venue_target_from_state(state, bundle_format)
+    venue = target.label
+    author_tex = "Anonymous authors\\\\Paper under double-blind review" if target.double_blind else "DeepGraph Auto Research (PaperOrchestra pipeline)"
     refined = orchestrated.get("refined") if isinstance(orchestrated.get("refined"), dict) else {}
     abs_tex = _strip_latex_document_shell(refined.get("abstract") or "See experiments section for quantitative results.")
     intro = _strip_latex_document_shell(refined.get("introduction") or state.get("problem_statement", ""))
@@ -372,7 +392,7 @@ def assemble_main_tex(state: dict, orchestrated: dict, bundle_format: str) -> st
 {problem_spine}
 \section{{Related Work}}
 {related}"""
-    if bundle_format == "conference":
+    if target.template == "iclr2026":
         return rf"""\documentclass{{article}}
 \usepackage{{iclr2026_conference,times}}
 \input{{math_commands.tex}}
@@ -421,7 +441,7 @@ def assemble_main_tex(state: dict, orchestrated: dict, bundle_format: str) -> st
 \setlength{{\abovecaptionskip}}{{4pt}}
 \setlength{{\belowcaptionskip}}{{2pt}}
 \title{{{state['title']}}}
-\author{{DeepGraph Auto Research (PaperOrchestra pipeline)}}
+\author{{{author_tex}}}
 \date{{{venue}}}
 \begin{{document}}
 \maketitle
@@ -440,7 +460,7 @@ def assemble_main_tex(state: dict, orchestrated: dict, bundle_format: str) -> st
 {results_line}
 \section{{Discussion}}
 {dis}
-\bibliographystyle{{plain}}
+\bibliographystyle{{{target.bibliography_style}}}
 \bibliography{{references}}
 \end{{document}}
 """
@@ -597,6 +617,40 @@ def normalize_latex_source(text: str, *, force_iclr2026: bool = False) -> str:
     return source + ("\n" if source and not source.endswith("\n") else "")
 
 
+def _strip_iclr_style_for_target(source: str, target: SubmissionTarget) -> str:
+    """Remove ICLR-only style commands when the routed target is not ICLR."""
+    if target.template == "iclr2026" or "\\begin{document}" not in source:
+        return source
+    preamble, marker, body = source.partition(r"\begin{document}")
+    preamble = re.sub(r"\\usepackage(?:\[[^\]]*\])?\{[^}]*iclr2026_conference[^}]*\}\s*", "", preamble)
+    preamble = re.sub(r"\\input\{math_commands\.tex\}\s*", "", preamble)
+    if r"\documentclass" not in preamble:
+        preamble = r"\documentclass[10pt]{article}" + "\n" + preamble
+    preamble = re.sub(r"\\documentclass\{article\}", r"\documentclass[10pt]{article}", preamble, count=1)
+    if "geometry" not in preamble:
+        preamble = preamble.rstrip() + "\n" + r"\usepackage[margin=1in]{geometry}" + "\n"
+    for package in ["microtype", "graphicx", "booktabs", "array", "tabularx", "amsmath,amssymb", "natbib", "hyperref", "url"]:
+        first_pkg = package.split(",", 1)[0]
+        if first_pkg not in preamble:
+            preamble = preamble.rstrip() + "\n" + rf"\usepackage{{{package}}}" + "\n"
+    if r"\date" not in preamble:
+        preamble = preamble.rstrip() + "\n" + rf"\date{{{target.label}}}" + "\n"
+    cleaned = preamble + marker + body
+    cleaned = re.sub(r"\\bibliographystyle\{[^}]+\}", rf"\\bibliographystyle{{{target.bibliography_style}}}", cleaned)
+    if "\\bibliography{" in cleaned and "\\bibliographystyle{" not in cleaned:
+        cleaned = re.sub(r"(\s*)\\bibliography\{", rf"\1\\bibliographystyle{{{target.bibliography_style}}}\1\\bibliography{{", cleaned, count=1)
+    return cleaned
+
+
+def normalize_latex_for_target(text: str, target: SubmissionTarget) -> str:
+    """Normalize LaTeX while respecting the selected venue or journal target."""
+    source = normalize_latex_source(text, force_iclr2026=target.template == "iclr2026")
+    if target.template != "iclr2026":
+        source = _strip_iclr_style_for_target(source, target)
+        source = normalize_latex_source(source, force_iclr2026=False)
+        source = _strip_iclr_style_for_target(source, target)
+    return source
+
 def _inject_after_first_section(source: str, section_name: str, block: str) -> str:
     if not block.strip():
         return source
@@ -608,27 +662,101 @@ def _inject_after_first_section(source: str, section_name: str, block: str) -> s
     return source[:insert_at] + "\n" + block.strip() + "\n" + source[insert_at:]
 
 
+def _inject_after_section_opening_paragraph(source: str, section_name: str, block: str) -> str:
+    """Place a figure after real section prose rather than as the first object."""
+    if not block.strip():
+        return source
+    pattern = rf"\\section\*?\{{{re.escape(section_name)}\}}"
+    match = re.search(pattern, source, flags=re.IGNORECASE)
+    if not match:
+        return source
+    section_start = match.end()
+    next_section = re.search(r"\\section\*?\{", source[section_start:], flags=re.IGNORECASE)
+    section_end = section_start + next_section.start() if next_section else len(source)
+    segment = source[section_start:section_end]
+    paragraph_break = re.search(r"\n\s*\n", segment)
+    if paragraph_break and paragraph_break.end() > 24:
+        insert_at = section_start + paragraph_break.end()
+    else:
+        insert_at = min(section_end, section_start + 900)
+    return source[:insert_at].rstrip() + "\n\n" + block.strip() + "\n\n" + source[insert_at:].lstrip()
+
+
+def _strip_standalone_figure_caption_paragraphs(source: str) -> str:
+    """Remove duplicate prose captions such as a raw 'Figure 1:' after a figure."""
+    pattern = re.compile(
+        r"(\\end\{figure\*?\})\s*(?:\\noindent\s*)?(?:\\textbf\{)?Figure\s*\d+\}?[:.][^\n]*(?:\n(?!\s*\\(?:section|subsection|begin\{figure)).*){0,3}",
+        re.IGNORECASE,
+    )
+    previous = None
+    cleaned = source
+    while previous != cleaned:
+        previous = cleaned
+        cleaned = pattern.sub(r"\1\n", cleaned)
+    return cleaned
+
+
+def _move_topmatter_figures_after_intro(source: str) -> str:
+    """Move figures out of title/author/abstract top matter if a model placed them there."""
+    abstract_end = re.search(r"\\end\{abstract\}", source or "", flags=re.IGNORECASE)
+    intro = re.search(r"\\section\*?\{Introduction\}", source or "", flags=re.IGNORECASE)
+    maketitle = re.search(r"\\maketitle", source or "", flags=re.IGNORECASE)
+    boundaries = [m.end() for m in (abstract_end, maketitle) if m]
+    if intro:
+        boundaries.append(intro.start())
+    if not boundaries:
+        return source
+    boundary = max(boundaries)
+    head, tail = source[:boundary], source[boundary:]
+    moved: list[str] = []
+
+    def _collect(match: re.Match[str]) -> str:
+        moved.append(match.group(0))
+        return "\n"
+
+    head = re.sub(r"\\begin\{figure\*?\}.*?\\end\{figure\*?\}", _collect, head, flags=re.IGNORECASE | re.DOTALL)
+    cleaned = head + tail
+    if not moved:
+        return cleaned
+    block = "\n\n".join(moved)
+    if intro:
+        return _inject_after_section_opening_paragraph(cleaned, "Introduction", block)
+    if abstract_end:
+        insert_at = abstract_end.end()
+        return cleaned[:insert_at] + "\n\n" + block + "\n" + cleaned[insert_at:]
+    return cleaned
+
+
+def _sanitize_visual_layout_source(source: str) -> str:
+    source = _strip_standalone_figure_caption_paragraphs(source)
+    source = _move_topmatter_figures_after_intro(source)
+    source = _strip_standalone_figure_caption_paragraphs(source)
+    return source
+
+
 def _ensure_required_concept_figures(source: str, orchestrated: dict) -> str:
-    """Inject required post-writing concept figures even when refinement returns a full document."""
+    """Inject required post-writing concept figures only after substantive prose."""
     motivation = _concept_figure_blocks(orchestrated, {"fig_motivation_symbolic"})
     overview = _concept_figure_blocks(orchestrated, {"fig_overview_symbolic"})
     if motivation and "fig:fig_motivation_symbolic" not in source:
-        source = _inject_after_first_section(source, "Introduction", motivation)
+        source = _inject_after_section_opening_paragraph(source, "Introduction", motivation)
     if overview and "fig:fig_overview_symbolic" not in source:
-        source = _inject_after_first_section(source, "Method", overview)
+        source = _inject_after_section_opening_paragraph(source, "Method", overview)
     return source
 
 
 def pick_main_tex(orchestrated: dict, state: dict, bundle_format: str) -> str:
     """Prefer full refined LaTeX if the model returned a complete ``\\documentclass`` document."""
     full = (orchestrated.get("refinement_full_text") or "").strip()
-    force_iclr2026 = bundle_format == "conference"
+    target = _venue_target_from_state(state, bundle_format)
     if full and re.match(r"^\s*(?:%[^\n]*\n\s*)*\\documentclass(?:\[[^\]]*\])?\{", full):
-        tex = normalize_latex_source(full, force_iclr2026=force_iclr2026)
+        tex = normalize_latex_for_target(full, target)
     else:
-        tex = normalize_latex_source(assemble_main_tex(state, orchestrated, bundle_format), force_iclr2026=force_iclr2026)
+        tex = normalize_latex_for_target(assemble_main_tex(state, orchestrated, bundle_format), target)
+    tex = _sanitize_visual_layout_source(tex)
     tex = _ensure_required_concept_figures(tex, orchestrated)
-    return normalize_latex_source(tex, force_iclr2026=force_iclr2026)
+    tex = _sanitize_visual_layout_source(tex)
+    return normalize_latex_for_target(tex, target)
 
 
 def _compile_main_pdf(bundle_dir: Path) -> dict:
@@ -716,6 +844,12 @@ def _copy_iclr2026_template_files(bundle_dir: Path) -> list[str]:
         shutil.copy2(src, dst)
         copied.append(name)
     return copied
+
+
+def _copy_template_files(bundle_dir: Path, target: SubmissionTarget) -> list[str]:
+    if target.template != "iclr2026":
+        return []
+    return _copy_iclr2026_template_files(bundle_dir)
 
 
 INCLUDEGRAPHICS_RE = re.compile(r"\\includegraphics(?:\[[^\]]*\])?\{([^}]+)\}")
@@ -942,6 +1076,7 @@ def _experiment_figure_roles(main_tex: str, includes: list[str]) -> dict[str, li
         "cost_latency_frontier": [],
         "subset_or_difficulty": [],
         "calibration_or_uncertainty": [],
+        "method_metric_matrix": [],
     }
     for idx, raw in enumerate(includes):
         stem = Path(raw).stem.lower()
@@ -959,6 +1094,8 @@ def _experiment_figure_roles(main_tex: str, includes: list[str]) -> dict[str, li
             roles["subset_or_difficulty"].append(raw)
         if any(term in text for term in ("calibration", "uncertainty", "confidence", "entropy", "distortion")):
             roles["calibration_or_uncertainty"].append(raw)
+        if any(term in text for term in ("heatmap", "matrix", "method metric", "method-metric", "profile", "metric profile")):
+            roles["method_metric_matrix"].append(raw)
     return roles
 
 
@@ -972,8 +1109,28 @@ def _raw_float_examples(main_tex: str, limit: int = 8) -> list[str]:
             break
     return examples
 
-def _manuscript_guideline_audit(*, main_tex: str, sections: list[str], includes: list[str], page_count: int | None, manuscript_state: dict | None, compile_ok: bool) -> dict:
+def _bare_abbreviation_hits(section_text: str) -> list[str]:
+    checks = [
+        (r"\bLLMs?\b", "large language model", "LLM/LLMs"),
+        (r"\bRAG\b", "retrieval-augmented generation", "RAG"),
+        (r"\bRe-ID\b", "person re-identification", "Re-ID"),
+        (r"\bVI\b", "visible-infrared", "VI"),
+        (r"\bEM\b", "exact match", "EM"),
+        (r"\bECE\b", "expected calibration error", "ECE"),
+        (r"\bQA\b", "question answering", "QA"),
+    ]
+    lower = (section_text or "").lower()
+    hits: list[str] = []
+    for pattern, phrase, label in checks:
+        if re.search(pattern, section_text or "") and phrase not in lower:
+            hits.append(label)
+    return hits
+
+
+def _manuscript_guideline_audit(*, main_tex: str, sections: list[str], includes: list[str], page_count: int | None, manuscript_state: dict | None, compile_ok: bool, venue_target: SubmissionTarget | None = None, bibtex: str = "") -> dict:
     state = manuscript_state or {}
+    target = venue_target or _venue_target_from_state(state)
+    paper_contract = state.get("paper_contract") if isinstance(state.get("paper_contract"), dict) else {}
     packet = state.get("result_packet") if isinstance(state.get("result_packet"), dict) else {}
     summary = packet.get("benchmark_summary") if isinstance(packet.get("benchmark_summary"), dict) else {}
     contract = state.get("publication_evidence_contract") if isinstance(state.get("publication_evidence_contract"), dict) else {}
@@ -999,6 +1156,9 @@ def _manuscript_guideline_audit(*, main_tex: str, sections: list[str], includes:
     intro_body = _section_body(main_tex, "Introduction")
     results_body = _section_body(main_tex, "Results")
     discussion_body = _section_body(main_tex, "Discussion")
+    method_body = _section_body(main_tex, "Method")
+    experiments_body = _section_body(main_tex, "Experiments")
+    related_body = _section_body(main_tex, "Related Work")
     issues = []
     word_count = _plain_tex_word_count(main_tex)
     duplicate_sections = sorted({x for x in sections if sections.count(x) > 1})
@@ -1008,6 +1168,12 @@ def _manuscript_guideline_audit(*, main_tex: str, sections: list[str], includes:
     expected_order = [x for x in expected_sections if x in section_order]
     if not compile_ok:
         issues.append(_guide_issue("high", "Submission/format", "PDF compilation must pass before a bundle can be ready.", fix="Repair LaTeX/PDF compilation."))
+    if not paper_contract:
+        issues.append(_guide_issue("high", "Paper Contract standard", "paper_contract.json is missing from manuscript state.", fix="Create paper_contract.json before writing and bind target, evidence scope, claims, metrics, terminology, and banned expressions."))
+    if target.template == "iclr2026" and "iclr2026_conference" not in main_tex:
+        issues.append(_guide_issue("high", "Venue-target consistency", "ICLR target requires the ICLR 2026 style marker.", target.label, "Use the official ICLR 2026 template only for ICLR targets."))
+    if target.template != "iclr2026" and "iclr2026_conference" in main_tex:
+        issues.append(_guide_issue("high", "Venue-target consistency", "Non-ICLR target still uses the ICLR 2026 style marker.", target.label, "Regenerate with the routed venue/journal template and remove ICLR-specific style files."))
     if duplicate_sections:
         issues.append(_guide_issue("high", "Writing structure", "The manuscript contains duplicate top-level sections.", ", ".join(duplicate_sections), "Deduplicate and merge repeated sections."))
     if missing_sections:
@@ -1016,6 +1182,21 @@ def _manuscript_guideline_audit(*, main_tex: str, sections: list[str], includes:
         issues.append(_guide_issue("high", "Abstract/title cleanup", "The manuscript must contain exactly one abstract and must not repeat an Abstract section.", f"abstract_env_count={abstract_env_count} abstract_section_count={abstract_section_count}", "Keep one abstract environment after maketitle and remove duplicate generated abstracts."))
     if section_order != expected_order:
         issues.append(_guide_issue("medium", "Problem-motivation-method-result spine", "Section order does not follow the required paper narrative.", " -> ".join(sections[:10]), "Use Introduction -> Related Work -> Method -> Experiments -> Results -> Discussion/Limitations."))
+    if re.search(r"\\begin\{equation\}|\\begin\{align\}|\\\[|\$\$", intro_body):
+        issues.append(_guide_issue("high", "Introduction standard", "Introduction contains display math, which the writing guide forbids.", fix="Move formulas to Method and keep Introduction prose-only."))
+    method_equation_count = len(re.findall(r"\\begin\{(?:equation|align|gather)\}", method_body))
+    if "$$" in method_body:
+        issues.append(_guide_issue("high", "Method standard", "Method contains unnumbered $$ display math.", fix="Use numbered equation environments sparingly and explain every symbol."))
+    if method_equation_count > 4:
+        issues.append(_guide_issue("medium", "Method standard", "Method exceeds the recommended equation budget.", f"equation_count={method_equation_count}", "Keep about three or four numbered equations unless the paper is theory-heavy."))
+    for section_name, section_text in (("Abstract", abstract), ("Introduction", intro_body), ("Method", method_body), ("Experiments", experiments_body)):
+        abbr_hits = _bare_abbreviation_hits(section_text)
+        if abbr_hits:
+            issues.append(_guide_issue("high", "Abbreviation standard", f"{section_name} uses abbreviations before defining them.", ", ".join(abbr_hits), "Define each abbreviation on first meaningful use within each major section."))
+    for raw_title in re.findall(r"\\subsection\*?\{([^}]+)\}", related_body):
+        title_words = re.findall(r"[A-Za-z0-9-]+", raw_title)
+        if len(title_words) > 3:
+            issues.append(_guide_issue("medium", "Related Work standard", "Related Work subsection title is longer than the one-to-three-word guide.", raw_title, "Use a short Title Case noun phrase."))
     if raw_float_values:
         issues.append(_guide_issue("high", "Table standard / numeric formatting", "Raw unrounded floating-point values remain in the manuscript.", ", ".join(raw_float_values), "Round metrics and costs for paper tables, typically 3 decimals for rates/accuracy and 1--2 decimals for token or latency costs."))
     if re.search(r"training[- ]free", main_tex or "", flags=re.IGNORECASE):
@@ -1036,10 +1217,24 @@ def _manuscript_guideline_audit(*, main_tex: str, sections: list[str], includes:
         issues.append(_guide_issue("high", "Figure/experiment presentation", "The same figure asset is included more than once.", ", ".join(duplicate_includes), "Remove duplicate figure blocks or replace them with distinct evidence."))
     if duplicate_captions:
         issues.append(_guide_issue("high", "Figure/experiment presentation", "Figure captions are duplicated or near-identical.", duplicate_captions[0][:180], "Rewrite captions and replace repeated plots with distinct analyses."))
-    if word_count < 4500:
-        issues.append(_guide_issue("high", "篇幅 / full-paper length", "The main manuscript is too short for the binding full-paper writing guide.", f"word_count={word_count}", "Expand method, experiment setup, baseline analysis, ablations, limitations, and related work."))
-    if page_count is not None and page_count < 8:
-        issues.append(_guide_issue("medium", "篇幅 / ICLR-style length", "Compiled paper is short relative to full conference papers.", f"page_count={page_count}", "Target a complete main paper rather than a thin technical note."))
+    length_audit = audit_manuscript_length(
+        main_tex=main_tex,
+        page_count=page_count,
+        venue_target=target.to_dict(),
+        bibliography_entry_count=len(_bib_entries_by_key(bibtex or "")),
+    )
+    for audit_issue in length_audit.get("issues") or []:
+        if isinstance(audit_issue, dict):
+            issues.append(audit_issue)
+    reference_audit = audit_references(
+        main_tex=main_tex,
+        bibtex=bibtex or "",
+        min_references=int((length_audit.get("venue_policy") or {}).get("min_reference_count") or 50),
+        min_cited_references=int((length_audit.get("venue_policy") or {}).get("min_cited_reference_count") or 50),
+    )
+    for audit_issue in reference_audit.get("issues") or []:
+        if isinstance(audit_issue, dict):
+            issues.append(audit_issue)
     required_story = problem_awareness.get("required_story_order") or paper_intent.get("required_story_order") or ["problem", "motivation", "method", "result", "limitations"]
     for key in required_story:
         key_l = str(key).lower()
@@ -1070,6 +1265,8 @@ def _manuscript_guideline_audit(*, main_tex: str, sections: list[str], includes:
     if non_concept_includes and len(covered_figure_roles) < 3:
         issues.append(_guide_issue("high", "Figure/experiment diversity", "Experiment figures do not cover enough distinct evidence types.", f"covered_roles={covered_figure_roles}", "Use different evidence displays: main benchmark, ablation, cost/latency frontier, subset/difficulty analysis, or calibration/uncertainty."))
     table_count = len(re.findall(r"\\begin\{table\*?\}", main_tex or "")) + len(re.findall(r"\\begin\{tabular", main_tex or ""))
+    if table_count and not all(rule in (main_tex or "") for rule in ("\\toprule", "\\midrule", "\\bottomrule")):
+        issues.append(_guide_issue("high", "Tables and figures standard", "Tables are present but do not use complete booktabs top/mid/bottom rules.", f"table_count={table_count}", "Use booktabs tables with \\toprule, \\midrule, and \\bottomrule."))
     if table_count < 2:
         issues.append(_guide_issue("high", "Table standard / experiments", "The manuscript lacks enough numeric experiment tables.", f"table_count={table_count}", "Add main results and ablation/cost tables using the table standard."))
     required_ablations = required.get("ablations") or contract.get("required_ablations") or []
@@ -1101,7 +1298,31 @@ def _manuscript_guideline_audit(*, main_tex: str, sections: list[str], includes:
         decision = "manuscript_blocked"
     elif any(x.get("severity") == "medium" for x in issues):
         decision = "needs_revision"
-    return {"schema_version": "deepgraph_writing_guideline_audit_v1", "status": "pass" if not issues else "fail", "decision": decision, "word_count": word_count, "page_count": page_count, "sections": sections, "duplicate_sections": duplicate_sections, "figure_count": len(includes), "table_count": table_count, "standard_sources": ["agents/paperorchestra/writing_standard.py", "agents/paperorchestra/table_standard.py", "agents/paperorchestra/figure_standard.py", "docs/top_venue_manuscript_chain.md", "paper_intent.json/problem_awareness/publication_evidence_contract"], "issues": issues, "next_actions": [x.get("fix") or x.get("issue") for x in issues[:12]]}
+    return {
+        "schema_version": "deepgraph_writing_guideline_audit_v2",
+        "status": "pass" if not issues else "fail",
+        "decision": decision,
+        "word_count": word_count,
+        "page_count": page_count,
+        "sections": sections,
+        "duplicate_sections": duplicate_sections,
+        "figure_count": len(includes),
+        "table_count": table_count,
+        "length_auditor": length_audit,
+        "reference_auditor": reference_audit,
+        "standard_sources": [
+            "agents/paperorchestra/writing_standard.py",
+            "agents/manuscript_length_policy.py",
+            "agents/manuscript_length_auditor.py",
+            "agents/reference_auditor.py",
+            "agents/paperorchestra/table_standard.py",
+            "agents/paperorchestra/figure_standard.py",
+            "docs/top_venue_manuscript_chain.md",
+            "paper_intent.json/problem_awareness/publication_evidence_contract",
+        ],
+        "issues": issues,
+        "next_actions": [x.get("fix") or x.get("issue") for x in issues[:16]],
+    }
 
 def _paper_quality_report(
     *,
@@ -1114,8 +1335,10 @@ def _paper_quality_report(
     removed_cite_keys: list[str],
     template_files: list[str] | None = None,
     manuscript_state: dict | None = None,
+    venue_target: SubmissionTarget | None = None,
 ) -> dict:
     entries = _bib_entries_by_key(bibtex)
+    target = venue_target or _venue_target_from_state(manuscript_state or {})
     cited = _cited_keys(main_tex)
     includes = [raw.strip() for raw in INCLUDEGRAPHICS_RE.findall(main_tex or "") if raw.strip()]
     missing_figures: list[str] = []
@@ -1159,8 +1382,10 @@ def _paper_quality_report(
         issues.append({"severity": "medium", "issue": "Citation density is below a conference-paper target."})
     if len(includes) < 1:
         issues.append({"severity": "medium", "issue": "The paper has no native experiment figure."})
-    if "iclr2026_conference" not in main_tex:
-        issues.append({"severity": "high", "issue": "Conference bundle is not using the ICLR 2026 template."})
+    if target.template == "iclr2026" and "iclr2026_conference" not in main_tex:
+        issues.append({"severity": "high", "issue": "ICLR target bundle is not using the ICLR 2026 template."})
+    if target.template != "iclr2026" and "iclr2026_conference" in main_tex:
+        issues.append({"severity": "high", "issue": f"Routed target is {target.label}, but manuscript still uses the ICLR 2026 template."})
     if internal_audit_hits:
         issues.append({"severity": "medium", "issue": "Internal-audit wording remains in the main body."})
     if page_count is not None and page_count < 8:
@@ -1182,6 +1407,14 @@ def _paper_quality_report(
     for issue in reference_corpus_audit.get("issues") or []:
         if isinstance(issue, dict) and issue not in issues:
             issues.append(issue)
+    visual_layout_audit = audit_visual_layout(
+        main_tex=main_tex,
+        figure_assets=figure_assets,
+        page_count=page_count,
+    )
+    for issue in visual_layout_audit.get("issues") or []:
+        if isinstance(issue, dict) and issue not in issues:
+            issues.append(issue)
     writing_guideline_audit = _manuscript_guideline_audit(
         main_tex=main_tex,
         sections=sections,
@@ -1189,6 +1422,8 @@ def _paper_quality_report(
         page_count=page_count,
         manuscript_state=manuscript_state or {},
         compile_ok=bool(compile_result.get("ok")),
+        venue_target=target,
+        bibtex=bibtex,
     )
     for issue in writing_guideline_audit.get("issues") or []:
         if isinstance(issue, dict) and issue not in issues:
@@ -1205,6 +1440,9 @@ def _paper_quality_report(
             "citation_count": len(cited),
             "scientific_review_gate": scientific_review,
             "writing_guideline_audit": writing_guideline_audit,
+            "length_auditor": writing_guideline_audit.get("length_auditor") or {},
+            "reference_auditor": writing_guideline_audit.get("reference_auditor") or {},
+            "visual_layout_audit": visual_layout_audit,
         },
     )
     for issue in plain_reviewer.get("issues") or []:
@@ -1237,7 +1475,8 @@ def _paper_quality_report(
         "reference_corpus_dir": str(REFERENCE_PDF_CORPUS_DIR),
         "reference_exemplar": str(REFERENCE_PDF_CORPUS_DIR / "2604.14206.pdf"),
         "reference_corpus_audit": reference_corpus_audit,
-        "venue_template": "iclr2026_conference",
+        "venue_template": target.template,
+        "venue_target": target.to_dict(),
         "template_files": template_files or [],
         "compile_ok": bool(compile_result.get("ok")),
         "page_count": page_count,
@@ -1264,7 +1503,10 @@ def _paper_quality_report(
             if isinstance(asset, dict)
         ],
         "scientific_review_gate": scientific_review,
+        "visual_layout_audit": visual_layout_audit,
         "writing_guideline_audit": writing_guideline_audit,
+        "length_auditor": writing_guideline_audit.get("length_auditor") or {},
+        "reference_auditor": writing_guideline_audit.get("reference_auditor") or {},
         "plain_manuscript_reviewer": plain_reviewer,
         "internal_audit_wording_hits": internal_audit_hits,
         "issues": issues,
@@ -1274,6 +1516,401 @@ def _paper_quality_report(
             "Move missing implementation details into a concise reproducibility/scope subsection rather than repeating them throughout the paper.",
         ],
     }
+
+
+
+def _env_int_local(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+MANUSCRIPT_REVISION_MAX_ATTEMPTS = max(0, _env_int_local("DEEPGRAPH_MANUSCRIPT_REVISION_ATTEMPTS", 2))
+MANUSCRIPT_REVISION_MAX_TOKENS = max(4000, _env_int_local("DEEPGRAPH_MANUSCRIPT_REVISION_MAX_TOKENS", 12000))
+
+
+MANUSCRIPT_REVISION_SYSTEM = """You are PaperOrchestra's final manuscript revision writer.
+Revise the supplied full LaTeX document according to structured quality-gate feedback.
+Do not invent experiments, datasets, baselines, ablations, citations, figures, or numeric results.
+Use only the provided citation keys and figure files. Preserve exact quantitative claims unless the feedback asks to weaken or remove unsupported claims.
+For missing evidence, calibrate or remove claims rather than fabricating support.
+Keep motivation and overview figures mandatory, but place them after substantive paper text, never in title/author/abstract/top matter.
+Return one complete compilable LaTeX document only."""
+
+
+def _quality_gate_decision(quality_report: dict) -> tuple[str, list[dict]]:
+    writing_guideline_audit = quality_report.get("writing_guideline_audit") or {}
+    guide_decision = str(writing_guideline_audit.get("decision") or "")
+    quality_issues = [issue for issue in (quality_report.get("issues") or []) if isinstance(issue, dict)]
+    if guide_decision not in {"manuscript_blocked", "needs_revision"}:
+        if any(issue.get("severity") == "high" for issue in quality_issues):
+            guide_decision = "manuscript_blocked"
+        else:
+            gate_medium = False
+            for issue in quality_issues:
+                source = str(issue.get("standard") or "")
+                if issue.get("severity") == "medium" and source.startswith(("Scientific review gate", "Plain final reviewer")):
+                    gate_medium = True
+                    break
+            if gate_medium:
+                guide_decision = "needs_revision"
+    return guide_decision, quality_issues
+
+
+def _issue_text(issue: dict) -> str:
+    return " ".join(
+        str(issue.get(key) or "")
+        for key in ("standard", "severity", "issue", "evidence", "fix")
+    ).lower()
+
+
+def _issue_is_authorable(issue: dict) -> bool:
+    """Whether a quality issue can be sent back to the manuscript writer.
+
+    Evidence/generation blockers must not be solved by prose. They need the
+    experiment or figure-generation stage to rerun instead.
+    """
+
+    text = _issue_text(issue)
+    standard = str(issue.get("standard") or "").lower()
+    if "visual layout auditor / required concept figures" in standard:
+        return not any(
+            marker in text
+            for marker in (
+                "is missing",
+                "not produced",
+                "did not produce",
+                "paperbanana_failed",
+                "paperbanana_error",
+                "paperbanana_not_configured",
+            )
+        )
+    if "ablation requirement" in standard and "artifact_present=true" not in text:
+        return False
+    hard_stage_markers = (
+        "evidence gate",
+        "full benchmark evidence is not complete",
+        "quality gate requires full benchmark",
+        "benchmark evidence",
+        "scientific evidence is too small",
+        "evaluation scale is thin",
+        "statistically significant",
+        "candidate does not beat",
+        "baseline coverage is weak",
+        "benchmark comparison does not cover",
+        "run or present all required baselines",
+        "missing pairwise",
+        "seed coverage is thin",
+        "route/gate trigger rate",
+        "live-sampling sanity check",
+        "full benchmark",
+        "benchmark_artifact_manifest",
+        "full_benchmark_completed",
+        "paperbanana/gemini generation failure",
+        "fix the paperbanana/gemini generation failure",
+        "required motivation figure generation did not produce",
+        "required overview figure generation did not produce",
+        "required motivation figure is missing",
+        "required overview figure is missing",
+        "referenced figures are missing or placeholder-rendered",
+    )
+    return not any(marker in text for marker in hard_stage_markers)
+
+
+def _build_manuscript_revision_feedback(quality_report: dict, attempt: int) -> dict:
+    guide_decision, quality_issues = _quality_gate_decision(quality_report)
+    authorable: list[dict] = []
+    stage_blockers: list[dict] = []
+    for issue in quality_issues:
+        if _issue_is_authorable(issue):
+            authorable.append(issue)
+        else:
+            stage_blockers.append(issue)
+    return {
+        "schema_version": "deepgraph_manuscript_revision_feedback_v1",
+        "attempt": attempt,
+        "quality_decision": guide_decision,
+        "authorable_issue_count": len(authorable),
+        "stage_blocker_count": len(stage_blockers),
+        "authorable_issues": authorable[:24],
+        "stage_blockers": stage_blockers[:24],
+        "instruction": (
+            "Revise authorable manuscript issues and rerun quality gates. "
+            "Do not rewrite around stage blockers that require new benchmark evidence or PaperBanana/Gemini assets."
+        ),
+    }
+
+
+def _extract_latex_revision(text: str) -> str:
+    raw = str(text or "").strip()
+    match = re.search(r"```latex\s*([\s\S]*?)```", raw, flags=re.IGNORECASE)
+    if match:
+        raw = match.group(1).strip()
+    else:
+        match = re.search(r"(\\documentclass[\s\S]*)", raw)
+        if match:
+            raw = match.group(1).strip()
+    return raw
+
+
+def _sanitize_citations_to_bib(tex: str, bibtex: str) -> str:
+    entries = _bib_entries_by_key(bibtex or "")
+    if not entries:
+        return tex
+    allowed = set(entries)
+    fallback = list(entries)[:2]
+
+    def _replace(match: re.Match[str]) -> str:
+        keys = [part.strip() for part in match.group(1).split(",") if part.strip()]
+        kept = [key for key in keys if key in allowed]
+        if kept:
+            return match.group(0).replace(match.group(1), ", ".join(kept))
+        if fallback:
+            return match.group(0).replace(match.group(1), ", ".join(fallback))
+        return ""
+
+    return CITE_RE.sub(_replace, tex or "")
+
+
+def _available_figure_files(bundle_dir: Path, limit: int = 80) -> list[str]:
+    figures_dir = bundle_dir / "figures"
+    if not figures_dir.exists():
+        return []
+    out: list[str] = []
+    for path in sorted(figures_dir.iterdir()):
+        if path.is_file() and path.suffix.lower() in {".png", ".pdf", ".jpg", ".jpeg", ".svg"}:
+            out.append("figures/" + path.name)
+    return out[:limit]
+
+
+def _revision_issue_summary(feedback: dict, limit: int = 18) -> list[dict]:
+    rows: list[dict] = []
+    for issue in feedback.get("authorable_issues") or []:
+        if not isinstance(issue, dict):
+            continue
+        rows.append(
+            {
+                "severity": issue.get("severity"),
+                "standard": issue.get("standard"),
+                "issue": issue.get("issue"),
+                "evidence": issue.get("evidence"),
+                "required_fix": issue.get("fix"),
+            }
+        )
+        if len(rows) >= limit:
+            break
+    return rows
+
+
+def _revise_main_tex_from_quality_feedback(
+    *,
+    bundle_dir: Path,
+    main_tex: str,
+    bibtex: str,
+    figure_assets: list[dict],
+    feedback: dict,
+    manuscript_state: dict,
+    venue_target: SubmissionTarget,
+) -> tuple[str, dict]:
+    deterministic = _sanitize_visual_layout_source(main_tex or "")
+    deterministic = _ensure_required_concept_figures(deterministic, {"plotting": {"assets": figure_assets or []}})
+    deterministic = normalize_latex_for_target(deterministic, venue_target)
+    if not feedback.get("authorable_issues"):
+        return deterministic, {"status": "deterministic_only", "changed": deterministic != (main_tex or "")}
+
+    citation_keys = list(_bib_entries_by_key(bibtex or ""))
+    payload = {
+        "venue_target": venue_target.to_dict(),
+        "title": manuscript_state.get("title"),
+        "method_name": manuscript_state.get("method_name"),
+        "revision_feedback": {
+            "attempt": feedback.get("attempt"),
+            "authorable_issues": _revision_issue_summary(feedback),
+            "stage_blockers_not_authorable": [
+                {
+                    "standard": issue.get("standard"),
+                    "issue": issue.get("issue"),
+                    "fix": issue.get("fix"),
+                }
+                for issue in (feedback.get("stage_blockers") or [])[:12]
+                if isinstance(issue, dict)
+            ],
+        },
+        "allowed_citation_keys": citation_keys[:100],
+        "allowed_figure_files": _available_figure_files(bundle_dir),
+        "mandatory_concept_figures": ["fig_motivation_symbolic", "fig_overview_symbolic"],
+        "instructions": [
+            "Return the complete LaTeX document, not a patch.",
+            "Use only allowed citation keys and allowed figure files.",
+            "Do not add claims, baselines, datasets, ablations, or numbers that are not already in the manuscript or evidence state.",
+            "For unsupported claims, weaken/remove the claim or move it to limitations instead of inventing evidence.",
+            "Keep motivation/overview figures in the paper, but after title/abstract and after substantive prose.",
+            "Remove duplicate standalone Figure X paragraphs; keep only LaTeX captions.",
+        ],
+    }
+    prompt = (
+        "--- revision_feedback.json ---\n"
+        + json.dumps(payload, indent=2, ensure_ascii=False, default=str)[:18000]
+        + "\n\n--- current_main.tex ---\n```latex\n"
+        + deterministic[:70000]
+        + "\n```"
+    )
+    try:
+        revised_text, tokens = call_llm(
+            MANUSCRIPT_REVISION_SYSTEM,
+            prompt,
+            temperature=0.0,
+            max_tokens=MANUSCRIPT_REVISION_MAX_TOKENS,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return deterministic, {
+            "status": "llm_revision_failed",
+            "error": str(exc),
+            "changed": deterministic != (main_tex or ""),
+        }
+    candidate = _extract_latex_revision(revised_text)
+    if not (
+        re.search(r"^\s*(?:%[^\n]*\n\s*)*\\documentclass", candidate)
+        and "\\begin{document}" in candidate
+        and "\\end{document}" in candidate
+    ):
+        return deterministic, {
+            "status": "llm_revision_rejected",
+            "reason": "response was not a complete LaTeX document",
+            "tokens": tokens,
+            "changed": deterministic != (main_tex or ""),
+        }
+    if len(candidate) < max(2000, int(len(deterministic) * 0.45)):
+        return deterministic, {
+            "status": "llm_revision_rejected",
+            "reason": "response was too short for a full manuscript",
+            "tokens": tokens,
+            "changed": deterministic != (main_tex or ""),
+        }
+    candidate = _sanitize_citations_to_bib(candidate, bibtex)
+    candidate = _sanitize_visual_layout_source(candidate)
+    candidate = _ensure_required_concept_figures(candidate, {"plotting": {"assets": figure_assets or []}})
+    candidate = _sanitize_visual_layout_source(candidate)
+    candidate = normalize_latex_for_target(candidate, venue_target)
+    return candidate, {
+        "status": "llm_revision_applied",
+        "tokens": tokens,
+        "changed": candidate.strip() != (main_tex or "").strip(),
+    }
+
+
+def _run_manuscript_revision_loop(
+    *,
+    bundle_dir: Path,
+    main_tex: str,
+    bibtex: str,
+    figure_assets: list[dict],
+    all_placeholder_figures: list[str],
+    compile_result: dict,
+    removed_cite_keys: list[str],
+    copied_template_files: list[str],
+    manuscript_state: dict,
+    venue_target: SubmissionTarget,
+    initial_quality_report: dict,
+) -> tuple[str, dict, dict, list[str], list[dict]]:
+    quality_report = initial_quality_report
+    revision_history: list[dict] = []
+    max_attempts = MANUSCRIPT_REVISION_MAX_ATTEMPTS
+    if max_attempts <= 0:
+        return main_tex, compile_result, quality_report, all_placeholder_figures, revision_history
+
+    for attempt in range(1, max_attempts + 1):
+        guide_decision, quality_issues = _quality_gate_decision(quality_report)
+        if guide_decision not in {"manuscript_blocked", "needs_revision"}:
+            break
+        feedback = _build_manuscript_revision_feedback(quality_report, attempt)
+        feedback["before"] = {
+            "decision": guide_decision,
+            "issue_count": len(quality_issues),
+            "high_count": sum(1 for issue in quality_issues if issue.get("severity") == "high"),
+            "medium_count": sum(1 for issue in quality_issues if issue.get("severity") == "medium"),
+        }
+        _write(
+            bundle_dir / f"manuscript_revision_feedback_attempt_{attempt}.json",
+            json.dumps(feedback, indent=2, ensure_ascii=False, default=str)[:120_000],
+        )
+        if not feedback.get("authorable_issues"):
+            feedback["status"] = "no_authorable_issues"
+            revision_history.append(feedback)
+            break
+
+        revised_tex, revision_meta = _revise_main_tex_from_quality_feedback(
+            bundle_dir=bundle_dir,
+            main_tex=main_tex,
+            bibtex=bibtex,
+            figure_assets=figure_assets,
+            feedback=feedback,
+            manuscript_state=manuscript_state,
+            venue_target=venue_target,
+        )
+        feedback["revision_meta"] = revision_meta
+        if revised_tex.strip() == (main_tex or "").strip():
+            feedback["status"] = "no_text_change"
+            revision_history.append(feedback)
+            break
+
+        main_tex = revised_tex
+        _write(bundle_dir / "main.tex", main_tex)
+        main_tex = _prefer_vector_figure_references(bundle_dir, main_tex)
+        _write(bundle_dir / "main.tex", main_tex)
+        tex_code_report = repair_latex_bundle(bundle_dir, stage=f"quality_gate_revision_{attempt}")
+        if tex_code_report.get("changed"):
+            main_tex = (bundle_dir / "main.tex").read_text(encoding="utf-8", errors="replace")
+        main_tex = _sanitize_visual_layout_source(main_tex)
+        _write(bundle_dir / "main.tex", main_tex)
+        compile_result = _compile_main_pdf(bundle_dir)
+        all_placeholder_figures = _dedupe_strings(
+            _ensure_referenced_figures(bundle_dir, main_tex)
+            + _placeholder_like_asset_figures(bundle_dir, figure_assets)
+        )
+        quality_report = _paper_quality_report(
+            bundle_dir=bundle_dir,
+            main_tex=main_tex,
+            bibtex=bibtex,
+            figure_assets=figure_assets,
+            placeholder_figures=all_placeholder_figures,
+            compile_result=compile_result,
+            removed_cite_keys=removed_cite_keys,
+            template_files=copied_template_files,
+            manuscript_state=manuscript_state,
+            venue_target=venue_target,
+        )
+        _write(
+            bundle_dir / f"paper_quality_report_after_revision_{attempt}.json",
+            json.dumps(quality_report, indent=2, ensure_ascii=False, default=str),
+        )
+        after_decision, after_issues = _quality_gate_decision(quality_report)
+        feedback["status"] = "revised"
+        feedback["after"] = {
+            "decision": after_decision,
+            "issue_count": len(after_issues),
+            "high_count": sum(1 for issue in after_issues if issue.get("severity") == "high"),
+            "medium_count": sum(1 for issue in after_issues if issue.get("severity") == "medium"),
+        }
+        revision_history.append(feedback)
+        if after_decision not in {"manuscript_blocked", "needs_revision"}:
+            break
+
+    _write(
+        bundle_dir / "manuscript_revision_history.json",
+        json.dumps(
+            {
+                "schema_version": "deepgraph_manuscript_revision_history_v1",
+                "max_attempts": max_attempts,
+                "attempts": revision_history,
+            },
+            indent=2,
+            ensure_ascii=False,
+            default=str,
+        )[:200_000],
+    )
+    return main_tex, compile_result, quality_report, all_placeholder_figures, revision_history
 
 
 def _scientific_review_gate(main_tex: str, state: dict) -> dict:
@@ -1924,6 +2561,9 @@ def generate_bundle_paper_orchestra(
             "backend": "paper_orchestra",
         }
     state = state_contract.to_dict()
+    venue_target = infer_submission_target(state, configured_template=MANUSCRIPT_LATEX_TEMPLATE)
+    state["venue_target"] = venue_target.to_dict()
+    state["paper_contract"] = build_paper_contract(state, venue_target.to_dict())
     paper_ids = [str(x) for x in _json_list(insight.get("supporting_papers")) if x]
     literature_block = insight.get("evidence_summary") or insight.get("related_work_positioning") or ""
     layout = get_idea_workspace(int(run["deep_insight_id"]), insight=insight, create=True, sync_db=True)
@@ -1937,6 +2577,8 @@ def generate_bundle_paper_orchestra(
         insight=insight,
         files={
             "manuscript_input_state.json": state,
+            "venue_target.json": state.get("venue_target") or {},
+            "paper_contract.json": state.get("paper_contract") or {},
             "paper_intent.json": state.get("paper_intent") or {},
             "problem_awareness.json": state.get("problem_awareness") or {},
             "publication_evidence_contract.json": state.get("publication_evidence_contract") or {},
@@ -1988,6 +2630,137 @@ def generate_bundle_paper_orchestra(
             baseline=run.get("baseline_metric_value"),
             metric_name=run.get("baseline_metric_name") or "metric",
         )
+    except ReferenceExpansionError as exc:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        error = str(exc)
+        report = exc.report or {}
+        blockers = report.get("blockers") or [error]
+        partial = exc.expanded_literature or {}
+        if partial.get("bibtex"):
+            _write(manuscript_root / "references.bib", str(partial.get("bibtex") or ""))
+        if partial.get("collected_papers") is not None:
+            _write(
+                manuscript_root / "citation_registry.json",
+                json.dumps(partial.get("collected_papers") or [], indent=2, ensure_ascii=False, default=str),
+            )
+        _write(
+            manuscript_root / "reference_manager_report.json",
+            json.dumps(report, indent=2, ensure_ascii=False, default=str),
+        )
+        block_report = {
+            "run_id": run_id,
+            "deep_insight_id": run["deep_insight_id"],
+            "status": "manuscript_blocked",
+            "error": error,
+            "blockers": blockers,
+            "next_actions": [
+                "expand Semantic Scholar/literature discovery queries until at least 50 verified references are collected",
+                "rerun manuscript generation only after reference_manager_report.status is ok",
+            ],
+            "reference_manager_report": str(manuscript_root / "reference_manager_report.json"),
+        }
+        _write_blocked_current_marker(layout, block_report)
+        db.execute(
+            "UPDATE manuscript_runs SET status='manuscript_blocked', updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            (manuscript_run_id,),
+        )
+        db.execute(
+            "UPDATE deep_insights SET submission_status='manuscript_blocked', updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            (run["deep_insight_id"],),
+        )
+        db.execute(
+            "UPDATE experiment_runs SET status='manuscript_blocked', error_message=? WHERE id=?",
+            (error, run_id),
+        )
+        db.commit()
+        write_latest_status(
+            int(run["deep_insight_id"]),
+            {
+                "stage": "reference_manager",
+                "status": "manuscript_blocked",
+                "manuscript_run_id": manuscript_run_id,
+                "error": error,
+                "submission_blockers": blockers,
+                "reference_manager_report": str(manuscript_root / "reference_manager_report.json"),
+                "paper_current_root": str(manuscript_root),
+            },
+            run_id=run_id,
+            insight=insight,
+        )
+        return {
+            "error": error,
+            "status": "manuscript_blocked",
+            "submission_blockers": blockers,
+            "reference_manager_report": str(manuscript_root / "reference_manager_report.json"),
+            "manuscript_run_id": manuscript_run_id,
+            "workdir": str(manuscript_root),
+            "backend": "paper_orchestra",
+        }
+    except ExperimentPlotReferenceError as exc:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        error = str(exc)
+        report = exc.report or {}
+        blockers = report.get("blockers") or [error]
+        _write(
+            manuscript_root / "experiment_plot_reference_report.json",
+            json.dumps(report, indent=2, ensure_ascii=False, default=str),
+        )
+        block_report = {
+            "run_id": run_id,
+            "deep_insight_id": run["deep_insight_id"],
+            "status": "manuscript_blocked",
+            "error": error,
+            "blockers": blockers,
+            "next_actions": [
+                "run experiment_plot_reference after reference_manager with live Semantic Scholar access",
+                "collect at least three searched experiment-figure style references",
+                "produce at least three artifact-backed experiment figures from distinct chart families",
+            ],
+            "experiment_plot_reference_report": str(manuscript_root / "experiment_plot_reference_report.json"),
+        }
+        _write_blocked_current_marker(layout, block_report)
+        db.execute(
+            "UPDATE manuscript_runs SET status='manuscript_blocked', updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            (manuscript_run_id,),
+        )
+        db.execute(
+            "UPDATE deep_insights SET submission_status='manuscript_blocked', updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            (run["deep_insight_id"],),
+        )
+        db.execute(
+            "UPDATE experiment_runs SET status='manuscript_blocked', error_message=? WHERE id=?",
+            (error, run_id),
+        )
+        db.commit()
+        write_latest_status(
+            int(run["deep_insight_id"]),
+            {
+                "stage": "experiment_plot_reference",
+                "status": "manuscript_blocked",
+                "manuscript_run_id": manuscript_run_id,
+                "error": error,
+                "submission_blockers": blockers,
+                "experiment_plot_reference_report": str(manuscript_root / "experiment_plot_reference_report.json"),
+                "paper_current_root": str(manuscript_root),
+            },
+            run_id=run_id,
+            insight=insight,
+        )
+        return {
+            "error": error,
+            "status": "manuscript_blocked",
+            "submission_blockers": blockers,
+            "experiment_plot_reference_report": str(manuscript_root / "experiment_plot_reference_report.json"),
+            "manuscript_run_id": manuscript_run_id,
+            "workdir": str(manuscript_root),
+            "backend": "paper_orchestra",
+        }
     except Exception as exc:
         try:
             db.rollback()
@@ -2056,6 +2829,10 @@ def generate_bundle_paper_orchestra(
 
     preferred_bundle_dir: Path | None = None
     for bundle_format in bundle_formats:
+        bundle_target = infer_submission_target(state, bundle_format=bundle_format, configured_template=MANUSCRIPT_LATEX_TEMPLATE)
+        bundle_state = dict(state)
+        bundle_state["venue_target"] = bundle_target.to_dict()
+        bundle_state["paper_contract"] = build_paper_contract(bundle_state, bundle_target.to_dict())
         bundle_dir = paper_bundle_root(int(run["deep_insight_id"]), bundle_format, insight=insight)
         if bundle_dir.exists():
             for child in sorted(bundle_dir.iterdir()):
@@ -2066,7 +2843,7 @@ def generate_bundle_paper_orchestra(
         _ensure_dirs(bundle_dir)
         figures_dir = bundle_dir / "figures"
         _ensure_dirs(figures_dir)
-        copied_template_files = _copy_iclr2026_template_files(bundle_dir) if bundle_format == "conference" else []
+        copied_template_files = _copy_template_files(bundle_dir, bundle_target)
         if shared_fig.exists():
             for p in sorted(shared_fig.glob("*")):
                 if p.is_file():
@@ -2076,12 +2853,13 @@ def generate_bundle_paper_orchestra(
             json.dumps(orchestrated.get("plotting") or {}, indent=2, default=str)[:100_000],
         )
 
-        main_tex = pick_main_tex(orchestrated, state, bundle_format)
+        main_tex = pick_main_tex(orchestrated, bundle_state, bundle_format)
         bundle_bibtex = bibtex
         main_tex, bundle_bibtex, removed_cite_keys = _clean_topic_citations(main_tex, bundle_bibtex, state)
         orchestrated.setdefault("citation_cleanup", {})[bundle_format] = {
             "removed_offtopic_cite_keys": removed_cite_keys,
-            "iclr2026_template_files": copied_template_files,
+            "template_files": copied_template_files,
+            "venue_target": bundle_target.to_dict(),
         }
         _write(bundle_dir / "main.tex", main_tex)
         materialized_assets = _materialize_referenced_figures(
@@ -2268,6 +3046,8 @@ def generate_bundle_paper_orchestra(
             json.dumps(orchestrated, indent=2, default=str)[:200_000],
         )
         _write(bundle_dir / "paper_intent.json", json.dumps(state.get("paper_intent") or {}, indent=2, default=str))
+        _write(bundle_dir / "venue_target.json", json.dumps(bundle_state.get("venue_target") or {}, indent=2, ensure_ascii=False, default=str))
+        _write(bundle_dir / "paper_contract.json", json.dumps(bundle_state.get("paper_contract") or {}, indent=2, ensure_ascii=False, default=str)[:120_000])
         _write(bundle_dir / "problem_awareness.json", json.dumps(state.get("problem_awareness") or {}, indent=2, default=str))
         _write(
             bundle_dir / "publication_evidence_contract.json",
@@ -2303,7 +3083,7 @@ def generate_bundle_paper_orchestra(
                     "- [x] Evidence manifest",
                     "- [x] Claim-evidence matrix",
                     "- [x] Problem-awareness contract",
-                    "- [x] ICLR 2026 LaTeX template files",
+                    f"- [x] Venue target manifest ({bundle_target.label})",
                     "- [x] Reviewer simulator report",
                     "- [x] LaTeX sanity report",
                     "- [x] Citation verifier report",
@@ -2356,27 +3136,45 @@ def generate_bundle_paper_orchestra(
             compile_result=compile_result,
             removed_cite_keys=removed_cite_keys,
             template_files=copied_template_files,
-            manuscript_state=state,
+            manuscript_state=bundle_state,
+            venue_target=bundle_target,
         )
         _write(
             bundle_dir / "paper_quality_report.json",
             json.dumps(quality_report, indent=2, ensure_ascii=False, default=str),
         )
+        main_tex, compile_result, quality_report, all_placeholder_figures, revision_history = _run_manuscript_revision_loop(
+            bundle_dir=bundle_dir,
+            main_tex=main_tex,
+            bibtex=bundle_bibtex,
+            figure_assets=figure_assets,
+            all_placeholder_figures=all_placeholder_figures,
+            compile_result=compile_result,
+            removed_cite_keys=removed_cite_keys,
+            copied_template_files=copied_template_files,
+            manuscript_state=bundle_state,
+            venue_target=bundle_target,
+            initial_quality_report=quality_report,
+        )
+        if revision_history:
+            _write(
+                figures_dir / "figure_manifest.json",
+                json.dumps(
+                    {
+                        "assets": figure_assets,
+                        "materialized_references": materialized_assets,
+                        "placeholder_figures": all_placeholder_figures,
+                    },
+                    indent=2,
+                    default=str,
+                )[:100_000],
+            )
+            _write(
+                bundle_dir / "paper_quality_report.json",
+                json.dumps(quality_report, indent=2, ensure_ascii=False, default=str),
+            )
         writing_guideline_audit = quality_report.get("writing_guideline_audit") or {}
-        guide_decision = str(writing_guideline_audit.get("decision") or "")
-        quality_issues = [issue for issue in (quality_report.get("issues") or []) if isinstance(issue, dict)]
-        if guide_decision not in {"manuscript_blocked", "needs_revision"}:
-            if any(issue.get("severity") == "high" for issue in quality_issues):
-                guide_decision = "manuscript_blocked"
-            else:
-                gate_medium = False
-                for issue in quality_issues:
-                    source = str(issue.get("standard") or "")
-                    if issue.get("severity") == "medium" and source.startswith(("Scientific review gate", "Plain final reviewer")):
-                        gate_medium = True
-                        break
-                if gate_medium:
-                    guide_decision = "needs_revision"
+        guide_decision, quality_issues = _quality_gate_decision(quality_report)
         if guide_decision in {"manuscript_blocked", "needs_revision"}:
             blockers = [
                 f"{issue.get('standard') or issue.get('severity')}: {issue.get('issue')}"
@@ -2397,6 +3195,8 @@ def generate_bundle_paper_orchestra(
                 "paper_current_root": str(manuscript_root),
                 "bundle_dir": str(bundle_dir),
                 "quality_report": str(bundle_dir / "paper_quality_report.json"),
+                "revision_attempts": len(revision_history),
+                "revision_history": str(bundle_dir / "manuscript_revision_history.json") if revision_history else "",
                 "writing_standard_sources": writing_guideline_audit.get("standard_sources") or [],
             }
             _write(
@@ -2457,6 +3257,8 @@ def generate_bundle_paper_orchestra(
                     "paper_current_root": str(manuscript_root),
                     "bundle_dir": str(bundle_dir),
                     "quality_report": str(bundle_dir / "paper_quality_report.json"),
+                    "revision_attempts": len(revision_history),
+                    "revision_history": str(bundle_dir / "manuscript_revision_history.json") if revision_history else "",
                     "blockers": blockers[:20],
                 },
                 run_id=run_id,
@@ -2466,6 +3268,8 @@ def generate_bundle_paper_orchestra(
                 "status": guide_decision,
                 "submission_blockers": blockers,
                 "writing_guideline_audit": writing_guideline_audit,
+                "revision_attempts": len(revision_history),
+                "revision_history": str(bundle_dir / "manuscript_revision_history.json") if revision_history else "",
                 "manuscript_run_id": manuscript_run_id,
                 "workdir": str(manuscript_root),
                 "backend": "paper_orchestra",

@@ -14,15 +14,10 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from db import database as db
+from agents.paperorchestra.venue_policy import ICLR2026_TEMPLATE_FILES, SubmissionTarget, infer_submission_target, target_from_key
 
 
-ICLR_REQUIRED_FILES = {
-    "iclr2026_conference.sty",
-    "iclr2026_conference.bst",
-    "math_commands.tex",
-    "natbib.sty",
-    "fancyhdr.sty",
-}
+ICLR_REQUIRED_FILES = set(ICLR2026_TEMPLATE_FILES)
 CONTRACT_FILES = {
     "problem_awareness.json",
     "publication_evidence_contract.json",
@@ -30,6 +25,8 @@ CONTRACT_FILES = {
     "claim_evidence_matrix.json",
     "reviewer_report.json",
     "paper_quality_report.json",
+    "venue_target.json",
+    "paper_contract.json",
 }
 
 
@@ -58,6 +55,19 @@ def _load_claim_values(root: Path) -> dict[str, Any]:
         if payload:
             return payload
     return {}
+
+
+def _load_venue_target(root: Path, main_tex: str, bundle_format: str) -> SubmissionTarget:
+    for relative in ("venue_target.json", "audited_results/venue_target.json"):
+        payload = _load_json(root / relative)
+        target = target_from_key(payload.get("key") or payload.get("template")) if payload else None
+        if target is not None:
+            return target
+    if "iclr2026_conference" in (main_tex or ""):
+        target = target_from_key("iclr2026")
+        if target is not None:
+            return target
+    return infer_submission_target({}, bundle_format=bundle_format, configured_template="auto")
 
 
 def _available_contract_files(root: Path, root_files: set[str]) -> set[str]:
@@ -174,15 +184,21 @@ def audit_bundle_path(bundle_path: str | Path, *, bundle_format: str = "conferen
     files = {path.name for path in root.iterdir() if path.is_file()}
     first_kb = main_tex[:1200].lower()
     is_conference = str(bundle_format or "").lower() == "conference"
+    venue_target = _load_venue_target(root, main_tex, bundle_format)
 
-    if is_conference:
+    if is_conference and venue_target.template == "iclr2026":
         if "iclr2026_conference" not in main_tex:
-            issues.append(_issue("high", "Conference paper does not use the ICLR 2026 style."))
+            issues.append(_issue("high", "ICLR target paper does not use the ICLR 2026 style."))
         missing_template = sorted(ICLR_REQUIRED_FILES - files)
         if missing_template:
-            issues.append(_issue("high", "Conference bundle is missing ICLR template files: " + ", ".join(missing_template) + "."))
+            issues.append(_issue("high", "ICLR target bundle is missing template files: " + ", ".join(missing_template) + "."))
         if "\\documentclass{article}" in first_kb and "iclr2026_conference" not in main_tex:
             issues.append(_issue("high", "Conference paper still uses the generic article class."))
+
+    if is_conference and venue_target.template != "iclr2026" and "iclr2026_conference" in main_tex:
+        issues.append(_issue("high", f"Conference target is {venue_target.label}, but main.tex still uses the ICLR 2026 style."))
+    if not is_conference and "iclr2026_conference" in main_tex:
+        issues.append(_issue("high", f"Bundle target is {venue_target.label}, but main.tex still uses the ICLR 2026 style."))
 
     missing_contracts = sorted(CONTRACT_FILES - _available_contract_files(root, files))
     if missing_contracts:
@@ -205,6 +221,7 @@ def audit_bundle_path(bundle_path: str | Path, *, bundle_format: str = "conferen
     return {
         "bundle_path": str(root),
         "bundle_format": bundle_format,
+        "venue_target": venue_target.to_dict(),
         "status": "block" if high_count else "pass",
         "high_issue_count": high_count,
         "main_tex_chars": len(main_tex),
@@ -316,7 +333,7 @@ def reconcile_stale_manuscript_jobs(*, limit: int = 50) -> int:
         (limit,),
     )
     for row in rows:
-        note = "Latest manuscript bundle is stale; a new evidence-backed ICLR bundle is required."
+        note = "Latest manuscript bundle is stale; a new evidence-backed venue-routed bundle is required."
         db.execute(
             """
             UPDATE auto_research_jobs

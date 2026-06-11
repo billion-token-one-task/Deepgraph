@@ -314,15 +314,15 @@ class ManuscriptBundleTests(unittest.TestCase):
     def _stub_orchestra(self, state, literature_block, paper_ids, iterations, *, figures_dir, baseline, metric_name):
         figures_dir.mkdir(parents=True, exist_ok=True)
         assets = []
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
         for figure_id, label in (
             ("fig_main_benchmark", "main benchmark"),
             ("fig_ablation", "ablation"),
             ("fig_cost_quality", "cost quality"),
         ):
             fig_path = figures_dir / f"{figure_id}.png"
-            import matplotlib
-            matplotlib.use("Agg")
-            import matplotlib.pyplot as plt
             fig, ax = plt.subplots(figsize=(7, 4.2), dpi=220)
             ax.bar(["A", "B", "C"], [0.50, 0.57, 0.61], color=["#64748b", "#94a3b8", "#2563eb"])
             ax.set_ylim(0.0, 0.75)
@@ -342,16 +342,66 @@ class ManuscriptBundleTests(unittest.TestCase):
                     "kind": "plot",
                 }
             )
-        body = " ".join(
-            [
-                "The problem is budgeted reasoning under disagreement, where a system must decide when extra candidate traces are worth the latency and token cost.",
-                "The motivation is that fixed direct answering and fixed majority aggregation either miss useful evidence or spend compute uniformly.",
-                "The method uses confidence, route, cost, disagreement, and calibration signals to select reasoning paths under a compute budget.",
-                "The result is reported against four benchmark baselines with seed variation, ablation evidence, latency analysis, cost analysis, difficulty breakdown, and a disagreement subset.",
-                "The limitations include a single-model setting, one primary benchmark family, and sensitivity to confidence calibration.",
-            ]
-            * 220
-        )
+        for figure_id, label in (
+            ("fig_motivation_symbolic", "Motivation schematic"),
+            ("fig_overview_symbolic", "Overview schematic"),
+        ):
+            fig_path = figures_dir / f"{figure_id}.png"
+            fig, ax = plt.subplots(figsize=(8.5, 4.2), dpi=320)
+            ax.axis("off")
+            ax.set_xlim(0, 1)
+            ax.set_ylim(0, 1)
+            for x, color in [(0.10, "#bfdbfe"), (0.20, "#bbf7d0"), (0.30, "#ddd6fe")]:
+                ax.add_patch(plt.Rectangle((x, 0.56), 0.07, 0.16, facecolor=color, edgecolor="#111827", linewidth=1.5))
+                ax.text(x + 0.035, 0.64, "A", ha="center", va="center", fontsize=14, weight="bold")
+            ax.add_patch(plt.Rectangle((0.42, 0.46), 0.18, 0.32, facecolor="#f8fafc", edgecolor="#111827", linewidth=2))
+            ax.text(0.51, 0.67, "selector", ha="center", fontsize=14, weight="bold")
+            ax.text(0.51, 0.56, "conf .95", ha="center", fontsize=10)
+            ax.text(0.51, 0.48, "cost 20", ha="center", fontsize=10)
+            for y, color in [(0.68, "#86efac"), (0.52, "#fecaca")]:
+                ax.add_patch(plt.Circle((0.72, y), 0.045, facecolor=color, edgecolor="#111827", linewidth=1.5))
+            ax.text(0.80, 0.68, "keep", fontsize=13, weight="bold")
+            ax.text(0.80, 0.52, "drop", fontsize=13, weight="bold")
+            ax.plot([0.34, 0.42], [0.64, 0.64], color="#111827", linewidth=2)
+            ax.plot([0.60, 0.68], [0.64, 0.68], color="#111827", linewidth=2)
+            ax.plot([0.60, 0.68], [0.56, 0.52], color="#111827", linewidth=2)
+            ax.add_patch(plt.Rectangle((0.14, 0.24), 0.66, 0.08, facecolor="#eff6ff", edgecolor="#2563eb", linewidth=1.4))
+            ax.text(0.47, 0.265, "budget", ha="center", fontsize=11)
+            fig.tight_layout()
+            fig.savefig(fig_path)
+            plt.close(fig)
+            assets.append(
+                {
+                    "figure_id": figure_id,
+                    "path": str(fig_path),
+                    "svg_path": "",
+                    "pdf_path": "",
+                    "code_path": "",
+                    "objective": label,
+                    "kind": "diagram",
+                    "stage": "postwriting_api_figures",
+                    "notes": "paperbanana_ok",
+                }
+            )
+        cite_keys = ["cite_a"] + [f"cite_{i}" for i in range(1, 50)]
+
+        def words(n, prefix):
+            return " ".join(f"{prefix}{i}" for i in range(n))
+
+        def cite_range(start, end, size=5):
+            chunks = []
+            for offset in range(start, end, size):
+                chunks.append("\\cite{" + ", ".join(cite_keys[offset:min(end, offset + size)]) + "}")
+            return " ".join(chunks)
+
+        abstract_body = "This paper studies a problem challenge method result limitation setting. " + words(170, "a")
+        intro_body = "The problem motivation method result limitations are explicit. " + words(820, "i") + " " + cite_range(0, 8)
+        related_body = "Related work is grouped by selective prediction routing confidence disagreement and test time compute. " + words(700, "r") + " " + cite_range(8, 23) + " " + cite_range(23, 38)
+        method_body = "The method defines routing confidence disagreement cost calibration and compute allocation. " + words(1230, "m") + " " + cite_range(38, 48)
+        experiments_body = "The experiments report datasets baselines metrics seeds statistical tests latency tokens cost ablation and difficulty breakdown. " + words(860, "e") + " " + cite_range(48, 50)
+        results_body = "The result analysis compares baselines ablations latency cost disagreement and calibration. " + words(820, "z")
+        discussion_body = "The discussion states limitations scope benchmark coverage calibration sensitivity and deployment risk. " + words(500, "d")
+
         full_text = rf"""\documentclass{{article}}
 \usepackage{{iclr2026_conference,times}}
 \input{{math_commands.tex}}
@@ -363,14 +413,14 @@ class ManuscriptBundleTests(unittest.TestCase):
 \begin{{document}}
 \maketitle
 \begin{{abstract}}
-This paper studies the problem of budgeted reasoning under disagreement. The challenge is to preserve useful minority evidence without paying keep-all token and latency cost. The proposed method routes candidate traces with confidence, disagreement, and cost signals. On GSM8K it improves the candidate accuracy to 0.61 while the strongest deployable baseline reaches 0.57, and the analysis reports ablation, cost, latency, and disagreement subset behavior.
+{abstract_body}
 \end{{abstract}}
 \section{{Introduction}}
-{body} \cite{{cite_a}}
+{intro_body}
 \section{{Related Work}}
-{body} Prior work on selective prediction, test-time compute, uncertainty routing, and multi-agent aggregation motivates the benchmark design \cite{{cite_a}}.
+{related_body}
 \section{{Method}}
-{body}
+{method_body}
 \begin{{figure}}[t]
 \centering
 \includegraphics[width=\linewidth]{{figures/fig_main_benchmark.png}}
@@ -378,7 +428,7 @@ This paper studies the problem of budgeted reasoning under disagreement. The cha
 \label{{fig:main-benchmark}}
 \end{{figure}}
 \section{{Experiments}}
-{body}
+{experiments_body}
 \begin{{table}}[t]
 \centering
 \begin{{tabular}}{{lrr}}
@@ -400,7 +450,7 @@ Candidate & 0.61 & 110 \\
 \label{{fig:ablation}}
 \end{{figure}}
 \section{{Results}}
-{body} The ablation without the guard reaches 0.58, confirming that the routing guard matters. The latency and cost analysis shows the candidate keeps accuracy gains while using fewer tokens than always-reasoning. The disagreement subset analysis isolates examples where candidates disagree and confirms the method keeps high-confidence minority evidence.
+{results_body} The ablation without the guard reaches 0.58, confirming that the routing guard matters. The latency and cost analysis shows the candidate keeps accuracy gains while using fewer tokens than always-reasoning. The disagreement subset analysis isolates examples where candidates disagree and confirms the method keeps high-confidence minority evidence.
 \begin{{table}}[t]
 \centering
 \begin{{tabular}}{{lrr}}
@@ -420,7 +470,7 @@ Candidate & 0.61 & 1.5 \\
 \label{{fig:cost-quality}}
 \end{{figure}}
 \section{{Discussion}}
-{body} These results support the method while preserving clear limitations about benchmark scope, calibration, and model coverage.
+{discussion_body} These results support the method while preserving clear limitations about benchmark scope, calibration, and model coverage.
 \bibliographystyle{{iclr2026_conference}}
 \bibliography{{references}}
 \end{{document}}
@@ -443,24 +493,34 @@ Candidate & 0.61 & 1.5 \\
             },
             "refinement_full_text": full_text,
             "agentreview_worklog": [],
-            "bibtex": "@misc{cite_a,\n  title = {Verified Paper},\n  author = {Author One},\n  year = {2024}\n}\n",
-            "bib_keys": ["cite_a"],
+            "bibtex": "\n".join(
+                f"@inproceedings{{{key},\n"
+                f"  title = {{Verified Routing Confidence Paper {idx}}},\n"
+                f"  author = {{Author {idx} and Coauthor {idx}}},\n"
+                f"  booktitle = {{Proceedings of a Conference}},\n"
+                f"  year = {{2024}},\n"
+                f"  doi = {{10.0000/example.{idx}}}\n"
+                f"}}\n"
+                for idx, key in enumerate(cite_keys)
+            ),
+            "bib_keys": cite_keys,
             "citation_registry": [
                 {
-                    "cite_key": "cite_a",
-                    "title": "Verified Paper",
-                    "abstract": "Paper abstract.",
+                    "cite_key": key,
+                    "title": f"Verified Routing Confidence Paper {idx}",
+                    "abstract": "Selective prediction routing confidence disagreement test-time compute benchmark baseline.",
                     "year": 2024,
                     "source_claim_ids": ["1"],
                     "source_node_ids": ["ml.test"],
                 }
+                for idx, key in enumerate(cite_keys)
             ],
             "claim_citation_map": {
                 "1": {
                     "claim_text": "The method improved accuracy.",
                     "source_paper_ids": ["2401.12345"],
                     "source_node_ids": ["ml.test"],
-                    "cite_keys": ["cite_a"],
+                    "cite_keys": cite_keys[:8],
                 }
             },
         }
@@ -480,6 +540,8 @@ Candidate & 0.61 & 1.5 \\
         self.assertTrue((bundle_path / "claim_citation_map.json").exists())
         self.assertTrue((bundle_path / "paper_intent.json").exists())
         self.assertTrue((bundle_path / "problem_awareness.json").exists())
+        self.assertTrue((bundle_path / "venue_target.json").exists())
+        self.assertTrue((bundle_path / "paper_contract.json").exists())
         self.assertTrue((bundle_path / "publication_evidence_contract.json").exists())
         self.assertTrue((bundle_path / "evidence_manifest.json").exists())
         self.assertTrue((bundle_path / "claim_evidence_matrix.json").exists())

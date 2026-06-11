@@ -33,6 +33,8 @@ _discovery_thread = None
 _discovery_lock = threading.Lock()
 _tier2_thread = None
 _tier2_lock = threading.Lock()
+_milestone_thread = None
+_milestone_lock = threading.Lock()
 _stop_event = threading.Event()
 DISCOVERY_CONSUMER = "discovery_scheduler"
 PARALLEL_TIER2_MIN_INTERVAL_SECONDS = 90
@@ -302,6 +304,121 @@ def _reasoned_paper_count() -> int:
     return int(row["c"]) if row else 0
 
 
+def _milestone_for_count(reasoned_count: int) -> int:
+    interval = max(0, int(DISCOVERY_AUTO_TRIGGER_PAPERS or 0))
+    if interval <= 0:
+        return 0
+    return (max(0, reasoned_count) // interval) * interval
+
+
+def _milestone_done(milestone: int) -> bool:
+    row = db.fetchone(
+        "SELECT id FROM pipeline_events WHERE dedupe_key=? LIMIT 1",
+        (f"idea_screening_done:{milestone}",),
+    )
+    return bool(row)
+
+
+def _run_milestone_idea_screening(milestone: int, reasoned_count: int, trigger: str) -> None:
+    try:
+        db.emit_pipeline_event(
+            "idea_screening_started",
+            {
+                "milestone": milestone,
+                "reasoned_count": reasoned_count,
+                "trigger": trigger,
+                "interval": DISCOVERY_AUTO_TRIGGER_PAPERS,
+            },
+            entity_type="discovery_milestone",
+            entity_id=str(milestone),
+            dedupe_key=f"idea_screening_started:{milestone}",
+        )
+        log_event(
+            "discovery",
+            {
+                "step": "idea_screening_start",
+                "milestone": milestone,
+                "reasoned_count": reasoned_count,
+                "trigger": trigger,
+            },
+        )
+        result = run_full_discovery(
+            tier1_candidates=DISCOVERY_TIER1_CANDIDATES,
+            tier2_problems=DISCOVERY_TIER2_PROBLEMS,
+            tier2_papers=DISCOVERY_TIER2_PAPERS,
+            bulk=False,
+        )
+        db.emit_pipeline_event(
+            "idea_screening_done",
+            {
+                "milestone": milestone,
+                "reasoned_count": reasoned_count,
+                "trigger": trigger,
+                "tier1_count": len(result.get("tier1") or []),
+                "tier2_count": len(result.get("tier2") or []),
+                "completed_at": result.get("completed_at"),
+            },
+            entity_type="discovery_milestone",
+            entity_id=str(milestone),
+            dedupe_key=f"idea_screening_done:{milestone}",
+        )
+        log_event(
+            "discovery",
+            {
+                "step": "idea_screening_done",
+                "milestone": milestone,
+                "tier1_count": len(result.get("tier1") or []),
+                "tier2_count": len(result.get("tier2") or []),
+            },
+        )
+    except Exception as exc:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        print(f"[DISCOVERY] Milestone idea screening failed at {milestone}: {exc}", flush=True)
+        print(traceback.format_exc(), flush=True)
+        db.emit_pipeline_event(
+            "idea_screening_failed",
+            {
+                "milestone": milestone,
+                "reasoned_count": reasoned_count,
+                "trigger": trigger,
+                "error": str(exc),
+            },
+            entity_type="discovery_milestone",
+            entity_id=str(milestone),
+            dedupe_key=f"idea_screening_failed:{milestone}:{int(time.time())}",
+        )
+        log_event("error", {"step": "idea_screening", "milestone": milestone, "error": str(exc)})
+
+
+def maybe_launch_milestone_idea_screening(trigger: str = "manual") -> dict:
+    """Launch harvest + Tier1 + Tier2 once per reasoned-paper milestone."""
+    global _milestone_thread
+    reasoned_count = _reasoned_paper_count()
+    milestone = _milestone_for_count(reasoned_count)
+    if milestone <= 0:
+        return {
+            "status": "below_threshold",
+            "reasoned_count": reasoned_count,
+            "interval": DISCOVERY_AUTO_TRIGGER_PAPERS,
+        }
+    if _milestone_done(milestone):
+        return {"status": "already_done", "milestone": milestone, "reasoned_count": reasoned_count}
+    with _milestone_lock:
+        if _milestone_thread and _milestone_thread.is_alive():
+            return {"status": "already_running", "milestone": milestone, "reasoned_count": reasoned_count}
+        _milestone_thread = threading.Thread(
+            target=_run_milestone_idea_screening,
+            args=(milestone, reasoned_count, trigger),
+            daemon=True,
+            name=f"deepgraph-idea-screening-{milestone}",
+        )
+        _milestone_thread.start()
+    return {"status": "started", "milestone": milestone, "reasoned_count": reasoned_count}
+
+
 def _run_parallel_tier2_discovery() -> None:
     try:
         target_backlog = max(1, DISCOVERY_MIN_TIER2_BACKLOG)
@@ -415,11 +532,13 @@ def consume_pipeline_events_once(limit: int = 100) -> dict:
             log_event("discovery", {"step": "paper_reasoned_seen", "paper_id": payload.get("paper_id")})
     db.ack_pipeline_events(DISCOVERY_CONSUMER, last_event_id)
     tier2_status = _maybe_launch_parallel_tier2_discovery("pipeline_events")
+    idea_screening_status = maybe_launch_milestone_idea_screening("pipeline_events")
     return {
         "events": len(events),
         "nodes_refreshed": len(refreshed),
         "details": list(refreshed.values()),
         "tier2": tier2_status,
+        "idea_screening": idea_screening_status,
     }
 
 

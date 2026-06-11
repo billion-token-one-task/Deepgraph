@@ -4,15 +4,10 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
+from agents.benchmark_protocol import resolve_benchmark_protocol
 from contracts import DeepInsightSpec, ExperimentJudgement
 from config import (
     EXPERIMENT_ALLOW_SYNTHETIC_FALLBACK,
-    EXPERIMENT_FULL_BENCHMARK_MIN_BASELINES,
-    EXPERIMENT_FULL_BENCHMARK_MIN_DATASETS,
-    EXPERIMENT_FULL_BENCHMARK_MIN_EXAMPLES,
-    EXPERIMENT_FULL_BENCHMARK_MIN_MODELS,
-    EXPERIMENT_REAL_BENCHMARK_MAX_EXAMPLES,
-    EXPERIMENT_REAL_BENCHMARK_SEEDS,
     EXPERIMENT_REQUIRE_REAL_BENCHMARK,
 )
 
@@ -100,19 +95,42 @@ def review_experiment_candidate(
     real_datasets = [name for name in datasets if not _looks_synthetic(name)]
     model_targets = _model_names(plan)
     primary_metric = _primary_metric(plan)
+    publication_contract = plan.get("publication_evidence_contract") if isinstance(plan.get("publication_evidence_contract"), dict) else {}
+    benchmark_protocol = (
+        publication_contract.get("benchmark_protocol")
+        if isinstance(publication_contract.get("benchmark_protocol"), dict)
+        else plan.get("benchmark_protocol") if isinstance(plan.get("benchmark_protocol"), dict) else None
+    )
+    if not isinstance(benchmark_protocol, dict):
+        benchmark_protocol = resolve_benchmark_protocol(
+            plan,
+            method=method,
+            claim=spec.title or spec.problem_statement,
+        )
+    protocol_requirements = benchmark_protocol.get("full_benchmark_requirements") if isinstance(benchmark_protocol.get("full_benchmark_requirements"), dict) else {}
+    protocol_baselines = protocol_requirements.get("required_baseline_names") if isinstance(protocol_requirements.get("required_baseline_names"), list) else []
+    protocol_datasets = protocol_requirements.get("required_dataset_names") if isinstance(protocol_requirements.get("required_dataset_names"), list) else []
+    protocol_models = protocol_requirements.get("required_model_names") if isinstance(protocol_requirements.get("required_model_names"), list) else []
+    protocol_seed_policy = benchmark_protocol.get("seed_policy") if isinstance(benchmark_protocol.get("seed_policy"), dict) else {}
+    try:
+        protocol_minimum_seeds = max(1, int(protocol_seed_policy.get("minimum_repeats") or 1))
+    except (TypeError, ValueError):
+        protocol_minimum_seeds = 1
 
+    minimum_baselines = max(2, len(protocol_baselines) if protocol_baselines else 2)
     baseline_review = {
         "baseline_count": len(baselines),
         "baselines": baselines,
-        "strong_enough": len(baselines) >= EXPERIMENT_FULL_BENCHMARK_MIN_BASELINES,
-        "minimum_required_for_paper": EXPERIMENT_FULL_BENCHMARK_MIN_BASELINES,
+        "strong_enough": len(baselines) >= minimum_baselines,
+        "minimum_required_for_paper": minimum_baselines,
+        "source": "benchmark_protocol",
     }
     if len(baselines) < 2:
         blockers.append("Experimental plan lacks at least two explicit baselines.")
-    if EXPERIMENT_REQUIRE_REAL_BENCHMARK and len(baselines) < EXPERIMENT_FULL_BENCHMARK_MIN_BASELINES:
+    elif len(baselines) < minimum_baselines:
         blockers.append(
             f"Experimental plan has only {len(baselines)} baseline(s); "
-            f"paper-eligible full benchmarks require at least {EXPERIMENT_FULL_BENCHMARK_MIN_BASELINES}."
+            f"the benchmark protocol requires {minimum_baselines}."
         )
 
     scale_target = (
@@ -133,57 +151,56 @@ def review_experiment_candidate(
         "method_definition_present": bool(_non_empty_text(method.get("definition"))),
         "dataset_count": len(datasets),
         "real_dataset_count": len(real_datasets),
-        "minimum_real_datasets_for_paper": EXPERIMENT_FULL_BENCHMARK_MIN_DATASETS,
+        "minimum_real_datasets_for_paper": max(1, len(protocol_datasets) if protocol_datasets else 1),
         "model_targets": model_targets,
-        "minimum_models_for_paper": EXPERIMENT_FULL_BENCHMARK_MIN_MODELS,
+        "minimum_models_for_paper": max(1, len(protocol_models) if protocol_models else 1),
         "primary_metric": primary_metric,
+        "benchmark_protocol": {
+            "status": benchmark_protocol.get("status"),
+            "datasets": protocol_datasets,
+            "models": protocol_models,
+            "minimum_seeds": protocol_minimum_seeds,
+            "examples_policy": protocol_requirements.get("examples_policy"),
+            "global_numeric_thresholds_allowed": protocol_requirements.get("global_numeric_thresholds_allowed"),
+            "warnings": benchmark_protocol.get("warnings") or [],
+        },
         "aligned": bool(datasets and primary_metric and _non_empty_text(method.get("definition"))),
     }
     if not datasets:
         blockers.append("Experimental plan is missing explicit datasets.")
     if EXPERIMENT_REQUIRE_REAL_BENCHMARK and not real_datasets:
         blockers.append("Experimental plan must name at least one real public benchmark dataset; synthetic/proxy datasets are not allowed.")
-    if EXPERIMENT_REQUIRE_REAL_BENCHMARK and len(real_datasets) < EXPERIMENT_FULL_BENCHMARK_MIN_DATASETS:
-        blockers.append(
-            f"Experimental plan has only {len(real_datasets)} real dataset(s); "
-            f"paper-eligible full benchmarks require at least {EXPERIMENT_FULL_BENCHMARK_MIN_DATASETS}."
-        )
     if EXPERIMENT_REQUIRE_REAL_BENCHMARK and not model_targets:
         blockers.append("Experimental plan must name at least one real model target.")
-    if EXPERIMENT_REQUIRE_REAL_BENCHMARK and len(model_targets) < EXPERIMENT_FULL_BENCHMARK_MIN_MODELS:
-        blockers.append(
-            f"Experimental plan has only {len(model_targets)} model target(s); "
-            f"paper-eligible full benchmarks require at least {EXPERIMENT_FULL_BENCHMARK_MIN_MODELS}."
-        )
-    seed_raw = plan.get("minimum_seeds") or plan.get("seeds") or EXPERIMENT_REAL_BENCHMARK_SEEDS
+    seed_raw = plan.get("minimum_seeds") or plan.get("seeds") or protocol_minimum_seeds
     try:
         planned_seed_count = len(seed_raw) if isinstance(seed_raw, list) else int(seed_raw)
     except (TypeError, ValueError):
         planned_seed_count = 0
-    if EXPERIMENT_REQUIRE_REAL_BENCHMARK and planned_seed_count < EXPERIMENT_REAL_BENCHMARK_SEEDS:
+    if EXPERIMENT_REQUIRE_REAL_BENCHMARK and planned_seed_count < protocol_minimum_seeds:
         blockers.append(
             f"Experimental plan has only {planned_seed_count} seed(s); "
-            f"paper-eligible full benchmarks require at least {EXPERIMENT_REAL_BENCHMARK_SEEDS}."
+            f"the benchmark protocol requires at least {protocol_minimum_seeds}."
         )
-    try:
-        planned_examples = int(plan.get("max_eval_examples") or plan.get("num_examples") or EXPERIMENT_REAL_BENCHMARK_MAX_EXAMPLES)
-    except (TypeError, ValueError):
-        planned_examples = 0
-    if EXPERIMENT_REQUIRE_REAL_BENCHMARK and planned_examples < EXPERIMENT_FULL_BENCHMARK_MIN_EXAMPLES:
-        blockers.append(
-            f"Experimental plan has only {planned_examples} planned examples; "
-            f"paper-eligible full benchmarks require at least {EXPERIMENT_FULL_BENCHMARK_MIN_EXAMPLES}."
-        )
+    protocol_blockers = benchmark_protocol.get("blockers") if isinstance(benchmark_protocol.get("blockers"), list) else []
+    blockers.extend(str(item) for item in protocol_blockers if str(item).strip())
+    protocol_warnings = benchmark_protocol.get("warnings") if isinstance(benchmark_protocol.get("warnings"), list) else []
+    warnings.extend(str(item) for item in protocol_warnings if str(item).strip())
     if EXPERIMENT_REQUIRE_REAL_BENCHMARK and plan.get("proxy_allowed") and not EXPERIMENT_ALLOW_SYNTHETIC_FALLBACK:
         blockers.append("Synthetic/proxy fallback is disabled for formal experiments.")
     recipe_blockers = plan.get("benchmark_recipe_blockers")
-    if EXPERIMENT_REQUIRE_REAL_BENCHMARK and plan.get("generated_runner_supported") is False:
+    benchmark_harness_required = bool(
+        EXPERIMENT_REQUIRE_REAL_BENCHMARK and plan.get("generated_runner_supported") is False
+    )
+    unsupported_benchmark_targets: list[str] = []
+    if benchmark_harness_required:
         if isinstance(recipe_blockers, list) and recipe_blockers:
             names = [
                 _non_empty_text(item.get("name") if isinstance(item, dict) else item)
                 for item in recipe_blockers
             ]
             names = [name for name in names if name]
+            unsupported_benchmark_targets = names
             detail = ", ".join(names[:3]) if names else "the requested benchmark targets"
             blockers.append(
                 "Generated real-benchmark runner does not support "
@@ -227,6 +244,16 @@ def review_experiment_candidate(
         "generated_real_benchmark_runner_allowed": generated_real_runner,
         "entrypoint_available": entrypoint_available if entrypoint_available is not None else bool(main_train_file),
         "cpu_compatible": spec.resource_class in {"", "cpu"},
+        "benchmark_harness_required": benchmark_harness_required,
+        "unsupported_benchmark_targets": unsupported_benchmark_targets,
+        "harness_queue": "benchmark_harness_jobs" if benchmark_harness_required else "",
+        "required_harness_agents": [
+            "Benchmark Manager",
+            "Dataset Fetch Agent",
+            "Baseline Fetch Agent",
+            "Benchmark Harness Code Agent",
+            "Harness Review Agent",
+        ] if benchmark_harness_required else [],
     }
 
     smoke_only = False

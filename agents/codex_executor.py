@@ -145,7 +145,8 @@ def _history_requires_fresh_codex_session(history: list[dict], limit: int = 3) -
 
 def _real_benchmark_guardrails_text() -> str:
     return """## Real Benchmark Guardrails
-- Treat the benchmark contract as immutable: datasets, model targets, baselines, ablations, metrics, seeds, splits, and artifact names may not be weakened inside a method iteration.
+- Treat the benchmark contract as immutable: datasets, model targets, baselines, ablations, metrics, seeds, splits, benchmark_protocol, and artifact names may not be weakened inside a method iteration.
+- Follow benchmark_protocol for official/materialized splits and sample policy; do not substitute global example/seed thresholds for benchmark-specific requirements.
 - A sanity/bounded run may only prove infrastructure and metric parsing. It must not be described as paper evidence unless the full benchmark package passes with `full_benchmark_completed=true`.
 - Preserve or produce paper-ready artifacts when working on a full benchmark path: `benchmark_summary.json`, `benchmark_artifact_manifest.json`, raw prediction JSONL, routing decisions, per-seed/per-dataset tables, ablation table, latency/token table, bootstrap CI, and failure cases.
 - If this repository contains a generated real LLM benchmark runner, preserve the runner scaffolding while repairing or improving it.
