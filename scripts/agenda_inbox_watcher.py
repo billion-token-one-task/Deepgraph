@@ -1,6 +1,7 @@
 """Watch research_agendas/inbox/ for user direction submissions (.yaml).
 
 For each new YAML file:
+- reject files larger than MAX_SUBMISSION_BYTES without reading their content,
 - parse it with agents.direction_intake (deterministic, no LLM),
 - persist the mapped agenda via agents.agenda_loader (direct DB write — works
   whether or not the web app is running),
@@ -32,6 +33,10 @@ if str(REPO_ROOT) not in sys.path:
 
 DEFAULT_INBOX = REPO_ROOT / "research_agendas" / "inbox"
 
+# Direction files are short YAML documents; anything bigger is malformed or
+# abusive. Oversized files are quarantined without their content being read.
+MAX_SUBMISSION_BYTES = 256 * 1024
+
 
 def _unique_target(directory: Path, name: str) -> Path:
     """Destination path inside directory; suffix a timestamp on collision."""
@@ -49,6 +54,12 @@ def process_file(path: Path, processed_dir: Path, failed_dir: Path) -> dict:
     from agents.direction_intake import DirectionParseError, parse_direction_yaml
 
     try:
+        size = path.stat().st_size
+        if size > MAX_SUBMISSION_BYTES:
+            raise DirectionParseError(
+                f"file too large: {size} bytes (limit {MAX_SUBMISSION_BYTES}); "
+                "content not read"
+            )
         text = path.read_text(encoding="utf-8")
         agenda, echo = parse_direction_yaml(text)
         agenda_id = agenda_loader.save_agenda(agenda)

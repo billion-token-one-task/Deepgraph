@@ -1,9 +1,12 @@
 """Per-agenda LLM token accounting and budget enforcement.
 
 Each research agenda carries a token budget (research_agendas.token_budget,
-falling back to config.AGENDA_TOKEN_BUDGET_DEFAULT). Work performed on behalf
-of an agenda runs inside `agenda_scope(agenda_id, operation)`; the LLM client
-then:
+falling back to config.AGENDA_TOKEN_BUDGET_DEFAULT). A budget of 0, NULL
+(with default 0) or a negative value means "no cap": check_budget always
+passes and the agenda is never flipped to 'paused_budget', but record_usage
+still writes the agenda_token_ledger row and bumps token_spent, so accounting
+stays complete either way. Work performed on behalf of an agenda runs inside
+`agenda_scope(agenda_id, operation)`; the LLM client then:
 
 1. calls `check_budget(agenda_id)` BEFORE issuing the provider request — if the
    budget is exhausted the call fails with AgendaBudgetExceededError before any
@@ -68,7 +71,11 @@ def current_scope() -> tuple[int, str] | None:
 
 
 def effective_budget(token_budget: Any) -> int:
-    """Resolve a row's token_budget to the enforced value (NULL -> default)."""
+    """Resolve a row's token_budget to the enforced value (NULL -> default).
+
+    The resolved value may be <= 0, which means no cap is enforced (usage is
+    still recorded by record_usage).
+    """
     if token_budget is None:
         return int(AGENDA_TOKEN_BUDGET_DEFAULT)
     return int(token_budget)
@@ -95,6 +102,10 @@ def get_budget_state(agenda_id: int) -> dict[str, Any] | None:
 
 def check_budget(agenda_id: int) -> None:
     """Raise AgendaBudgetExceededError if the agenda may not spend more tokens.
+
+    A budget <= 0 (including the NULL -> default fallback) disables the cap:
+    the check always passes and the agenda is never paused for budget reasons,
+    while record_usage keeps writing the ledger and token_spent.
 
     A 'paused_budget' agenda whose budget was raised in the meantime
     (token_spent < budget again) is automatically reactivated, so increasing

@@ -245,9 +245,12 @@ DISCOVERY_BULK_TIER2_LIMIT_NODES = _env_int("DEEPGRAPH_BULK_TIER2_LIMIT_NODES", 
 EVOSCI_VERIFY_TIMEOUT = _env_int("DEEPGRAPH_EVOSCI_VERIFY_TIMEOUT", 900, "experiment.evosci_verify_timeout")
 
 # Research agendas: default per-agenda LLM token budget. Used when a
-# research_agendas row has token_budget NULL. <= 0 disables the cap.
+# research_agendas row has token_budget NULL. <= 0 disables the cap (no
+# enforcement, never pauses an agenda) while usage accounting stays on:
+# every scoped call still writes agenda_token_ledger and bumps token_spent.
+# Default 0 = accounting only; set a positive value to enforce a cap.
 AGENDA_TOKEN_BUDGET_DEFAULT = _env_int(
-    "DEEPGRAPH_AGENDA_TOKEN_BUDGET_DEFAULT", 2_000_000, "agenda.token_budget_default"
+    "DEEPGRAPH_AGENDA_TOKEN_BUDGET_DEFAULT", 0, "agenda.token_budget_default"
 )
 
 # SciForge Experiment Validation

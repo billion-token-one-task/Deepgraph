@@ -11,4 +11,5 @@ constraints:                                                # optional, free tex
   data: "仅公开数据集"
 goal: experiment_plan   # idea_only | experiment_plan | signal | verified_evidence
 contact: "nickname or email"  # required
+token_budget: 500000    # optional LLM token cap; default 0 = no cap (usage is still recorded)
 ```

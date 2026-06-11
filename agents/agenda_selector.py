@@ -27,6 +27,7 @@ from typing import Any, Iterable, Mapping
 from contracts.agenda import VALID_SELECTION_STATUS, AgendaSelection, ResearchAgenda
 from contracts.base import ContractValidationError, ensure_dict, ensure_list, ensure_string_list
 from db import database as db
+from db.sql_dialect import escape_like
 
 
 # ---------- scoring weights ----------
@@ -289,9 +290,9 @@ def _fetch_insight_pool(
         for kw in keywords:
             likes.append(
                 "LOWER(COALESCE(title, '') || ' ' || COALESCE(problem_statement, '') "
-                "|| ' ' || COALESCE(formal_structure, '')) LIKE ?"
+                "|| ' ' || COALESCE(formal_structure, '')) LIKE ? ESCAPE '\\'"
             )
-            params.append(f"%{kw}%")
+            params.append(f"%{escape_like(kw)}%")
         clauses.append(f"(agenda_id IS NULL AND ({' OR '.join(likes)}))")
     else:
         # No scope keywords: keep untagged insights visible (legacy data).

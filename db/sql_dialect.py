@@ -5,6 +5,23 @@ from __future__ import annotations
 import re
 
 
+def escape_like(term: str) -> str:
+    """Escape LIKE wildcards in a user-supplied term bound as a parameter.
+
+    `%`, `_` and the escape character `\\` itself are prefixed with `\\` so
+    the term matches literally instead of widening the pattern. The SQL clause
+    must declare the escape character explicitly -- write ``LIKE ? ESCAPE '\\'``
+    -- which is valid on both SQLite and PostgreSQL (PostgreSQL defaults to
+    backslash; SQLite has no default escape character).
+    """
+    return (
+        str(term)
+        .replace("\\", "\\\\")
+        .replace("%", "\\%")
+        .replace("_", "\\_")
+    )
+
+
 def to_postgres(sql: str) -> str:
     """Best-effort ? -> %s and common SQLite idioms. Review generated SQL for edge cases."""
     out = sql.replace("?", "%s")

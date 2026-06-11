@@ -138,6 +138,45 @@ class BudgetAccountingTests(BudgetTestBase):
         agenda_budget.record_usage(agenda.agenda_id, "op", 10_000_000)
         agenda_budget.check_budget(agenda.agenda_id)  # must not raise
 
+    def test_zero_budget_still_accounts_usage(self):
+        """budget 0 = no cap, never paused, but ledger + token_spent keep counting."""
+        from agents import agenda_budget
+
+        agenda = self._save_agenda(name="uncapped_accounting", token_budget=0)
+        agenda_budget.record_usage(agenda.agenda_id, "tier1_discovery", 4_000_000)
+        agenda_budget.record_usage(agenda.agenda_id, "tier2_discovery", 6_000_000)
+        agenda_budget.check_budget(agenda.agenda_id)  # must not raise
+
+        state = agenda_budget.get_budget_state(agenda.agenda_id)
+        self.assertEqual(state["token_spent"], 10_000_000)
+        self.assertEqual(state["status"], "active")  # never paused_budget
+        self.assertFalse(state["exhausted"])
+        rows = self.db.fetchall(
+            "SELECT operation, tokens FROM agenda_token_ledger WHERE agenda_id=? ORDER BY id",
+            (agenda.agenda_id,),
+        )
+        self.assertEqual(
+            [(r["operation"], r["tokens"]) for r in rows],
+            [("tier1_discovery", 4_000_000), ("tier2_discovery", 6_000_000)],
+        )
+
+    def test_null_budget_with_zero_default_is_uncapped(self):
+        """token_budget NULL + default 0: enforcement off, accounting on."""
+        import unittest as _ut
+
+        from agents import agenda_budget
+        from config import AGENDA_TOKEN_BUDGET_DEFAULT
+
+        if AGENDA_TOKEN_BUDGET_DEFAULT > 0:
+            raise _ut.SkipTest("env overrides the shipped default of 0")
+
+        agenda = self._save_agenda(name="null_budget", token_budget=None)
+        agenda_budget.record_usage(agenda.agenda_id, "op", 3_000_000)
+        agenda_budget.check_budget(agenda.agenda_id)  # must not raise
+        state = agenda_budget.get_budget_state(agenda.agenda_id)
+        self.assertEqual(state["token_spent"], 3_000_000)
+        self.assertEqual(state["status"], "active")
+
 
 class LlmClientHookTests(BudgetTestBase):
     """call_llm must meter scoped calls and stop cleanly once the budget is spent."""

@@ -221,6 +221,30 @@ class InboxWatcherTests(unittest.TestCase):
         row = self.db.fetchone("SELECT COUNT(*) AS c FROM research_agendas")
         self.assertEqual(row["c"], 0)
 
+    def test_oversized_file_quarantined_without_parsing(self):
+        import agenda_inbox_watcher as watcher
+
+        self.inbox.mkdir(parents=True)
+        big = "# padding\n" * (watcher.MAX_SUBMISSION_BYTES // 10 + 1)
+        path = self.inbox / "huge.yaml"
+        path.write_text(big, encoding="utf-8")
+        self.assertGreater(path.stat().st_size, watcher.MAX_SUBMISSION_BYTES)
+
+        results = watcher.scan_inbox(self.inbox)
+        self.assertEqual(results[0]["status"], "failed")
+        self.assertIn("too large", results[0]["error"])
+        self.assertFalse(path.exists())
+        failed = self.inbox / "failed" / "huge.yaml"
+        self.assertTrue(failed.exists())
+        error_text = (self.inbox / "failed" / "huge.yaml.error.txt").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("too large", error_text)
+        self.assertIn(str(watcher.MAX_SUBMISSION_BYTES), error_text)
+        # Nothing persisted
+        row = self.db.fetchone("SELECT COUNT(*) AS c FROM research_agendas")
+        self.assertEqual(row["c"], 0)
+
     def test_non_yaml_files_ignored(self):
         import agenda_inbox_watcher as watcher
 

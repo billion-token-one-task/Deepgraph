@@ -175,6 +175,71 @@ class TaxonomyCircleTests(AgendaScopeTestBase):
         self.assertEqual(crypto_nodes, ["ml.crypto"])
         self.assertEqual(agenda_taxonomy_node_ids([]), [])
 
+    def test_wildcard_keyword_does_not_match_everything(self):
+        from agents.signal_harvester import agenda_taxonomy_node_ids
+
+        self._seed_node("ml.medimg", "Medical Imaging", "segmentation")
+        self._seed_node("ml.crypto", "Cryptography", "lattice")
+        self._seed_node("ml.quant", "Quantization", "keeps 99% accuracy at 4-bit")
+
+        # LIKE wildcards in user keywords must match literally, not widen
+        # scope: '%' only hits the node whose text contains a literal '%'.
+        self.assertEqual(agenda_taxonomy_node_ids(["%"]), ["ml.quant"])
+        self.assertEqual(agenda_taxonomy_node_ids(["_"]), [])
+        self.assertEqual(agenda_taxonomy_node_ids(["99% accuracy"]), ["ml.quant"])
+
+
+class LikeWildcardEscapeTests(AgendaScopeTestBase):
+    """User-supplied scope keywords go into SQL LIKE patterns; wildcard
+    characters must not widen the candidate pool beyond the literal term."""
+
+    def test_escape_like_escapes_wildcards(self):
+        from db.sql_dialect import escape_like
+
+        self.assertEqual(escape_like(r"50%_\x"), r"50\%\_\\x")
+        self.assertEqual(escape_like("plain term"), "plain term")
+
+    def test_percent_keyword_does_not_widen_insight_pool(self):
+        from agents.agenda_loader import parse_agenda
+        from agents.agenda_selector import _fetch_insight_pool
+
+        self._seed_insight(1, "Diffusion model for medical imaging",
+                           "Few-shot generalization")
+        self._seed_insight(2, "Lattice-based cryptography scheme",
+                           "Post-quantum encryption")
+
+        wild = parse_agenda({
+            "version": "v1",
+            "name": "wildcard_probe",
+            "focus": ["%"],
+        })
+        # Pre-escape this pattern ('%%%') matched the whole table
+        self.assertEqual(_fetch_insight_pool(agenda=wild), [])
+
+        underscore = parse_agenda({
+            "version": "v1",
+            "name": "underscore_probe",
+            "focus": ["________"],
+        })
+        self.assertEqual(_fetch_insight_pool(agenda=underscore), [])
+
+    def test_literal_percent_keyword_matches_only_literal_text(self):
+        from agents.agenda_loader import parse_agenda
+        from agents.agenda_selector import _fetch_insight_pool
+
+        self._seed_insight(1, "Quantization keeps 99% accuracy at 4-bit",
+                           "Compression without quality loss")
+        self._seed_insight(2, "Reaching 99 points of accuracy with ensembling",
+                           "Ensembles for tabular data")
+
+        agenda = parse_agenda({
+            "version": "v1",
+            "name": "literal_percent",
+            "focus": ["99% accuracy"],
+        })
+        ids = {r["id"] for r in _fetch_insight_pool(agenda=agenda)}
+        self.assertEqual(ids, {1})
+
 
 if __name__ == "__main__":
     unittest.main()

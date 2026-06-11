@@ -14,6 +14,7 @@ from collections import Counter, defaultdict
 from difflib import SequenceMatcher
 from contracts import DiscoverySignalBundle
 from db import database as db
+from db.sql_dialect import escape_like
 from db.insight_outcomes import record_harvester_run
 
 
@@ -718,11 +719,12 @@ def agenda_taxonomy_node_ids(keywords: list[str]) -> list[str]:
     if not cleaned:
         return []
     likes = " OR ".join(
-        ["LOWER(name || ' ' || COALESCE(description, '')) LIKE ?"] * len(cleaned)
+        ["LOWER(name || ' ' || COALESCE(description, '')) LIKE ? ESCAPE '\\'"]
+        * len(cleaned)
     )
     rows = db.fetchall(
         f"SELECT id FROM taxonomy_nodes WHERE {likes} ORDER BY id",
-        tuple(f"%{kw}%" for kw in cleaned),
+        tuple(f"%{escape_like(kw)}%" for kw in cleaned),
     )
     return [str(r["id"]) for r in rows]
 
@@ -890,11 +892,14 @@ def get_tier2_signals(
         ]
         if cleaned_keywords:
             likes = " OR ".join(
-                ["LOWER(COALESCE(title, '') || ' ' || COALESCE(evidence_summary, '')) LIKE ?"]
+                [
+                    "LOWER(COALESCE(title, '') || ' ' "
+                    "|| COALESCE(evidence_summary, '')) LIKE ? ESCAPE '\\'"
+                ]
                 * len(cleaned_keywords)
             )
             keyword_filter = f" AND ({likes})"
-            keyword_params = [f"%{kw}%" for kw in cleaned_keywords]
+            keyword_params = [f"%{escape_like(kw)}%" for kw in cleaned_keywords]
         high_insights = db.fetchall(
             f"""
             SELECT id, title, mechanism_type, evidence_packet, adversarial_score,

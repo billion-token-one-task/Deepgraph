@@ -9,7 +9,8 @@ Input schema (user-facing, see research_agendas/inbox/README.md):
       data: "..."
     goal: experiment_plan       # idea_only | experiment_plan | signal | verified_evidence
     contact: "..."              # required, nickname or email
-    token_budget: 500000        # optional, overrides the config default
+    token_budget: 500000        # optional token cap; default 0 = no cap,
+                                # usage is recorded either way
 
 Mapping (rule-based, no LLM):
     direction            -> description (+ auto-generated slug name)
