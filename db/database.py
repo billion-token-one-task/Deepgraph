@@ -387,6 +387,38 @@ def _ensure_agenda_isolation_schema() -> None:
         "CREATE INDEX IF NOT EXISTS idx_deep_insights_agenda ON deep_insights(agenda_id)",
         best_effort_if_locked=_use_pg(),
     )
+    # agenda_token_ledger lives in schema_agenda*.sql for fresh databases, but
+    # the best-effort schema-file replay can be skipped on existing PG
+    # databases (an earlier failed statement aborts the transaction), so
+    # create it explicitly here for pre-existing DBs.
+    if _use_pg():
+        ledger_ddl = """
+        CREATE TABLE IF NOT EXISTS agenda_token_ledger (
+            id BIGSERIAL PRIMARY KEY,
+            agenda_id INTEGER NOT NULL,
+            operation TEXT NOT NULL,
+            tokens INTEGER NOT NULL DEFAULT 0,
+            cost_usd REAL,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )"""
+    else:
+        ledger_ddl = """
+        CREATE TABLE IF NOT EXISTS agenda_token_ledger (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            agenda_id INTEGER NOT NULL,
+            operation TEXT NOT NULL,
+            tokens INTEGER NOT NULL DEFAULT 0,
+            cost_usd REAL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (agenda_id) REFERENCES research_agendas(id)
+        )"""
+    _execute_startup_statement(conn, ledger_ddl, best_effort_if_locked=_use_pg())
+    _execute_startup_statement(
+        conn,
+        "CREATE INDEX IF NOT EXISTS idx_agenda_token_ledger_agenda"
+        " ON agenda_token_ledger(agenda_id, created_at DESC)",
+        best_effort_if_locked=_use_pg(),
+    )
     conn.commit()
 
 
@@ -633,7 +665,13 @@ def init_db():
                                 try:
                                     get_conn().execute(s)
                                 except Exception:
-                                    pass
+                                    # On Postgres a failed statement aborts
+                                    # the whole transaction; roll back so the
+                                    # remaining statements still execute.
+                                    try:
+                                        get_conn().rollback()
+                                    except Exception:
+                                        pass
                         get_conn().commit()
                     except Exception:
                         pass
@@ -656,7 +694,13 @@ def init_db():
                                 try:
                                     get_conn().execute(s)
                                 except Exception:
-                                    pass
+                                    # On Postgres a failed statement aborts
+                                    # the whole transaction; roll back so the
+                                    # remaining statements still execute.
+                                    try:
+                                        get_conn().rollback()
+                                    except Exception:
+                                        pass
                         get_conn().commit()
                     except Exception:
                         pass
@@ -677,7 +721,13 @@ def init_db():
                                 try:
                                     get_conn().execute(s)
                                 except Exception:
-                                    pass
+                                    # On Postgres a failed statement aborts
+                                    # the whole transaction; roll back so the
+                                    # remaining statements still execute.
+                                    try:
+                                        get_conn().rollback()
+                                    except Exception:
+                                        pass
                         get_conn().commit()
                     except Exception:
                         pass
@@ -694,7 +744,13 @@ def init_db():
                                 try:
                                     get_conn().execute(s)
                                 except Exception:
-                                    pass
+                                    # On Postgres a failed statement aborts
+                                    # the whole transaction; roll back so the
+                                    # remaining statements still execute.
+                                    try:
+                                        get_conn().rollback()
+                                    except Exception:
+                                        pass
                         get_conn().commit()
                     except Exception:
                         pass
