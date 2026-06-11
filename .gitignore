@@ -35,3 +35,9 @@ workspace/tmp/
 tests/js/node_modules/
 tests/js/package-lock.json
 tests/js/*.log
+
+# User direction submissions (runtime data, keep out of the repo)
+research_agendas/inbox/*.yaml
+research_agendas/inbox/*.yml
+research_agendas/inbox/processed/
+research_agendas/inbox/failed/

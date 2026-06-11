@@ -48,11 +48,23 @@ def _init_schema_v2():
     db.init_db()
 
 
-def harvest_signals() -> dict:
-    """Run signal harvesting (SQL only, no LLM cost)."""
+def harvest_signals(agenda=None) -> dict:
+    """Run signal harvesting (SQL only, no LLM cost).
+
+    The optional agenda is accepted for call-site symmetry with the Tier 1/2
+    entries. Signal tables are shared whole-corpus aggregates (no per-agenda
+    column), so harvesting itself stays global; agenda scoping is applied
+    where the signals are consumed (get_tier1_signals / get_tier2_signals).
+    """
     _init_schema_v2()
     from agents.signal_harvester import harvest_all
-    log_event("discovery", {"step": "signal_harvest_start"})
+    log_event(
+        "discovery",
+        {
+            "step": "signal_harvest_start",
+            **({"agenda_id": agenda.agenda_id} if agenda is not None else {}),
+        },
+    )
     stats = harvest_all()
     log_event("discovery", {"step": "signal_harvest_done", **stats})
     return stats
@@ -62,9 +74,17 @@ def run_tier1_discovery(
     max_candidates: int | None = None,
     *,
     bulk: bool = False,
+    agenda=None,
 ) -> list[dict]:
-    """Run Tier 1 (Paradigm) discovery. Returns stored insight IDs."""
+    """Run Tier 1 (Paradigm) discovery. Returns stored insight IDs.
+
+    With an agenda (contracts.agenda.ResearchAgenda) the scan is restricted to
+    the agenda's taxonomy subgraph, LLM spend is metered against its token
+    budget, and stored insights carry agenda_id. Without one, behavior is
+    unchanged.
+    """
     _init_schema_v2()
+    from agents.agenda_budget import agenda_scope
     from agents.paradigm_agent import discover_paradigm_insights, store_deep_insight
 
     if max_candidates is None:
@@ -82,16 +102,26 @@ def run_tier1_discovery(
             "bulk": bulk,
             "signal_overlaps": top_ov,
             "signal_patterns": top_pat,
+            **({"agenda_id": agenda.agenda_id} if agenda is not None else {}),
         },
     )
     print("[DISCOVERY] Starting Tier 1 (Paradigm) discovery...", flush=True)
 
     try:
-        insights = discover_paradigm_insights(
-            max_candidates=max_candidates,
-            tier1_top_overlaps=top_ov,
-            tier1_top_patterns=top_pat,
-        )
+        if agenda is not None:
+            with agenda_scope(agenda.agenda_id, "tier1_discovery"):
+                insights = discover_paradigm_insights(
+                    max_candidates=max_candidates,
+                    tier1_top_overlaps=top_ov,
+                    tier1_top_patterns=top_pat,
+                    agenda=agenda,
+                )
+        else:
+            insights = discover_paradigm_insights(
+                max_candidates=max_candidates,
+                tier1_top_overlaps=top_ov,
+                tier1_top_patterns=top_pat,
+            )
         stored = []
         for ins in insights:
             insight_id = store_deep_insight(ins)
@@ -131,12 +161,16 @@ def run_tier2_discovery(
     max_papers: int | None = None,
     *,
     bulk: bool = False,
+    agenda=None,
 ) -> list[dict]:
     """Run Tier 2 (Paper Ideas) discovery. Returns stored insight IDs.
 
     In bulk mode, expands every sharpened problem (max_papers follows max_problems).
+    With an agenda the scan is restricted to its taxonomy subgraph, LLM spend
+    is metered against its token budget, and stored ideas carry agenda_id.
     """
     _init_schema_v2()
+    from agents.agenda_budget import agenda_scope
     from agents.paradigm_agent import store_deep_insight
     from agents.paper_idea_agent import discover_paper_ideas
 
@@ -153,17 +187,32 @@ def run_tier2_discovery(
 
     log_event(
         "discovery",
-        {"step": "tier2_start", "max_problems": max_problems, "bulk": bulk},
+        {
+            "step": "tier2_start",
+            "max_problems": max_problems,
+            "bulk": bulk,
+            **({"agenda_id": agenda.agenda_id} if agenda is not None else {}),
+        },
     )
     print("[DISCOVERY] Starting Tier 2 (Paper Ideas) discovery...", flush=True)
 
     try:
-        insights = discover_paper_ideas(
-            max_problems=max_problems,
-            max_papers=mpapers,
-            tier2_plateau_limit=plateaus,
-            tier2_limitation_nodes=lim_nodes,
-        )
+        if agenda is not None:
+            with agenda_scope(agenda.agenda_id, "tier2_discovery"):
+                insights = discover_paper_ideas(
+                    max_problems=max_problems,
+                    max_papers=mpapers,
+                    tier2_plateau_limit=plateaus,
+                    tier2_limitation_nodes=lim_nodes,
+                    agenda=agenda,
+                )
+        else:
+            insights = discover_paper_ideas(
+                max_problems=max_problems,
+                max_papers=mpapers,
+                tier2_plateau_limit=plateaus,
+                tier2_limitation_nodes=lim_nodes,
+            )
         stored = []
         for ins in insights:
             insight_id = store_deep_insight(ins)
@@ -209,21 +258,27 @@ def run_full_discovery(
     tier2_papers: int | None = None,
     *,
     bulk: bool = False,
+    agenda=None,
 ) -> dict:
     """Run the full discovery pipeline: harvest → Tier 1 → Tier 2."""
     results = {"started_at": datetime.utcnow().isoformat(), "bulk": bulk}
+    if agenda is not None:
+        results["agenda_id"] = agenda.agenda_id
 
     # Step 1: Harvest signals
-    results["signals"] = harvest_signals()
+    results["signals"] = harvest_signals(agenda=agenda)
 
     # Step 2: Tier 1
-    results["tier1"] = run_tier1_discovery(max_candidates=tier1_candidates, bulk=bulk)
+    results["tier1"] = run_tier1_discovery(
+        max_candidates=tier1_candidates, bulk=bulk, agenda=agenda
+    )
 
     # Step 3: Tier 2
     results["tier2"] = run_tier2_discovery(
         max_problems=tier2_problems,
         max_papers=tier2_papers,
         bulk=bulk,
+        agenda=agenda,
     )
 
     results["completed_at"] = datetime.utcnow().isoformat()

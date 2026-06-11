@@ -1,0 +1,35 @@
+# Run the agenda inbox watcher on a schedule (pick ONE of the two options).
+# Adjust WorkingDirectory / paths / user to your deployment.
+
+# --- Option A: systemd service + timer -------------------------------------
+# /etc/systemd/system/deepgraph-agenda-inbox.service
+#
+#   [Unit]
+#   Description=DeepGraph agenda inbox watcher (single scan)
+#   After=network.target
+#
+#   [Service]
+#   Type=oneshot
+#   User=deepgraph
+#   WorkingDirectory=/opt/deepgraph
+#   ExecStart=/usr/bin/python3 -m scripts.agenda_inbox_watcher --once
+#
+# /etc/systemd/system/deepgraph-agenda-inbox.timer
+#
+#   [Unit]
+#   Description=Scan the agenda inbox every minute
+#
+#   [Timer]
+#   OnBootSec=2min
+#   OnUnitActiveSec=1min
+#
+#   [Install]
+#   WantedBy=timers.target
+#
+# Enable with:
+#   systemctl enable --now deepgraph-agenda-inbox.timer
+
+# --- Option B: cron ---------------------------------------------------------
+# crontab -e (as the deepgraph user):
+#
+#   * * * * * cd /opt/deepgraph && /usr/bin/python3 -m scripts.agenda_inbox_watcher --once >> /var/log/deepgraph/agenda-inbox.log 2>&1

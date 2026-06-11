@@ -216,15 +216,25 @@ class AgendaPersistenceTests(unittest.TestCase):
         rows = list_agendas()
         self.assertEqual(len(rows), 1)
 
-    def test_active_flag_is_exclusive(self):
-        from agents.agenda_loader import get_active_agenda, parse_agenda, save_agenda
+    def test_multiple_agendas_stay_active(self):
+        from agents.agenda_loader import (
+            get_active_agenda,
+            get_agenda,
+            list_agendas,
+            parse_agenda,
+            save_agenda,
+        )
 
         a1 = save_agenda(parse_agenda(dict(SAMPLE_AGENDA_DICT, name="a1")))
         a2 = save_agenda(parse_agenda(dict(SAMPLE_AGENDA_DICT, name="a2")))
-        # second insert with is_active=True should become the sole active row
-        active = get_active_agenda()
-        self.assertEqual(active.agenda_id, a2)
-        self.assertNotEqual(active.agenda_id, a1)
+        # Both agendas run concurrently; saving the second one must not
+        # deactivate the first (isolation is per agenda_id, not per flag).
+        self.assertTrue(get_agenda(a1).is_active)
+        self.assertTrue(get_agenda(a2).is_active)
+        active_ids = {a.agenda_id for a in list_agendas(only_active=True)}
+        self.assertEqual(active_ids, {a1, a2})
+        # The single-agenda convenience accessor returns the newest active row.
+        self.assertEqual(get_active_agenda().agenda_id, a2)
 
     def test_schema_tables_present(self):
         from db import database as db

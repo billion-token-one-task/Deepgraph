@@ -25,6 +25,13 @@ from contracts.base import (
 )
 
 
+VALID_AGENDA_STATUS = {
+    "active",
+    # Token budget exhausted; the agenda stops consuming LLM calls until the
+    # budget is raised or the resume endpoint is called.
+    "paused_budget",
+}
+
 VALID_REVIEW_RECOMMENDATIONS = {
     "accept",
     "minor_revision",
@@ -63,6 +70,11 @@ class ResearchAgenda(ContractRecord):
     raw_config: dict[str, Any] = field(default_factory=dict)
     agenda_id: int | None = None
     is_active: bool = True
+    # Multi-agenda isolation + token budget (see db/schema_agenda.sql)
+    submitter: str = ""
+    token_budget: int | None = None
+    token_spent: int = 0
+    status: str = "active"
 
     def validate(self) -> None:
         super().validate()
@@ -73,6 +85,12 @@ class ResearchAgenda(ContractRecord):
         self.reject = ensure_dict(self.reject)
         self.required_output = ensure_dict(self.required_output)
         self.raw_config = ensure_dict(self.raw_config)
+        self.token_budget = coerce_optional_int(self.token_budget)
+        self.token_spent = coerce_optional_int(self.token_spent) or 0
+        if self.status not in VALID_AGENDA_STATUS:
+            raise ContractValidationError(
+                f"ResearchAgenda status '{self.status}' not in {sorted(VALID_AGENDA_STATUS)}"
+            )
         if not self.focus and not self.prefer:
             raise ContractValidationError(
                 "ResearchAgenda needs at least one focus keyword or prefer rule"

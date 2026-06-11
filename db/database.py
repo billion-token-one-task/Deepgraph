@@ -360,6 +360,36 @@ def _ensure_vnext_migrations() -> None:
     conn.commit()
 
 
+def _ensure_agenda_isolation_schema() -> None:
+    """Multi-agenda isolation: budget columns + per-agenda insight tagging (existing DBs).
+
+    New columns also appear in schema_agenda*.sql for fresh databases; this
+    migration upgrades databases created before they were added.
+    """
+    _ensure_columns(
+        "research_agendas",
+        {
+            "submitter": "TEXT",
+            "token_budget": "INTEGER",
+            "token_spent": "INTEGER DEFAULT 0",
+            "status": "TEXT DEFAULT 'active'",
+        },
+    )
+    _ensure_columns(
+        "deep_insights",
+        {
+            "agenda_id": "INTEGER",
+        },
+    )
+    conn = get_conn()
+    _execute_startup_statement(
+        conn,
+        "CREATE INDEX IF NOT EXISTS idx_deep_insights_agenda ON deep_insights(agenda_id)",
+        best_effort_if_locked=_use_pg(),
+    )
+    conn.commit()
+
+
 def _ensure_grounding_schema() -> None:
     """Add cite-and-verify columns for claims and results (existing DBs)."""
     _ensure_columns(
@@ -652,6 +682,7 @@ def init_db():
                     except Exception:
                         pass
                 _ensure_vnext_migrations()
+                _ensure_agenda_isolation_schema()
                 _ensure_grounding_schema()
                 schema_feedback = Path(__file__).parent / "schema_insight_feedback.sql"
                 if schema_feedback.exists():
@@ -702,6 +733,7 @@ def init_db():
     if schema_format_lint_path.exists():
         conn.executescript(schema_format_lint_path.read_text(encoding="utf-8"))
     _ensure_vnext_migrations()
+    _ensure_agenda_isolation_schema()
     _ensure_grounding_schema()
     schema_feedback = Path(__file__).parent / "schema_insight_feedback.sql"
     if schema_feedback.exists():

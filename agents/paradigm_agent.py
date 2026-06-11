@@ -20,8 +20,9 @@ from agents.llm_client import (
     is_llm_auth_error,
     is_llm_provider_unavailable_error,
 )
+from agents.agenda_budget import AgendaBudgetExceededError
 from contracts import DeepInsightSpec, normalize_deep_insight_storage
-from agents.signal_harvester import get_tier1_signals
+from agents.signal_harvester import agenda_taxonomy_node_ids, get_tier1_signals
 from config import LLM_MODEL, PROMPT_VERSION
 from db import database as db
 from db.insight_outcomes import new_generation_run_id, record_created
@@ -326,11 +327,25 @@ def _call_with_provider(system: str, user: str, provider_name: str = None) -> tu
         _init_providers()
         for p in _providers:
             if p["name"] == provider_name:
+                from agents.agenda_budget import check_budget, current_scope, record_usage
                 from agents.llm_client import _call_provider, _rate_limiters
+                budget_scope = current_scope()
+                if budget_scope is not None:
+                    # Same metering as llm_client.call_llm: this path goes to a
+                    # specific provider directly, so account for it here too.
+                    check_budget(budget_scope[0])
                 limiter = _rate_limiters.get(p["name"])
                 if limiter:
                     limiter.wait()
                 text, tokens, _, _ = _call_provider(p, system, user, 16_000)
+                if budget_scope is not None and tokens:
+                    try:
+                        record_usage(budget_scope[0], budget_scope[1], tokens)
+                    except Exception as acct_err:  # noqa: BLE001
+                        print(
+                            f"[PARADIGM] WARNING: agenda token accounting failed: {acct_err}",
+                            flush=True,
+                        )
                 import re
                 text = text.strip()
                 text = re.sub(r'<think>[\s\S]*?</think>', '', text).strip()
@@ -364,18 +379,38 @@ def discover_paradigm_insights(
     *,
     tier1_top_overlaps: int = 20,
     tier1_top_patterns: int = 15,
+    agenda=None,
 ) -> list[dict]:
     """Run the 3-stage paradigm discovery pipeline.
 
     Returns list of deep_insight dicts ready for storage.
+
+    With an agenda (contracts.agenda.ResearchAgenda), the signal scan is
+    circled to the taxonomy subgraph matching the agenda's scope keywords and
+    every produced insight is tagged with agenda_id. Budget exhaustion
+    (AgendaBudgetExceededError from the metered LLM client) stops the loop
+    cleanly, returning the insights accepted so far.
     """
     print(f"[PARADIGM] Starting Tier 1 discovery (max {max_candidates} candidates)...", flush=True)
     total_tokens = 0
     total_calls = 0
 
-    # Stage 0: Gather signals
+    # Stage 0: Gather signals (scoped to the agenda's subgraph when known)
+    scope_node_ids = None
+    if agenda is not None:
+        from agents.agenda_selector import agenda_scope_keywords
+
+        scope_node_ids = agenda_taxonomy_node_ids(agenda_scope_keywords(agenda)) or None
+        if scope_node_ids is None:
+            print(
+                f"[PARADIGM] Agenda '{agenda.name}' matched no taxonomy nodes; "
+                "falling back to global signal scan",
+                flush=True,
+            )
     signals = get_tier1_signals(
-        top_overlaps=tier1_top_overlaps, top_patterns=tier1_top_patterns
+        top_overlaps=tier1_top_overlaps,
+        top_patterns=tier1_top_patterns,
+        node_ids=scope_node_ids,
     )
     if not signals["entity_overlaps"] and not signals["pattern_matches"]:
         print("[PARADIGM] No signals available. Run signal_harvester first.", flush=True)
@@ -388,6 +423,9 @@ def discover_paradigm_insights(
         result1, tokens1 = call_llm_json(STRUCTURE_DETECTION_SYSTEM, structure_prompt)
         total_tokens += tokens1
         total_calls += 1
+    except AgendaBudgetExceededError as e:
+        print(f"[PARADIGM] Stopped before structure detection: {e}", flush=True)
+        return []
     except Exception as e:
         if _llm_temporarily_unavailable(e):
             print(f"[PARADIGM] Structure detection skipped: LLM unavailable ({e})", flush=True)
@@ -423,6 +461,9 @@ def discover_paradigm_insights(
             result2, tokens2 = call_llm_json(FORMALIZATION_SYSTEM, formal_prompt)
             total_tokens += tokens2
             total_calls += 1
+        except AgendaBudgetExceededError as e:
+            print(f"[PARADIGM] Stopped at formalization: {e}", flush=True)
+            break
         except Exception as e:
             if _llm_temporarily_unavailable(e):
                 print(f"[PARADIGM] Formalization paused: LLM unavailable ({e})", flush=True)
@@ -446,6 +487,9 @@ def discover_paradigm_insights(
                 ADVERSARIAL_SYSTEM, adversarial_prompt, provider_name="minimax")
             total_tokens += tokens3
             total_calls += 1
+        except AgendaBudgetExceededError as e:
+            print(f"[PARADIGM] Stopped at adversarial challenge: {e}", flush=True)
+            break
         except Exception as e:
             if _llm_temporarily_unavailable(e):
                 print(f"[PARADIGM] Adversarial challenge skipped: LLM unavailable ({e})", flush=True)
@@ -513,6 +557,7 @@ def discover_paradigm_insights(
             "novelty_status": "unchecked",
             "generation_tokens": total_tokens,
             "llm_calls": total_calls,
+            "agenda_id": agenda.agenda_id if agenda is not None else None,
         }
 
         # Also store minimal experiment info in experimental_plan
@@ -576,8 +621,8 @@ def store_deep_insight(insight: dict) -> int:
             generation_tokens, llm_calls,
             generation_run_id, source_signal_ids, source_paper_ids,
             prompt_version, model_version, exemplars_used,
-            token_cost_usd, wall_clock_seconds, outcome)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            token_cost_usd, wall_clock_seconds, outcome, agenda_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            RETURNING id""",
         (
             insight.get("tier", 1),
@@ -619,6 +664,7 @@ def store_deep_insight(insight: dict) -> int:
             insight.get("token_cost_usd"),
             insight.get("wall_clock_seconds"),
             insight.get("outcome", "pending"),
+            insight.get("agenda_id"),
         ),
     )
     db.commit()
