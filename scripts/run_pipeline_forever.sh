@@ -18,6 +18,11 @@ if [[ -f "$ROOT/.env" ]]; then
   set +a
 fi
 
+if [[ -f "$ROOT/scripts/deepgraph_proxy_env.sh" ]]; then
+  # shellcheck disable=SC1091
+  source "$ROOT/scripts/deepgraph_proxy_env.sh"
+fi
+
 while true; do
   processing_json="$(curl -s --max-time 10 "$API_BASE/api/processing" || true)"
   if [[ -z "$processing_json" ]]; then

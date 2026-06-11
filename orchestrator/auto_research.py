@@ -14,12 +14,19 @@ import json
 import os
 import threading
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
 from agents.discovery_metadata import infer_experimentability, infer_resource_class
 from agents.compute_profile import detect_compute_profile, gpu_resource_allowed
-from agents.experiment_forge import forge_experiment
+from agents.experiment_forge import forge_experiment, repair_experiment_plan_from_review
+from agents.benchmark_manager import (
+    HARNESS_REQUIRED_STAGE,
+    HARNESS_REQUIRED_STATUS,
+    judgement_requires_benchmark_harness,
+    record_harness_required,
+)
 from agents.insight_validation import (
     INSIGHT_INPUT_MISSING_ERROR_CODE,
     get_evosci_input_issue,
@@ -65,12 +72,27 @@ _stop_event = threading.Event()
 _process_lock: FileLock | None = None
 _active_execution_lock = threading.Lock()
 _active_execution: dict | None = None
+_active_queue_worker_lock = threading.Lock()
+_active_queue_workers: dict[int, str] = {}
 AUTO_RESEARCH_CONSUMER = "auto_research"
 VERIFY_STALE_SECONDS = 60 * 60
 RESEARCH_STALE_SECONDS = 6 * 60 * 60
 REVIEW_PENDING_STALE_SECONDS = 15 * 60
 EXECUTION_STALE_SECONDS = int(os.environ.get("DEEPGRAPH_EXECUTION_STALE_SECONDS", "600"))
+MAX_EXPERIMENT_REVIEW_REPAIR_ATTEMPTS = int(os.environ.get("DEEPGRAPH_EXPERIMENT_REVIEW_REPAIR_ATTEMPTS", "2"))
+MAX_FAILED_RUN_REPAIR_ATTEMPTS = int(os.environ.get("DEEPGRAPH_FAILED_RUN_REPAIR_ATTEMPTS", "1"))
 MAX_PARALLEL_VERIFICATIONS = 2
+MAX_PARALLEL_REVIEWS = int(os.environ.get("DEEPGRAPH_MAX_PARALLEL_REVIEWS", "2"))
+QUEUE_VERIFICATION = "verification"
+QUEUE_RESEARCH = "research"
+QUEUE_REVIEW = "experiment_review"
+QUEUE_REPAIR = "repair"
+QUEUE_EXECUTION = "execution"
+QUEUE_HARNESS = "harness_required"
+QUEUE_WAITING = "waiting"
+QUEUE_DONE = "done"
+QUEUE_BLOCKED = "blocked"
+QUEUE_ORDER = (QUEUE_REPAIR, QUEUE_VERIFICATION, QUEUE_EXECUTION, QUEUE_REVIEW)
 TERMINAL_RUN_STATUSES = {
     "completed",
     "failed",
@@ -101,6 +123,13 @@ HEAVY_KEYWORDS = {
     "video", "multimodal", "vision-language", "vlm", "7b", "13b", "70b",
     "gpu", "pretrain", "pre-training", "billion", "transformer-xl",
 }
+
+
+@dataclass(frozen=True)
+class QueueDecision:
+    queue: str
+    runnable: bool
+    reason: str = ""
 
 
 def evosci_available() -> bool:
@@ -243,6 +272,299 @@ def _job_age_seconds(job: dict) -> float:
         return 0.0
     now = datetime.now(ts.tzinfo) if ts.tzinfo else datetime.now()
     return max(0.0, (now - ts).total_seconds())
+
+
+
+def _repair_attempt_from_note(note: str | None, kind: str) -> int:
+    text = str(note or "")
+    token = f"[auto_repair:{kind} attempt="
+    idx = text.rfind(token)
+    if idx < 0:
+        return 0
+    rest = text[idx + len(token):]
+    digits = []
+    for ch in rest:
+        if ch.isdigit():
+            digits.append(ch)
+        else:
+            break
+    try:
+        return int("".join(digits)) if digits else 0
+    except ValueError:
+        return 0
+
+
+def _experiment_review_repair_attempt_from_plan_data(raw_plan) -> int:
+    if not raw_plan:
+        return 0
+    try:
+        plan = json.loads(raw_plan) if isinstance(raw_plan, str) else raw_plan
+    except (TypeError, json.JSONDecodeError):
+        return 0
+    if not isinstance(plan, dict):
+        return 0
+    history = plan.get("review_repair_history")
+    if not isinstance(history, list):
+        return 0
+    attempts: list[int] = []
+    for item in history:
+        if not isinstance(item, dict):
+            continue
+        try:
+            attempts.append(int(item.get("attempt") or 0))
+        except (TypeError, ValueError):
+            continue
+    # Older buggy runs repeatedly wrote attempt=1 after the job note was
+    # overwritten. Count history length as a floor so those runs still exhaust.
+    return max([len(history), *attempts] or [0])
+
+
+def _experiment_review_repair_attempt_from_plan(insight_id: int) -> int:
+    """Return persisted review-repair attempt count from the insight plan.
+
+    ``last_note`` is intentionally overwritten while a fresh forge is running,
+    so relying on only the auto job note can reset the bounded retry counter and
+    create an infinite review/repair loop. The experiment plan repair history is
+    the durable source of truth.
+    """
+
+    try:
+        row = db.fetchone("SELECT experimental_plan FROM deep_insights WHERE id=?", (insight_id,))
+    except Exception:
+        return 0
+    raw = (row or {}).get("experimental_plan") if isinstance(row, dict) else None
+    return _experiment_review_repair_attempt_from_plan_data(raw)
+
+
+def _repair_tag(kind: str, attempt: int, max_attempts: int) -> str:
+    return f"[auto_repair:{kind} attempt={attempt}/{max_attempts}]"
+
+
+def _coerce_review_judgement(payload: dict | None) -> dict:
+    payload = payload or {}
+    judgement = payload.get("judgement") if isinstance(payload.get("judgement"), dict) else {}
+    if judgement:
+        return judgement
+    error = str(payload.get("error") or "Experiment review blocked formalization.").strip()
+    return {
+        "summary": error,
+        "blockers": [error] if error else [],
+        "warnings": [],
+    }
+
+
+def _queue_benchmark_harness_required(
+    insight_id: int,
+    forged: dict | None,
+    *,
+    judgement: dict,
+    source: str,
+    summary: str,
+) -> bool:
+    result = record_harness_required(
+        insight_id,
+        judgement_payload=forged or {"judgement": judgement},
+        source=source,
+    )
+    if result.get("error"):
+        return False
+    benchmark_name = str(result.get("benchmark_name") or "custom benchmark").strip()
+    harness_job_id = result.get("harness_job_id")
+    paths = result.get("paths") if isinstance(result.get("paths"), dict) else {}
+    path_note = f" Task: {paths.get('benchmark_harness_task.json')}" if paths.get("benchmark_harness_task.json") else ""
+    _upsert_job(
+        insight_id,
+        status=HARNESS_REQUIRED_STATUS,
+        stage=HARNESS_REQUIRED_STAGE,
+        experiment_run_id=None,
+        last_error=(forged or {}).get("error") or summary,
+        last_note=(
+            f"Benchmark harness job {harness_job_id} queued for {benchmark_name}. "
+            "Main experiment scheduling is released; Benchmark Manager/Dataset/Baseline/Harness agents must complete this before GPU execution."
+            f"{path_note}"
+        ),
+    )
+    log_event(
+        "auto_research",
+        {
+            "step": "benchmark_harness_required",
+            "insight_id": insight_id,
+            "benchmark_name": benchmark_name,
+            "harness_job_id": harness_job_id,
+            "source": source,
+        },
+    )
+    return True
+
+
+def _handle_experiment_review_blocked(insight_id: int, forged: dict | None, *, source: str = "review") -> None:
+    """Feed structured review blockers back into experiment design, then requeue.
+
+    The previous implementation treated review blockers as terminal. These are
+    usually design/benchmark-contract defects, so they should flow back to the
+    experiment-design agent with a bounded retry count.
+    """
+
+    job = db.fetchone(
+        "SELECT last_note, last_error FROM auto_research_jobs WHERE deep_insight_id=?",
+        (insight_id,),
+    ) or {}
+    previous_attempt = max(
+        _repair_attempt_from_note(job.get("last_note"), "experiment_review"),
+        _repair_attempt_from_note(job.get("last_error"), "experiment_review"),
+        _experiment_review_repair_attempt_from_plan(insight_id),
+    )
+    next_attempt = previous_attempt + 1
+    judgement = _coerce_review_judgement(forged)
+    summary = str(judgement.get("summary") or (forged or {}).get("error") or "Experiment review blocked formalization.").strip()
+    if judgement_requires_benchmark_harness(forged or {"judgement": judgement}):
+        if _queue_benchmark_harness_required(
+            insight_id,
+            forged,
+            judgement=judgement,
+            source=source,
+            summary=summary,
+        ):
+            return
+
+    max_attempts = max(0, MAX_EXPERIMENT_REVIEW_REPAIR_ATTEMPTS)
+    if next_attempt > max_attempts:
+        tag = _repair_tag("experiment_review", previous_attempt, max_attempts)
+        _upsert_job(
+            insight_id,
+            status="blocked",
+            stage="experiment_review_blocked_final",
+            experiment_run_id=None,
+            last_error=(forged or {}).get("error") or summary,
+            last_note=f"{tag} automatic review repair exhausted; manual benchmark/design intervention required. {summary}",
+        )
+        log_event(
+            "warning",
+            {
+                "step": "experiment_review_repair_exhausted",
+                "insight_id": insight_id,
+                "source": source,
+                "attempts": previous_attempt,
+            },
+        )
+        return
+
+    tag = _repair_tag("experiment_review", next_attempt, max_attempts)
+    repair = repair_experiment_plan_from_review(insight_id, judgement=judgement, attempt=next_attempt)
+    if repair.get("error"):
+        _upsert_job(
+            insight_id,
+            status="blocked",
+            stage="experiment_review_repair_failed",
+            experiment_run_id=None,
+            last_error=f"{tag} {repair['error']}",
+            last_note=f"{tag} experiment design repair failed before retry. Review: {summary}",
+        )
+        log_event(
+            "warning",
+            {
+                "step": "experiment_review_repair_failed",
+                "insight_id": insight_id,
+                "source": source,
+                "error": repair.get("error"),
+            },
+        )
+        return
+
+    _upsert_job(
+        insight_id,
+        status="queued",
+        stage="experiment_review_repair",
+        experiment_run_id=None,
+        last_error=None,
+        last_note=f"{tag} {repair.get('repair_summary') or 'Experiment design repaired from review blockers.'} Requeued structured review.",
+    )
+    log_event(
+        "auto_research",
+        {
+            "step": "experiment_review_repair_requeued",
+            "insight_id": insight_id,
+            "source": source,
+            "attempt": next_attempt,
+            "llm_repair_used": bool(repair.get("llm_repair_used")),
+        },
+    )
+
+
+def _maybe_repair_preexisting_review_block(insight: dict) -> bool:
+    if str(insight.get("auto_status") or "") != "blocked":
+        return False
+    stage = str(insight.get("auto_stage") or "")
+    if stage not in {"experiment_review_blocked", "experiment_review_repair_failed"}:
+        return False
+    error = str(insight.get("auto_last_error") or insight.get("auto_last_note") or "Experiment review blocked formalization.")
+    _handle_experiment_review_blocked(
+        int(insight["id"]),
+        {"error": error, "judgement": {"summary": error, "blockers": [error], "warnings": []}},
+        source="blocked_recovery",
+    )
+    return True
+
+
+def _retry_failed_run_with_repair(insight_id: int, run: dict, resource_class: str) -> bool:
+    job = db.fetchone(
+        "SELECT last_note, last_error FROM auto_research_jobs WHERE deep_insight_id=?",
+        (insight_id,),
+    ) or {}
+    previous_attempt = max(
+        _repair_attempt_from_note(job.get("last_note"), "failed_run"),
+        _repair_attempt_from_note(job.get("last_error"), "failed_run"),
+    )
+    next_attempt = previous_attempt + 1
+    max_attempts = max(0, MAX_FAILED_RUN_REPAIR_ATTEMPTS)
+    if next_attempt > max_attempts:
+        return False
+    error = str(run.get("error_message") or "Experiment run failed without an error message.").strip()
+    tag = _repair_tag("failed_run", next_attempt, max_attempts)
+    repair = repair_experiment_plan_from_review(
+        insight_id,
+        judgement={
+            "summary": f"Execution failed after forge/review: {error}",
+            "blockers": [error],
+            "warnings": ["Repair the experiment design or runnable benchmark contract before reforge."],
+        },
+        attempt=next_attempt,
+    )
+    if repair.get("error"):
+        _upsert_job(
+            insight_id,
+            status="failed",
+            stage="experiment_failed_repair_failed",
+            experiment_run_id=run.get("id"),
+            resource_class=resource_class,
+            last_error=f"{tag} {repair['error']}",
+            last_note=f"{tag} failed-run repair could not update the experiment design.",
+        )
+        return True
+    _supersede_stale_scaffold_run(
+        int(run["id"]),
+        f"{tag} superseded failed run for automatic repaired reforge: {error[:500]}",
+    )
+    _upsert_job(
+        insight_id,
+        status="queued",
+        stage="retry_failed_run",
+        experiment_run_id=None,
+        resource_class=resource_class,
+        assigned_worker=None,
+        last_error=None,
+        last_note=f"{tag} {repair.get('repair_summary') or 'Experiment design repaired after failed run.'} Requeued fresh forge.",
+    )
+    log_event(
+        "auto_research",
+        {
+            "step": "failed_run_repair_requeued",
+            "insight_id": insight_id,
+            "run_id": run.get("id"),
+            "attempt": next_attempt,
+        },
+    )
+    return True
 
 
 def _supersede_stale_scaffold_run(run_id: int, reason: str) -> None:
@@ -512,6 +834,7 @@ def get_status() -> dict:
              SUM(CASE WHEN status='verifying' THEN 1 ELSE 0 END) AS verifying,
              SUM(CASE WHEN status='researching' THEN 1 ELSE 0 END) AS researching,
              SUM(CASE WHEN status='review_pending' THEN 1 ELSE 0 END) AS review_pending,
+             SUM(CASE WHEN status='harness_required' THEN 1 ELSE 0 END) AS harness_required,
              SUM(CASE WHEN status='smoke_only' THEN 1 ELSE 0 END) AS smoke_only,
              SUM(CASE WHEN status='blocked' THEN 1 ELSE 0 END) AS blocked,
              SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed
@@ -521,6 +844,8 @@ def get_status() -> dict:
         "running": running,
         "interval_seconds": AUTO_RESEARCH_INTERVAL_SECONDS,
         "max_active": AUTO_RESEARCH_MAX_ACTIVE,
+        "max_parallel_reviews": MAX_PARALLEL_REVIEWS,
+        "review_active": _review_pending_job_count(),
         "evoscientist_available": evosci_available(),
         **counts,
     }
@@ -553,8 +878,166 @@ def _verification_job_count() -> int:
     return row["c"] if row else 0
 
 
+def _review_pending_job_count() -> int:
+    row = db.fetchone(
+        """SELECT COUNT(*) AS c
+           FROM auto_research_jobs
+           WHERE status IN ('review_pending')"""
+    )
+    return row["c"] if row else 0
+
+
 def _active_job_count() -> int:
     return _execution_active_job_count() + _verification_job_count() + _research_job_count()
+
+
+def _queue_active_counts() -> dict[str, int]:
+    return {
+        QUEUE_EXECUTION: _execution_active_job_count(),
+        QUEUE_VERIFICATION: _verification_job_count(),
+        QUEUE_RESEARCH: _research_job_count(),
+        QUEUE_REVIEW: _review_pending_job_count(),
+    }
+
+
+def _queue_capacity(queue: str) -> int:
+    if queue == QUEUE_VERIFICATION:
+        return MAX_PARALLEL_VERIFICATIONS
+    if queue == QUEUE_EXECUTION:
+        return max(1, AUTO_RESEARCH_MAX_ACTIVE)
+    if queue in {QUEUE_REVIEW, QUEUE_REPAIR}:
+        return max(1, MAX_PARALLEL_REVIEWS)
+    return 0
+
+
+def _queue_has_capacity(queue: str, counts: dict[str, int]) -> bool:
+    if queue == QUEUE_REPAIR:
+        return counts.get(QUEUE_REVIEW, 0) < _queue_capacity(queue)
+    return counts.get(queue, 0) < _queue_capacity(queue)
+
+
+def _active_queue_worker_count(queue: str | None = None) -> int:
+    with _active_queue_worker_lock:
+        if queue is None:
+            return len(_active_queue_workers)
+        return sum(1 for active_queue in _active_queue_workers.values() if active_queue == queue)
+
+
+def _start_candidate_worker(candidate: dict, queue: str) -> bool:
+    candidate_id = int(candidate["id"])
+    worker_queue = QUEUE_REVIEW if queue in {QUEUE_REVIEW, QUEUE_REPAIR} else queue
+    with _active_queue_worker_lock:
+        if candidate_id in _active_queue_workers:
+            return False
+        _active_queue_workers[candidate_id] = worker_queue
+    if queue in {QUEUE_REVIEW, QUEUE_REPAIR}:
+        _upsert_job(
+            candidate_id,
+            status="review_pending",
+            stage=f"{queue}_worker",
+            last_error=None,
+            last_note=f"Dispatched to {queue} worker under multi-queue scheduler.",
+        )
+
+    def _run() -> None:
+        try:
+            _process_candidate(candidate)
+        except Exception as exc:  # pragma: no cover - defensive worker guard
+            _upsert_job(candidate_id, status="failed", stage="exception", last_error=str(exc))
+            log_event("error", {"step": "auto_research_worker", "queue": queue, "insight_id": candidate_id, "error": str(exc)})
+        finally:
+            with _active_queue_worker_lock:
+                _active_queue_workers.pop(candidate_id, None)
+
+    thread = threading.Thread(target=_run, name=f"deepgraph-auto-{queue}-{candidate_id}", daemon=True)
+    thread.start()
+    return True
+
+
+def _candidate_repair_stage(status: str, stage: str) -> bool:
+    if status == "blocked" and (
+        stage == "cpu_ineligible"
+        or stage in {
+            "verification_input_missing",
+            "research_input_missing",
+            "experiment_review_blocked",
+            "experiment_review_repair_failed",
+        }
+    ):
+        return True
+    return status == "failed" and stage in {
+        "manual_reforge_unfinished",
+        "manual_requeue_unfinished",
+        "retry_failed_run",
+        "manual_rerun_completed",
+        "reset_completed_experiments",
+    }
+
+
+def _candidate_queue_decision(candidate: dict) -> QueueDecision:
+    status = str(candidate.get("auto_status") or "").strip()
+    stage = str(candidate.get("auto_stage") or "").strip()
+    if status == HARNESS_REQUIRED_STATUS or stage == HARNESS_REQUIRED_STAGE:
+        return QueueDecision(QUEUE_HARNESS, False, "waiting for benchmark harness agents")
+    if status in {"completed", "bundle_ready", "smoke_only"} and stage != "tier1_research_complete":
+        return QueueDecision(QUEUE_DONE, False, "terminal or non-formal job")
+    if status in {"running_experiment", "running_gpu", "running_cpu", "queued_gpu"}:
+        return QueueDecision(QUEUE_EXECUTION, False, "execution already active")
+    if status == "review_pending":
+        return QueueDecision(QUEUE_REVIEW, False, "review already pending")
+    if status == "researching":
+        return QueueDecision(QUEUE_RESEARCH, False, "deep research already active")
+    if status == "verifying":
+        return QueueDecision(QUEUE_VERIFICATION, False, "verification already active")
+    if status == "blocked" and _candidate_still_missing_required_inputs(candidate):
+        return QueueDecision(QUEUE_BLOCKED, False, "required inputs still missing")
+    if _candidate_repair_stage(status, stage):
+        return QueueDecision(QUEUE_REPAIR, True, "repairable blocked/failed state")
+    if _candidate_needs_verification(candidate):
+        return QueueDecision(QUEUE_VERIFICATION, True, "novelty verification required")
+    if status in {"eligible", "queued_cpu", "queued_gpu"} or candidate.get("auto_experiment_run_id"):
+        return QueueDecision(QUEUE_EXECUTION, True, "existing formal run can execute or resume")
+    return QueueDecision(QUEUE_REVIEW, True, "ready for experiment review/forge")
+
+
+def _candidate_queues(candidates: list[dict]) -> dict[str, list[tuple[dict, QueueDecision]]]:
+    queues: dict[str, list[tuple[dict, QueueDecision]]] = {
+        QUEUE_REPAIR: [],
+        QUEUE_VERIFICATION: [],
+        QUEUE_EXECUTION: [],
+        QUEUE_REVIEW: [],
+        QUEUE_HARNESS: [],
+        QUEUE_BLOCKED: [],
+        QUEUE_WAITING: [],
+        QUEUE_DONE: [],
+    }
+    for candidate in candidates:
+        decision = _candidate_queue_decision(candidate)
+        queues.setdefault(decision.queue, []).append((candidate, decision))
+    return queues
+
+
+def _select_candidate_from_queues(candidates: list[dict] | None = None) -> tuple[dict | None, dict]:
+    candidates = _candidate_pool() if candidates is None else candidates
+    queues = _candidate_queues(candidates)
+    counts = _queue_active_counts()
+    summary = {queue: len(rows) for queue, rows in queues.items() if rows}
+    for queue in QUEUE_ORDER:
+        if not _queue_has_capacity(queue, counts):
+            continue
+        for candidate, decision in queues.get(queue, []):
+            if decision.runnable:
+                return candidate, {
+                    "selected_queue": queue,
+                    "queue_counts": summary,
+                    "active_counts": counts,
+                    "decision": decision.reason,
+                }
+    return None, {
+        "selected_queue": None,
+        "queue_counts": summary,
+        "active_counts": counts,
+    }
 
 
 def _candidate_pool() -> list[dict]:
@@ -562,7 +1045,10 @@ def _candidate_pool() -> list[dict]:
         """SELECT di.*,
                   arj.status AS auto_status,
                   arj.stage AS auto_stage,
-                  arj.cpu_eligible AS auto_cpu_eligible
+                  arj.cpu_eligible AS auto_cpu_eligible,
+                  arj.experiment_run_id AS auto_experiment_run_id,
+                  arj.last_note AS auto_last_note,
+                  arj.last_error AS auto_last_error
            FROM deep_insights di
            LEFT JOIN auto_research_jobs arj ON arj.deep_insight_id = di.id
            WHERE COALESCE(di.status, 'candidate') NOT IN ('exists')
@@ -591,7 +1077,12 @@ def _candidate_pool() -> list[dict]:
                     arj.status='blocked'
                     AND (
                       arj.stage='cpu_ineligible'
-                      OR arj.stage IN ('verification_input_missing', 'research_input_missing')
+                      OR arj.stage IN (
+                        'verification_input_missing',
+                        'research_input_missing',
+                        'experiment_review_blocked',
+                        'experiment_review_repair_failed'
+                      )
                     )
                   )
              )
@@ -681,19 +1172,8 @@ def _candidate_still_missing_required_inputs(candidate: dict) -> bool:
 
 
 def _next_candidate() -> dict | None:
-    execution_active = _execution_active_job_count()
-    verifying_active = _verification_job_count()
-    max_active = max(1, AUTO_RESEARCH_MAX_ACTIVE)
-    for candidate in _candidate_pool():
-        if _candidate_still_missing_required_inputs(candidate):
-            continue
-        if _candidate_needs_verification(candidate):
-            if verifying_active < MAX_PARALLEL_VERIFICATIONS:
-                return candidate
-            continue
-        if execution_active < max_active:
-            return candidate
-    return None
+    candidate, _ = _select_candidate_from_queues()
+    return candidate
 
 
 def _refresh_running_jobs() -> None:
@@ -821,12 +1301,13 @@ def _refresh_running_jobs() -> None:
                 )
             elif job.get("last_error") and not job.get("experiment_run_id"):
                 note = job.get("last_note") or job["last_error"]
-                _upsert_job(
+                _handle_experiment_review_blocked(
                     insight_id,
-                    status="blocked",
-                    stage="experiment_review_blocked",
-                    last_error=job["last_error"],
-                    last_note=note,
+                    {
+                        "error": job["last_error"],
+                        "judgement": {"summary": note, "blockers": [job["last_error"]], "warnings": []},
+                    },
+                    source="review_pending_error",
                 )
             elif _job_age_seconds(job) >= REVIEW_PENDING_STALE_SECONDS and not job.get("experiment_run_id"):
                 _upsert_job(
@@ -898,15 +1379,23 @@ def _launch_candidates_to_capacity() -> dict:
     _refresh_running_jobs()
     scheduled: list[int] = []
     seen_candidates: set[int] = set()
+    last_selection: dict = {}
 
     while True:
-        candidate = _next_candidate()
+        candidate, selection = _select_candidate_from_queues()
+        last_selection = selection
         if not candidate:
             break
         candidate_id = int(candidate["id"])
         if candidate_id in seen_candidates:
             break
         seen_candidates.add(candidate_id)
+        queue = selection.get("selected_queue") if isinstance(selection, dict) else None
+        if queue in {QUEUE_REVIEW, QUEUE_REPAIR}:
+            if _start_candidate_worker(candidate, str(queue)):
+                scheduled.append(candidate_id)
+                continue
+            break
         try:
             _process_candidate(candidate)
             scheduled.append(candidate_id)
@@ -915,11 +1404,17 @@ def _launch_candidates_to_capacity() -> dict:
             log_event("error", {"step": "auto_research", "insight_id": candidate_id, "error": str(exc)})
             break
 
+    active_counts = _queue_active_counts()
+    queue_counts = last_selection.get("queue_counts", {}) if isinstance(last_selection, dict) else {}
     return {
         "scheduled": scheduled,
         "active": _active_job_count(),
-        "execution_active": _execution_active_job_count(),
-        "verifying_active": _verification_job_count(),
+        "execution_active": active_counts.get(QUEUE_EXECUTION, 0),
+        "verifying_active": active_counts.get(QUEUE_VERIFICATION, 0),
+        "review_active": active_counts.get(QUEUE_REVIEW, 0),
+        "research_active": active_counts.get(QUEUE_RESEARCH, 0),
+        "queue_counts": queue_counts,
+        "selected_queue": last_selection.get("selected_queue") if isinstance(last_selection, dict) else None,
         "recovered_execution": recovered_execution,
     }
 
@@ -955,6 +1450,9 @@ def _process_candidate(insight: dict) -> None:
         resource_class=resource_class,
         scheduler_priority=2 if resource_class == "gpu_large" else 1,
     )
+
+    if _maybe_repair_preexisting_review_block(insight):
+        return
 
     if REQUIRE_EVOSCIENTIST_FOR_EXPERIMENTS:
         fresh = db.fetchone("SELECT * FROM deep_insights WHERE id=?", (insight_id,))
@@ -1264,6 +1762,30 @@ def _process_candidate(insight: dict) -> None:
         )
         existing_run = None
     if not existing_run:
+        prior_review_repairs = _experiment_review_repair_attempt_from_plan_data(insight.get("experimental_plan"))
+        max_review_repairs = max(0, MAX_EXPERIMENT_REVIEW_REPAIR_ATTEMPTS)
+        if max_review_repairs and prior_review_repairs >= max_review_repairs:
+            tag = _repair_tag("experiment_review", max_review_repairs, max_review_repairs)
+            _upsert_job(
+                insight_id,
+                status="blocked",
+                stage="experiment_review_blocked_final",
+                experiment_run_id=None,
+                last_error="Experiment review repair exhausted before forge; dedicated benchmark/code harness intervention required.",
+                last_note=(
+                    f"{tag} automatic review repair exhausted before another forge attempt; "
+                    "manual benchmark/code-harness intervention required."
+                ),
+            )
+            log_event(
+                "warning",
+                {
+                    "step": "experiment_review_repair_exhausted_pre_forge",
+                    "insight_id": insight_id,
+                    "attempts": prior_review_repairs,
+                },
+            )
+            return
         _upsert_job(
             insight_id,
             status="review_pending",
@@ -1274,13 +1796,7 @@ def _process_candidate(insight: dict) -> None:
         if "error" in forged:
             route = forged.get("route")
             if route == "blocked":
-                _upsert_job(
-                    insight_id,
-                    status="blocked",
-                    stage="experiment_review_blocked",
-                    last_error=forged["error"],
-                    last_note=(forged.get("judgement") or {}).get("summary") if isinstance(forged.get("judgement"), dict) else forged["error"],
-                )
+                _handle_experiment_review_blocked(insight_id, forged, source="forge_review")
                 return
             _upsert_job(insight_id, status="failed", stage="forge_failed", last_error=forged["error"])
             set_outcome(
@@ -1361,6 +1877,8 @@ def _process_candidate(insight: dict) -> None:
         _upsert_job(insight_id, status="completed", stage="closed_loop_complete", experiment_run_id=existing_run["id"], last_note=note)
         return
     if existing_run["status"] in {"failed"}:
+        if _retry_failed_run_with_repair(insight_id, existing_run, resource_class):
+            return
         _upsert_job(insight_id, status="failed", stage="experiment_failed", experiment_run_id=existing_run["id"], last_error=existing_run.get("error_message"))
         return
 
@@ -1414,6 +1932,17 @@ def _process_candidate(insight: dict) -> None:
         log_event("auto_research", {"step": "gpu_job_queued", "insight_id": insight_id, "run_id": existing_run["id"]})
         return
 
+    if _active_execution_run_id() is not None:
+        _upsert_job(
+            insight_id,
+            status="queued_cpu",
+            stage="cpu_execution_wait",
+            experiment_run_id=existing_run["id"],
+            resource_class=resource_class,
+            last_note="CPU validation lane is busy; queued for the execution queue.",
+            last_error=None,
+        )
+        return
     _upsert_job(
         insight_id,
         status="running_cpu",
@@ -1477,11 +2006,17 @@ def consume_pipeline_events_once(limit: int = 50) -> dict:
         last_event_id = int(event["id"])
         payload = db._load_json(event.get("payload"), {})
         event_type = event.get("event_type")
-        if event_type == "deep_insight_created" and _active_job_count() < max(1, AUTO_RESEARCH_MAX_ACTIVE):
+        if event_type == "deep_insight_created":
             insight_id = payload.get("insight_id")
-            insight = db.fetchone("SELECT * FROM deep_insights WHERE id=?", (insight_id,))
+            insight = db.fetchone("SELECT id FROM deep_insights WHERE id=?", (insight_id,))
             if insight:
-                _process_candidate(insight)
+                _upsert_job(
+                    int(insight_id),
+                    status="queued",
+                    stage="idea_ready",
+                    last_error=None,
+                    last_note="Queued by deep_insight_created event for multi-queue scheduling.",
+                )
                 processed += 1
         else:
             _refresh_running_jobs()
@@ -1503,14 +2038,37 @@ def run_cycle() -> dict:
         return {
             "status": "processed",
             "insight_ids": launch_stats["scheduled"],
+            "queues": launch_stats.get("queue_counts", {}),
             "recovered_legacy": recovered,
             "manuscript_audit": manuscript_audit,
         }
-    if launch_stats["execution_active"] >= max(1, AUTO_RESEARCH_MAX_ACTIVE) or launch_stats["verifying_active"] >= MAX_PARALLEL_VERIFICATIONS:
-        return {"status": "busy", "recovered_legacy": recovered, "manuscript_audit": manuscript_audit}
-    if not _next_candidate():
-        return {"status": "idle", "recovered_legacy": recovered, "manuscript_audit": manuscript_audit}
-    return {"status": "pending", "recovered_legacy": recovered, "manuscript_audit": manuscript_audit}
+    queue_counts = launch_stats.get("queue_counts", {}) or {}
+    queue_busy = (
+        (queue_counts.get(QUEUE_EXECUTION, 0) and launch_stats["execution_active"] >= max(1, AUTO_RESEARCH_MAX_ACTIVE))
+        or (queue_counts.get(QUEUE_VERIFICATION, 0) and launch_stats["verifying_active"] >= MAX_PARALLEL_VERIFICATIONS)
+        or ((queue_counts.get(QUEUE_REVIEW, 0) or queue_counts.get(QUEUE_REPAIR, 0)) and launch_stats["review_active"] >= max(1, MAX_PARALLEL_REVIEWS))
+    )
+    if queue_busy:
+        return {
+            "status": "busy",
+            "queues": queue_counts,
+            "recovered_legacy": recovered,
+            "manuscript_audit": manuscript_audit,
+        }
+    candidate, selection = _select_candidate_from_queues()
+    if not candidate:
+        return {
+            "status": "idle",
+            "queues": selection.get("queue_counts", {}),
+            "recovered_legacy": recovered,
+            "manuscript_audit": manuscript_audit,
+        }
+    return {
+        "status": "pending",
+        "queues": selection.get("queue_counts", {}),
+        "recovered_legacy": recovered,
+        "manuscript_audit": manuscript_audit,
+    }
 
 
 def _run_once() -> dict:

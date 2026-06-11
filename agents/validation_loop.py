@@ -666,6 +666,112 @@ def _workdir_uses_cggr_runner(workdir: Path) -> bool:
     return '"cggr_mode": true' in text or "'cggr_mode': true" in text
 
 
+def _contract_context(workdir: Path) -> tuple[dict, dict, dict]:
+    success = _read_success_criteria(workdir)
+    proxy = _read_proxy_config(workdir)
+    contract = success.get("publication_evidence_contract") if isinstance(success.get("publication_evidence_contract"), dict) else {}
+    if not contract and isinstance(proxy.get("publication_evidence_contract"), dict):
+        contract = proxy.get("publication_evidence_contract") or {}
+    quality_gates = success.get("quality_gates") if isinstance(success.get("quality_gates"), dict) else {}
+    if not quality_gates and isinstance(contract.get("quality_gates"), dict):
+        quality_gates = contract.get("quality_gates") or {}
+    return success, proxy, contract | {"quality_gates": quality_gates}
+
+
+def _formal_benchmark_required(workdir: Path, *, full_benchmark: bool = False) -> bool:
+    if full_benchmark:
+        return True
+    success, proxy, contract = _contract_context(workdir)
+    quality_gates = contract.get("quality_gates") if isinstance(contract.get("quality_gates"), dict) else {}
+    evidence_tier = str(contract.get("evidence_tier") or success.get("evidence_tier") or "")
+    return bool(
+        proxy.get("real_benchmark_required")
+        or evidence_tier in {"benchmark_plan", "sanity_real_benchmark"}
+        or quality_gates.get("requires_full_benchmark_package")
+        or contract.get("required_real_benchmarks")
+    )
+
+
+def _command_script_path(command_tokens: list[str], code_dir: Path) -> Path:
+    candidates = command_tokens[1:] if command_tokens and Path(command_tokens[0]).name.lower().startswith("python") else command_tokens[:1]
+    for token in candidates:
+        if token.startswith("-"):
+            continue
+        if token.endswith(".py"):
+            return code_dir / token
+        break
+    return code_dir / "train.py"
+
+
+def _runner_contract_violations(
+    workdir: Path,
+    code_dir: Path,
+    command_tokens: list[str],
+    *,
+    full_benchmark: bool = False,
+) -> list[str]:
+    if not _formal_benchmark_required(workdir, full_benchmark=full_benchmark):
+        return []
+    script_path = _command_script_path(command_tokens, code_dir)
+    try:
+        text = script_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return [f"formal benchmark entrypoint is missing: {script_path}"]
+    lowered = text.lower()
+    violations: list[str] = []
+
+    literal_patterns = {
+        r"\bsort_keys\s*=\s*true\b": "Python code uses JSON boolean true in sort_keys=true; use True.",
+        r"\bensure_ascii\s*=\s*false\b": "Python code uses JSON boolean false in ensure_ascii=false; use False.",
+        r"\breturn\s+null\b": "Python code uses JSON null; use None.",
+        r"\bis\s+null\b": "Python code compares with null; use None.",
+        r":\s*null\b": "Python dict literal contains null; use None.",
+    }
+    for pattern, message in literal_patterns.items():
+        if re.search(pattern, lowered):
+            violations.append(message)
+
+    proxy_markers = (
+        "smoke baseline",
+        "smoke-only",
+        "synthetic",
+        "simulated",
+        "toy",
+        "dummy",
+        "random.randn",
+        "torch.randn",
+        "np.random",
+        "cpu-only probe",
+        "probe evidence",
+    )
+    real_markers = (
+        "load_dataset",
+        "from_pretrained",
+        "default_local_jsonl",
+        "raw_predictions",
+        "benchmark_summary",
+        "per_seed_results",
+        "per_dataset_results",
+    )
+    if any(marker in lowered for marker in proxy_markers) and not any(marker in lowered for marker in real_markers):
+        violations.append("formal benchmark runner appears to be a smoke/toy/synthetic proxy without real dataset/model loading.")
+
+    success, proxy, contract = _contract_context(workdir)
+    quality_gates = contract.get("quality_gates") if isinstance(contract.get("quality_gates"), dict) else {}
+    benchmark_plan = bool(
+        full_benchmark
+        or str(contract.get("evidence_tier") or success.get("evidence_tier") or "") == "benchmark_plan"
+        or quality_gates.get("requires_full_benchmark_package")
+    )
+    if benchmark_plan:
+        required_output_markers = ("final_results:", "per_method", "candidate_method", "full_benchmark_completed")
+        missing = [marker for marker in required_output_markers if marker not in lowered]
+        if missing:
+            violations.append("formal benchmark runner is missing required output contract markers: " + ", ".join(missing))
+
+    return violations
+
+
 def _benchmark_env_for_execution(workdir: Path, *, full_benchmark: bool = False) -> dict[str, str]:
     env = ssh_gpu_backend.benchmark_env_from_workdir(workdir)
     if full_benchmark or _env_truthy("DEEPGRAPH_BENCHMARK_FULL_RUN"):
@@ -674,14 +780,8 @@ def _benchmark_env_for_execution(workdir: Path, *, full_benchmark: bool = False)
         env.setdefault("DEEPGRAPH_BENCHMARK_INCLUDE_TOP_VENUE_BASELINES", "1")
         return env
 
-    env["DEEPGRAPH_BENCHMARK_MAX_EXAMPLES"] = _bounded_int_text(
-        env.get("DEEPGRAPH_BENCHMARK_MAX_EXAMPLES"),
-        EXPERIMENT_VALIDATION_BENCHMARK_MAX_EXAMPLES,
-    )
-    env["DEEPGRAPH_BENCHMARK_SEEDS"] = _bounded_int_text(
-        env.get("DEEPGRAPH_BENCHMARK_SEEDS"),
-        EXPERIMENT_VALIDATION_BENCHMARK_SEEDS,
-    )
+    env.setdefault("DEEPGRAPH_BENCHMARK_MAX_EXAMPLES", str(EXPERIMENT_VALIDATION_BENCHMARK_MAX_EXAMPLES))
+    env.setdefault("DEEPGRAPH_BENCHMARK_SEEDS", str(EXPERIMENT_VALIDATION_BENCHMARK_SEEDS))
     env["DEEPGRAPH_BENCHMARK_MAX_EXAMPLES_CAP"] = str(EXPERIMENT_VALIDATION_BENCHMARK_MAX_EXAMPLES)
     env["DEEPGRAPH_BENCHMARK_SEEDS_CAP"] = str(EXPERIMENT_VALIDATION_BENCHMARK_SEEDS)
     if EXPERIMENT_VALIDATION_BENCHMARK_METHODS and _workdir_uses_cggr_runner(workdir):
@@ -1073,6 +1173,35 @@ def _run_experiment(
     start = time.time()
     worker = (execution_context or {}).get("worker") if execution_context else None
     benchmark_env = dict(benchmark_env_override) if benchmark_env_override is not None else _benchmark_env_for_execution(workdir, full_benchmark=full_benchmark)
+    contract_violations = _runner_contract_violations(
+        workdir,
+        code_dir,
+        command_tokens,
+        full_benchmark=full_benchmark,
+    )
+    if contract_violations:
+        duration = time.time() - start
+        error = "; ".join(contract_violations)
+        try:
+            log_path.write_text(
+                "Contract-preserving runner guard blocked execution.\n"
+                f"Command: {command_tokens}\n"
+                + "\n".join(f"- {item}" for item in contract_violations)
+                + "\n",
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
+        return {
+            "status": "crash",
+            "duration": duration,
+            "error": error,
+            "failure_type": "contract_violation",
+            "final_results_present": False,
+            "command_tokens": command_tokens,
+            "log_path": str(log_path),
+            "benchmark_env": benchmark_env,
+        }
     if full_benchmark and not _disable_model_matrix and len(_benchmark_model_list_from_env(benchmark_env)) > 1:
         return _run_experiment_model_matrix(
             workdir,

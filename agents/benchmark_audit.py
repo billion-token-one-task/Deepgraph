@@ -278,11 +278,310 @@ def _candidate_and_strongest(summary: dict[str, Any], metric_name: str | None, d
     return candidate, candidate_value, best_name, best_value, gap
 
 
+def _label_key(value: Any) -> str:
+    return "".join(ch for ch in str(value or "").lower() if ch.isalnum())
+
+
+def _labels_from_values(value: Any, *, keys: tuple[str, ...]) -> list[str]:
+    rows = value if isinstance(value, list) else ([value] if value not in (None, "", "unknown") else [])
+    out: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        if isinstance(row, dict):
+            text = ""
+            for key in keys:
+                text = str(row.get(key) or "").strip()
+                if text:
+                    break
+        else:
+            text = str(row or "").strip()
+        key = text.lower()
+        if text and key not in seen:
+            seen.add(key)
+            out.append(text)
+    return out
+
+
+def _label_matches(required: str, observed: list[str]) -> bool:
+    req = _label_key(required)
+    if not req:
+        return True
+    for item in observed:
+        obs = _label_key(item)
+        if obs and (req == obs or req in obs or obs in req):
+            return True
+    return False
+
+
+def _summary_dataset_labels(summary: dict[str, Any]) -> list[str]:
+    labels = _labels_from_values(summary.get("datasets"), keys=("name", "id", "dataset", "hf_dataset"))
+    labels.extend(_labels_from_values(summary.get("dataset"), keys=("name", "id", "dataset", "hf_dataset")))
+    per_dataset = summary.get("per_dataset_results") or summary.get("per_dataset_table")
+    if isinstance(per_dataset, dict):
+        labels.extend(str(key) for key in per_dataset.keys())
+    elif isinstance(per_dataset, list):
+        labels.extend(_labels_from_values(per_dataset, keys=("name", "id", "dataset", "hf_dataset")))
+    out: list[str] = []
+    seen: set[str] = set()
+    for label in labels:
+        key = label.lower()
+        if label and key not in seen:
+            seen.add(key)
+            out.append(label)
+    return out
+
+
+def _summary_model_labels(summary: dict[str, Any]) -> list[str]:
+    labels = _labels_from_values(summary.get("models"), keys=("name", "id", "model", "hf_model", "model_id"))
+    labels.extend(_labels_from_values(summary.get("model"), keys=("name", "id", "model", "hf_model", "model_id")))
+    env = summary.get("environment_report") if isinstance(summary.get("environment_report"), dict) else {}
+    labels.extend(_labels_from_values(env.get("model_id"), keys=("name", "id", "model", "hf_model", "model_id")))
+    out: list[str] = []
+    seen: set[str] = set()
+    for label in labels:
+        key = label.lower()
+        if label and key not in seen:
+            seen.add(key)
+            out.append(label)
+    return out
+
+
+def _summary_method_labels(summary: dict[str, Any], per_method: dict[str, Any]) -> list[str]:
+    labels = [str(name) for name in per_method.keys()]
+    labels.extend(_labels_from_values(summary.get("methods"), keys=("name", "method", "id")))
+    out: list[str] = []
+    seen: set[str] = set()
+    for label in labels:
+        key = label.lower()
+        if label and key not in seen:
+            seen.add(key)
+            out.append(label)
+    return out
+
+
+def _summary_seed_count(summary: dict[str, Any]) -> int:
+    seed_results = summary.get("seed_results") if isinstance(summary.get("seed_results"), list) else []
+    for key in ("num_seeds", "seeds"):
+        value = summary.get(key)
+        if isinstance(value, list):
+            return len(value)
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            parsed = 0
+        if parsed:
+            return parsed
+    return len(seed_results)
+
+
+def _row_count(row: Any) -> int | None:
+    if not isinstance(row, dict):
+        return None
+    for key in ("num_test", "num_materialized_examples", "num_examples", "count", "n", "size"):
+        try:
+            value = int(row.get(key) or 0)
+        except (TypeError, ValueError):
+            value = 0
+        if value > 0:
+            return value
+    return None
+
+
+def _summary_dataset_counts(summary: dict[str, Any]) -> dict[str, int | None]:
+    counts: dict[str, int | None] = {}
+    datasets = summary.get("datasets") if isinstance(summary.get("datasets"), list) else []
+    dataset = summary.get("dataset") if isinstance(summary.get("dataset"), dict) else None
+    rows = list(datasets)
+    if dataset:
+        rows.append(dataset)
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        labels = _labels_from_values(row, keys=("name", "id", "dataset", "hf_dataset"))
+        label = labels[0] if labels else "dataset"
+        counts[label] = _row_count(row)
+    per_dataset = summary.get("per_dataset_results") or summary.get("per_dataset_table")
+    if isinstance(per_dataset, dict):
+        for key, row in per_dataset.items():
+            if isinstance(row, dict):
+                counts.setdefault(str(key), _row_count(row))
+    elif isinstance(per_dataset, list):
+        for row in per_dataset:
+            if not isinstance(row, dict):
+                continue
+            labels = _labels_from_values(row, keys=("name", "id", "dataset", "hf_dataset"))
+            if labels:
+                counts.setdefault(labels[0], _row_count(row))
+    return counts
+
+
+def _criteria_protocol(criteria: dict[str, Any], contract: dict[str, Any], quality_gates: dict[str, Any]) -> dict[str, Any]:
+    for value in (
+        criteria.get("benchmark_protocol"),
+        contract.get("benchmark_protocol"),
+        quality_gates.get("benchmark_protocol"),
+    ):
+        if isinstance(value, dict) and value:
+            return value
+    for source in (criteria, contract, quality_gates):
+        manifest = source.get("benchmark_manifest") if isinstance(source.get("benchmark_manifest"), dict) else {}
+        protocol = manifest.get("benchmark_protocol") if isinstance(manifest.get("benchmark_protocol"), dict) else {}
+        if protocol:
+            return protocol
+    return {}
+
+
+def _protocol_artifact_present(summary: dict[str, Any], artifact: str) -> bool:
+    name = str(artifact or "").strip().lower()
+    if not name:
+        return True
+    stem = name.removesuffix(".jsonl").removesuffix(".json")
+    artifact_paths = summary.get("artifact_paths") if isinstance(summary.get("artifact_paths"), dict) else {}
+    if artifact_paths:
+        for key, value in artifact_paths.items():
+            item = f"{key} {value}".lower()
+            if stem in item or name in item:
+                return True
+    manifest = summary.get("artifact_manifest") or summary.get("benchmark_artifact_manifest")
+    if isinstance(manifest, dict):
+        raw_items = manifest.get("artifacts") or manifest.get("files") or manifest.get("required_artifacts") or []
+        items = []
+        if isinstance(raw_items, dict):
+            items = list(raw_items.keys())
+        elif isinstance(raw_items, list):
+            for item in raw_items:
+                if isinstance(item, dict):
+                    items.append(str(item.get("name") or item.get("path") or item.get("artifact") or ""))
+                else:
+                    items.append(str(item or ""))
+        if items and any(stem in item.lower() or name in item.lower() for item in items):
+            return True
+    checks = {
+        "per_seed_results": bool(summary.get("seed_results") or summary.get("per_seed_results")),
+        "per_dataset_results": bool(summary.get("per_dataset_results") or summary.get("per_dataset_table") or summary.get("datasets")),
+        "main_results_table": bool(summary.get("main_results_table") or summary.get("per_method")),
+        "ablation_table": bool(summary.get("ablation_table") or summary.get("ablations") or summary.get("ablation_results")),
+        "latency_tokens_table": bool(summary.get("latency_tokens_table") or summary.get("latency_table") or summary.get("token_cost_table") or summary.get("cost_utility_tradeoff_table")),
+        "route_rate_sweep_table": bool(summary.get("route_rate_sweep") or summary.get("route_rate_sweep_table") or summary.get("routing_sweep") or summary.get("budget_sweep")),
+        "routing_analysis": bool(summary.get("routing_analysis")),
+        "quality_cost_frontier": bool(summary.get("quality_cost_frontier") or summary.get("frontier_analysis")),
+        "cost_utility_tradeoff_table": bool(summary.get("cost_utility_tradeoff_table") or summary.get("quality_cost_frontier")),
+        "difficulty_breakdown_table": bool(summary.get("difficulty_breakdown_table") or summary.get("easy_medium_hard_breakdown") or summary.get("subset_analysis")),
+        "simple_case_degradation": bool(summary.get("simple_case_degradation")),
+        "calibration_reliability": bool(summary.get("calibration_reliability") or summary.get("reliability_table")),
+        "bootstrap_ci": bool(summary.get("bootstrap_ci") or summary.get("statistical_tests") or summary.get("significance")),
+        "run_config": bool(summary.get("run_config") or summary.get("config") or summary.get("budget")),
+        "benchmark_summary": True,
+        "raw_predictions": bool(summary.get("raw_predictions") or summary.get("raw_prediction_count") or summary.get("raw_predictions_path")),
+        "routing_decisions": bool(summary.get("routing_decisions") or summary.get("routing_decision_count") or summary.get("routing_decisions_path") or summary.get("routing_analysis")),
+        "failure_cases": bool(summary.get("failure_cases") or summary.get("failure_case_count") is not None),
+        "artifact_manifest": isinstance(manifest, dict) and bool(manifest),
+    }
+    return bool(checks.get(stem, True))
+
+
+def _protocol_evidence_blockers(
+    summary: dict[str, Any],
+    *,
+    protocol: dict[str, Any],
+    contract: dict[str, Any],
+) -> list[str]:
+    blockers: list[str] = []
+    if summary.get("full_benchmark_completed") is False:
+        blockers.append("benchmark_summary.full_benchmark_completed is false")
+    if summary.get("load_failures"):
+        blockers.append("benchmark_summary.load_failures is non-empty")
+
+    per_method = summary.get("per_method") if isinstance(summary.get("per_method"), dict) else {}
+    if not per_method or len(per_method) < 2:
+        blockers.append("benchmark_summary.per_method must contain at least two methods")
+
+    requirements = protocol.get("full_benchmark_requirements") if isinstance(protocol.get("full_benchmark_requirements"), dict) else {}
+    dataset_protocols = protocol.get("dataset_protocols") if isinstance(protocol.get("dataset_protocols"), list) else []
+    required_datasets = requirements.get("required_dataset_names") if isinstance(requirements.get("required_dataset_names"), list) else []
+    if not required_datasets:
+        required_datasets = contract.get("required_real_benchmarks") or contract.get("required_datasets") or []
+    required_datasets = [str(item.get("name") if isinstance(item, dict) else item).strip() for item in required_datasets if str(item.get("name") if isinstance(item, dict) else item).strip()]
+    observed_datasets = _summary_dataset_labels(summary)
+    if required_datasets and not observed_datasets:
+        blockers.append("benchmark dataset coverage metadata is missing")
+    missing_datasets = [name for name in required_datasets if not _label_matches(name, observed_datasets)]
+    if missing_datasets:
+        blockers.append("required benchmark coverage missing: " + ", ".join(missing_datasets))
+
+    counts = _summary_dataset_counts(summary)
+    total_examples = _summary_total_examples(summary)
+    if dataset_protocols:
+        for row in dataset_protocols:
+            if not isinstance(row, dict):
+                continue
+            name = str(row.get("name") or row.get("canonical_name") or row.get("hf_dataset") or "dataset").strip()
+            matched_label = next((label for label in counts if _label_matches(name, [label])), "")
+            count = counts.get(matched_label) if matched_label else None
+            sample_policy = row.get("sample_policy") if isinstance(row.get("sample_policy"), dict) else {}
+            try:
+                expected = int(sample_policy.get("expected_examples") or 0)
+            except (TypeError, ValueError):
+                expected = 0
+            if count is None:
+                blockers.append(f"materialized example count missing for benchmark dataset {name}")
+            elif count <= 0:
+                blockers.append(f"benchmark dataset {name} has zero materialized examples")
+            elif expected and count < expected:
+                blockers.append(f"benchmark dataset {name} has {count} materialized examples; expected official/materialized count is {expected}")
+    elif total_examples <= 0:
+        blockers.append("materialized benchmark example count is missing")
+
+    required_models = requirements.get("required_model_names") if isinstance(requirements.get("required_model_names"), list) else []
+    if not required_models:
+        required_models = contract.get("required_models") or []
+    required_models = [str(item.get("name") if isinstance(item, dict) else item).strip() for item in required_models if str(item.get("name") if isinstance(item, dict) else item).strip()]
+    observed_models = _summary_model_labels(summary)
+    if required_models and not observed_models:
+        blockers.append("benchmark model coverage metadata is missing")
+    missing_models = [name for name in required_models if not _label_matches(name, observed_models)]
+    if missing_models:
+        blockers.append("required model coverage missing: " + ", ".join(missing_models))
+
+    required_baselines = requirements.get("required_baseline_names") if isinstance(requirements.get("required_baseline_names"), list) else []
+    if not required_baselines:
+        required_baselines = contract.get("required_baselines") or []
+    required_baselines = [str(item.get("name") if isinstance(item, dict) else item).strip() for item in required_baselines if str(item.get("name") if isinstance(item, dict) else item).strip()]
+    observed_methods = _summary_method_labels(summary, per_method)
+    missing_baselines = [name for name in required_baselines if not _label_matches(name, observed_methods)]
+    if missing_baselines:
+        blockers.append("required baselines missing: " + ", ".join(missing_baselines))
+
+    seed_policy = protocol.get("seed_policy") if isinstance(protocol.get("seed_policy"), dict) else {}
+    try:
+        minimum_seeds = max(1, int(seed_policy.get("minimum_repeats") or contract.get("minimum_seeds") or 1))
+    except (TypeError, ValueError):
+        minimum_seeds = 1
+    num_seeds = _summary_seed_count(summary)
+    if num_seeds < minimum_seeds:
+        blockers.append(f"num_seeds={num_seeds} is below benchmark protocol minimum_seeds={minimum_seeds}")
+
+    required_ablations = requirements.get("required_ablations") if isinstance(requirements.get("required_ablations"), list) else []
+    if not required_ablations:
+        required_ablations = contract.get("required_ablations") or []
+    if required_ablations and not _protocol_artifact_present(summary, "ablation_table.json"):
+        blockers.append("required ablation table is missing")
+
+    required_artifacts = requirements.get("required_artifacts") if isinstance(requirements.get("required_artifacts"), list) else []
+    for artifact in required_artifacts:
+        if not _protocol_artifact_present(summary, str(artifact)):
+            blockers.append(f"required benchmark artifact/analysis missing: {artifact}")
+    return blockers
+
+
 def full_benchmark_evidence_blockers(summary: dict[str, Any] | None, criteria: dict[str, Any] | None = None) -> list[str]:
     """Hard policy for paper-eligible benchmark evidence.
 
-    A small sanity slice can help debug code, but cannot set
-    full_benchmark_completed=true or support a complete manuscript.
+    New experiment contracts may carry ``benchmark_protocol``. When present,
+    that protocol is authoritative: official/materialized split coverage,
+    benchmark-specific seeds, model/baseline lists, and required artifacts are
+    checked without applying global example/model/baseline thresholds. Legacy
+    summaries without a protocol retain the previous global fallback.
     """
     if not isinstance(summary, dict) or not summary:
         return ["full benchmark summary is missing"]
@@ -306,44 +605,49 @@ def full_benchmark_evidence_blockers(summary: dict[str, Any] | None, criteria: d
         EXPERIMENT_FULL_BENCHMARK_REQUIRE_SIGNIFICANCE = True
         EXPERIMENT_FULL_BENCHMARK_REQUIRE_STRONGEST_WIN = True
 
-    min_examples = int(quality_gates.get("full_benchmark_min_examples") or contract.get("full_benchmark_min_examples") or EXPERIMENT_FULL_BENCHMARK_MIN_EXAMPLES)
-    min_datasets = int(quality_gates.get("full_benchmark_min_datasets") or contract.get("full_benchmark_min_datasets") or EXPERIMENT_FULL_BENCHMARK_MIN_DATASETS)
-    min_models = int(quality_gates.get("full_benchmark_min_models") or contract.get("full_benchmark_min_models") or EXPERIMENT_FULL_BENCHMARK_MIN_MODELS)
-    min_baselines = int(quality_gates.get("full_benchmark_min_baselines") or contract.get("full_benchmark_min_baselines") or EXPERIMENT_FULL_BENCHMARK_MIN_BASELINES)
-    require_significance = bool(quality_gates.get("require_statistical_significance", EXPERIMENT_FULL_BENCHMARK_REQUIRE_SIGNIFICANCE))
-    require_strongest_win = bool(quality_gates.get("require_strongest_baseline_win", EXPERIMENT_FULL_BENCHMARK_REQUIRE_STRONGEST_WIN))
+    require_significance = bool(quality_gates.get("require_statistical_significance", contract.get("require_statistical_significance", EXPERIMENT_FULL_BENCHMARK_REQUIRE_SIGNIFICANCE)))
+    require_strongest_win = bool(quality_gates.get("require_strongest_baseline_win", contract.get("require_strongest_baseline_win", EXPERIMENT_FULL_BENCHMARK_REQUIRE_STRONGEST_WIN)))
+    protocol = _criteria_protocol(criteria, contract, quality_gates)
 
     blockers: list[str] = []
-    total_examples = _summary_total_examples(summary)
-    dataset_count = _summary_dataset_count(summary)
-    model_count = _summary_model_count(summary)
     per_method = summary.get("per_method") if isinstance(summary.get("per_method"), dict) else {}
-    deployable_method_count = len([name for name, row in per_method.items() if isinstance(row, dict) and not _is_upper_bound_method(str(name), row)])
-    if total_examples < min_examples:
-        blockers.append(f"full benchmark has only {total_examples} examples; minimum paper-eligible total is {min_examples}")
-    if dataset_count < min_datasets:
-        blockers.append(f"full benchmark covers only {dataset_count} dataset(s); minimum is {min_datasets}")
-    if model_count < min_models:
-        blockers.append(f"full benchmark covers only {model_count} model(s); minimum is {min_models}")
-    if max(0, deployable_method_count - 1) < min_baselines:
-        blockers.append(f"full benchmark has only {max(0, deployable_method_count - 1)} deployable baseline(s); minimum is {min_baselines}")
+    if protocol:
+        blockers.extend(_protocol_evidence_blockers(summary, protocol=protocol, contract=contract))
+    else:
+        min_examples = int(quality_gates.get("full_benchmark_min_examples") or contract.get("full_benchmark_min_examples") or EXPERIMENT_FULL_BENCHMARK_MIN_EXAMPLES)
+        min_datasets = int(quality_gates.get("full_benchmark_min_datasets") or contract.get("full_benchmark_min_datasets") or EXPERIMENT_FULL_BENCHMARK_MIN_DATASETS)
+        min_models = int(quality_gates.get("full_benchmark_min_models") or contract.get("full_benchmark_min_models") or EXPERIMENT_FULL_BENCHMARK_MIN_MODELS)
+        min_baselines = int(quality_gates.get("full_benchmark_min_baselines") or contract.get("full_benchmark_min_baselines") or EXPERIMENT_FULL_BENCHMARK_MIN_BASELINES)
 
-    required_analysis = {
-        "ablation_table": bool(summary.get("ablation_table") or summary.get("ablations") or summary.get("ablation_results")),
-        "cost_quality_frontier": bool(summary.get("quality_cost_frontier") or summary.get("frontier_analysis") or summary.get("cost_utility_tradeoff_table")),
-        "per_dataset_breakdown": bool(summary.get("per_dataset_results") or summary.get("per_dataset_table") or (isinstance(summary.get("datasets"), list) and len(summary.get("datasets") or []) >= 2)),
-        "difficulty_breakdown": bool(summary.get("difficulty_breakdown_table") or summary.get("easy_medium_hard_breakdown") or summary.get("subset_analysis")),
-    }
-    for name, present in required_analysis.items():
-        if not present:
-            blockers.append(f"required benchmark analysis missing: {name}")
+        total_examples = _summary_total_examples(summary)
+        dataset_count = _summary_dataset_count(summary)
+        model_count = _summary_model_count(summary)
+        deployable_method_count = len([name for name, row in per_method.items() if isinstance(row, dict) and not _is_upper_bound_method(str(name), row)])
+        if total_examples < min_examples:
+            blockers.append(f"full benchmark has only {total_examples} examples; minimum paper-eligible total is {min_examples}")
+        if dataset_count < min_datasets:
+            blockers.append(f"full benchmark covers only {dataset_count} dataset(s); minimum is {min_datasets}")
+        if model_count < min_models:
+            blockers.append(f"full benchmark covers only {model_count} model(s); minimum is {min_models}")
+        if max(0, deployable_method_count - 1) < min_baselines:
+            blockers.append(f"full benchmark has only {max(0, deployable_method_count - 1)} deployable baseline(s); minimum is {min_baselines}")
 
-    metric_name = str(summary.get("primary_metric") or summary.get("metric_name") or criteria.get("metric_name") or "metric_value")
+        required_analysis = {
+            "ablation_table": bool(summary.get("ablation_table") or summary.get("ablations") or summary.get("ablation_results")),
+            "cost_quality_frontier": bool(summary.get("quality_cost_frontier") or summary.get("frontier_analysis") or summary.get("cost_utility_tradeoff_table")),
+            "per_dataset_breakdown": bool(summary.get("per_dataset_results") or summary.get("per_dataset_table") or (isinstance(summary.get("datasets"), list) and len(summary.get("datasets") or []) >= 2)),
+            "difficulty_breakdown": bool(summary.get("difficulty_breakdown_table") or summary.get("easy_medium_hard_breakdown") or summary.get("subset_analysis")),
+        }
+        for name, present in required_analysis.items():
+            if not present:
+                blockers.append(f"required benchmark analysis missing: {name}")
+
+    metric_name = str(summary.get("primary_metric") or summary.get("metric_name") or criteria.get("metric_name") or contract.get("primary_metric") or "metric_value")
     direction = str(criteria.get("metric_direction") or contract.get("metric_direction") or "higher")
     candidate, candidate_value, strongest_name, strongest_value, strongest_gap = _candidate_and_strongest(summary, metric_name, direction)
     candidate_text = str(summary.get("candidate_method") or candidate or "").lower()
     if any(token in candidate_text for token in ("route", "routing", "gate", "packet", "selector", "residual")):
-        if not (summary.get("route_rate_sweep") or summary.get("routing_sweep") or summary.get("budget_sweep")):
+        if not (summary.get("route_rate_sweep") or summary.get("routing_sweep") or summary.get("budget_sweep") or summary.get("route_rate_sweep_table")):
             blockers.append("routing/selective method is missing route-rate or budget sweep")
         if not summary.get("routing_analysis"):
             blockers.append("routing/selective method is missing routing_analysis")

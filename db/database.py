@@ -360,6 +360,63 @@ def _ensure_vnext_migrations() -> None:
     conn.commit()
 
 
+def _ensure_benchmark_harness_schema() -> None:
+    conn = get_conn()
+    if _use_pg():
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS benchmark_harness_jobs (
+                id BIGSERIAL PRIMARY KEY,
+                deep_insight_id INTEGER NOT NULL UNIQUE REFERENCES deep_insights(id),
+                status TEXT DEFAULT 'harness_required',
+                harness_kind TEXT DEFAULT 'custom_benchmark_harness',
+                benchmark_name TEXT,
+                dataset_refs TEXT,
+                baseline_refs TEXT,
+                required_capabilities TEXT,
+                task_plan TEXT,
+                artifact_uri TEXT,
+                last_error TEXT,
+                last_note TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+    else:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS benchmark_harness_jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                deep_insight_id INTEGER NOT NULL UNIQUE REFERENCES deep_insights(id),
+                status TEXT DEFAULT 'harness_required',
+                harness_kind TEXT DEFAULT 'custom_benchmark_harness',
+                benchmark_name TEXT,
+                dataset_refs TEXT,
+                baseline_refs TEXT,
+                required_capabilities TEXT,
+                task_plan TEXT,
+                artifact_uri TEXT,
+                last_error TEXT,
+                last_note TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+    _execute_startup_statement(
+        conn,
+        "CREATE INDEX IF NOT EXISTS idx_benchmark_harness_jobs_status ON benchmark_harness_jobs(status)",
+        best_effort_if_locked=_use_pg(),
+    )
+    _execute_startup_statement(
+        conn,
+        "CREATE INDEX IF NOT EXISTS idx_benchmark_harness_jobs_insight ON benchmark_harness_jobs(deep_insight_id)",
+        best_effort_if_locked=_use_pg(),
+    )
+    conn.commit()
+
+
 def _ensure_grounding_schema() -> None:
     """Add cite-and-verify columns for claims and results (existing DBs)."""
     _ensure_columns(
@@ -600,6 +657,7 @@ def init_db():
                 _ensure_papers_checkpoint_columns()
                 _ensure_claim_dedup_schema()
                 _ensure_pipeline_event_schema()
+                _ensure_benchmark_harness_schema()
                 _sync_postgres_sequences()
                 get_conn().commit()
                 _pg_init_done = True
@@ -629,6 +687,7 @@ def init_db():
     _ensure_papers_checkpoint_columns()
     _ensure_claim_dedup_schema()
     _ensure_pipeline_event_schema()
+    _ensure_benchmark_harness_schema()
     conn.commit()
     _emit_backend_notice_once()
 

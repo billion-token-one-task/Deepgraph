@@ -71,6 +71,36 @@ class ExperimentReviewTests(unittest.TestCase):
         self.assertTrue(judgement.formal_experiment)
         self.assertFalse(judgement.smoke_test_only)
 
+    def test_review_marks_unsupported_benchmark_as_harness_required(self):
+        judgement = review_experiment_candidate(
+            {
+                "id": 4,
+                "tier": 2,
+                "title": "Attention-audited LongBench plan",
+                "resource_class": "gpu_large",
+                "proposed_method": {"name": "CCAR", "definition": "certified approximate attention audit"},
+                "experimental_plan": {
+                    "baselines": [{"name": "Dense Attention"}, {"name": "Approx Attention"}],
+                    "datasets": [{"name": "LongBench v2", "hf_dataset": "zai-org/LongBench-v2"}],
+                    "model_targets": [{"name": "Qwen/Qwen2.5-7B-Instruct"}],
+                    "metrics": {"primary": "accuracy"},
+                    "compute_budget": {"total_gpu_hours": 12},
+                    "generated_runner_supported": False,
+                    "benchmark_recipe_blockers": [
+                        {"name": "LongBench v2", "reason": "requires attention audit tensors"}
+                    ],
+                },
+            },
+            codebase={"url": "scratch", "name": "generated-real-benchmark"},
+            entrypoint_available=False,
+        )
+
+        self.assertEqual(judgement.recommended_route, "blocked")
+        self.assertTrue(judgement.environment_review["benchmark_harness_required"])
+        self.assertEqual(judgement.environment_review["harness_queue"], "benchmark_harness_jobs")
+        self.assertIn("Benchmark Harness Code Agent", judgement.environment_review["required_harness_agents"])
+
+
 
 if __name__ == "__main__":
     unittest.main()

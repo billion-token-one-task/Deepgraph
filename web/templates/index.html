@@ -9,6 +9,27 @@
     <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;0,6..72,700;1,6..72,400&family=Source+Sans+3:wght@400;500;600;700&family=Source+Code+Pro:wght@400;500;600;700&display=swap" rel="stylesheet">
     <script src="https://d3js.org/d3.v7.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script>
+        window.MathJax = {
+            tex: {
+                inlineMath: [["\\(", "\\)"], ["$", "$"]],
+                displayMath: [["\\[", "\\]"], ["$$", "$$"]],
+                processEscapes: true,
+                processEnvironments: true
+            },
+            options: {
+                skipHtmlTags: ["script", "noscript", "style", "textarea", "pre", "code"]
+            },
+            startup: {
+                typeset: false,
+                ready: () => {
+                    window.MathJax.startup.defaultReady();
+                    if (window._dgTypesetMath) window._dgTypesetMath(document.body);
+                }
+            }
+        };
+    </script>
+    <script defer src="/static/vendor/mathjax/tex-svg.js"></script>
     <link rel="stylesheet" href="/static/css/style.css">
 </head>
 <body data-root-node="{{ root_node_id }}" data-profile="{{ profile }}">
@@ -75,9 +96,9 @@
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M10 1L12.5 6.5 18.5 7.5 14 11.5 15 17.5 10 14.5 5 17.5 6 11.5 1.5 7.5 7.5 6.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
                     <span>Paper Ideas</span>
                 </button>
-                <button class="nav-item" data-tab="providers">
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><rect x="5" y="6" width="10" height="9" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M8 3h4M10 3v3M7.5 10h.01M12.5 10h.01M8 13h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M3 10h2M15 10h2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-                    <span>Config</span>
+                <button class="nav-item" data-tab="office">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><rect x="3" y="5" width="14" height="11" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M6 9h3M11 9h3M6 12h2M12 12h2M10 5V3M7 16v2M13 16v2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                    <span>Agent Office</span>
                 </button>
             </div>
 
@@ -162,24 +183,35 @@
                         </div>
                     </div>
 
-                    <!-- Processing panel -->
-                    <div class="card card-compact" id="overviewProcessing">
+                    <!-- Runtime config -->
+                    <div class="card overview-config-card" id="overviewConfig">
                         <div class="card-header">
-                            <h3>Currently Processing</h3>
-                            <span class="badge badge-dim" id="processingCount">0</span>
+                            <h3>Model & Config</h3>
+                            <span class="badge badge-dim" id="providerRefresh">Auto-refresh 10s</span>
                         </div>
-                        <div class="processing-list" id="processingList">
-                            <p class="empty-msg">Idle</p>
-                        </div>
+                        <div id="runtimeConfigPanel"></div>
+                        <div class="providers-grid" id="providersList"></div>
                     </div>
 
-                    <!-- Recently discovered -->
-                    <div class="card">
-                        <div class="card-header">
-                            <h3>Recently Discovered</h3>
+                </div>
+            </section>
+
+            <!-- ── Agent Office Tab ─────────────────────────────── -->
+            <section class="tab-panel" id="tab-office">
+                <div class="tab-scroll office-tab-scroll">
+                    <div class="card card-compact" id="officeProcessing">
+                        <div class="card-header office-card-header">
+                            <div>
+                                <h3>Agent Office</h3>
+                                <div class="office-subtitle">Live pixel workspace for DeepGraph departments and sub-agents.</div>
+                            </div>
+                            <span class="badge badge-dim" id="processingCount">office idle</span>
                         </div>
-                        <div class="recently-grid" id="recentlyGrid">
-                            <p class="empty-msg">Run the pipeline to discover gaps, contradictions, and opportunities.</p>
+                        <div class="processing-list" id="processingList">
+                            <div class="agent-office-loading">
+                                <div class="pixel-loader" aria-hidden="true"><span></span><span></span><span></span></div>
+                                <span>Mapping DeepGraph departments...</span>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -348,19 +380,7 @@
                 </div>
             </section>
 
-            <!-- ── Providers Tab ────────────────────────────────── -->
-            <section class="tab-panel" id="tab-providers">
-                <div class="tab-scroll">
-                    <div class="card">
-                        <div class="card-header">
-                            <h3>Model & Config</h3>
-                            <span class="badge badge-dim" id="providerRefresh">Auto-refresh 10s</span>
-                        </div>
-                        <div id="runtimeConfigPanel"></div>
-                        <div class="providers-grid" id="providersList"></div>
-                    </div>
-                </div>
-            </section>
+
 
         </main>
     </div>

@@ -79,6 +79,7 @@ text_backend = "source_auto"
 
 [pipeline]
 concurrency = 30
+paper_text_prefetch_concurrency = 8
 sleep_between_papers = 1
 incremental_insight_every = 20
 max_retryable_failures = 12
@@ -112,7 +113,7 @@ tier1_candidates = 5
 tier2_problems = 8
 tier2_papers = 5
 min_tier2_backlog = 3
-auto_trigger_papers = 200
+auto_trigger_papers = 100
 bulk_tier1_candidates = 12
 bulk_tier1_overlaps = 80
 bulk_tier1_patterns = 60
@@ -181,7 +182,7 @@ auto_pip_install = true
 setup_timeout_seconds = 3600
 
 [manuscript]
-latex_template = "iclr2026"
+latex_template = "auto"
 submission_bundle_formats = ["conference"]
 backend = "paper_orchestra"
 iclr2026_template_files = [

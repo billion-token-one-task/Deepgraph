@@ -15,6 +15,11 @@ if [[ -f "$ROOT/.env" ]]; then
   set +a
 fi
 
+if [[ -f "$ROOT/scripts/deepgraph_proxy_env.sh" ]]; then
+  # shellcheck disable=SC1091
+  source "$ROOT/scripts/deepgraph_proxy_env.sh"
+fi
+
 export DEEPGRAPH_WEB_PORT="${DEEPGRAPH_WEB_PORT:-8081}"
 
 while true; do

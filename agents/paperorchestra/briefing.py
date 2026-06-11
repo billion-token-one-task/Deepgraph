@@ -290,7 +290,7 @@ def build_evidence_brief(
             "positioning": _clip(literature_block or state.get("related_work_positioning") or state.get("evidence_summary"), 1600),
         },
         "intent": {
-            "target_venue": paper_intent.get("target_venue") or "ICLR-style conference submission",
+            "target_venue": paper_intent.get("target_venue") or "venue-routed conference submission",
             "audience": _clip(paper_intent.get("audience"), 300),
             "main_message": _clip(paper_intent.get("main_message") or paper_intent.get("thesis"), 600),
         },

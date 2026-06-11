@@ -4,7 +4,8 @@ from __future__ import annotations
 
 STAGE_ROLE_PROMPTS: dict[str, str] = {
     "code_scout": """## Role: Code Scout
-You only select the execution substrate: repository, entrypoint, setup commands, and benchmark harness compatibility.
+You actively hunt GitHub for baseline repositories: design search queries, inspect candidates,
+and verify entrypoints instead of guessing repos from memory.
 Do not weaken datasets, metrics, baselines, or the scientific claim to fit a convenient repo.
 If no repo can support the full contract, choose scratch and require a generated real-benchmark harness.""",
     "experiment_contract_architect": """## Role: Experiment Contract Architect

@@ -20,6 +20,7 @@ from agents.idea_taste import (
 )
 from agents.insight_validation import get_evosci_input_issue
 from agents.llm_client import call_llm_json, is_llm_auth_error, is_llm_provider_unavailable_error
+from agents.paper_title_policy import TITLE_NAMING_STANDARD_TEXT, normalize_paper_title
 from agents.signal_harvester import get_tier2_signals
 from agents.tier2_review_refine import review_and_refine_tier2_idea
 from db import database as db
@@ -183,11 +184,14 @@ You will receive the problem statement and proposed method.
    - What method mechanism resolves the failure mode?
    - What result would support or falsify the claim?
 
+9. **Title Naming**: Follow this binding title policy.
+""" + TITLE_NAMING_STANDARD_TEXT + """
+
 Output: one raw JSON object only (no markdown fences; strict JSON).
 
 Return JSON:
 {
-  "paper_title": "Suggested paper title (concise, descriptive)",
+  "paper_title": "Suggested paper title using SymbolicName: Descriptive Subtitle or ACRONYM: Expansion Subtitle",
   "target_venue": "NeurIPS|ICML|ICLR|ACL|CVPR|specific workshop",
   "baselines": [
     {
@@ -671,10 +675,18 @@ def discover_paper_ideas(
             or method.get("falsification_hook", ""),
         }
 
+        raw_paper_title = result3.get("paper_title") or f"{method['name']}: {title}"
+        normalized_paper_title = normalize_paper_title(
+            raw_paper_title,
+            method_name=method.get("name"),
+            claim=problem_awareness.get("central_question") or method.get("one_line") or title,
+            context={"full_benchmark_completed": False},
+        )
+
         deep_insight = {
             "tier": 2,
             "status": "candidate",
-            "title": result3.get("paper_title", f"{method['name']}: {title}"),
+            "title": normalized_paper_title,
             "problem_statement": problem.get("formal_statement", ""),
             "existing_weakness": problem.get("current_failure_mode", ""),
             "proposed_method": json.dumps(method),

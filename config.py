@@ -218,6 +218,7 @@ PDF_TEXT_BACKEND = _env_str("DEEPGRAPH_PDF_TEXT_BACKEND", "source_auto", "pdf.te
 
 # Pipeline
 PIPELINE_CONCURRENCY = _env_int("DEEPGRAPH_PIPELINE_CONCURRENCY", 30, "pipeline.concurrency")
+PAPER_TEXT_PREFETCH_CONCURRENCY = _env_int("DEEPGRAPH_PAPER_TEXT_PREFETCH_CONCURRENCY", 8, "pipeline.paper_text_prefetch_concurrency")
 PIPELINE_SLEEP_BETWEEN_PAPERS = _env_int("DEEPGRAPH_PIPELINE_SLEEP_BETWEEN_PAPERS", 1, "pipeline.sleep_between_papers")
 PIPELINE_INCREMENTAL_INSIGHT_EVERY = _env_int("DEEPGRAPH_INCREMENTAL_INSIGHT_EVERY", 20, "pipeline.incremental_insight_every")
 PIPELINE_MAX_RETRYABLE_FAILURES = _env_int("DEEPGRAPH_PIPELINE_MAX_RETRYABLE_FAILURES", 12, "pipeline.max_retryable_failures")
@@ -249,7 +250,7 @@ DISCOVERY_TIER1_CANDIDATES = _env_int("DEEPGRAPH_TIER1_CANDIDATES", 5, "discover
 DISCOVERY_TIER2_PROBLEMS = _env_int("DEEPGRAPH_TIER2_PROBLEMS", 8, "discovery.tier2_problems")
 DISCOVERY_TIER2_PAPERS = _env_int("DEEPGRAPH_TIER2_PAPERS", 5, "discovery.tier2_papers")
 DISCOVERY_MIN_TIER2_BACKLOG = _env_int("DEEPGRAPH_DISCOVERY_MIN_TIER2_BACKLOG", 3, "discovery.min_tier2_backlog")
-DISCOVERY_AUTO_TRIGGER_PAPERS = _env_int("DEEPGRAPH_DISCOVERY_AUTO_TRIGGER", 200, "discovery.auto_trigger_papers")
+DISCOVERY_AUTO_TRIGGER_PAPERS = _env_int("DEEPGRAPH_DISCOVERY_AUTO_TRIGGER", 100, "discovery.auto_trigger_papers")
 # Paper reading / idea review gates
 MULTI_AGENT_EXTRACTION_ENABLED = _env_bool("DEEPGRAPH_MULTI_AGENT_EXTRACTION", True, "extraction.multi_agent_enabled")
 TIER2_EVOSCI_PREINSERT_REVIEW = _env_bool("DEEPGRAPH_TIER2_EVOSCI_PREINSERT_REVIEW", True, "discovery.tier2_evosci_preinsert_review")
@@ -347,7 +348,7 @@ GPU_REMOTE_SETUP_TIMEOUT_SECONDS = _env_int("DEEPGRAPH_GPU_REMOTE_SETUP_TIMEOUT_
 IDEA_EVIDENCE_MIN_NON_NUMERIC = _env_int("DEEPGRAPH_IDEA_EVIDENCE_MIN_NON_NUMERIC", 2, "idea.evidence_min_non_numeric")
 
 # Manuscript / submission bundle
-MANUSCRIPT_LATEX_TEMPLATE = _env_str("DEEPGRAPH_MANUSCRIPT_LATEX_TEMPLATE", "iclr2026", "manuscript.latex_template")
+MANUSCRIPT_LATEX_TEMPLATE = _env_str("DEEPGRAPH_MANUSCRIPT_LATEX_TEMPLATE", "auto", "manuscript.latex_template")
 SUBMISSION_BUNDLE_FORMATS = _split_csv(os.getenv("DEEPGRAPH_SUBMISSION_BUNDLE_FORMATS") or _toml_get("manuscript.submission_bundle_formats", None)) or ["conference"]
 MANUSCRIPT_WORKDIR = Path(_env_str("DEEPGRAPH_MANUSCRIPT_WORKDIR", str(Path.home() / "deepgraph_manuscripts"), "paths.manuscript_workdir")).expanduser()
 # PaperOrchestra is the only supported manuscript backend.

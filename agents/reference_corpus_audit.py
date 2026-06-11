@@ -187,8 +187,8 @@ def audit_against_reference_corpus(
         median_words = corpus.get("median_sample_word_count")
         if median_words and generated["tex_word_count"] < max(2500, 0.45 * float(median_words)):
             issues.append({"severity": "medium", "issue": "Generated manuscript text density is low relative to reference papers."})
-    if generated["bibliography_entry_count"] < 10:
-        issues.append({"severity": "medium", "issue": "Bibliography is sparse relative to top-conference reference papers."})
+    if generated["bibliography_entry_count"] < 50:
+        issues.append({"severity": "medium", "issue": "Bibliography is sparse relative to the full-paper reference policy (50 entries)."})
     if generated["figure_reference_count"] < 1:
         issues.append({"severity": "medium", "issue": "Generated paper has no native experiment figure."})
     abstract_lower = _tex_plain_text(_abstract_body(main_tex)).lower()

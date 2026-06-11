@@ -10,6 +10,7 @@ from config import SUBMISSION_BUNDLE_FORMATS
 from contracts import ContractValidationError, ManuscriptInputState
 from agents.benchmark_audit import best_iteration_benchmark_summary
 from agents.paper_completeness import audit_evidence_completeness
+from agents.paper_title_policy import normalize_paper_title
 from db import database as db
 
 
@@ -510,13 +511,21 @@ def build_manuscript_input_state(run: dict, insight: dict, iterations: list[dict
     reviewer_objections = result_packet.get("reviewer_objections") or publication_contract.get("reviewer_objections") or []
     if not isinstance(reviewer_objections, list):
         reviewer_objections = []
+    normalized_title = normalize_paper_title(
+        insight.get("title") or f"DeepGraph Run {run['id']}",
+        method_name=method.get("name") or insight.get("title"),
+        claim=(paper_intent.get("central_claim") if isinstance(paper_intent, dict) else "")
+        or publication_contract.get("claim_to_validate")
+        or problem_awareness.get("central_question"),
+        context={"result_packet": result_packet, "full_benchmark_completed": result_packet.get("full_benchmark_completed")},
+    )
 
     state = ManuscriptInputState(
         run_id=run.get("id"),
         deep_insight_id=run.get("deep_insight_id"),
         formal_experiment=bool(result_packet.get("formal_experiment")),
         smoke_test_only=bool(result_packet.get("smoke_test_only")),
-        title=insight.get("title") or f"DeepGraph Run {run['id']}",
+        title=normalized_title,
         problem_statement=insight.get("problem_statement") or insight.get("existing_weakness") or "",
         existing_weakness=insight.get("existing_weakness") or "",
         method_name=method.get("name") or insight.get("title") or "DeepGraph Method",

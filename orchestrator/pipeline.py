@@ -3,11 +3,12 @@ import logging
 import json
 import threading
 import traceback
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 from config import (
     PIPELINE_CONCURRENCY,
+    PAPER_TEXT_PREFETCH_CONCURRENCY,
     PIPELINE_MAX_RETRYABLE_FAILURES,
     GROUNDING_MIN_STORE_SCORE,
 )
@@ -248,6 +249,79 @@ def ingest_papers(max_papers: int = 100) -> int:
 
     log_event("ingest_done", {"new_papers": count, "total_fetched": total_fetched})
     return count
+
+
+def _prefetch_single_paper_text(paper_id: str) -> dict:
+    """Best-effort text_ready prefetch for one paper before LLM-heavy processing."""
+    paper = db.fetchone("SELECT * FROM papers WHERE id=?", (paper_id,))
+    if not paper:
+        return {"paper_id": paper_id, "ok": False, "error": "paper_not_found"}
+    text = paper.get("full_text") or ""
+    appendix_text = paper.get("appendix_text") or ""
+    current_stage = paper.get("processing_stage") or "ingested"
+    if _stage_at_least(current_stage, "text_ready") and len(text) >= 100:
+        return {"paper_id": paper_id, "ok": True, "cached": True, "text_length": len(text)}
+    try:
+        log_event("step", {"paper_id": paper_id, "title": paper.get("title"), "step": "prefetch_text"})
+        if len(text) < 100:
+            text, appendix_text = get_paper_text_parts(
+                paper_id,
+                paper.get("pdf_url", ""),
+                paper.get("abstract", ""),
+            )
+        if len(text) < 100:
+            log_event("prefetch_text_short", {"paper_id": paper_id, "text_length": len(text or "")})
+            return {"paper_id": paper_id, "ok": False, "text_length": len(text or "")}
+        db.update_paper_text(paper_id, text, appendix_text=appendix_text)
+        db.record_paper_checkpoint(
+            paper_id,
+            "text_ready",
+            {"text_length": len(text), "appendix_length": len(appendix_text), "prefetched": True},
+        )
+        db.update_paper_processing_stage(paper_id, "text_ready")
+        _emit_stage_event(
+            paper_id,
+            "text_ready",
+            {"text_length": len(text), "appendix_length": len(appendix_text), "prefetched": True},
+        )
+        return {"paper_id": paper_id, "ok": True, "text_length": len(text), "appendix_length": len(appendix_text)}
+    except Exception as exc:  # noqa: BLE001
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        logger.info("Text prefetch failed for %s: %s", paper_id, exc)
+        log_event("prefetch_text_error", {"paper_id": paper_id, "error": str(exc)})
+        return {"paper_id": paper_id, "ok": False, "error": str(exc)}
+
+
+def _prefetch_paper_texts(paper_ids: list[str]) -> list[dict]:
+    """Prefetch paper text concurrently; failures fall back to process_single_paper."""
+    ids = [str(pid) for pid in paper_ids if pid]
+    if not ids:
+        return []
+    try:
+        workers = int(PAPER_TEXT_PREFETCH_CONCURRENCY or 0)
+    except (TypeError, ValueError):
+        workers = 0
+    workers = max(0, min(workers, len(ids)))
+    if workers <= 0:
+        return [{"paper_id": pid, "ok": True, "disabled": True} for pid in ids]
+    log_event("prefetch_text_start", {"paper_count": len(ids), "workers": workers})
+    results: list[dict] = []
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(_prefetch_single_paper_text, pid): pid for pid in ids}
+        for future in as_completed(futures):
+            pid = futures[future]
+            try:
+                results.append(future.result())
+            except Exception as exc:  # noqa: BLE001
+                logger.info("Text prefetch future failed for %s: %s", pid, exc)
+                results.append({"paper_id": pid, "ok": False, "error": str(exc)})
+    ok_count = sum(1 for row in results if row.get("ok"))
+    log_event("prefetch_text_done", {"paper_count": len(ids), "ok_count": ok_count, "workers": workers})
+    return results
+
 
 
 def process_single_paper(paper_id: str) -> dict:
@@ -690,6 +764,7 @@ def run_continuous(max_papers: int = 0):
                     (p["id"],),
                 )
             db.commit()
+            _prefetch_paper_texts([p["id"] for p in papers])
             for p in papers:
                 try:
                     f = pool.submit(process_single_paper, p["id"])

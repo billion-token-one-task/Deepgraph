@@ -42,8 +42,11 @@ CONCEPT_REFERENCE_STYLE_NOTE = (
     "Before drawing, follow the PaperOrchestra concept-figure style reference at "
     "{project_root}/动机图和框架图例子: learn the tidy high-information schematic language, "
     "not just the surface cuteness. Use aligned regions, dashed/rounded containers, local zoom-ins, "
-    "worked mini examples, compact formula or score callouts, small matrices/tables where useful, "
-    "task-specific flat icons, rounded hand-written or marker-like sans labels, flat PowerPoint-like geometry, "
+    "worked mini examples, compact formula or score callouts, small matrices/tables where useful. "
+    "Never draw LaTeX-style captions, Figure/Fig. numbering, panel numbers such as 1./2./3., "
+    "line numbers, standalone titles, or explanatory paragraphs inside the image. "
+    "Do not use a rigid three-column motivation comparison; prefer one compact worked-example/tension-map composition with at most two small callouts. "
+    "Use task-specific flat icons, rounded hand-written or marker-like sans labels, flat PowerPoint-like geometry, "
     "and concrete method objects. "
     "Do not copy the examples; adapt only the visual grammar to this paper. "
     "The main composition must be a structured technical schematic with dense semantics, as if carefully assembled in PPT. "
@@ -459,6 +462,11 @@ def _native_asset(
         "notes": f"native_{renderer}",
         "objective": objective,
         "aspect_ratio": fig.get("aspect_ratio"),
+        "chart_type": fig.get("chart_type"),
+        "chart_family": fig.get("chart_family"),
+        "source_agent": fig.get("source_agent"),
+        "style_reference_keys": fig.get("style_reference_keys") or [],
+        "style_reference_titles": fig.get("style_reference_titles") or [],
         **(extras or {}),
     }
 
@@ -1003,15 +1011,90 @@ def _render_quality_cost_tradeoff(fig: dict[str, Any], state: dict, metric_name:
             zorder=0,
         )
     max_tokens = max((pt[0] for pt in points.values()), default=1.0)
+    y_values = [pt[1] for pt in points.values()] or [0.0, 1.0]
+    y_min, y_max = min(y_values), max(y_values)
+    y_pad = max(0.02, (y_max - y_min) * 0.18)
     ax.set_xlabel("Average new tokens")
     ax.set_ylabel(_metric_label(metric_name))
-    ax.set_xlim(0, max_tokens * 1.12)
-    ax.set_ylim(0.55, 1.03)
+    ax.set_xlim(0, max(1.0, max_tokens * 1.12))
+    if 0.0 <= y_min <= y_max <= 1.05:
+        ax.set_ylim(max(0.0, y_min - y_pad), min(1.05, y_max + y_pad))
+    else:
+        ax.set_ylim(y_min - y_pad, y_max + y_pad)
     ax.grid(color="#e5e7eb", linewidth=0.65)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
     ax.text(0.02, 0.97, "Higher is better; left is cheaper", transform=ax.transAxes, ha="left", va="top", fontsize=7.2, color="#374151")
     fig_obj.tight_layout(pad=0.5)
+    _save_native_matplotlib_figure(fig_obj, out_path)
+    plt.close(fig_obj)
+
+
+def _render_method_metric_heatmap(fig: dict[str, Any], state: dict, metric_name: str, out_path: Path) -> None:
+    summary = _state_benchmark_summary(state)
+    per_method = summary.get("per_method") if isinstance(summary.get("per_method"), dict) else {}
+    if not per_method:
+        _render_main_results_bar(fig, state, None, metric_name, out_path)
+        return
+
+    plt = _setup_matplotlib()
+    import numpy as np
+
+    primary = str(summary.get("primary_metric") or summary.get("metric_name") or metric_name or "metric")
+    candidate_metrics = [
+        primary,
+        "accuracy",
+        "avg_new_tokens",
+        "avg_latency_seconds",
+        "route_rate",
+        "cost",
+        "q_struct",
+        "simple_regret",
+    ]
+    metrics: list[str] = []
+    methods = list(per_method.keys())[:9]
+    for metric in candidate_metrics:
+        if metric in metrics:
+            continue
+        if any(isinstance(per_method.get(method), dict) and _as_float((per_method.get(method) or {}).get(metric)) is not None for method in methods):
+            metrics.append(metric)
+        if len(metrics) >= 5:
+            break
+    if not metrics:
+        metrics = [primary]
+
+    raw = np.array(
+        [
+            [float(_as_float((per_method.get(method) or {}).get(metric)) or 0.0) for metric in metrics]
+            for method in methods
+        ],
+        dtype=float,
+    )
+    norm = np.zeros_like(raw)
+    for j in range(raw.shape[1]):
+        col = raw[:, j]
+        lo = float(np.nanmin(col))
+        hi = float(np.nanmax(col))
+        if abs(hi - lo) < 1e-12:
+            norm[:, j] = 0.5
+        else:
+            norm[:, j] = (col - lo) / (hi - lo)
+        if metrics[j] in {"avg_new_tokens", "avg_latency_seconds", "cost", "simple_regret"}:
+            norm[:, j] = 1.0 - norm[:, j]
+
+    fig_obj, ax = plt.subplots(figsize=_figure_size(fig))
+    im = ax.imshow(norm, cmap="YlGnBu", aspect="auto", vmin=0.0, vmax=1.0)
+    ax.set_xticks(np.arange(len(metrics)), [_metric_label(m) for m in metrics], rotation=22, ha="right")
+    ax.set_yticks(np.arange(len(methods)), [_short_method_label(method) for method in methods])
+    for i in range(raw.shape[0]):
+        for j in range(raw.shape[1]):
+            value = raw[i, j]
+            fmt = "{:.3f}" if abs(value) <= 1.2 else "{:.1f}"
+            ax.text(j, i, fmt.format(value), ha="center", va="center", fontsize=6.7, color="#111827")
+    cbar = fig_obj.colorbar(im, ax=ax, fraction=0.046, pad=0.035)
+    cbar.set_label("Column-normalized profile")
+    ax.set_title("Method-metric profile", fontweight="bold", pad=6)
+    fig_obj.tight_layout(pad=0.45)
     _save_native_matplotlib_figure(fig_obj, out_path)
     plt.close(fig_obj)
 
@@ -1365,6 +1448,18 @@ def _allowed_optional_experiment_figure(fig: dict[str, Any], summary: dict[str, 
     ).lower()
     if is_blocklisted_internal_figure(fig):
         return False
+    chart_type = str(fig.get("chart_type") or "").lower()
+    role = str(fig.get("role") or "").lower()
+    if role == "experiment_figure_pack" and chart_type in {
+        "main_results_bar",
+        "main_results_bar_1x2",
+        "quality_cost_tradeoff",
+        "method_metric_heatmap",
+        "backend_grouped_bars",
+        "backend_heatmap_single",
+        "backend_rank_lines_1x4",
+    }:
+        return bool(summary.get("per_method") or _has_backend_matrix(summary))
     if "ablation" in text:
         return bool(summary.get("ablation_table"))
     if any(token in text for token in ("trend", "sensitivity")):
@@ -1375,7 +1470,11 @@ def _allowed_optional_experiment_figure(fig: dict[str, Any], summary: dict[str, 
 def _augment_plotting_plan(plan: list[dict[str, Any]], state: dict, iterations: list[dict], metric_name: str) -> list[dict[str, Any]]:
     """Enforce PaperOrchestra experiment-figure packs from verified evidence."""
     summary = _state_benchmark_summary(state)
-    if _has_backend_matrix(summary):
+    reference_grounded_plan = any(
+        isinstance(item, dict) and item.get("source_agent") == "experiment_plot_reference_manager"
+        for item in plan
+    )
+    if _has_backend_matrix(summary) and not reference_grounded_plan:
         return _backend_plot_pack(metric_name)
 
     cleaned: list[dict[str, Any]] = []
@@ -1419,18 +1518,11 @@ def render_native_figure(
     rows = _metric_points(iterations)
     try:
         if fid == "fig_quality_cost_tradeoff" or chart_type == "quality_cost_tradeoff":
-            return {
-                "figure_id": fid,
-                "title": str(fig.get("title") or fid),
-                "kind": "blocked",
-                "path": "",
-                "svg_path": "",
-                "pdf_path": "",
-                "code_path": "",
-                "notes": "blocked_nonstandard_experiment_figure",
-                "objective": objective,
-                "blocker": "Quality-cost scatter plots are not part of the default experiment figure pack; use standard bar, heatmap, line, sensitivity, or ablation figures backed by artifacts.",
-            }
+            _render_quality_cost_tradeoff(fig, state, metric_name, out_path)
+            return _native_asset(fid=fid, fig=fig, out_path=out_path, kind="plot", renderer="quality_cost_tradeoff", objective=objective)
+        if fid == "fig_method_metric_heatmap" or chart_type == "method_metric_heatmap":
+            _render_method_metric_heatmap(fig, state, metric_name, out_path)
+            return _native_asset(fid=fid, fig=fig, out_path=out_path, kind="plot", renderer="method_metric_heatmap", objective=objective)
         if fid == "fig_backend_grouped_bars" or chart_type == "backend_grouped_bars":
             _render_backend_grouped_bars(fig, state, metric_name, out_path)
             return _native_asset(
@@ -1590,6 +1682,24 @@ def _run_external_diagram(
                 "datasets": safe_state.get("datasets") or [],
                 "baselines": safe_state.get("baselines") or [],
             },
+            "visual_text_policy": {
+                "no_internal_figure_numbering": True,
+                "no_internal_caption_text": True,
+                "no_standalone_title_inside_image": True,
+                "no_line_numbers": True,
+                "no_numbered_panels": True,
+                "max_label_words": 4,
+                "long_explanation_belongs_in_latex_caption": True,
+            },
+            "composition_policy": {
+                "motivation_three_column_comparison_forbidden": True,
+                "preferred_motivation_layouts": [
+                    "compact tension map",
+                    "central mechanism schematic",
+                    "single worked-example diagram with at most two callouts",
+                ],
+                "first_page_layout_checked_by_visual_auditor": True,
+            },
             "concept_style_reference": {
                 "local_dir": "{project_root}/动机图和框架图例子",
                 "learn": [
@@ -1617,6 +1727,10 @@ def _run_external_diagram(
                     "furniture-heavy scene illustration",
                     "Times New Roman or formal serif labels inside the figure",
                     "cute illustration without enough technical content",
+                    "internal Figure/Fig. numbering or caption text",
+                    "line numbers or numbered panels",
+                    "three-column motivation comparison",
+                    "long explanatory paragraphs inside the generated image",
                 ],
             },
         },
@@ -1688,6 +1802,7 @@ def run_figure_orchestra(
     metric_name: str,
     paperbanana_cmd: str | None = None,
     allow_external_diagrams: bool = False,
+    experiment_plot_reference: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     figures_dir.mkdir(parents=True, exist_ok=True)
     evidence_plan = state.get("evidence_plan") if isinstance(state.get("evidence_plan"), dict) else {}
@@ -1764,7 +1879,10 @@ def run_figure_orchestra(
         "policy": experiment_figure_policy_manifest(),
         "assets": assets,
         "plotting_plan_used": plan,
+        "experiment_plot_reference": experiment_plot_reference or {},
         "generated_count": len(assets),
+        "experiment_plot_count": len([asset for asset in assets if isinstance(asset, dict) and asset.get("kind") == "plot"]),
+        "experiment_chart_families": sorted({str(asset.get("chart_family") or "") for asset in assets if isinstance(asset, dict) and asset.get("kind") == "plot" and asset.get("chart_family")}),
         "blockers": blockers,
     }
     (figures_dir / "figure_manifest.json").write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
@@ -1829,12 +1947,12 @@ def run_postwriting_api_figure_stage(
                 "objective": (
                     CONCEPT_REFERENCE_STYLE_NOTE
                     + " Create a high-information flat PPT-built motivation schematic, not a rendered illustration, poster scene, or plain process flow. "
-                    "Use three tidy comparison regions with a shared worked example. Use the paper's own domain entities as icons; for this multi-agent reasoning setting, show five small agent/avatar icons A1-A5 producing answer bubbles A/A/A/B*/C, support counts, confidence chips, cost chips, token budget, and retained/lost marks. "
-                    "Majority voting should visibly erase a high-confidence B* dissent; keep-all should visibly preserve B* but overrun token/latency budget; conditional retention should show a margin cue and a small rule card that keeps B* only when disagreement is meaningful. "
-                    "Include concrete numeric cues such as conf=.95, cost=20, m=(3-1)/5, and a budget bar; include small icons only as annotations. "
+                    "Use one compact worked example or tension-map composition, not three side-by-side columns. Use the paper's own domain entities as icons; for this multi-agent reasoning setting, show five small agent/avatar icons A1-A5 producing answer bubbles A/A/A/B*/C, support counts, confidence chips, cost chips, token budget, and retained/lost marks. "
+                    "Show the central tension visually: majority aggregation can lose a high-confidence B* dissent, keep-all preserves it but spends too much token/latency budget, and conditional retention keeps it only when disagreement is meaningful. These should be integrated around one focal mechanism or tension map, with at most two small callouts, not as numbered panels. "
+                    "Use concrete numeric cues such as conf=.95, cost=20, m=(3-1)/5, and a budget bar as small tags. Keep all text inside the image to short labels of roughly 1-4 words. Do not draw a title, Figure/Fig. text, a caption, line numbers, panel numbers, or explanatory paragraphs inside the image. "
                     "Use rounded hand-written or marker-like sans labels, not Times New Roman. "
                     "Use a pure white canvas. Only local modules may have very pale tints; no warm yellow/cream full-canvas wash, no vignette, no gradient, no grid, graph-paper, notebook, worksheet, or ruled lines. Use thick clean outlines, flat fills, dashed containers, crisp alignment, and minimal/no shading. "
-                    "Avoid current-practice -> limitation -> motivation boxes, generic labels, large blank areas, text-only cards, all-caps titles, visible step numbers, isolated icon boards, full-scene cartoon posters, rendered illustration style, glossy objects, cast shadows, furniture, unrelated envelope/tray metaphors, and arrows carrying the whole story."
+                    "Avoid current-practice -> limitation -> motivation boxes, generic labels, large blank areas, text-only cards, all-caps titles, visible step numbers, numbered panels, isolated icon boards, full-scene cartoon posters, rendered illustration style, glossy objects, cast shadows, furniture, unrelated envelope/tray metaphors, and arrows carrying the whole story."
                 ),
                 "caption": (
                     "Motivation figure showing why fixed aggregation policies are insufficient: majority voting may discard "
@@ -1859,7 +1977,7 @@ def run_postwriting_api_figure_stage(
                     "Agent/avatar icons must be visible and relevant in this multi-agent paper: they are the sources of the candidate traces, with answer bubbles connected to them. They should be flat schematic avatars, not glossy mascots. "
                     "Use rounded hand-written or marker-like sans labels, not Times New Roman. "
                     "Use a pure white canvas. Only local modules may have very pale tints; no warm yellow/cream full-canvas wash, no vignette, no gradient, no grid, graph-paper, notebook, worksheet, or ruled lines. Use thick clean outlines, flat fills, dashed containers, crisp alignment, and minimal/no shading. "
-                    "Use very few arrows and no stage-chain layout. Do not use generic Module/Decision/Output labels, text-only card stacks, visible step numbers, numbered circle badges, large all-caps headings, isolated widgets, dashboard panels, rendered cartoon style, glossy objects, cast shadows, furniture, unrelated envelope/tray metaphors, or full-scene lab illustrations."
+                    "Use very few arrows and no stage-chain layout. Keep in-image text to short labels/tags only; do not draw a title, Figure/Fig. text, caption text, line numbers, panel numbers, or explanatory paragraphs inside the image. Do not use generic Module/Decision/Output labels, text-only card stacks, visible step numbers, numbered circle badges, large all-caps headings, isolated widgets, dashboard panels, rendered cartoon style, glossy objects, cast shadows, furniture, unrelated envelope/tray metaphors, or full-scene lab illustrations."
                 ),
                 "caption": (
                     "Overview figure of the proposed selection mechanism: candidate evidence, "
@@ -1879,7 +1997,7 @@ def run_postwriting_api_figure_stage(
                 "objective": (
                     CONCEPT_REFERENCE_STYLE_NOTE
                     + " Show the paper's central question, motivation, proposed mechanism, "
-                    "and benchmark result in one ICLR-style method figure. "
+                    "and benchmark result in one venue-style method figure. "
                     + str(pa.get("central_question") or state.get("problem_statement") or "")[:220]
                 ),
                 "data_source": "postwriting manuscript draft plus experiment result packet",

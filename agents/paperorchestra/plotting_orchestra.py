@@ -18,16 +18,22 @@ def run_plotting_stage(
     baseline: float | None,
     metric_name: str,
     paperbanana_cmd: str | None = None,
+    experiment_plot_plan: list[dict[str, Any]] | None = None,
+    experiment_plot_reference: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Delegate figure rendering to the independent Figure Orchestra."""
+    """Delegate artifact-backed experiment figure rendering to Figure Orchestra."""
+    plotting_outline = dict(outline or {})
+    if experiment_plot_plan:
+        plotting_outline["plotting_plan"] = [dict(row) for row in experiment_plot_plan if isinstance(row, dict)]
     return run_figure_orchestra(
-        outline,
+        plotting_outline,
         state,
         [dict(x) for x in iterations],
         figures_dir,
         baseline=baseline,
         metric_name=metric_name,
         paperbanana_cmd=paperbanana_cmd,
+        experiment_plot_reference=experiment_plot_reference,
     )
 
 
