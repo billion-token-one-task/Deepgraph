@@ -10,6 +10,7 @@ The bar: a senior researcher reads it and says "this is a real paper, let me imp
 """
 import json
 from agents.agenda_budget import AgendaBudgetExceededError
+from agents.agenda_relevance import agenda_constraint_block, insight_in_scope
 from agents.discovery_metadata import build_evidence_packet, enrich_deep_insight
 from agents.insight_validation import get_evosci_input_issue
 from agents.llm_client import call_llm_json, is_llm_auth_error, is_llm_provider_unavailable_error
@@ -243,8 +244,12 @@ Return JSON:
 }"""
 
 
-def _build_problem_prompt(signals: dict) -> str:
-    """Build evidence prompt for Call 1 (Problem Sharpening)."""
+def _build_problem_prompt(signals: dict, agenda=None) -> str:
+    """Build evidence prompt for Call 1 (Problem Sharpening).
+
+    With an agenda, the user's research direction is appended as a hard
+    constraint; without one the prompt is built exactly as before.
+    """
     sections = ["# EVIDENCE FROM 10,000+ ML PAPERS\n"]
 
     # Contradiction clusters
@@ -337,12 +342,15 @@ def _build_problem_prompt(signals: dict) -> str:
         for row in rows[:6]:
             sections.append(f"- {json.dumps(row, ensure_ascii=True, default=str)[:260]}")
 
+    if agenda is not None:
+        sections.append(agenda_constraint_block(agenda))
+
     return "\n".join(sections)
 
 
-def _build_method_prompt(problem: dict) -> str:
+def _build_method_prompt(problem: dict, agenda=None) -> str:
     """Build prompt for Call 2 (Method Invention)."""
-    return f"""# RESEARCH PROBLEM
+    prompt = f"""# RESEARCH PROBLEM
 
 ## Title: {problem['title']}
 
@@ -365,11 +373,14 @@ def _build_method_prompt(problem: dict) -> str:
 
 Design a NEW method that addresses this specific failure mode.
 The method must be technically novel — not "apply [existing technique] to [this domain]"."""
+    if agenda is not None:
+        prompt += "\n" + agenda_constraint_block(agenda)
+    return prompt
 
 
-def _build_experiment_prompt(problem: dict, method: dict) -> str:
+def _build_experiment_prompt(problem: dict, method: dict, agenda=None) -> str:
     """Build prompt for Call 3 (Experimental Design)."""
-    return f"""# PROPOSED RESEARCH
+    prompt = f"""# PROPOSED RESEARCH
 
 ## Problem
 Title: {problem['title']}
@@ -387,6 +398,9 @@ Limitations: {method.get('limitations', '')}
 
 Design a complete experimental plan for validating this method.
 Be specific: exact model names, dataset names, metric names, compute estimates."""
+    if agenda is not None:
+        prompt += "\n" + agenda_constraint_block(agenda)
+    return prompt
 
 
 def _llm_temporarily_unavailable(exc: Exception) -> bool:
@@ -400,16 +414,19 @@ def discover_paper_ideas(
     tier2_plateau_limit: int = 20,
     tier2_limitation_nodes: int = 15,
     agenda=None,
-) -> list[dict]:
+) -> dict:
     """Run the 3-stage paper idea discovery pipeline.
 
-    Returns list of deep_insight dicts ready for storage.
+    Returns {"insights": [...], "dropped_out_of_scope": n} where insights are
+    deep_insight dicts ready for storage.
     If max_papers is None, every sharpened problem (up to max_problems) is expanded.
 
     With an agenda (contracts.agenda.ResearchAgenda), the signal scan is
-    circled to the matching taxonomy subgraph and produced ideas are tagged
-    with agenda_id. Budget exhaustion stops the loop cleanly, returning the
-    ideas accepted so far.
+    circled to the matching taxonomy subgraph, every generation prompt carries
+    the agenda's direction as a hard constraint, ideas whose text matches none
+    of the agenda's scope terms are dropped (counted in dropped_out_of_scope),
+    and produced ideas are tagged with agenda_id. Budget exhaustion stops the
+    loop cleanly, returning the ideas accepted so far.
     """
     if max_papers is None:
         max_papers = max_problems
@@ -417,6 +434,11 @@ def discover_paper_ideas(
     print(f"[PAPER_IDEA] Starting Tier 2 discovery...", flush=True)
     total_tokens = 0
     total_calls = 0
+    deep_insights: list[dict] = []
+    dropped_out_of_scope = 0
+
+    def _result() -> dict:
+        return {"insights": deep_insights, "dropped_out_of_scope": dropped_out_of_scope}
 
     # Stage 0: Gather signals (scoped to the agenda's subgraph when known)
     scope_node_ids = None
@@ -451,29 +473,29 @@ def discover_paper_ideas(
     )
     if not has_signals:
         print("[PAPER_IDEA] No signals available. Run signal_harvester first.", flush=True)
-        return []
+        return _result()
 
     # Stage 1: Problem Sharpening
     print("[PAPER_IDEA] Call 1/3: Problem Sharpening...", flush=True)
-    problem_prompt = _build_problem_prompt(signals)
+    problem_prompt = _build_problem_prompt(signals, agenda=agenda)
     try:
         result1, tokens1 = call_llm_json(PROBLEM_SHARPENING_SYSTEM, problem_prompt)
         total_tokens += tokens1
         total_calls += 1
     except AgendaBudgetExceededError as e:
         print(f"[PAPER_IDEA] Stopped before problem sharpening: {e}", flush=True)
-        return []
+        return _result()
     except Exception as e:
         if _llm_temporarily_unavailable(e):
             print(f"[PAPER_IDEA] Problem sharpening skipped: LLM unavailable ({e})", flush=True)
-            return []
+            return _result()
         print(f"[PAPER_IDEA] Problem sharpening failed: {e}", flush=True)
-        return []
+        return _result()
 
     problems = result1.get("problems", [])
     if not problems:
         print("[PAPER_IDEA] No problems extracted", flush=True)
-        return []
+        return _result()
 
     problem_budget = min(len(problems), max_problems + max(2, max_papers // 2))
     problems = problems[:problem_budget]
@@ -483,7 +505,6 @@ def discover_paper_ideas(
     )
 
     # Stage 2 + 3: Method Invention + Experiment Design for top problems
-    deep_insights = []
     for i, problem in enumerate(problems):
         if len(deep_insights) >= max_papers:
             break
@@ -493,7 +514,7 @@ def discover_paper_ideas(
 
         # Stage 2: Method Invention
         print(f"[PAPER_IDEA] Call 2/3: Inventing method for '{title[:50]}'...", flush=True)
-        method_prompt = _build_method_prompt(problem)
+        method_prompt = _build_method_prompt(problem, agenda=agenda)
         try:
             result2, tokens2 = call_llm_json(METHOD_INVENTION_SYSTEM, method_prompt)
             total_tokens += tokens2
@@ -521,7 +542,7 @@ def discover_paper_ideas(
 
         # Stage 3: Experimental Design
         print(f"[PAPER_IDEA] Call 3/3: Designing experiments for '{method['name']}'...", flush=True)
-        exp_prompt = _build_experiment_prompt(problem, method)
+        exp_prompt = _build_experiment_prompt(problem, method, agenda=agenda)
         try:
             result3, tokens3 = call_llm_json(EXPERIMENT_DESIGN_SYSTEM, exp_prompt)
             total_tokens += tokens3
@@ -604,6 +625,15 @@ def discover_paper_ideas(
             "agenda_id": agenda.agenda_id if agenda is not None else None,
         }
 
+        if agenda is not None and not insight_in_scope(deep_insight, agenda):
+            dropped_out_of_scope += 1
+            print(
+                f"[PAPER_IDEA] Dropped out-of-scope idea for agenda "
+                f"'{agenda.name}': {deep_insight['title'][:80]}",
+                flush=True,
+            )
+            continue
+
         input_issue = get_evosci_input_issue(deep_insight, mode="verification")
         if input_issue:
             missing = ", ".join(input_issue.get("missing_fields") or [])
@@ -616,6 +646,7 @@ def discover_paper_ideas(
         deep_insights.append(enrich_deep_insight(deep_insight))
         print(f"[PAPER_IDEA] Accepted: {method['name']} — {title[:60]}", flush=True)
 
-    print(f"[PAPER_IDEA] Done: {len(deep_insights)} paper ideas from {len(problems)} problems. "
+    print(f"[PAPER_IDEA] Done: {len(deep_insights)} paper ideas from {len(problems)} problems "
+          f"({dropped_out_of_scope} dropped as out of agenda scope). "
           f"Tokens: {total_tokens}, LLM calls: {total_calls}", flush=True)
-    return deep_insights
+    return _result()

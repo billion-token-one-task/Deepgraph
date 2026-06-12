@@ -21,6 +21,7 @@ from agents.llm_client import (
     is_llm_provider_unavailable_error,
 )
 from agents.agenda_budget import AgendaBudgetExceededError
+from agents.agenda_relevance import agenda_constraint_block, insight_in_scope
 from contracts import DeepInsightSpec, normalize_deep_insight_storage
 from agents.signal_harvester import agenda_taxonomy_node_ids, get_tier1_signals
 from config import LLM_MODEL, PROMPT_VERSION
@@ -201,8 +202,12 @@ def _guess_mechanism_type(candidate: dict, formalized: dict) -> str:
     return "structural_equivalence"
 
 
-def _build_structure_prompt(signals: dict) -> str:
-    """Build the evidence prompt for Call 1 (Structure Detection)."""
+def _build_structure_prompt(signals: dict, agenda=None) -> str:
+    """Build the evidence prompt for Call 1 (Structure Detection).
+
+    With an agenda, the user's research direction is appended as a hard
+    constraint; without one the prompt is built exactly as before.
+    """
     sections = []
 
     sections.append("# CROSS-FIELD EVIDENCE FROM 10,000+ ML PAPERS\n")
@@ -267,10 +272,13 @@ def _build_structure_prompt(signals: dict) -> str:
             # default=str keeps prompt building backend-agnostic.
             sections.append(f"- {json.dumps(row, ensure_ascii=True, default=str)[:220]}")
 
+    if agenda is not None:
+        sections.append(agenda_constraint_block(agenda))
+
     return "\n".join(sections)
 
 
-def _build_formalization_prompt(candidate: dict, signals: dict) -> str:
+def _build_formalization_prompt(candidate: dict, signals: dict, agenda=None) -> str:
     """Build the evidence prompt for Call 2 (Formalization)."""
     sections = [f"# CANDIDATE PARADIGM INSIGHT\n"]
     sections.append(f"## Title: {candidate['title']}\n")
@@ -319,6 +327,9 @@ def _build_formalization_prompt(candidate: dict, signals: dict) -> str:
             sections.append("Results:")
             for r in results:
                 sections.append(f"  {r['method_name']} on {r['dataset_name']} [{r['metric_name']}] = {r['metric_value']}")
+
+    if agenda is not None:
+        sections.append(agenda_constraint_block(agenda))
 
     return "\n".join(sections)
 
@@ -382,20 +393,29 @@ def discover_paradigm_insights(
     tier1_top_overlaps: int = 20,
     tier1_top_patterns: int = 15,
     agenda=None,
-) -> list[dict]:
+) -> dict:
     """Run the 3-stage paradigm discovery pipeline.
 
-    Returns list of deep_insight dicts ready for storage.
+    Returns {"insights": [...], "dropped_out_of_scope": n} where insights are
+    deep_insight dicts ready for storage.
 
     With an agenda (contracts.agenda.ResearchAgenda), the signal scan is
-    circled to the taxonomy subgraph matching the agenda's scope keywords and
-    every produced insight is tagged with agenda_id. Budget exhaustion
-    (AgendaBudgetExceededError from the metered LLM client) stops the loop
-    cleanly, returning the insights accepted so far.
+    circled to the taxonomy subgraph matching the agenda's scope keywords,
+    every generation prompt carries the agenda's direction as a hard
+    constraint, insights whose text matches none of the agenda's scope terms
+    are dropped (counted in dropped_out_of_scope), and every produced insight
+    is tagged with agenda_id. Budget exhaustion (AgendaBudgetExceededError
+    from the metered LLM client) stops the loop cleanly, returning the
+    insights accepted so far.
     """
     print(f"[PARADIGM] Starting Tier 1 discovery (max {max_candidates} candidates)...", flush=True)
     total_tokens = 0
     total_calls = 0
+    deep_insights: list[dict] = []
+    dropped_out_of_scope = 0
+
+    def _result() -> dict:
+        return {"insights": deep_insights, "dropped_out_of_scope": dropped_out_of_scope}
 
     # Stage 0: Gather signals (scoped to the agenda's subgraph when known)
     scope_node_ids = None
@@ -416,29 +436,29 @@ def discover_paradigm_insights(
     )
     if not signals["entity_overlaps"] and not signals["pattern_matches"]:
         print("[PARADIGM] No signals available. Run signal_harvester first.", flush=True)
-        return []
+        return _result()
 
     # Stage 1: Structure Detection
     print("[PARADIGM] Call 1/3: Structure Detection...", flush=True)
-    structure_prompt = _build_structure_prompt(signals)
+    structure_prompt = _build_structure_prompt(signals, agenda=agenda)
     try:
         result1, tokens1 = call_llm_json(STRUCTURE_DETECTION_SYSTEM, structure_prompt)
         total_tokens += tokens1
         total_calls += 1
     except AgendaBudgetExceededError as e:
         print(f"[PARADIGM] Stopped before structure detection: {e}", flush=True)
-        return []
+        return _result()
     except Exception as e:
         if _llm_temporarily_unavailable(e):
             print(f"[PARADIGM] Structure detection skipped: LLM unavailable ({e})", flush=True)
-            return []
+            return _result()
         print(f"[PARADIGM] Structure detection failed: {e}", flush=True)
-        return []
+        return _result()
 
     candidates = result1.get("candidates", [])
     if not candidates:
         print("[PARADIGM] No candidates from structure detection", flush=True)
-        return []
+        return _result()
 
     candidates.sort(key=lambda c: c.get("confidence", 0), reverse=True)
     candidate_budget = min(len(candidates), max_candidates + max(2, max_candidates // 2))
@@ -449,7 +469,6 @@ def discover_paradigm_insights(
     )
 
     # Stage 2 + 3: Formalize and Challenge each candidate
-    deep_insights = []
     for i, candidate in enumerate(candidates):
         if len(deep_insights) >= max_candidates:
             break
@@ -458,7 +477,7 @@ def discover_paradigm_insights(
 
         # Stage 2: Formalization
         print(f"[PARADIGM] Call 2/3: Formalizing '{title[:50]}'...", flush=True)
-        formal_prompt = _build_formalization_prompt(candidate, signals)
+        formal_prompt = _build_formalization_prompt(candidate, signals, agenda=agenda)
         try:
             result2, tokens2 = call_llm_json(FORMALIZATION_SYSTEM, formal_prompt)
             total_tokens += tokens2
@@ -566,6 +585,15 @@ def discover_paradigm_insights(
         if result2.get("minimal_experiment"):
             deep_insight["experimental_plan"] = json.dumps(result2["minimal_experiment"])
 
+        if agenda is not None and not insight_in_scope(deep_insight, agenda):
+            dropped_out_of_scope += 1
+            print(
+                f"[PARADIGM] Dropped out-of-scope insight for agenda "
+                f"'{agenda.name}': {deep_insight['title'][:80]}",
+                flush=True,
+            )
+            continue
+
         input_issue = get_evosci_input_issue(deep_insight, mode="verification")
         if input_issue:
             missing = ", ".join(input_issue.get("missing_fields") or [])
@@ -578,9 +606,10 @@ def discover_paradigm_insights(
         deep_insights.append(enrich_deep_insight(deep_insight))
         print(f"[PARADIGM] Accepted: {title[:80]} (score={score})", flush=True)
 
-    print(f"[PARADIGM] Done: {len(deep_insights)} insights from {len(candidates)} candidates. "
+    print(f"[PARADIGM] Done: {len(deep_insights)} insights from {len(candidates)} candidates "
+          f"({dropped_out_of_scope} dropped as out of agenda scope). "
           f"Tokens: {total_tokens}, LLM calls: {total_calls}", flush=True)
-    return deep_insights
+    return _result()
 
 
 def _jsonify(v):
