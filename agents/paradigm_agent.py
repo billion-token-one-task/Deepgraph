@@ -263,7 +263,9 @@ def _build_structure_prompt(signals: dict) -> str:
             continue
         sections.append(f"\n## {title}")
         for row in rows[:10]:
-            sections.append(f"- {json.dumps(row, ensure_ascii=True)[:220]}")
+            # Postgres rows carry datetime objects (SQLite returns strings);
+            # default=str keeps prompt building backend-agnostic.
+            sections.append(f"- {json.dumps(row, ensure_ascii=True, default=str)[:220]}")
 
     return "\n".join(sections)
 
