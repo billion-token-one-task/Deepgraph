@@ -14,7 +14,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-os.environ.setdefault("DEEPGRAPH_DATABASE_URL", "")
+os.environ["DEEPGRAPH_DATABASE_URL"] = ""  # force SQLite tmpdir; never touch a real DB from the environment
 
 
 SAMPLE_AGENDA_DICT = {
