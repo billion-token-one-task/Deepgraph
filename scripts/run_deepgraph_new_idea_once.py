@@ -103,10 +103,11 @@ def main() -> int:
         print(_as_json({"event": "harvest_signals_start"}), flush=True)
         print(_as_json({"event": "harvest_signals_done", "stats": harvest_signals()}), flush=True)
 
-    ideas = discover_paper_ideas(
+    idea_result = discover_paper_ideas(
         max_problems=args.max_problems,
         max_papers=args.max_generated,
     )
+    ideas = idea_result["insights"]
     print(_as_json({"event": "ideas_generated", "count": len(ideas)}), flush=True)
 
     stored: list[int] = []

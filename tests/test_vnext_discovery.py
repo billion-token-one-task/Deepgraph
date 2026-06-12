@@ -133,7 +133,10 @@ class DiscoverySchedulerSkipTests(unittest.TestCase):
 
         with (
             mock.patch.object(discovery_scheduler, "_init_schema_v2"),
-            mock.patch("agents.paradigm_agent.discover_paradigm_insights", return_value=insights),
+            mock.patch(
+                "agents.paradigm_agent.discover_paradigm_insights",
+                return_value={"insights": insights, "dropped_out_of_scope": 0},
+            ),
             mock.patch("agents.paradigm_agent.store_deep_insight", side_effect=[0, 42]),
             mock.patch.object(discovery_scheduler, "log_event"),
         ):

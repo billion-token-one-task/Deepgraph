@@ -110,18 +110,20 @@ def run_tier1_discovery(
     try:
         if agenda is not None:
             with agenda_scope(agenda.agenda_id, "tier1_discovery"):
-                insights = discover_paradigm_insights(
+                result = discover_paradigm_insights(
                     max_candidates=max_candidates,
                     tier1_top_overlaps=top_ov,
                     tier1_top_patterns=top_pat,
                     agenda=agenda,
                 )
         else:
-            insights = discover_paradigm_insights(
+            result = discover_paradigm_insights(
                 max_candidates=max_candidates,
                 tier1_top_overlaps=top_ov,
                 tier1_top_patterns=top_pat,
             )
+        insights = result["insights"]
+        dropped_out_of_scope = int(result.get("dropped_out_of_scope") or 0)
         stored = []
         for ins in insights:
             insight_id = store_deep_insight(ins)
@@ -142,8 +144,19 @@ def run_tier1_discovery(
                 "title": ins["title"],
                 "adversarial_score": ins.get("adversarial_score", 0),
             })
-        log_event("discovery", {"step": "tier1_done", "count": len(stored)})
-        print(f"[DISCOVERY] Tier 1 done: {len(stored)} paradigm insights stored", flush=True)
+        log_event(
+            "discovery",
+            {
+                "step": "tier1_done",
+                "count": len(stored),
+                "dropped_out_of_scope": dropped_out_of_scope,
+            },
+        )
+        print(
+            f"[DISCOVERY] Tier 1 done: {len(stored)} paradigm insights stored "
+            f"({dropped_out_of_scope} dropped as out of agenda scope)",
+            flush=True,
+        )
         return stored
     except Exception as e:
         if _llm_temporarily_unavailable(e):
@@ -199,7 +212,7 @@ def run_tier2_discovery(
     try:
         if agenda is not None:
             with agenda_scope(agenda.agenda_id, "tier2_discovery"):
-                insights = discover_paper_ideas(
+                result = discover_paper_ideas(
                     max_problems=max_problems,
                     max_papers=mpapers,
                     tier2_plateau_limit=plateaus,
@@ -207,12 +220,14 @@ def run_tier2_discovery(
                     agenda=agenda,
                 )
         else:
-            insights = discover_paper_ideas(
+            result = discover_paper_ideas(
                 max_problems=max_problems,
                 max_papers=mpapers,
                 tier2_plateau_limit=plateaus,
                 tier2_limitation_nodes=lim_nodes,
             )
+        insights = result["insights"]
+        dropped_out_of_scope = int(result.get("dropped_out_of_scope") or 0)
         stored = []
         for ins in insights:
             insight_id = store_deep_insight(ins)
@@ -238,8 +253,19 @@ def run_tier2_discovery(
                 "title": ins["title"],
                 "method_name": method.get("name", ""),
             })
-        log_event("discovery", {"step": "tier2_done", "count": len(stored)})
-        print(f"[DISCOVERY] Tier 2 done: {len(stored)} paper ideas stored", flush=True)
+        log_event(
+            "discovery",
+            {
+                "step": "tier2_done",
+                "count": len(stored),
+                "dropped_out_of_scope": dropped_out_of_scope,
+            },
+        )
+        print(
+            f"[DISCOVERY] Tier 2 done: {len(stored)} paper ideas stored "
+            f"({dropped_out_of_scope} dropped as out of agenda scope)",
+            flush=True,
+        )
         return stored
     except Exception as e:
         if _llm_temporarily_unavailable(e):

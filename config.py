@@ -253,6 +253,14 @@ AGENDA_TOKEN_BUDGET_DEFAULT = _env_int(
     "DEEPGRAPH_AGENDA_TOKEN_BUDGET_DEFAULT", 0, "agenda.token_budget_default"
 )
 
+# Agenda relevance gate: minimum number of agenda scope terms (focus +
+# prefer.keywords + direction-text tokens) a generated insight must mention
+# to be stored under that agenda. Deliberately lenient: 1 keeps an insight on
+# any single term hit; 0 disables the gate. See agents/agenda_relevance.py.
+AGENDA_SCOPE_MIN_TERM_HITS = _env_int(
+    "DEEPGRAPH_AGENDA_SCOPE_MIN_TERM_HITS", 1, "agenda.scope_min_term_hits"
+)
+
 # SciForge Experiment Validation
 EXPERIMENT_TIME_BUDGET = _env_int("SCIFORGE_TIME_BUDGET", 300, "experiment.time_budget_seconds")
 EXPERIMENT_MAX_ITERATIONS = _env_int("SCIFORGE_MAX_ITERATIONS", 100, "experiment.max_iterations")
