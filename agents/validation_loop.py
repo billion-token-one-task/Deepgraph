@@ -28,6 +28,7 @@ from agents.benchmark_audit import (
     full_benchmark_evidence_blockers,
 )
 from agents import codex_executor
+from agents import experiment_feedback
 from agents import experiment_supervisor
 from agents.evosci_requirements import evosci_strict_gate_insight
 from agents.workspace_layout import ensure_run_workspace, plan_file_path, promote_canonical_run, write_latest_status
@@ -60,6 +61,11 @@ _TELEMETRY_RESULT_KEYS = {
     "device",
     "method",
 }
+_AUTOMATION_FAILURE_ANOMALIES = {"no_candidate_diff", "pre_benchmark_guard"}
+try:
+    AUTOMATION_FAILURE_PATIENCE = max(1, int(os.environ.get("DEEPGRAPH_AUTOMATION_FAILURE_PATIENCE", "3")))
+except ValueError:
+    AUTOMATION_FAILURE_PATIENCE = 3
 
 
 def _git_binary() -> str | None:
@@ -709,6 +715,7 @@ def _runner_contract_violations(
     command_tokens: list[str],
     *,
     full_benchmark: bool = False,
+    execution_context: dict | None = None,
 ) -> list[str]:
     if not _formal_benchmark_required(workdir, full_benchmark=full_benchmark):
         return []
@@ -721,14 +728,16 @@ def _runner_contract_violations(
     violations: list[str] = []
 
     literal_patterns = {
-        r"\bsort_keys\s*=\s*true\b": "Python code uses JSON boolean true in sort_keys=true; use True.",
-        r"\bensure_ascii\s*=\s*false\b": "Python code uses JSON boolean false in ensure_ascii=false; use False.",
+        r"\b[A-Za-z_][A-Za-z0-9_]*\s*=\s*true\b": "Python code uses JSON boolean true in a keyword/assignment; use True.",
+        r"\b[A-Za-z_][A-Za-z0-9_]*\s*=\s*false\b": "Python code uses JSON boolean false in a keyword/assignment; use False.",
+        r"\b[A-Za-z_][A-Za-z0-9_]*\s*=\s*null\b": "Python code uses JSON null in an assignment; use None.",
         r"\breturn\s+null\b": "Python code uses JSON null; use None.",
+        r"\bis\s+not\s+null\b": "Python code compares with null; use None.",
         r"\bis\s+null\b": "Python code compares with null; use None.",
         r":\s*null\b": "Python dict literal contains null; use None.",
     }
     for pattern, message in literal_patterns.items():
-        if re.search(pattern, lowered):
+        if re.search(pattern, text):
             violations.append(message)
 
     proxy_markers = (
@@ -769,7 +778,130 @@ def _runner_contract_violations(
         if missing:
             violations.append("formal benchmark runner is missing required output contract markers: " + ", ".join(missing))
 
+    job = (execution_context or {}).get("job") if execution_context else None
+    worker = (execution_context or {}).get("worker") if execution_context else None
+    resource_class = str((job or {}).get("resource_class") or "").lower()
+    gpu_routed = bool(worker) or resource_class.startswith("gpu")
+    real_benchmark_required = bool(
+        proxy.get("real_benchmark_required")
+        or proxy.get("benchmark_model")
+        or proxy.get("benchmark_dataset")
+        or contract.get("required_real_benchmarks")
+    )
+    if gpu_routed and real_benchmark_required:
+        cpu_proxy_markers = (
+            "sklearn.datasets",
+            "load_digits",
+            "load_breast_cancer",
+            "load_iris",
+            "logisticregression",
+            "make_classification",
+            "random.random",
+            "random.seed",
+            "local smoke",
+            "smoke test",
+            "proxy baseline",
+        )
+        if any(marker in lowered for marker in cpu_proxy_markers) and not any(marker in lowered for marker in real_markers):
+            violations.append("gpu_large real benchmark runner is a CPU/proxy script; it must load the contracted model and dataset instead of sklearn/random/local smoke data.")
+
+        dataset = str(proxy.get("benchmark_dataset") or "").strip()
+        model = str(proxy.get("benchmark_model") or "").strip()
+        if dataset:
+            dataset_terms = {dataset.lower(), dataset.split("/")[-1].lower()}
+            if not any(term and term in lowered for term in dataset_terms) and "load_dataset" not in lowered:
+                violations.append(f"gpu_large real benchmark runner does not reference required benchmark dataset {dataset!r}.")
+        if model:
+            model_terms = {model.lower(), model.split("/")[-1].lower()}
+            if not any(term and term in lowered for term in model_terms) and "from_pretrained" not in lowered:
+                violations.append(f"gpu_large real benchmark runner does not reference required benchmark model {model!r}.")
+        if "cuda" not in lowered and "torch.device" not in lowered:
+            violations.append("gpu_large real benchmark runner has no CUDA/device handling, so it would not exercise the assigned GPU.")
+
     return violations
+
+
+
+def _repair_generated_runner_json_literals(
+    workdir: Path,
+    code_dir: Path,
+    command_tokens: list[str],
+) -> list[str]:
+    """Fix common LLM JSON-literal leaks in generated Python runners."""
+    script_path = _command_script_path(command_tokens, code_dir)
+    try:
+        original = script_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+
+    repaired = original
+    replacements = (
+        (r"\b([A-Za-z_][A-Za-z0-9_]*)\s*=\s*true\b", r"\1=True"),
+        (r"\b([A-Za-z_][A-Za-z0-9_]*)\s*=\s*false\b", r"\1=False"),
+        (r"->\s*null\b", "-> None"),
+        (r"\b([A-Za-z_][A-Za-z0-9_]*)\s*=\s*null\b", r"\1=None"),
+        (r"\breturn\s+null\b", "return None"),
+        (r"\bis\s+not\s+null\b", "is not None"),
+        (r"\bis\s+null\b", "is None"),
+        (r":\s*null\b", ": None"),
+        (r":\s*true\b", ": True"),
+        (r":\s*false\b", ": False"),
+    )
+    applied: list[str] = []
+    for pattern, replacement in replacements:
+        repaired, count = re.subn(pattern, replacement, repaired)
+        if count:
+            applied.append(pattern)
+    if repaired == original:
+        return []
+
+    try:
+        compile(repaired, str(script_path), "exec")
+    except SyntaxError:
+        return []
+
+    try:
+        script_path.write_text(repaired, encoding="utf-8")
+        repair_log = workdir / "results" / "generated_runner_literal_repair.json"
+        repair_log.parent.mkdir(parents=True, exist_ok=True)
+        repair_log.write_text(
+            json.dumps(
+                {
+                    "status": "repaired",
+                    "script": str(script_path),
+                    "patterns": applied,
+                    "reason": "Converted JSON-style true/false/null tokens to Python literals before execution.",
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    except OSError:
+        return []
+    return applied
+
+
+def _apply_worker_vram_env(
+    benchmark_env: dict[str, str],
+    execution_context: dict | None,
+) -> dict[str, str]:
+    env = dict(benchmark_env)
+    worker = (execution_context or {}).get("worker") if execution_context else None
+    job = (execution_context or {}).get("job") if execution_context else None
+    try:
+        worker_vram = float((worker or {}).get("total_mem_gb") or 0)
+    except (TypeError, ValueError):
+        worker_vram = 0.0
+    try:
+        requested_vram = float((job or {}).get("vram_required_gb") or 0)
+    except (TypeError, ValueError):
+        requested_vram = 0.0
+    if worker_vram > 0:
+        env.setdefault("DEEPGRAPH_GPU_WORKER_VRAM_GB", f"{worker_vram:.2f}")
+        env.setdefault("DEEPGRAPH_BENCHMARK_TARGET_VRAM_GB", f"{max(1.0, min(worker_vram, requested_vram or worker_vram)):.2f}")
+        env.setdefault("DEEPGRAPH_BENCHMARK_BATCH_SIZE", "1")
+        env.setdefault("DEEPGRAPH_BENCHMARK_MICRO_BATCH_SIZE", "1")
+    return env
 
 
 def _benchmark_env_for_execution(workdir: Path, *, full_benchmark: bool = False) -> dict[str, str]:
@@ -1173,11 +1305,19 @@ def _run_experiment(
     start = time.time()
     worker = (execution_context or {}).get("worker") if execution_context else None
     benchmark_env = dict(benchmark_env_override) if benchmark_env_override is not None else _benchmark_env_for_execution(workdir, full_benchmark=full_benchmark)
+    benchmark_env = _apply_worker_vram_env(benchmark_env, execution_context)
+    literal_repairs = _repair_generated_runner_json_literals(workdir, code_dir, command_tokens)
+    if literal_repairs:
+        print(
+            f"[LOOP] Repaired generated runner Python literals before execution: {len(literal_repairs)} pattern(s)",
+            flush=True,
+        )
     contract_violations = _runner_contract_violations(
         workdir,
         code_dir,
         command_tokens,
         full_benchmark=full_benchmark,
+        execution_context=execution_context,
     )
     if contract_violations:
         duration = time.time() - start
@@ -1538,6 +1678,75 @@ def _meets_threshold(value: float, threshold: float, direction: str) -> bool:
     return value >= threshold
 
 
+def _history_anomaly(row: dict) -> str:
+    judgement = row.get("result_judgement") if isinstance(row.get("result_judgement"), dict) else {}
+    return str(judgement.get("anomaly_type") or "").strip()
+
+
+def _recent_automation_failure_streak(history: list[dict]) -> int:
+    streak = 0
+    for row in reversed(history):
+        if row.get("metric") is not None or row.get("status") == "keep":
+            break
+        anomaly = _history_anomaly(row)
+        if anomaly in _AUTOMATION_FAILURE_ANOMALIES:
+            streak += 1
+        else:
+            break
+    return streak
+
+
+def _hypothesis_testing_automation_failed(history: list[dict]) -> bool:
+    if not history:
+        return False
+    benchmarked = [row for row in history if row.get("metric") is not None]
+    kept = [row for row in history if row.get("status") == "keep"]
+    if benchmarked or kept:
+        return False
+    anomalies = []
+    for row in history:
+        anomaly = _history_anomaly(row)
+        if anomaly:
+            anomalies.append(anomaly)
+    if not anomalies:
+        return True
+    return all(anomaly in _AUTOMATION_FAILURE_ANOMALIES for anomaly in anomalies)
+
+
+def _write_automation_failure_artifact(
+    workdir: Path,
+    *,
+    run_id: int,
+    insight_id: int,
+    history: list[dict],
+    stop_reason: str,
+    method_desc: str,
+) -> Path:
+    path = workdir / "results" / "automation_failure.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    recent = history[-min(len(history), 12):]
+    payload = {
+        "contract_type": "HypothesisTestingAutomationFailure",
+        "run_id": run_id,
+        "deep_insight_id": insight_id,
+        "failure_type": "no_benchmarked_candidate_method_change",
+        "stop_reason": stop_reason,
+        "method_excerpt": method_desc[:1200],
+        "automation_anomalies": [_history_anomaly(row) for row in history if _history_anomaly(row)],
+        "recent_history": recent,
+        "not_scientific_verdict": True,
+        "recommended_actions": [
+            "Route the idea back to experiment repair/reforge instead of marking it refuted.",
+            "Inspect why the proposed method was not operationalized into a source/config diff.",
+            "Add or repair the benchmark harness hook that exposes the method path to the runner.",
+            "If the method definition is underspecified, rewrite the idea/experimental plan before another validation loop.",
+            "Do not draft a formal manuscript claim from this run until a full benchmarked candidate change exists.",
+        ],
+    }
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    return path
+
+
 def _determine_final_verdict(
     *,
     baseline: float,
@@ -1548,6 +1757,7 @@ def _determine_final_verdict(
     total_kept: int,
     refute_min: int,
     benchmark_summary: dict | None = None,
+    automation_failed: bool = False,
 ) -> str:
     """Classify the overall run outcome.
 
@@ -1562,6 +1772,8 @@ def _determine_final_verdict(
     exciting = criteria.get("exciting", 0)
     solid = criteria.get("solid", 0)
 
+    if automation_failed:
+        return "inconclusive"
     if total_iters <= 0:
         summary = benchmark_summary or {}
         if summary:
@@ -2255,6 +2467,16 @@ def _launch_reproduction_repair(
     err = str(last_result.get("error") or "") or str(last_result.get("status") or "crash")
 
     repair_log = workdir / "results" / f"repro_repair_{repair_round:02d}.json"
+    success, proxy, contract = _contract_context(workdir)
+    benchmark_contract = {
+        "formal_benchmark_required": _formal_benchmark_required(workdir),
+        "real_benchmark_required": bool(proxy.get("real_benchmark_required")),
+        "benchmark_model": proxy.get("benchmark_model"),
+        "benchmark_dataset": proxy.get("benchmark_dataset"),
+        "benchmark_dataset_config": proxy.get("benchmark_dataset_config"),
+        "required_real_benchmarks": contract.get("required_real_benchmarks"),
+        "quality_gates": contract.get("quality_gates"),
+    }
 
     if codex_executor.codex_available():
         print(f"[LOOP] Reproduction repair via Codex (round {repair_round})...", flush=True)
@@ -2288,12 +2510,15 @@ def _launch_reproduction_repair(
         Return ONLY valid JSON with this shape:
         {"summary":"one line","files":[{"path":"relative/path.py","content":"FULL new file text"}]}
         Rules: at most 4 files; paths use forward slashes relative to repo root; no path segments ".." .
-        Prefer fixing imports, device (CUDA->CPU), paths, and adding minimal smoke settings so a float metric is printed.
+        For ordinary local experiments, prefer fixing imports, paths, and minimal runtime settings.
+        For formal real benchmarks, preserve the benchmark contract: use the contracted model/dataset, load real data, keep CUDA/device handling when a GPU worker is assigned, and do not replace the runner with sklearn/random/toy/smoke data.
         The log must contain either a line like metric_value: 0.42 OR a FINAL_RESULTS: {...} JSON line.""")
 
     user = textwrap.dedent(f"""\
         metric_name preference: {metric_name}
         baseline_command: {baseline_command or "(python main train script)"}
+        benchmark_contract: {json.dumps(benchmark_contract, ensure_ascii=False)}
+        environment_report: {json.dumps(environment_report, ensure_ascii=False)[:4000]}
         last status: {last_result.get("status")}
         error: {err[:4000]}
         log tail:
@@ -2822,18 +3047,30 @@ def run_validation_loop(run_id: int, execution_context: dict | None = None) -> d
         env_path.write_text(json.dumps(environment_report, indent=2), encoding="utf-8")
 
     if not baseline_values:
+        failure_type = str(last_repro_result.get("failure_type") or "missing_metric")
+        last_error = str(last_repro_result.get("error") or "no metric obtained")
+        error_message = (
+            "reproduction failed: no metric obtained; "
+            f"last_failure_type={failure_type}; "
+            f"code_repair_required; last_error={last_error[:500]}"
+        )
         db.execute(
-            "UPDATE experiment_runs SET status='failed', error_message='reproduction failed: no metric obtained', completed_at=CURRENT_TIMESTAMP WHERE id=?",
-            (run_id,))
+            "UPDATE experiment_runs SET status='failed', error_message=?, completed_at=CURRENT_TIMESTAMP WHERE id=?",
+            (error_message, run_id,))
         db.commit()
         write_latest_status(
             insight_id,
-            {"stage": "reproduction", "status": "failed", "error": "reproduction failed: no metric obtained"},
+            {"stage": "reproduction", "status": "failed", "error": error_message},
             run_id=run_id,
             insight=insight,
         )
         print(f"[LOOP] Phase 1 FAILED: could not obtain baseline metric", flush=True)
-        return {"verdict": "failed", "reason": "reproduction_failure"}
+        return {
+            "verdict": "failed",
+            "reason": "reproduction_failure",
+            "failure_type": failure_type,
+            "code_repair_required": True,
+        }
 
     benchmark_mode = bool(benchmark_summary and benchmark_baseline_values and benchmark_candidate_values)
     if benchmark_mode:
@@ -2908,6 +3145,7 @@ def run_validation_loop(run_id: int, execution_context: dict | None = None) -> d
             print(f"[LOOP] Judge requested stop before iter {i+1}: {stop_reason}", flush=True)
             break
 
+        prior_method_feedback = experiment_feedback.load_latest_method_feedback(workdir)
         supervisor_plan = experiment_supervisor.build_supervisor_plan(
             spec=spec,
             environment_report=environment_report,
@@ -2916,6 +3154,7 @@ def run_validation_loop(run_id: int, execution_context: dict | None = None) -> d
             history=history,
             iteration=i + 1,
             success_criteria=criteria,
+            method_feedback=prior_method_feedback,
         )
         supervisor_artifacts = experiment_supervisor.write_supervisor_artifacts(
             workdir,
@@ -3023,6 +3262,24 @@ def run_validation_loop(run_id: int, execution_context: dict | None = None) -> d
                 result_judgement=result_judgement,
                 diff=diff,
             )
+        method_feedback_payload = experiment_feedback.build_method_feedback(
+            workdir=workdir,
+            run_id=run_id,
+            iteration=i + 1,
+            result=result,
+            result_judgement=result_judgement,
+            history=history,
+            criteria=criteria,
+            baseline=baseline,
+            best_value=best_before,
+        )
+        method_feedback_path = experiment_feedback.write_method_feedback(workdir, method_feedback_payload)
+        result_judgement["method_feedback"] = {
+            "findings": method_feedback_payload.get("findings", [])[:5],
+            "next_actions": method_feedback_payload.get("next_actions", [])[:5],
+            "path": str(method_feedback_path),
+        }
+
         if status == "keep":
             best_value = metric if metric is not None else best_value
             if iteration_benchmark_summary:
@@ -3065,6 +3322,7 @@ def run_validation_loop(run_id: int, execution_context: dict | None = None) -> d
             result_judgement=result_judgement,
             artifact_paths={
                 "log_path": result.get("log_path"),
+                "method_feedback": str(method_feedback_path),
                 **supervisor_artifacts,
                 **coding_step.get("artifact_paths", {}),
             },
@@ -3140,6 +3398,15 @@ def run_validation_loop(run_id: int, execution_context: dict | None = None) -> d
         if result_judgement.get("terminate"):
             print(f"[LOOP] Judge terminated loop at iter {i+1}: {stop_reason}", flush=True)
             break
+        automation_streak = _recent_automation_failure_streak(history)
+        if automation_streak >= AUTOMATION_FAILURE_PATIENCE:
+            stop_reason = (
+                "Automation failed: hypothesis testing produced no benchmarked candidate method "
+                f"change for {automation_streak} consecutive iterations; code_repair_required; "
+                "experiment_reforge_required."
+            )
+            print(f"[LOOP] Automation failure stop at iter {i+1}: {stop_reason}", flush=True)
+            break
         if plateau_patience > 0 and len(history) >= max(refute_min, plateau_patience):
             recent = history[-plateau_patience:]
             if recent and all(row.get("status") != "keep" for row in recent):
@@ -3149,6 +3416,7 @@ def run_validation_loop(run_id: int, execution_context: dict | None = None) -> d
 
     # ── Determine verdict ──
     final_benchmark_summary = best_benchmark_summary or benchmark_summary
+    automation_failed = _hypothesis_testing_automation_failed(history)
     verdict = _determine_final_verdict(
         baseline=baseline,
         best_value=best_value,
@@ -3158,7 +3426,41 @@ def run_validation_loop(run_id: int, execution_context: dict | None = None) -> d
         total_kept=total_kept,
         refute_min=refute_min,
         benchmark_summary=final_benchmark_summary if benchmark_mode else None,
+        automation_failed=automation_failed,
     )
+    final_method_feedback_path = None
+    if history:
+        final_method_feedback_payload = experiment_feedback.build_method_feedback(
+            workdir=workdir,
+            run_id=run_id,
+            iteration=None,
+            result={"benchmark_summary": final_benchmark_summary or {}},
+            result_judgement={
+                "status": "discard" if automation_failed else verdict,
+                "anomaly_type": "automation_failure" if automation_failed else "",
+            },
+            history=history,
+            criteria=criteria,
+            baseline=baseline,
+            best_value=best_value,
+        )
+        final_method_feedback_path = experiment_feedback.write_method_feedback(workdir, final_method_feedback_payload)
+
+    automation_failure_path = None
+    if automation_failed:
+        if not stop_reason or not stop_reason.startswith("Automation failed:"):
+            stop_reason = (
+                "Automation failed: hypothesis testing produced no benchmarked "
+                "candidate method changes; refusing to label a no-op loop as refuted."
+            )
+        automation_failure_path = _write_automation_failure_artifact(
+            workdir,
+            run_id=run_id,
+            insight_id=insight_id,
+            history=history,
+            stop_reason=stop_reason,
+            method_desc=method_desc,
+        )
     effect = best_value - baseline if direction == "higher" else baseline - best_value
     effect_pct = (effect / abs(baseline) * 100) if baseline != 0 else 0
 
@@ -3197,6 +3499,9 @@ def run_validation_loop(run_id: int, execution_context: dict | None = None) -> d
                 "iterations_kept": total_kept,
                 "environment_report": environment_report,
                 "stop_reason": stop_reason,
+                "automation_failed": automation_failed,
+                "automation_failure_path": str(automation_failure_path) if automation_failure_path else "",
+                "method_feedback_path": str(final_method_feedback_path) if final_method_feedback_path else "",
                 "benchmark_summary": final_benchmark_summary,
                 "full_benchmark_completed": full_benchmark_completed,
                 "benchmark_artifact_manifest": str(benchmark_artifact_path) if benchmark_artifact_path else "",
@@ -3225,6 +3530,15 @@ def run_validation_loop(run_id: int, execution_context: dict | None = None) -> d
                 "full_benchmark_completed": full_benchmark_completed,
             },
         )
+    if automation_failure_path:
+        _record_artifact(
+            run_id,
+            "source_data",
+            automation_failure_path,
+            metric_key=metric_name,
+            metric_value=best_value,
+            metadata={"contract_type": "HypothesisTestingAutomationFailure"},
+        )
     db.commit()
     write_latest_status(
         insight_id,
@@ -3239,6 +3553,8 @@ def run_validation_loop(run_id: int, execution_context: dict | None = None) -> d
             "iterations_total": iter_num,
             "iterations_kept": total_kept,
             "summary_path": str(summary_path),
+            "automation_failed": automation_failed,
+            "automation_failure_path": str(automation_failure_path) if automation_failure_path else "",
         },
         run_id=run_id,
         insight=insight,
@@ -3259,4 +3575,6 @@ def run_validation_loop(run_id: int, execution_context: dict | None = None) -> d
         "total_seconds": total_time,
         "environment_report": environment_report,
         "stop_reason": stop_reason,
+        "automation_failed": automation_failed,
+        "automation_failure_path": str(automation_failure_path) if automation_failure_path else "",
     }
