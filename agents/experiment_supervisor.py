@@ -54,15 +54,30 @@ def _format_gap(comparison: dict[str, Any]) -> str:
 def _history_summary(history: list[dict], limit: int = 12) -> list[dict]:
     out: list[dict] = []
     for row in history[-limit:]:
+        judgement = row.get("result_judgement") if isinstance(row.get("result_judgement"), dict) else {}
         out.append(
             {
                 "iteration": row.get("iteration"),
                 "status": row.get("status"),
                 "metric": row.get("metric"),
                 "description": str(row.get("description") or "")[:200],
+                "anomaly_type": judgement.get("anomaly_type"),
             }
         )
     return out
+
+
+def _recent_no_candidate_diff_streak(history: list[dict], limit: int = 12) -> int:
+    streak = 0
+    for row in reversed(history[-limit:]):
+        judgement = row.get("result_judgement") if isinstance(row.get("result_judgement"), dict) else {}
+        text = json.dumps(row, ensure_ascii=False).lower()
+        anomaly = str(judgement.get("anomaly_type") or "").strip().lower()
+        if anomaly == "no_candidate_diff" or "no candidate code diff" in text:
+            streak += 1
+        else:
+            break
+    return streak
 
 
 def _recent_cost_microtuning_streak(history: list[dict], limit: int = 12) -> int:
@@ -161,9 +176,11 @@ def build_supervisor_plan(
     history: list[dict],
     iteration: int,
     success_criteria: dict[str, Any],
+    method_feedback: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a deterministic supervisor plan for the next worker turn."""
     last = history[-1] if history else {}
+    no_candidate_diff_streak = _recent_no_candidate_diff_streak(history)
     crash_streak = 0
     for row in reversed(history):
         if row.get("status") == "crash":
@@ -171,7 +188,14 @@ def build_supervisor_plan(
         else:
             break
 
-    if crash_streak >= 1:
+    if no_candidate_diff_streak >= 1:
+        mode = "implement_required"
+        diagnosis = (
+            "Recent hypothesis worker iterations produced no candidate code diff. "
+            "This is an automation/operationalization failure, not evidence against the method; "
+            "identify the missing repo hook and make a real method implementation change."
+        )
+    elif crash_streak >= 1:
         mode = "repair"
         diagnosis = "Recent iterations crashed; prioritize restoring a runnable baseline-compatible path."
     elif history and last.get("status") == "discard":
@@ -203,6 +227,22 @@ def build_supervisor_plan(
     cost_microtuning_streak = _recent_cost_microtuning_streak(history)
     failed_prompt_shortening = _recent_failed_prompt_shortening(history)
     failed_context_propagation = _recent_failed_context_propagation(history)
+    feedback_findings = []
+    feedback_actions = []
+    feedback_guardrails = []
+    if isinstance(method_feedback, dict):
+        feedback_findings = [str(row) for row in method_feedback.get("findings", []) if str(row).strip()]
+        feedback_actions = [str(row) for row in method_feedback.get("next_actions", []) if str(row).strip()]
+        feedback_guardrails = [str(row) for row in method_feedback.get("guardrails", []) if str(row).strip()]
+    feedback_text = " ".join(feedback_findings + feedback_actions).lower()
+    if feedback_actions and mode not in {"implement_required", "repair"}:
+        if any(marker in feedback_text for marker in ("candidate trails", "does not beat baseline", "not statistically reliable", "route_rate")):
+            mode = "redirect"
+            diagnosis = (
+                "Benchmark method feedback found that the previous candidate did not produce a reliable positive method effect; "
+                "use the feedback actions as the next method/code repair target."
+            )
+
     if mode == "refine" and cost_microtuning_streak >= 2:
         mode = "redirect"
         diagnosis = (
@@ -220,7 +260,13 @@ def build_supervisor_plan(
     if not isinstance(publication_contract, dict):
         publication_contract = {}
 
-    if mode == "repair":
+    if mode == "implement_required":
+        next_actions = [
+            "Inspect the current repo entrypoint and locate where the proposed method should execute.",
+            "Make at least one meaningful tracked source or config change that implements the method path.",
+            "If the method cannot be operationalized in this harness, create an explicit redesign/blocker artifact instead of returning a no-op.",
+        ]
+    elif mode == "repair":
         next_actions = [
             "Locate the exact failing command, import, or file path that broke execution.",
             "Make the minimum repo change needed to restore a clean runnable experiment.",
@@ -259,6 +305,9 @@ def build_supervisor_plan(
             "Keep the code change local and easy to reason about.",
         ]
 
+    if feedback_actions:
+        next_actions = list(dict.fromkeys(feedback_actions + next_actions))[:12]
+
     guardrails = [
         "Honor the evidence plan and do not invent disabled analyses.",
         "Respect the budget block; do not reduce models, datasets, seeds, examples, or baselines just to make a run pass.",
@@ -266,6 +315,9 @@ def build_supervisor_plan(
         "Do not break the existing baseline execution path.",
         "Do not silently modify locked benchmark contract fields; request a contract revision instead.",
     ]
+    if feedback_guardrails:
+        guardrails = list(dict.fromkeys(feedback_guardrails + guardrails))[:14]
+
     if failed_prompt_shortening:
         guardrails.append(
             "Do not alter the candidate zero-budget open-answer prompt toward shortest-answer, answer-span, or phrase-only output; that discarded intervention family already lost utility."
@@ -276,6 +328,10 @@ def build_supervisor_plan(
     if failed_context_propagation:
         guardrails.append(
             "Do not make broad context-propagation or all-method prompt rewrites; recent benchmark-context prompting lowered the sanity metric."
+        )
+    if no_candidate_diff_streak >= 1:
+        guardrails.append(
+            "Do not finish this iteration with no repo diff; a no-op is an automation failure and must be converted into a real implementation patch or an explicit redesign blocker."
         )
 
     plan = {
@@ -303,6 +359,11 @@ def build_supervisor_plan(
             or publication_contract.get("benchmark_manifest", {})
         ),
         "next_actions": next_actions,
+        "automation_feedback": {
+            "no_candidate_diff_streak": no_candidate_diff_streak,
+            "requires_code_diff": no_candidate_diff_streak >= 1,
+        },
+        "method_feedback": method_feedback or {},
         "history": _history_summary(history),
         "success_criteria": success_criteria,
     }

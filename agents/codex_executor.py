@@ -90,12 +90,30 @@ def _history_text(history: list[dict], limit: int = 12) -> str:
         status = row.get("status", "?")
         metric = row.get("metric")
         description = str(row.get("description") or "").strip()
-        lines.append(f"- iter {row.get('iteration', '?')}: status={status} metric={metric} change={description[:180]}")
+        judgement = row.get("result_judgement") if isinstance(row.get("result_judgement"), dict) else {}
+        anomaly = str(judgement.get("anomaly_type") or "").strip()
+        suffix = f" anomaly={anomaly}" if anomaly else ""
+        lines.append(f"- iter {row.get('iteration', '?')}: status={status} metric={metric}{suffix} change={description[:180]}")
     return "\n".join(lines)
+
+
+def _recent_no_candidate_diff_streak(history: list[dict], limit: int = 12) -> int:
+    streak = 0
+    for row in reversed(history[-limit:]):
+        judgement = row.get("result_judgement") if isinstance(row.get("result_judgement"), dict) else {}
+        text = json.dumps(row, ensure_ascii=False).lower()
+        anomaly = str(judgement.get("anomaly_type") or "").strip().lower()
+        if anomaly == "no_candidate_diff" or "no candidate code diff" in text:
+            streak += 1
+        else:
+            break
+    return streak
 
 
 def _history_requires_fresh_codex_session(history: list[dict], limit: int = 3) -> bool:
     """Avoid resuming a Codex thread after contaminated or stale search context."""
+    if _recent_no_candidate_diff_streak(history) >= 1:
+        return True
     markers = (
         "benchmark_fairness_risk",
         "benchmark_semantic_risk",
@@ -182,6 +200,35 @@ def write_iteration_agents_md(
     metric_direction = success_criteria.get("metric_direction", "higher")
     main_train_file = proxy.get("main_train_file") or "auto-detect"
     baseline_command = proxy.get("baseline_command") or "auto-detect"
+    no_candidate_diff_streak = _recent_no_candidate_diff_streak(history)
+    implementation_failure_feedback = ""
+    if no_candidate_diff_streak:
+        implementation_failure_feedback = f"""
+## Implementation Failure Feedback
+The last {no_candidate_diff_streak} hypothesis iteration(s) produced no candidate code diff. Treat this as an automation failure, not as evidence that the method is bad.
+- First locate the concrete entrypoint/hook where the proposed method should run.
+- Make at least one meaningful tracked source or config change before your final response.
+- Do not return a prose-only summary, unchanged files, or a benchmark-only edit.
+- If the method cannot be implemented in this harness, create `EXPERIMENT_REDESIGN_REQUIRED.json` with the blocker, required harness change, and suggested method rewrite, then set validation_status to `blocked_redesign_required`.
+"""
+
+    method_feedback_text = ""
+    method_feedback = supervisor_plan.get("method_feedback") if isinstance(supervisor_plan, dict) else None
+    if isinstance(method_feedback, dict) and (method_feedback.get("findings") or method_feedback.get("next_actions")):
+        findings = "\n".join(f"- {row}" for row in method_feedback.get("findings", [])[:8])
+        actions = "\n".join(f"- {row}" for row in method_feedback.get("next_actions", [])[:8])
+        guardrails = "\n".join(f"- {row}" for row in method_feedback.get("guardrails", [])[:8])
+        method_feedback_text = f"""
+## Benchmark Method Feedback
+Findings:
+{findings or '- No benchmark findings recorded.'}
+
+Required next actions:
+{actions or '- Inspect benchmark artifacts and make one method-side change.'}
+
+Guardrails:
+{guardrails or '- Preserve benchmark contract fairness.'}
+"""
 
     content = f"""# DeepGraph Experiment Agent
 
@@ -225,7 +272,7 @@ Do not replace failures with synthetic data, random tensors, mocked examples, or
 
 ## Iteration History
 {_history_text(history)}
-
+{implementation_failure_feedback}{method_feedback_text}
 ## Working Rules
 - You may inspect and edit multiple files in this repo if needed.
 - Keep changes minimal and hypothesis-directed.

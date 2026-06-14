@@ -117,6 +117,53 @@ class ExperimentSupervisorPlanTests(unittest.TestCase):
         self.assertTrue(any("answer-shape regex" in guardrail for guardrail in plan["guardrails"]))
         self.assertTrue(any("context-propagation" in guardrail for guardrail in plan["guardrails"]))
 
+    def test_no_candidate_diff_switches_to_implementation_required(self):
+        plan = build_supervisor_plan(
+            spec=self._spec(),
+            environment_report={"resolved_train_file": "train.py", "formal_ready": True},
+            baseline=0.40,
+            best_so_far=0.40,
+            history=[
+                {
+                    "iteration": 1,
+                    "status": "discard",
+                    "metric": None,
+                    "description": "No candidate code diff was produced.",
+                    "result_judgement": {"anomaly_type": "no_candidate_diff"},
+                }
+            ],
+            iteration=2,
+            success_criteria=self._success_criteria(),
+        )
+
+        self.assertEqual(plan["mode"], "implement_required")
+        self.assertIn("no candidate code diff", plan["diagnosis"])
+        self.assertTrue(plan["automation_feedback"]["requires_code_diff"])
+        self.assertTrue(any("meaningful tracked source" in action for action in plan["next_actions"]))
+        self.assertTrue(any("no repo diff" in guardrail for guardrail in plan["guardrails"]))
+
+    def test_method_feedback_redirects_next_iteration(self):
+        plan = build_supervisor_plan(
+            spec=self._spec(),
+            environment_report={"resolved_train_file": "train.py", "formal_ready": True},
+            baseline=0.2433,
+            best_so_far=0.2047,
+            history=[{"iteration": 1, "status": "discard", "metric": 0.2047}],
+            iteration=2,
+            success_criteria={"metric_name": "accuracy", "metric_direction": "higher"},
+            method_feedback={
+                "findings": ["Candidate trails the best non-oracle method (GateSpec-SCIO=0.2047, Always-Reason CoT=0.2433, effect=-0.0386)."],
+                "next_actions": ["Change the candidate routing threshold or fallback policy that caused the measured deficit."],
+                "guardrails": ["Do not change scoring, answer normalization, dataset splits, seeds, baselines, or oracle labels to manufacture an improvement."],
+            },
+        )
+
+        self.assertEqual(plan["mode"], "redirect")
+        self.assertIn("Benchmark method feedback", plan["diagnosis"])
+        self.assertEqual(plan["next_actions"][0], "Change the candidate routing threshold or fallback policy that caused the measured deficit.")
+        self.assertTrue(any("answer normalization" in row for row in plan["guardrails"]))
+        self.assertIn("method_feedback", plan)
+
 
 if __name__ == "__main__":
     unittest.main()
