@@ -1606,7 +1606,16 @@ def _git_commit(code_dir: Path, message: str) -> str | None:
             timeout=10,
         )
         commit_result = subprocess.run(
-            [git_bin, "commit", "-m", message],
+            [
+                git_bin,
+                "-c",
+                "user.name=DeepGraph Auto",
+                "-c",
+                "user.email=deepgraph-auto@local",
+                "commit",
+                "-m",
+                message,
+            ],
             cwd=str(code_dir),
             capture_output=True,
             text=True,
