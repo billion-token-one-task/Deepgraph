@@ -2208,6 +2208,17 @@ def _iteration_db_description(
     return json.dumps(payload, ensure_ascii=False)
 
 
+def _history_judgement_from_db(value: object) -> dict:
+    text = str(value or "").strip()
+    if not text or not text.startswith("{"):
+        return {}
+    try:
+        payload = json.loads(text)
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
 def _history_description_from_db(value: object) -> str:
     text = str(value or "").strip()
     if not text:
@@ -2260,12 +2271,14 @@ def _resume_history_from_db(run_id: int, repro_iters: int) -> tuple[list[dict], 
             total_kept += 1
             if row.get("commit_hash"):
                 best_commit = row.get("commit_hash")
+        result_judgement = _history_judgement_from_db(row.get("description"))
         history.append(
             {
                 "iteration": max(1, iteration_number - repro_iters) if iteration_number else len(history) + 1,
                 "metric": row.get("metric_value"),
                 "status": status,
                 "description": _history_description_from_db(row.get("description"))[:500],
+                "result_judgement": result_judgement,
             }
         )
     return history, max_iter_num, total_kept, best_commit
