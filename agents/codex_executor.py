@@ -29,6 +29,19 @@ def codex_available() -> bool:
     return bool(codex_binary())
 
 
+def _codex_exec_permission_args() -> list[str]:
+    mode = os.environ.get("DEEPGRAPH_CODEX_SANDBOX_MODE", "bypass").strip().lower()
+    if mode in {"bypass", "danger", "danger-full-access", "no-sandbox"}:
+        return ["--dangerously-bypass-approvals-and-sandbox"]
+    if mode in {"workspace", "workspace-write"}:
+        return ["--sandbox", "workspace-write"]
+    if mode in {"read-only", "readonly"}:
+        return ["--sandbox", "read-only"]
+    if mode in {"full-auto", "legacy"}:
+        return ["--full-auto"]
+    return ["--dangerously-bypass-approvals-and-sandbox"]
+
+
 def _trim_json(obj: Any, max_chars: int = 2_500) -> str:
     text = json.dumps(obj, ensure_ascii=False, indent=2)
     return text[:max_chars]
@@ -368,7 +381,7 @@ def run_codex_iteration(
                 "exec",
                 "resume",
                 "--json",
-                "--full-auto",
+                *_codex_exec_permission_args(),
                 "--skip-git-repo-check",
                 "-o",
                 str(output_path),
@@ -381,7 +394,7 @@ def run_codex_iteration(
                 binary,
                 "exec",
                 "--json",
-                "--full-auto",
+                *_codex_exec_permission_args(),
                 "--skip-git-repo-check",
                 "-C",
                 str(code_dir),
@@ -615,7 +628,7 @@ def run_codex_reproduction_repair(
                 "exec",
                 "resume",
                 "--json",
-                "--full-auto",
+                *_codex_exec_permission_args(),
                 "--skip-git-repo-check",
                 "-o",
                 str(output_path),
@@ -628,7 +641,7 @@ def run_codex_reproduction_repair(
                 binary,
                 "exec",
                 "--json",
-                "--full-auto",
+                *_codex_exec_permission_args(),
                 "--skip-git-repo-check",
                 "-C",
                 str(code_dir),
