@@ -305,6 +305,77 @@ class CodexExecutorTests(unittest.TestCase):
         self.assertEqual(session["thread_id"], "")
         self.assertEqual(session["last_iteration"], 5)
 
+    def test_iteration_agents_md_escalates_no_candidate_diff(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workdir = Path(tmpdir)
+            code_dir = workdir / "code"
+            code_dir.mkdir(parents=True, exist_ok=True)
+
+            path = codex_executor.write_iteration_agents_md(
+                code_dir=code_dir,
+                method_desc="Method",
+                baseline=0.7,
+                best_so_far=0.7,
+                iteration=2,
+                history=[
+                    {
+                        "status": "discard",
+                        "metric": None,
+                        "description": "No candidate code diff was produced.",
+                        "result_judgement": {"anomaly_type": "no_candidate_diff"},
+                    }
+                ],
+                proxy={},
+                success_criteria={"metric_name": "acc"},
+                experimental_plan={},
+                evidence_plan={},
+                supervisor_plan={"mode": "implement_required"},
+            )
+
+            text = path.read_text(encoding="utf-8")
+
+        self.assertIn("Implementation Failure Feedback", text)
+        self.assertIn("no candidate code diff", text)
+        self.assertIn("Make at least one meaningful tracked source or config change", text)
+        self.assertIn("EXPERIMENT_REDESIGN_REQUIRED.json", text)
+
+    def test_iteration_agents_md_surfaces_runner_contract_crashes(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            code_dir = Path(tmpdir) / "code"
+            code_dir.mkdir(parents=True, exist_ok=True)
+
+            path = codex_executor.write_iteration_agents_md(
+                code_dir=code_dir,
+                method_desc="Method",
+                baseline=0.18,
+                best_so_far=0.01,
+                iteration=5,
+                history=[
+                    {
+                        "iteration": 4,
+                        "status": "crash",
+                        "metric": None,
+                        "description": "Added path_measure runner.",
+                        "result_judgement": {
+                            "summary": "formal benchmark runner is missing required output contract markers: final_results:, per_method, candidate_method, full_benchmark_completed; gpu_large real benchmark runner does not reference required benchmark dataset openai/gsm8k.",
+                            "anomaly_type": "execution_failure",
+                        },
+                    }
+                ],
+                proxy={},
+                success_criteria={"metric_name": "acc"},
+                experimental_plan={},
+                evidence_plan={},
+                supervisor_plan={"mode": "repair"},
+            )
+
+            text = path.read_text(encoding="utf-8")
+
+        self.assertIn("Runner Contract Repair Required", text)
+        self.assertIn("FINAL_RESULTS:", text)
+        self.assertIn("openai/gsm8k", text)
+        self.assertIn("full_benchmark_completed", text)
+
 
 if __name__ == "__main__":
     unittest.main()

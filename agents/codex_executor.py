@@ -106,8 +106,55 @@ def _history_text(history: list[dict], limit: int = 12) -> str:
         judgement = row.get("result_judgement") if isinstance(row.get("result_judgement"), dict) else {}
         anomaly = str(judgement.get("anomaly_type") or "").strip()
         suffix = f" anomaly={anomaly}" if anomaly else ""
-        lines.append(f"- iter {row.get('iteration', '?')}: status={status} metric={metric}{suffix} change={description[:180]}")
+        summary = str(judgement.get("summary") or judgement.get("error") or "").strip()
+        details = f" failure={summary[:220]}" if summary else ""
+        lines.append(
+            f"- iter {row.get('iteration', '?')}: status={status} metric={metric}{suffix} "
+            f"change={description[:180]}{details}"
+        )
     return "\n".join(lines)
+
+
+def _recent_runner_contract_feedback(history: list[dict], limit: int = 5) -> str:
+    messages: list[str] = []
+    markers = (
+        "formal benchmark runner",
+        "output contract",
+        "required output contract",
+        "final_results:",
+        "full_benchmark_completed",
+        "does not reference required benchmark dataset",
+    )
+    for row in reversed(history[-limit:]):
+        if str(row.get("status") or "").lower() != "crash":
+            continue
+        judgement = row.get("result_judgement") if isinstance(row.get("result_judgement"), dict) else {}
+        text = " ".join(
+            str(value or "")
+            for value in (
+                row.get("description"),
+                judgement.get("summary"),
+                judgement.get("error"),
+                judgement.get("failure_type"),
+            )
+        )
+        lowered = text.lower()
+        if any(marker in lowered for marker in markers):
+            messages.append(text.strip())
+    if not messages:
+        return ""
+    joined = "\n".join(f"- {message[:500]}" for message in messages[:3])
+    return f"""
+## Runner Contract Repair Required
+The recent candidate crashed before benchmarking because the formal runner contract failed:
+{joined}
+
+Fix this before making another method tweak:
+- The benchmark entrypoint source must contain and print the exact line prefix `FINAL_RESULTS:` followed by JSON.
+- The source/printed JSON must include `per_method`, `candidate_method`, `full_benchmark_completed`, baseline-vs-candidate metrics, and peak VRAM reporting.
+- For formal benchmark code, keep the real benchmark dataset/model identifiers from the plan in the runner source, including concrete ids such as `openai/gsm8k`.
+- Do not set `full_benchmark_completed=false` or `sanity_only=true` for a formal result; if the full benchmark cannot run, return a blocker/redesign artifact instead of a paper-evidence result.
+"""
 
 
 def _recent_no_candidate_diff_streak(history: list[dict], limit: int = 12) -> int:
@@ -183,7 +230,7 @@ def _real_benchmark_guardrails_text() -> str:
 - If this repository contains a generated real LLM benchmark runner, preserve the runner scaffolding while repairing or improving it.
 - Keep local real-data fallback support such as `DEFAULT_LOCAL_JSONL`, `_read_jsonl_rows`, `_download_jsonl_rows`, and checksum validation.
 - Keep real-model fallback support such as ModelScope snapshot loading for Qwen-family models and the `modelscope` dependency.
-- Keep the benchmark output contract: `FINAL_RESULTS`, `per_method`, `candidate_method`, baseline-vs-candidate metrics, and peak VRAM reporting.
+- Keep the benchmark output contract: print a `FINAL_RESULTS:` JSON line containing `per_method`, `candidate_method`, `full_benchmark_completed`, baseline-vs-candidate metrics, and peak VRAM reporting.
 - If recent history says the candidate exceeds an `upper_bound` or `oracle_router`, treat that as a benchmark-semantics bug first: repair the comparator label/oracle calculation or explain why it is not an upper bound before making method-score tweaks.
 - Do not change scoring, answer normalization, parsing, or post-processing only for the candidate method. Any evaluator-side normalization must apply to all methods, and any candidate-side post-processing must be an explicitly justified method component rather than a metric shortcut.
 - Do not add dataset/example-specific lexical shortcuts, answer canonicalizers, or string rewrites that make the candidate easier to score without giving baselines the same evaluator.
@@ -224,6 +271,8 @@ The last {no_candidate_diff_streak} hypothesis iteration(s) produced no candidat
 - Do not return a prose-only summary, unchanged files, or a benchmark-only edit.
 - If the method cannot be implemented in this harness, create `EXPERIMENT_REDESIGN_REQUIRED.json` with the blocker, required harness change, and suggested method rewrite, then set validation_status to `blocked_redesign_required`.
 """
+
+    runner_contract_feedback = _recent_runner_contract_feedback(history)
 
     method_feedback_text = ""
     method_feedback = supervisor_plan.get("method_feedback") if isinstance(supervisor_plan, dict) else None
@@ -285,7 +334,7 @@ Do not replace failures with synthetic data, random tensors, mocked examples, or
 
 ## Iteration History
 {_history_text(history)}
-{implementation_failure_feedback}{method_feedback_text}
+{implementation_failure_feedback}{runner_contract_feedback}{method_feedback_text}
 ## Working Rules
 - You may inspect and edit multiple files in this repo if needed.
 - Keep changes minimal and hypothesis-directed.
