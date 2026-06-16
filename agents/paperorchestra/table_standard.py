@@ -21,7 +21,7 @@ TABLE_RULES = {
     },
     "layout": {
         "wide_tables": r"Use table* + tabularx with \textwidth to fill text width; avoid @{\extracolsep{\fill}} because it breaks continuous row shading.",
-        "single_column_tables": r"Use tabularx with \linewidth when the table is narrow enough.",
+        "single_column_tables": r"Use tabularx with \linewidth by default so the table fills the column; avoid narrow centered tabular blocks.",
         "arraystretch": "1.04-1.08",
         "headers": r"Short symbolic headers such as Acc., Std., Tok., Lat., Route, $\Delta$.",
     },

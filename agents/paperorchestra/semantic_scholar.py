@@ -61,22 +61,40 @@ def arxiv_id_from_paper(p: dict[str, Any]) -> str | None:
 
 
 def paper_to_bibtex_key(p: dict[str, Any]) -> str:
-    """Stable cite key: ArXiv id or S2 paperId."""
+    """Stable cite key: ArXiv id, DOI, or source paper id."""
     aid = arxiv_id_from_paper(p)
     if aid:
         return aid.replace(".", "_").replace("/", "_")
+    doi = (p.get("externalIds") or {}).get("DOI")
+    if isinstance(doi, str) and doi.strip():
+        safe = re.sub(r"[^A-Za-z0-9]+", "_", doi.strip().lower()).strip("_")
+        if safe:
+            return f"DOI_{safe[:80]}"
     pid = p.get("paperId") or "unknown"
-    return f"S2_{pid.replace(':', '_')}"
+    return "REF_" + re.sub(r"[^A-Za-z0-9]+", "_", str(pid)).strip("_")[:96]
+
+def _bibtex_escape_value(value: Any) -> str:
+    text = str(value or "")
+    replacements = {
+        "\\": r"\textbackslash{}",
+        "{": r"\{",
+        "}": r"\}",
+        "&": r"\&",
+        "%": r"\%",
+        "#": r"\#",
+        "_": r"\_",
+    }
+    return "".join(replacements.get(ch, ch) for ch in text)
 
 
 def paper_to_bibtex_entry(p: dict[str, Any], cite_key: str) -> str:
     """Single BibTeX record (@article or @misc for arXiv)."""
-    title = (p.get("title") or "Untitled").replace("{", "\\{").replace("}", "\\}")
+    title = _bibtex_escape_value(p.get("title") or "Untitled")
     authors = p.get("authors") or []
     names: list[str] = []
     for a in authors[:40]:
         if isinstance(a, dict) and a.get("name"):
-            names.append(a["name"])
+            names.append(_bibtex_escape_value(a["name"]))
     au = " and ".join(names) if names else "Unknown"
     y = paper_year(p) or 2024
     aid = arxiv_id_from_paper(p)
@@ -89,12 +107,16 @@ def paper_to_bibtex_entry(p: dict[str, Any], cite_key: str) -> str:
             f"  note = {{arXiv:{aid}}}\n}}\n"
         )
     pid = p.get("paperId") or ""
-    ven = (p.get("venue") or "").replace("{", "\\{")
+    doi = (p.get("externalIds") or {}).get("DOI")
+    ven = _bibtex_escape_value(p.get("venue") or "")
+    doi_line = f"  doi = {{{doi}}},\n" if isinstance(doi, str) and doi.strip() else ""
+    source = _bibtex_escape_value(p.get("_source") or p.get("source") or "bibliographic metadata")
     return (
         f"@misc{{{cite_key},\n"
         f"  title = {{{title}}},\n"
         f"  author = {{{au}}},\n"
         f"  year = {{{y}}},\n"
-        f"  howpublished = {{Semantic Scholar {pid}}},\n"
+        f"{doi_line}"
+        f"  howpublished = {{{source} {pid}}},\n"
         f"  note = {{{ven}}}\n}}\n"
     )

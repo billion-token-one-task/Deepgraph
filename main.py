@@ -92,6 +92,19 @@ def _serve_http() -> None:
     serve(app, host=WEB_HOST, port=WEB_PORT, threads=8)
 
 
+def _run_startup_maintenance(label: str, fn) -> bool:
+    print(f"{label}...", flush=True)
+    try:
+        fn()
+    except Exception as exc:
+        if "database is locked" in str(exc).lower():
+            print(f"{label} skipped: database is locked; continuing startup.", flush=True)
+            return False
+        raise
+    print(f"{label} ready.", flush=True)
+    return True
+
+
 def main():
     if not _try_acquire_process_lock():
         owner = _current_lock_owner()
@@ -114,18 +127,11 @@ def main():
         print("Database ready.", flush=True)
         print(f"Database target: {backend['target']} ({backend['backend']})", flush=True)
 
-        # Seed taxonomy tree
-        print("Seeding taxonomy tree...", flush=True)
-        seed_taxonomy()
-        print("Taxonomy ready.", flush=True)
-
-        print("Backfilling result taxonomy links...", flush=True)
-        backfill_result_taxonomy()
-        print("Result taxonomy ready.", flush=True)
-
-        print("Backfilling entity resolution map...", flush=True)
-        backfill_entity_resolutions()
-        print("Entity resolutions ready.", flush=True)
+        # Startup maintenance is idempotent; do not let transient SQLite writers
+        # prevent the controller, auto-research loop, and GPU scheduler from booting.
+        _run_startup_maintenance("Seeding taxonomy tree", seed_taxonomy)
+        _run_startup_maintenance("Backfilling result taxonomy links", backfill_result_taxonomy)
+        _run_startup_maintenance("Backfilling entity resolution map", backfill_entity_resolutions)
 
         # Skip heavy backfills on startup for faster boot
         # These can run in the background via pipeline

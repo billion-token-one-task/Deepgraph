@@ -36,6 +36,15 @@ GENERIC_PREFIXES = (
     "on ",
 )
 
+GENERIC_TITLE_PREFIXES = {
+    "llm",
+    "llms",
+    "large language model",
+    "large language models",
+    "deepgraph",
+    "paper",
+}
+
 SYMBOLIC_NAME_BY_KEYWORD = (
     (("latent", "hidden", "communication", "inter-agent"), "Interstellar"),
     (("consensus", "refinement", "answer distribution", "fixed-point", "fixed point"), "Attractor"),
@@ -83,7 +92,16 @@ def _title_case_phrase(value: str) -> str:
 
 def _extract_acronym(value: str) -> str:
     match = re.search(r"\b[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)+\b|\b[A-Z]{2,8}\b", value or "")
-    return match.group(0) if match else ""
+    if match:
+        return match.group(0)
+    words = re.findall(r"\b[A-Z][A-Za-z0-9]+\b", value or "")
+    stop = {"Large", "Language", "Model", "Models", "Method", "System", "Paper"}
+    words = [word for word in words if word not in stop]
+    if 3 <= len(words) <= 6:
+        acronym = "".join(word[0] for word in words)
+        if 3 <= len(acronym) <= 6:
+            return acronym
+    return ""
 
 
 def _symbolic_name(*, raw_title: str, method_name: str, claim: str) -> str:
@@ -114,6 +132,10 @@ def _canonical_subtitle_source(value: str) -> str:
     if has_consensus_refinement and "answer distribution" in lower:
         prefix = "Benchmark-conditioned " if "benchmark-conditioned" in lower else ""
         return f"{prefix}refinement for answer distribution consensus"
+    if "residual policy packets" in lower and "cooperative" in lower:
+        if "llm" in lower or "language model" in lower:
+            return "residual policy packets for cooperative LLM inference"
+        return "residual policy packets for cooperative inference"
     return source
 
 
@@ -148,14 +170,19 @@ def normalize_paper_title(
     claim_text = _squash(claim or "")
     evidence_ready = _evidence_ready(context)
 
+    generic_colon_subtitle = ""
     if ":" in raw:
         prefix, subtitle = raw.split(":", 1)
         prefix = _squash(prefix)
-        subtitle = _clean_subtitle(subtitle, evidence_ready=evidence_ready)
-        if prefix and subtitle and len(prefix.split()) <= 4 and "/" not in prefix:
-            return f"{prefix}: {subtitle}"
+        prefix_lower = prefix.lower()
+        if prefix_lower in GENERIC_TITLE_PREFIXES:
+            generic_colon_subtitle = _squash(subtitle)
+        else:
+            subtitle = _clean_subtitle(subtitle, evidence_ready=evidence_ready)
+            if prefix and subtitle and len(prefix.split()) <= 4 and "/" not in prefix:
+                return f"{prefix}: {subtitle}"
 
-    source = _canonical_subtitle_source(raw or claim_text or method or "Method")
+    source = _canonical_subtitle_source(generic_colon_subtitle or raw or claim_text or method or "Method")
     if source == raw:
         source = re.sub(r"\s+as\s+.+$", "", source, flags=re.I)
     source = re.sub(r"\bimproves?\b.+$", "", source, flags=re.I).strip() or source

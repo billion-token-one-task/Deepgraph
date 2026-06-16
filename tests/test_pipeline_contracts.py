@@ -147,6 +147,43 @@ class ManuscriptInputStateTests(unittest.TestCase):
         with self.assertRaises(ContractValidationError):
             state.require_submission_ready()
 
+    def test_submission_ready_allows_benchmark_draft_with_incomplete_extended_package(self):
+        state = ManuscriptInputState(
+            run_id=1,
+            deep_insight_id=2,
+            formal_experiment=True,
+            smoke_test_only=False,
+            title="Benchmark Draft",
+            method_name="Method",
+            claims=[{"claim_text": "x"}],
+            citation_seed_paper_ids=["2401.1"],
+            result_packet={
+                "formal_experiment": True,
+                "verdict": "confirmed",
+                "hypothesis_iterations": [{"iteration_number": 1}],
+                "evidence_tier": "benchmark_plan",
+                "blocks_manuscript": True,
+                "full_benchmark_completed": False,
+                "artifact_paths": {"artifact_manifest": "/tmp/benchmark_artifact_manifest.json"},
+                "quality_gates": {"requires_full_benchmark_package": True, "minimum_seeds": 5},
+                "publication_evidence_contract": {
+                    "required_baselines": ["Extra Baseline"],
+                    "required_ablations": ["No component"],
+                    "minimum_seeds": 5,
+                },
+                "benchmark_summary": {
+                    "primary_metric": "accuracy",
+                    "num_seeds": 1,
+                    "per_method": {
+                        "baseline": {"accuracy": 0.7},
+                        "candidate": {"accuracy": 0.8},
+                    },
+                },
+            },
+        )
+
+        state.require_submission_ready()
+
     def test_submission_ready_blocks_non_full_paper_claim_route(self):
         state = ManuscriptInputState(
             run_id=1,

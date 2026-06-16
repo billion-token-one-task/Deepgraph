@@ -67,6 +67,26 @@ def _patch_compact_crpp_direct(train_path: Path) -> bool:
     return True
 
 
+def _patch_crpp_direct_budget(train_path: Path) -> bool:
+    """Allow copied shard code to cap the non-routed CRPP direct branch."""
+    text = train_path.read_text(encoding="utf-8")
+    if "DEEPGRAPH_CRPP_DIRECT_MAX_NEW_TOKENS" in text:
+        return False
+    anchor = '        max_new_tokens = _env_int("DEEPGRAPH_VOC_DELIBERATE_MAX_NEW_TOKENS", 64) if deliberate else 48\n'
+    replacement = (
+        '        max_new_tokens = (\n'
+        '            _env_int("DEEPGRAPH_VOC_DELIBERATE_MAX_NEW_TOKENS", 64)\n'
+        '            if deliberate\n'
+        '            else _env_int("DEEPGRAPH_CRPP_DIRECT_MAX_NEW_TOKENS", 48)\n'
+        '        )\n'
+    )
+    if anchor not in text:
+        raise RuntimeError("could not locate VOC max_new_tokens anchor for CRPP direct budget patch")
+    text = text.replace(anchor, replacement, 1)
+    train_path.write_text(text, encoding="utf-8")
+    return True
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--source-run", type=Path, default=Path("/root/deepgraph_ideas/idea_8/experiments/main/runs/run_13"))
@@ -107,6 +127,10 @@ def main() -> int:
     compact_crpp_patch_applied = False
     if compact_crpp_patch:
         compact_crpp_patch_applied = _patch_compact_crpp_direct(code_dir / "train.py")
+    direct_budget_patch = bool(os.getenv("DEEPGRAPH_CRPP_DIRECT_MAX_NEW_TOKENS"))
+    direct_budget_patch_applied = False
+    if direct_budget_patch:
+        direct_budget_patch_applied = _patch_crpp_direct_budget(code_dir / "train.py")
     if results_dir.exists():
         shutil.rmtree(results_dir)
     results_dir.mkdir(parents=True, exist_ok=True)
@@ -129,10 +153,12 @@ def main() -> int:
                 "DEEPGRAPH_VOC_THRESHOLD",
                 "DEEPGRAPH_VOC_REASONING_COST",
                 "DEEPGRAPH_VOC_DELIBERATE_MAX_NEW_TOKENS",
+                "DEEPGRAPH_CRPP_DIRECT_MAX_NEW_TOKENS",
             )
             if os.getenv(key) is not None
         },
         "compact_crpp_patch_applied": compact_crpp_patch_applied,
+        "direct_budget_patch_applied": direct_budget_patch_applied,
         "created_at": time.time(),
     }
     (spec_dir / "shard_config.json").parent.mkdir(parents=True, exist_ok=True)

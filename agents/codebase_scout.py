@@ -35,6 +35,7 @@ MAX_PAPER_GITHUB_QUERIES = 4
 MAX_CANDIDATES = 16
 MAX_AGENT_ROUNDS = 3
 MAX_AUTO_VERIFY_PAPER_CANDIDATES = 5
+_GITHUB_API_DISABLED_REASON = ""
 COMMON_ENTRYPOINTS = (
     "train.py",
     "main.py",
@@ -121,9 +122,20 @@ def _github_headers() -> dict[str, str]:
 
 
 def _github_get(client: httpx.Client, path: str, *, params: dict | None = None) -> dict | list | None:
+    global _GITHUB_API_DISABLED_REASON
+    if _GITHUB_API_DISABLED_REASON:
+        return None
     try:
         response = client.get(f"{GITHUB_API}{path}", headers=_github_headers(), params=params or {})
         if response.status_code == 404:
+            return None
+        if response.status_code in {403, 429}:
+            _GITHUB_API_DISABLED_REASON = f"HTTP {response.status_code}"
+            print(
+                f"[SCOUT] GitHub API disabled for this process after {_GITHUB_API_DISABLED_REASON}; "
+                "falling back to paper-linked repos or scratch.",
+                flush=True,
+            )
             return None
         response.raise_for_status()
         return response.json()

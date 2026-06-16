@@ -253,6 +253,9 @@ def _eligible_tier2_backlog() -> int:
         LEFT JOIN auto_research_jobs arj ON arj.deep_insight_id = di.id
         WHERE di.tier = 2
           AND COALESCE(di.status, 'candidate') NOT IN ('exists')
+          AND COALESCE(di.outcome, 'pending') NOT IN ('cleaned', 'archived')
+          AND COALESCE(di.novelty_status, '') NOT IN ('cleaned_similar_duplicate', 'exists')
+          AND COALESCE(di.submission_status, 'not_started') NOT IN ('stale')
           AND (
             arj.status IS NULL
             OR arj.status IN ('queued', 'eligible', 'failed', 'queued_cpu', 'queued_gpu')
@@ -271,6 +274,9 @@ def _warm_tier2_backlog() -> int:
         LEFT JOIN auto_research_jobs arj ON arj.deep_insight_id = di.id
         WHERE di.tier = 2
           AND COALESCE(di.status, 'candidate') NOT IN ('exists')
+          AND COALESCE(di.outcome, 'pending') NOT IN ('cleaned', 'archived')
+          AND COALESCE(di.novelty_status, '') NOT IN ('cleaned_similar_duplicate', 'exists')
+          AND COALESCE(di.submission_status, 'not_started') NOT IN ('stale')
           AND (
             arj.status IS NULL
             OR arj.status IN (
@@ -487,10 +493,14 @@ def _refresh_node_outputs(node_id: str) -> dict:
     summary = tax.ensure_node_summary(node_id, force=True)
 
     stored_ids: list[int] = []
-    if _recent_node_insight_count(node_id) < 2:
+    recent_count = _recent_node_insight_count(node_id)
+    slots = max(0, 2 - recent_count)
+    if slots > 0:
         insights, _tokens = discover_insights(node_id)
-        for ins in insights:
+        for ins in insights[:slots]:
             insight_id = store_insight(ins)
+            if not insight_id or insight_id <= 0:
+                continue
             stored_ids.append(insight_id)
             db.emit_pipeline_event(
                 "deep_insight_created",

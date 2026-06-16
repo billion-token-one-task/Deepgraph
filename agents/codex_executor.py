@@ -292,6 +292,15 @@ Guardrails:
 {guardrails or '- Preserve benchmark contract fairness.'}
 """
 
+    mechanism_contract_text = """
+## Mechanism Operationalization Contract
+- The repository does not need to already contain a named module for the idea. If the method requires a missing component (for example a memory encoder, replay buffer, router, packet, or repair loop), implement the smallest real component and wire it into the candidate path.
+- Do not treat a missing module as unsupported by itself. A blocker is appropriate only when the locked benchmark cannot exercise the mechanism or the required data/model/harness is absent.
+- Preserve the semantic mechanism in the method description. Do not replace a memory/replay, closed-loop, IRT, or representation-learning idea with unrelated prompt wording, token-cap tuning, or generic routing unless that is explicitly the proposed mechanism.
+- If the current benchmark cannot test the mechanism, create `EXPERIMENT_REDESIGN_REQUIRED.json` with: `reason`, `mechanism_needed`, `benchmark_gap`, `required_harness_change`, and `why_not_scientific_failure`. This means the run needs reforge/harness work, not that the idea is refuted.
+- If you proceed with an implementation, ensure the final summary explains how the code change maps to the proposed mechanism and why the metric can test it.
+"""
+
     content = f"""# DeepGraph Experiment Agent
 
 You are executing one iteration of a DeepGraph experiment inside this repository.
@@ -326,6 +335,8 @@ If the previous attempt was kept, build on it conservatively.
 Honor the evidence plan. Do not invent ablations or visual analyses when they are disabled.
 For formal benchmark runs, keep the experiment on the real dataset/model named in the plan.
 Do not replace failures with synthetic data, random tensors, mocked examples, or a CUDA-only probe.
+
+{mechanism_contract_text}
 
 {_real_benchmark_guardrails_text()}
 

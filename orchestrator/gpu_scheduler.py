@@ -46,6 +46,23 @@ GPU_SCHEDULER_CONSUMER = "gpu_scheduler"
 _job_dispatch_lock = threading.Lock()
 _active_job_lock = threading.Lock()
 _active_job_ids: set[int] = set()
+_active_run_ids: set[int] = set()
+
+
+def _bundle_failure_retry_fields(bundle: dict | None) -> dict | None:
+    if not isinstance(bundle, dict) or "error" not in bundle:
+        return None
+    status = str(bundle.get("status") or "").strip()
+    if status not in {"manuscript_blocked", "needs_revision"}:
+        return None
+    blockers = bundle.get("submission_blockers") if isinstance(bundle.get("submission_blockers"), list) else []
+    blocker_text = "; ".join(str(item) for item in blockers[:8]) or str(bundle.get("error") or "Manuscript quality gate failed")
+    return {
+        "status": "queued",
+        "stage": "manuscript_retry_after_quality_gate",
+        "last_note": "Manuscript quality gate failed; queued targeted manuscript revision instead of closing the loop.",
+        "last_error": blocker_text[:4000],
+    }
 
 
 def _local_hostname() -> str:
@@ -67,9 +84,30 @@ def _mark_job_inactive(job_id: int) -> None:
         _active_job_ids.discard(int(job_id))
 
 
+def _try_mark_run_active(run_id: int) -> bool:
+    with _active_job_lock:
+        run_id = int(run_id)
+        if run_id in _active_run_ids:
+            return False
+        _active_run_ids.add(run_id)
+        return True
+
+
+def _mark_run_inactive(run_id: int) -> None:
+    with _active_job_lock:
+        _active_run_ids.discard(int(run_id))
+
+
 def _job_is_active_in_this_process(job_id: int) -> bool:
     with _active_job_lock:
         return int(job_id) in _active_job_ids
+
+
+def _run_is_active_in_this_process(run_id: int | None) -> bool:
+    if run_id is None:
+        return False
+    with _active_job_lock:
+        return int(run_id) in _active_run_ids
 
 
 def _try_start_next_gpu_job() -> bool:
@@ -105,6 +143,81 @@ def _local_worker_ids(workers: list[dict] | None = None) -> list[str]:
     return ids
 
 
+
+def _pmon_gpu_processes() -> dict[str, list[int]]:
+    try:
+        proc = subprocess.run(
+            ["nvidia-smi", "pmon", "-c", "1"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return {}
+    if proc.returncode != 0:
+        return {}
+    out: dict[str, list[int]] = {}
+    for raw in proc.stdout.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split()
+        if len(parts) < 2 or parts[1] == "-":
+            continue
+        try:
+            pid = int(parts[1])
+        except ValueError:
+            continue
+        out.setdefault(parts[0], []).append(pid)
+    return out
+
+
+def _worker_visible_device(worker_id: str, worker: dict | None = None) -> str:
+    if worker:
+        raw = worker.get("metadata")
+        if isinstance(raw, str) and raw.strip():
+            try:
+                metadata = json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                metadata = {}
+            if isinstance(metadata, dict) and metadata.get("visible_device") is not None:
+                return str(metadata.get("visible_device"))
+    if ":gpu" in worker_id:
+        return worker_id.rsplit(":gpu", 1)[-1]
+    return ""
+
+
+def _pid_matches_run(pid: int, run_workdir: str) -> bool:
+    try:
+        cwd = Path(f"/proc/{pid}/cwd").resolve(strict=False)
+    except Exception:
+        cwd = Path("")
+    try:
+        cmdline = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode("utf-8", "replace")
+    except Exception:
+        cmdline = ""
+    needle = str(run_workdir or "").strip()
+    if not needle:
+        return False
+    return needle in str(cwd) or needle in cmdline
+
+
+def _local_run_has_live_process(job: dict) -> bool:
+    worker_id = str(job.get("assigned_worker") or "")
+    if not worker_id or worker_id.startswith("ssh:"):
+        return True
+    visible = _worker_visible_device(worker_id, job)
+    if not visible:
+        return True
+    pids = _pmon_gpu_processes().get(visible, [])
+    if not pids:
+        return False
+    run = db.fetchone("SELECT workdir FROM experiment_runs WHERE id=?", (job.get("experiment_run_id"),)) or {}
+    workdir = str(run.get("workdir") or "")
+    if not workdir:
+        return bool(pids)
+    return any(_pid_matches_run(pid, workdir) for pid in pids)
+
 def recover_stale_local_running_jobs(workers: list[dict] | None = None) -> int:
     """Requeue local GPU jobs left running by a controller restart.
 
@@ -132,6 +245,8 @@ def recover_stale_local_running_jobs(workers: list[dict] | None = None) -> int:
         job_id = job["id"]
         run_id = job["experiment_run_id"]
         insight_id = job["deep_insight_id"]
+        if _local_run_has_live_process(job):
+            continue
         if _current_run_is_successful(run_id):
             db.execute(
                 """
@@ -588,6 +703,62 @@ def get_status() -> dict:
     }
 
 
+
+def _max_schedulable_worker_vram_gb() -> float:
+    try:
+        workers = register_default_workers()
+    except Exception:
+        workers = []
+    values: list[float] = []
+    for worker in workers:
+        try:
+            value = float(worker.get("total_mem_gb") or 0)
+        except (TypeError, ValueError):
+            value = 0.0
+        if value > 0:
+            values.append(value)
+    if not values:
+        filter_sql, params = _worker_filter_sql()
+        if GPU_MODE != "ssh":
+            filter_sql += " AND hostname=?"
+            params = (*params, _local_hostname())
+        rows = db.fetchall(
+            f"""
+            SELECT total_mem_gb FROM gpu_workers
+            WHERE COALESCE(status, '') <> 'offline'{filter_sql}
+            """,
+            params,
+        )
+        for row in rows:
+            try:
+                value = float(row.get("total_mem_gb") or 0)
+            except (TypeError, ValueError):
+                value = 0.0
+            if value > 0:
+                values.append(value)
+    return max(values) if values else 0.0
+
+
+def _effective_vram_required_gb(resource_class: str, requested_vram_gb: float) -> tuple[float, str | None]:
+    try:
+        requested = float(requested_vram_gb or 0)
+    except (TypeError, ValueError):
+        requested = 0.0
+    if requested <= 0:
+        return 0.0, None
+    max_worker_vram = _max_schedulable_worker_vram_gb()
+    if max_worker_vram <= 0 or requested <= max_worker_vram:
+        return requested, None
+    if max_worker_vram >= 16:
+        effective = max_worker_vram
+        note = (
+            f"Adjusted vram_required_gb from {requested:g} to {effective:g} for {resource_class}; "
+            "runner will receive single/micro-batch VRAM environment hints."
+        )
+        return effective, note
+    return requested, None
+
+
 def queue_run(
     *,
     insight_id: int,
@@ -599,11 +770,12 @@ def queue_run(
     timeout_s: int | None = None,
 ) -> int:
     db.init_db()
+    effective_vram_required_gb, scheduling_note = _effective_vram_required_gb(resource_class, vram_required_gb)
     jid = db.insert_returning_id(
         """
         INSERT INTO gpu_jobs
-        (deep_insight_id, experiment_run_id, resource_class, gpu_count, vram_required_gb, timeout_s, priority, status)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'queued')
+        (deep_insight_id, experiment_run_id, resource_class, gpu_count, vram_required_gb, timeout_s, priority, status, error_message)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?)
         RETURNING id
         """,
         (
@@ -611,9 +783,10 @@ def queue_run(
             run_id,
             resource_class,
             gpu_count,
-            vram_required_gb,
+            effective_vram_required_gb,
             timeout_s or GPU_JOB_TIMEOUT_SECONDS,
             priority,
+            scheduling_note,
         ),
     )
     db.commit()
@@ -740,6 +913,24 @@ def _next_job() -> dict | None:
         """
     )
     for job in rows:
+        if _run_is_active_in_this_process(job.get("experiment_run_id")):
+            if not _job_is_active_in_this_process(int(job["id"])):
+                _mark_run_inactive(int(job["experiment_run_id"]))
+            else:
+                db.execute(
+                    """
+                    UPDATE gpu_jobs
+                    SET error_message=?
+                    WHERE id=? AND status='queued'
+                    """,
+                    (
+                        "Deferred because this experiment run is already active in this scheduler process; "
+                        "skipping queue head so other GPU jobs can launch.",
+                        job["id"],
+                    ),
+                )
+                db.commit()
+                continue
         run = db.fetchone("SELECT status, phase, error_message FROM experiment_runs WHERE id=?", (job["experiment_run_id"],))
         blocker = _launch_blocker_for_run(run)
         if blocker:
@@ -849,6 +1040,25 @@ def _run_job(job: dict, worker: dict) -> None:
     insight_id = job["deep_insight_id"]
     worker_id = worker["id"]
     _mark_job_active(int(job_id))
+    if not _try_mark_run_active(int(run_id)):
+        _mark_run_inactive(int(run_id))
+        if not _try_mark_run_active(int(run_id)):
+            db.execute(
+                """
+                UPDATE gpu_jobs
+                SET status='queued', assigned_worker=NULL, started_at=NULL,
+                    error_message='Deferred because this experiment run is already active in this scheduler process.'
+                WHERE id=?
+                """,
+                (job_id,),
+            )
+            db.execute(
+                "UPDATE gpu_workers SET status='idle', heartbeat_at=CURRENT_TIMESTAMP WHERE id=?",
+                (worker_id,),
+            )
+            db.commit()
+            _mark_job_inactive(int(job_id))
+            return
     auto_job = db.fetchone(
         "SELECT stage FROM auto_research_jobs WHERE deep_insight_id=?",
         (insight_id,),
@@ -952,21 +1162,41 @@ def _run_job(job: dict, worker: dict) -> None:
             ),
         )
         if not completion_queued:
-            db.execute(
-                """
-                UPDATE auto_research_jobs
-                SET status=?, stage=?, artifact_bundle_id=?, last_note=?, last_error=?
-                WHERE deep_insight_id=?
-                """,
-                (
-                    "bundle_ready" if "error" not in bundle else "completed",
-                    "writing_submission" if "error" not in bundle else "closed_loop_complete",
-                    (bundle.get("bundle_ids") or [None])[-1],
-                    f"GPU run completed with verdict={result.get('verdict', 'unknown')}. Submission bundle status={'ok' if 'error' not in bundle else 'failed'}.",
-                    gpu_error,
-                    insight_id,
-                ),
-            )
+            retry_fields = _bundle_failure_retry_fields(bundle if isinstance(bundle, dict) else None)
+            if retry_fields:
+                db.execute(
+                    """
+                    UPDATE auto_research_jobs
+                    SET status=?, stage=?, artifact_bundle_id=?, last_note=?, last_error=?,
+                        assigned_worker=NULL, updated_at=CURRENT_TIMESTAMP
+                    WHERE deep_insight_id=?
+                    """,
+                    (
+                        retry_fields["status"],
+                        retry_fields["stage"],
+                        (bundle.get("bundle_ids") or [None])[-1] if isinstance(bundle, dict) else None,
+                        retry_fields["last_note"],
+                        retry_fields["last_error"] or gpu_error,
+                        insight_id,
+                    ),
+                )
+            else:
+                bundle_ok = isinstance(bundle, dict) and "error" not in bundle
+                db.execute(
+                    """
+                    UPDATE auto_research_jobs
+                    SET status=?, stage=?, artifact_bundle_id=?, last_note=?, last_error=?
+                    WHERE deep_insight_id=?
+                    """,
+                    (
+                        "bundle_ready" if bundle_ok else "completed",
+                        "writing_submission" if bundle_ok else "closed_loop_complete",
+                        (bundle.get("bundle_ids") or [None])[-1] if isinstance(bundle, dict) else None,
+                        f"GPU run completed with verdict={result.get('verdict', 'unknown')}. Submission bundle status={'ok' if bundle_ok else 'failed'}.",
+                        gpu_error,
+                        insight_id,
+                    ),
+                )
         db.commit()
         db.emit_pipeline_event(
             "gpu_job_completed",
@@ -1015,6 +1245,7 @@ def _run_job(job: dict, worker: dict) -> None:
         )
     finally:
         _mark_job_inactive(int(job_id))
+        _mark_run_inactive(int(run_id))
         _release_worker_if_no_running_jobs(worker_id, finished_job_id=job_id)
         db.commit()
 
@@ -1043,7 +1274,12 @@ def _maybe_recover_stale_jobs() -> int:
     if now - _last_recovery_check < max(30, GPU_STALE_RECOVERY_POLL_SECONDS):
         return 0
     _last_recovery_check = now
-    return recover_stale_ssh_running_jobs() + recover_busy_workers_without_running_jobs()
+    workers = register_default_workers()
+    return (
+        recover_stale_local_running_jobs(workers)
+        + recover_stale_ssh_running_jobs()
+        + recover_busy_workers_without_running_jobs()
+    )
 
 
 def _loop() -> None:
@@ -1068,7 +1304,20 @@ def _loop() -> None:
 def start() -> dict:
     global _scheduler_thread
     db.init_db()
-    workers = register_default_workers()
+    try:
+        workers = register_default_workers()
+    except Exception as exc:  # pragma: no cover - startup SQLite contention guard
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        from orchestrator.pipeline import log_event
+
+        log_event("warning", {"step": "gpu_scheduler_register_workers", "error": str(exc)})
+        try:
+            workers = list_workers()
+        except Exception:
+            workers = []
     with _scheduler_lock:
         if _scheduler_thread and _scheduler_thread.is_alive():
             return {"status": "already_running"}

@@ -122,12 +122,10 @@ def review_manuscript_plain(*, bundle_dir: Path, main_tex: str, quality_context:
         "Judge the manuscript as a real submission draft."
     )
     user_prompt = (
-        "How is the quality of this paper? Is it deliverable/submittable now? List the deficiencies.\n"
-        "Pay special attention to: whether the proposed method beats simple cheap baselines; "
-        "statistical significance, seed count, dataset/model scale; route/gate rate showing whether the method actually works; "
-        "overclaiming words such as Certified or training-free; duplicated abstract/title/sections; raw unrounded floats; "
-        "question-style contribution framing; one-sentence Results/Discussion; unresolved citations or ???; "
-        "and repeated or same-type experiment figures.\n\n"
+        "How is the quality of this manuscript as a document? Is the submission bundle deliverable now? List document-level deficiencies only.\n"
+        "Do not judge experiment adequacy here: missing baselines, p-values, route/gate rates, seed count, dataset/model scale, ablations, benchmark scope, or whether the method meaningfully beats another method belong to the experiment/evidence gate, not this manuscript gate. "
+        "Only flag experiment content when the manuscript text misstates the recorded results, fabricates evidence, or uses overclaiming wording unsupported by the supplied context. "
+        "Pay special attention to: PDF/LaTeX compilation, exact compile errors in quality_context, duplicated abstract/title/sections, raw unrounded floats, unresolved citations or ???, missing or duplicated required sections, figure placement/layout, repeated figure assets, table formatting, citation coverage, and whether the text fits a complete conference paper.\n\n"
         "Return JSON only with keys: can_deliver boolean, score number from 1 to 10, recommendation string, "
         "summary string, issues array of objects {severity: high|medium|low, area, issue, evidence, fix}.\n\n"
         "--- quality_context.json ---\n"
@@ -137,6 +135,18 @@ def review_manuscript_plain(*, bundle_dir: Path, main_tex: str, quality_context:
         + "\n\n--- main_tex_plain_excerpt ---\n"
         + tex_excerpt
     )
+    if len(user_prompt or "") > 20000:
+        return {
+            "schema_version": PLAIN_REVIEW_SCHEMA_VERSION,
+            "status": "skipped",
+            "can_deliver": True,
+            "score": None,
+            "recommendation": "deterministic_auditors_only",
+            "summary": "Skipped plain LLM reviewer because the review prompt was too large for reliable streaming; deterministic quality auditors remain active.",
+            "issues": [],
+            "skip_reason": "prompt_too_large_for_reliable_llm_call",
+            "prompt_chars": len(user_prompt or ""),
+        }
     try:
         parsed, tokens = call_llm_json(system_prompt, user_prompt, temperature=0.0)
         review = _normalise_review(parsed, tokens)

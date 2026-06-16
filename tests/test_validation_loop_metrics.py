@@ -103,7 +103,7 @@ class ValidationMetricParsingTests(unittest.TestCase):
         self.assertEqual(result["failure_type"], "missing_final_results")
         self.assertIn("model_ready", result["last_benchmark_stage"])
 
-    def test_formal_runner_guard_blocks_smoke_script_and_json_literals(self):
+    def test_formal_runner_autorepairs_json_literals_before_guard(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             workdir = Path(tmpdir)
             code_dir = workdir / "code"
@@ -124,7 +124,27 @@ class ValidationMetricParsingTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (code_dir / "train.py").write_text(
-                "import json\nprint('tiny smoke baseline')\nprint('FINAL_RESULTS: ' + json.dumps({'accuracy': 0.0}, sort_keys=true))\n",
+                textwrap.dedent(
+                    """
+                    import json
+                    from pathlib import Path
+                    Path('artifacts').mkdir(parents=true, exist_ok=true)
+                    sentinel = null
+                    if sentinel is not null:
+                        raise RuntimeError('unreachable')
+                    result = {
+                        'primary_metric': 'accuracy',
+                        'candidate_method': 'candidate',
+                        'full_benchmark_completed': true,
+                        'num_seeds': 3,
+                        'per_method': {
+                            'direct': {'accuracy': 0.1},
+                            'candidate': {'accuracy': 0.2},
+                        },
+                    }
+                    print('FINAL_RESULTS: ' + json.dumps(result, sort_keys=true))
+                    """
+                ).strip(),
                 encoding="utf-8",
             )
 
@@ -136,9 +156,83 @@ class ValidationMetricParsingTests(unittest.TestCase):
                 metric_name="accuracy",
             )
 
+            repaired = (code_dir / "train.py").read_text(encoding="utf-8")
+
+        self.assertEqual(result["status"], "ok")
+        self.assertAlmostEqual(result["metric"], 0.2)
+        self.assertIn("full_benchmark_completed': True", repaired)
+        self.assertIn("sort_keys=True", repaired)
+        self.assertIn("parents=True", repaired)
+        self.assertIn("exist_ok=True", repaired)
+        self.assertIn("sentinel=None", repaired)
+        self.assertIn("sentinel is not None", repaired)
+
+    def test_gpu_real_benchmark_rejects_cpu_proxy_runner(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workdir = Path(tmpdir)
+            code_dir = workdir / "code"
+            spec_dir = workdir / "spec"
+            code_dir.mkdir()
+            spec_dir.mkdir()
+            (spec_dir / "success_criteria.json").write_text(
+                json.dumps(
+                    {
+                        "metric_name": "accuracy",
+                        "publication_evidence_contract": {
+                            "evidence_tier": "benchmark_plan",
+                            "required_real_benchmarks": ["GSM8K"],
+                            "quality_gates": {"requires_full_benchmark_package": True},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (spec_dir / "proxy_config.json").write_text(
+                json.dumps(
+                    {
+                        "real_benchmark_required": True,
+                        "benchmark_model": "Qwen/Qwen2.5-7B-Instruct",
+                        "benchmark_dataset": "openai/gsm8k",
+                        "benchmark_dataset_config": "main",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (code_dir / "train.py").write_text(
+                textwrap.dedent(
+                    """
+                    import json
+                    from sklearn.datasets import load_digits
+                    from sklearn.linear_model import LogisticRegression
+                    x, y = load_digits(return_X_y=True)
+                    LogisticRegression(max_iter=10).fit(x, y)
+                    print('FINAL_RESULTS: ' + json.dumps({
+                        'accuracy': 0.9,
+                        'candidate_method': 'candidate',
+                        'per_method': {'candidate': {'accuracy': 0.9}},
+                        'full_benchmark_completed': True,
+                    }))
+                    """
+                ).strip(),
+                encoding="utf-8",
+            )
+
+            result = validation_loop._run_experiment(
+                workdir,
+                code_dir,
+                30,
+                baseline_command=f'"{sys.executable}" train.py',
+                metric_name="accuracy",
+                execution_context={
+                    "job": {"resource_class": "gpu_large", "vram_required_gb": 24},
+                    "worker": {"id": "local-gpu0", "gpu_index": 0, "total_mem_gb": 24},
+                },
+            )
+
         self.assertEqual(result["status"], "crash")
         self.assertEqual(result["failure_type"], "contract_violation")
-        self.assertIn("sort_keys=true", result["error"])
+        self.assertIn("CPU/proxy", result["error"])
+        self.assertIn("CUDA/device", result["error"])
 
     def test_validation_benchmark_env_preserves_paper_grade_contract_budget(self):
         with tempfile.TemporaryDirectory() as tmpdir:

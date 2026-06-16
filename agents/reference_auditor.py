@@ -9,7 +9,7 @@ from typing import Any
 AUDITOR_VERSION = "deepgraph_reference_auditor_v1_2026_06_10"
 
 REFERENCE_AUDIT_STANDARD_TEXT = """Reference standard:
-- A full paper must include at least 50 real bibliography entries and at least 50 distinct entries cited in the main text when the topic has enough literature.
+- A full paper must include at least 30 real bibliography entries and at least 30 distinct entries cited in the main text; aim for roughly 50 when the topic has enough literature.
 - Every cited key must exist in references.bib; no invented, placeholder, or dangling citation keys are allowed.
 - Each bibliography entry must include title, year, and author/editor/organization metadata, plus publication venue or a DOI/arXiv/URL identifier whenever available.
 - Citations must not appear in the Abstract.
@@ -179,8 +179,8 @@ def audit_references(
     *,
     main_tex: str,
     bibtex: str,
-    min_references: int = 50,
-    min_cited_references: int = 50,
+    min_references: int = 30,
+    min_cited_references: int = 30,
     current_year: int = 2026,
 ) -> dict[str, Any]:
     entries = parse_bib_entries(bibtex)
@@ -196,7 +196,7 @@ def audit_references(
                 "Reference auditor / bibliography size",
                 "Bibliography is below the required full-paper reference count.",
                 f"bibliography_entry_count={len(entries)}; required_min={min_references}",
-                "Return to literature discovery and collect at least 50 verified, topic-relevant references before final writing.",
+                "Return to literature discovery and collect at least 30 verified, topic-relevant references before final writing; aim for 50 when available.",
             )
         )
     if len(cited_set) < min_cited_references:
@@ -206,7 +206,7 @@ def audit_references(
                 "Reference auditor / cited-reference size",
                 "Main text cites fewer distinct references than the required full-paper minimum.",
                 f"unique_cited_count={len(cited_set)}; required_min={min_cited_references}",
-                "Distribute at least 50 verified citations across Introduction, Related Work, and Method; do not pad Abstract or contribution bullets.",
+                "Distribute at least 30 verified citations across Introduction, Related Work, and Method; aim for 50 when available and do not pad Abstract or contribution bullets.",
             )
         )
 

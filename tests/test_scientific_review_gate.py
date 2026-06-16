@@ -90,6 +90,37 @@ class ScientificReviewGateTests(unittest.TestCase):
         self.assertFalse(review["missing_analyses"]["live_sanity_check"])
         self.assertNotEqual(review["target_assessments"]["iclr_main"]["verdict"], "reject")
 
+    def test_positive_sota_margin_downgrades_significance_and_tiny_gap(self):
+        state = {
+            "method_name": "Certified Residual Policy Packets",
+            "result_packet": {
+                "evidence_tier": "audited_live_benchmark",
+                "benchmark_summary": {
+                    "primary_metric": "cost_adjusted_accuracy",
+                    "candidate_method": "Certified Residual Policy Packets",
+                    "num_seeds": 5,
+                    "datasets": [{"name": "QASC", "num_test": 200}],
+                    "per_method": {
+                        "Rational-Metareasoning VOC Routing": {"cost_adjusted_accuracy": 0.7767509642356242, "avg_new_tokens": 100.0},
+                        "Certified Residual Policy Packets": {"cost_adjusted_accuracy": 0.776757209852735, "avg_new_tokens": 98.0, "route_rate": 0.0},
+                    },
+                    "bootstrap_ci": {"p_value": 0.0625},
+                    "live_sanity_check": {"datasets": ["QASC"], "num_examples": 200},
+                },
+            },
+        }
+        tex = "Certified Residual Policy Packets use a routing selector."
+
+        review = _scientific_review_gate(tex, state)
+
+        self.assertTrue(review["candidate_beats_strongest"])
+        self.assertAlmostEqual(review["strongest_practical_baseline"]["metric_gap"], 0.000006)
+        issue_text = "\n".join(issue["issue"] for issue in review["issues"])
+        self.assertNotIn("Core empirical result is not statistically significant", issue_text)
+        self.assertFalse(any(issue["severity"] == "high" and "p=" in issue["issue"] for issue in review["issues"]))
+        self.assertFalse(any(issue["severity"] == "medium" and "small" in issue["issue"].lower() for issue in review["issues"]))
+        self.assertFalse(any(issue["severity"] == "high" and "route/gate" in issue["issue"].lower() for issue in review["issues"]))
+
 
 if __name__ == "__main__":
     unittest.main()

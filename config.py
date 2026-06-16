@@ -382,7 +382,7 @@ AUTO_PIPELINE_BATCH_SIZE = _env_int("DEEPGRAPH_AUTO_PIPELINE_BATCH_SIZE", 100, "
 AUTO_PIPELINE_INTERVAL_SECONDS = _env_int("DEEPGRAPH_AUTO_PIPELINE_INTERVAL_SECONDS", 120, "auto_research.pipeline_interval_seconds")
 AUTO_PIPELINE_START_DELAY_SECONDS = _env_int("DEEPGRAPH_AUTO_PIPELINE_START_DELAY_SECONDS", 10, "auto_research.pipeline_start_delay_seconds")
 AUTO_RESEARCH_ENABLED = _env_bool("DEEPGRAPH_AUTO_RESEARCH_ENABLED", True, "auto_research.enabled")
-AUTO_RESEARCH_INTERVAL_SECONDS = _env_int("DEEPGRAPH_AUTO_RESEARCH_INTERVAL_SECONDS", 300, "auto_research.interval_seconds")
+AUTO_RESEARCH_INTERVAL_SECONDS = _env_int("DEEPGRAPH_AUTO_RESEARCH_INTERVAL_SECONDS", 30, "auto_research.interval_seconds")
 AUTO_RESEARCH_MAX_ACTIVE = _env_int("DEEPGRAPH_AUTO_RESEARCH_MAX_ACTIVE", 1, "auto_research.max_active")
 # When True: novelty must be 'novel', EvoScientist final_report.md must exist, and EvoSci
 # must be installed before experiment forge / validation loop (see agents/evosci_requirements.py).

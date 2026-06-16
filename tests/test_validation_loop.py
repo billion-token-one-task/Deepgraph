@@ -1,3 +1,4 @@
+import json
 import tempfile
 import subprocess
 import unittest
@@ -106,6 +107,38 @@ class ValidationLoopGitFallbackTests(unittest.TestCase):
             )
 
         self.assertEqual(resolved, target)
+
+    def test_runner_contract_guard_allows_python_bool_literals_case_sensitively(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workdir = Path(tmpdir)
+            code_dir = workdir / "code"
+            spec_dir = workdir / "spec"
+            code_dir.mkdir()
+            spec_dir.mkdir()
+            (spec_dir / "proxy_config.json").write_text(
+                '{"real_benchmark_required": true}', encoding="utf-8"
+            )
+            train_py = code_dir / "train.py"
+            train_py.write_text(
+                'import json\nprint(json.dumps({"ok": True}, ensure_ascii=False))\n',
+                encoding="utf-8",
+            )
+
+            violations = validation_loop._runner_contract_violations(
+                workdir, code_dir, ["python", "train.py"]
+            )
+
+            train_py.write_text(
+                'import json\nprint(json.dumps({"ok": True}, ensure_ascii=false))\n',
+                encoding="utf-8",
+            )
+            bad_violations = validation_loop._runner_contract_violations(
+                workdir, code_dir, ["python", "train.py"]
+            )
+
+        self.assertEqual(violations, [])
+        self.assertIn("false", bad_violations[0])
+        self.assertIn("False", bad_violations[0])
 
     def test_run_validation_loop_blocks_non_formal_experiment(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -228,6 +261,7 @@ class ValidationLoopGitFallbackTests(unittest.TestCase):
                         "ok": True,
                         "summary": "Codex changed repo files",
                         "artifact_paths": {"codex_last_message": "/tmp/last.json"},
+                        "validation_status": "blocked_redesign_required",
                     },
                 ),
                 mock.patch.object(validation_loop, "_read_proxy_config", return_value={}),
@@ -248,6 +282,7 @@ class ValidationLoopGitFallbackTests(unittest.TestCase):
         self.assertEqual(result["executor"], "codex")
         self.assertIn("Codex", result["description"])
         self.assertIn("codex_last_message", result["artifact_paths"])
+        self.assertEqual(result["validation_status"], "blocked_redesign_required")
 
     def test_launch_coding_agent_does_not_legacy_fallback_after_codex_failure(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -338,6 +373,139 @@ class ValidationLoopGitFallbackTests(unittest.TestCase):
 
         self.assertIn("Tightened the zero-budget answer prompt", history[0]["description"])
         self.assertIn("no_gain", history[0]["description"])
+
+
+class ValidationLoopVerdictTests(unittest.TestCase):
+    def test_no_candidate_diff_loop_is_inconclusive_not_refuted(self):
+        history = [
+            {
+                "status": "discard",
+                "metric": None,
+                "result_judgement": {"anomaly_type": "no_candidate_diff"},
+            }
+            for _ in range(30)
+        ]
+
+        verdict = validation_loop._determine_final_verdict(
+            baseline=0.7,
+            best_value=0.7,
+            direction="higher",
+            criteria={},
+            total_iters=len(history),
+            total_kept=0,
+            refute_min=30,
+            automation_failed=validation_loop._hypothesis_testing_automation_failed(history),
+        )
+
+        self.assertEqual(verdict, "inconclusive")
+
+    def test_benchmarked_no_gain_can_still_be_refuted(self):
+        history = [
+            {"status": "discard", "metric": 0.7, "result_judgement": {"anomaly_type": "no_gain"}}
+            for _ in range(30)
+        ]
+
+        verdict = validation_loop._determine_final_verdict(
+            baseline=0.7,
+            best_value=0.7,
+            direction="higher",
+            criteria={},
+            total_iters=len(history),
+            total_kept=0,
+            refute_min=30,
+            automation_failed=validation_loop._hypothesis_testing_automation_failed(history),
+        )
+
+        self.assertEqual(verdict, "refuted")
+
+    def test_recent_automation_failure_streak_counts_no_diff_only_until_real_metric(self):
+        history = [
+            {"status": "discard", "metric": 0.7, "result_judgement": {"anomaly_type": "no_gain"}},
+            {"status": "discard", "metric": None, "result_judgement": {"anomaly_type": "no_candidate_diff"}},
+            {"status": "discard", "metric": None, "result_judgement": {"anomaly_type": "pre_benchmark_guard"}},
+        ]
+
+        self.assertEqual(validation_loop._recent_automation_failure_streak(history), 2)
+
+    def test_write_automation_failure_artifact_marks_not_scientific_verdict(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = validation_loop._write_automation_failure_artifact(
+                Path(tmpdir),
+                run_id=9,
+                insight_id=4,
+                history=[
+                    {
+                        "status": "discard",
+                        "metric": None,
+                        "result_judgement": {"anomaly_type": "no_candidate_diff"},
+                    }
+                ],
+                stop_reason="Automation failed: no benchmarked candidate method change.",
+                method_desc="Method",
+            )
+            payload = json.loads(path.read_text(encoding="utf-8"))
+
+        self.assertEqual(payload["failure_type"], "no_benchmarked_candidate_method_change")
+        self.assertTrue(payload["not_scientific_verdict"])
+        self.assertTrue(any("reforge" in action for action in payload["recommended_actions"]))
+
+    def test_redesign_required_artifact_is_automation_failure(self):
+        history = [
+            {
+                "status": "discard",
+                "metric": None,
+                "result_judgement": {"anomaly_type": "benchmark_mismatch_or_redesign_required"},
+            }
+            for _ in range(3)
+        ]
+
+        self.assertTrue(validation_loop._hypothesis_testing_automation_failed(history))
+
+    def test_read_redesign_required_artifact_marks_not_scientific(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workdir = Path(tmpdir)
+            code_dir = workdir / "code"
+            code_dir.mkdir()
+            (code_dir / "EXPERIMENT_REDESIGN_REQUIRED.json").write_text(
+                json.dumps(
+                    {
+                        "reason": "benchmark cannot exercise memory replay",
+                        "mechanism_needed": "memory replay",
+                        "benchmark_gap": "runner has no long-horizon state",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            payload = validation_loop._read_redesign_required_artifact(code_dir, workdir)
+
+        self.assertIsNotNone(payload)
+        assert payload is not None
+        self.assertTrue(payload["not_scientific_verdict"])
+        self.assertEqual(payload["recommended_route"], "reforge_or_benchmark_harness")
+
+    def test_codex_agents_md_contains_mechanism_contract(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            code_dir = Path(tmpdir) / "code"
+            code_dir.mkdir()
+
+            path = validation_loop.codex_executor.write_iteration_agents_md(
+                code_dir=code_dir,
+                method_desc="Memory replay method",
+                baseline=0.7,
+                best_so_far=0.7,
+                iteration=1,
+                history=[],
+                proxy={},
+                success_criteria={"metric_name": "accuracy"},
+                experimental_plan={},
+                evidence_plan={},
+                supervisor_plan={},
+            )
+            text = path.read_text(encoding="utf-8")
+
+        self.assertIn("Mechanism Operationalization Contract", text)
+        self.assertIn("EXPERIMENT_REDESIGN_REQUIRED.json", text)
 
 
 if __name__ == "__main__":

@@ -175,15 +175,19 @@ def _run_incremental_insights(papers_so_far: int):
                 f"SELECT COUNT(*) as c FROM insights WHERE node_id=? AND {db.sql_created_after_hours(2)}",
                 (node["id"],),
             )
-            if existing and existing["c"] >= 2:
+            recent_count = int(existing["c"] if existing else 0)
+            slots = max(0, 2 - recent_count)
+            if slots <= 0:
                 continue
             try:
                 print(f"[PIPELINE] Insight discovery: analyzing {node['id']} ({node['pc']}p)...", flush=True)
                 log_event("step", {"step": "incremental_insight", "node_id": node["id"],
                                    "papers_so_far": papers_so_far})
                 insights, tokens = discover_insights(node["id"])
-                for ins in insights:
-                    store_insight(ins)
+                for ins in insights[:slots]:
+                    insight_id = store_insight(ins)
+                    if not insight_id or insight_id <= 0:
+                        continue
                     new_insights += 1
                     print(f"[PIPELINE] New insight: [{ins['type']}] {ins['title'][:80]}", flush=True)
                     log_event("insight", {
@@ -876,14 +880,18 @@ def run_continuous(max_papers: int = 0):
             f"SELECT COUNT(*) as c FROM insights WHERE node_id=? AND {db.sql_created_after_hours(24)}",
             (node["id"],),
         )
-        if existing and existing["c"] >= 2:
+        recent_count = int(existing["c"] if existing else 0)
+        slots = max(0, 2 - recent_count)
+        if slots <= 0:
             continue
 
         log_event("step", {"step": "insight_discovery", "node_id": node["id"]})
         insights, tokens = discover_insights(node["id"])
         total_insight_tokens += tokens
-        for ins in insights:
-            store_insight(ins)
+        for ins in insights[:slots]:
+            insight_id = store_insight(ins)
+            if not insight_id or insight_id <= 0:
+                continue
             log_event("insight", {
                 "node_id": ins["node_id"],
                 "type": ins["type"],

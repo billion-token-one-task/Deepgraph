@@ -10,6 +10,10 @@ from agents.paperorchestra.briefing import (
     evidence_brief_markdown,
 )
 from agents.paperorchestra.tracing import PaperGenerationTrace, call_json_traced
+from agents.paperorchestra.full_pipeline import (
+    _completed_benchmark_mode,
+    _repair_completed_evidence_section,
+)
 
 
 class PaperOrchestraBriefingTests(unittest.TestCase):
@@ -83,11 +87,38 @@ class PaperOrchestraBriefingTests(unittest.TestCase):
         self.assertIn("section_plan", outline)
         self.assertEqual(
             [fig["figure_id"] for fig in outline["plotting_plan"]],
-            ["fig_main_results"],
+            ["fig_main_results", "fig_ablation_results", "fig_hyperparameter_sweep"],
         )
-        self.assertEqual(outline["plotting_plan"][0]["role"], "experiment_figure_pack")
-        self.assertEqual(outline["plotting_plan"][0]["chart_type"], "main_results_bar")
+        self.assertTrue(all(fig["role"] == "experiment_figure_pack" for fig in outline["plotting_plan"]))
+        self.assertEqual(
+            [fig["chart_type"] for fig in outline["plotting_plan"]],
+            ["main_results_bar", "ablation_bar", "hyperparameter_sweep"],
+        )
         self.assertTrue(any("multi-agent" in q for q in outline["intro_related_work_plan"]["introduction_strategy"]["search_directions"]))
+
+    def test_completed_evidence_mode_repairs_plan_language(self):
+        brief = {
+            "experiment": {
+                "per_method": [{"method": "Certified Residual Policy Packets", "metric_value": 0.77}],
+                "ablation_table": [{"ablation": "selector_family_confidence_gate", "metric_value": 0.73}],
+            },
+            "gate": {
+                "quality_gates": {"full_benchmark_completed": True, "requires_ablation_table": True},
+                "required_evidence": {"artifacts": ["main_results_table", "ablation_table"]},
+            },
+        }
+        bad_tex = "The benchmark plan does not provide completed benchmark measurements, so results remain hypotheses."
+
+        self.assertTrue(_completed_benchmark_mode(brief))
+        self.assertEqual(
+            _repair_completed_evidence_section(
+                bad_tex,
+                fallback="Completed artifact-backed results.",
+                section_name="experiments",
+                evidence_brief=brief,
+            ),
+            "Completed artifact-backed results.",
+        )
 
     def test_deterministic_outline_uses_backend_figure_pack_for_backend_matrix(self):
         state = self._state()

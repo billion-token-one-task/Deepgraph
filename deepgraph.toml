@@ -204,7 +204,7 @@ pipeline_batch_size = 1
 pipeline_interval_seconds = 120
 pipeline_start_delay_seconds = 10
 enabled = true
-interval_seconds = 300
+interval_seconds = 30
 max_active = 1
 
 [web]

@@ -2,23 +2,27 @@
 
 This agent is intentionally separate from motivation/overview diagram generation.
 It performs real literature search for field-specific experimental figure styles,
-then emits an artifact-backed experiment plotting plan with at least three
-distinct visual families.
+then emits an artifact-backed experiment plotting plan with required
+main-results and ablation roles. Hyperparameter/sensitivity plots are added
+only when verified sweep artifacts exist.
 """
 
 from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 from typing import Any
 
 from agents.paperorchestra.semantic_scholar import paper_to_bibtex_key, paper_year, search_papers
 
 
-EXPERIMENT_PLOT_REFERENCE_VERSION = "deepgraph_experiment_plot_reference_v1_2026_06_11"
+EXPERIMENT_PLOT_REFERENCE_VERSION = "deepgraph_experiment_plot_reference_v4_2026_06_13"
 DEFAULT_MIN_EXPERIMENT_FIGURES = 3
 DEFAULT_MIN_STYLE_REFERENCES = 3
-DEFAULT_MIN_DISTINCT_FAMILIES = 3
+DEFAULT_MIN_DISTINCT_FAMILIES = 2
+LOCAL_EXPERIMENT_STYLE_REFERENCE_DIR = Path(__file__).resolve().parents[2] / "实验图例子"
+REQUIRED_STYLE_REFERENCE_SOURCES = ["local_user_examples", "related_literature_search"]
 
 CHART_FAMILY_BY_TYPE = {
     "main_results_bar": "bar_family",
@@ -29,6 +33,9 @@ CHART_FAMILY_BY_TYPE = {
     "backend_heatmap_single": "matrix_family",
     "backend_rank_lines_1x4": "line_family",
     "ablation_bar": "bar_family",
+    "ablation_results": "bar_family",
+    "hyperparameter_sweep": "line_family",
+    "threshold_sweep": "line_family",
     "tsne_embedding": "distribution_family",
     "umap_embedding": "distribution_family",
     "cmc_curve": "line_family",
@@ -44,7 +51,7 @@ DOMAIN_RULES = [
             "visible infrared person re-identification t-SNE CMC mAP ablation",
             "person re-identification retrieval ranking examples CMC curve experimental figure",
         ],
-        "recommended_chart_types": ["tsne_embedding", "cmc_curve", "ranking_examples", "main_results_bar", "method_metric_heatmap"],
+        "recommended_chart_types": ["main_results_bar", "ablation_bar", "hyperparameter_sweep", "tsne_embedding", "cmc_curve", "ranking_examples"],
     },
     {
         "domain": "vision_classification_or_detection",
@@ -53,7 +60,7 @@ DOMAIN_RULES = [
             "computer vision experimental results t-SNE ablation heatmap robustness figure",
             "image classification paper experimental figures ablation heatmap calibration",
         ],
-        "recommended_chart_types": ["main_results_bar", "method_metric_heatmap", "quality_cost_tradeoff", "tsne_embedding"],
+        "recommended_chart_types": ["main_results_bar", "ablation_bar", "hyperparameter_sweep", "tsne_embedding"],
     },
     {
         "domain": "graph_learning",
@@ -62,7 +69,7 @@ DOMAIN_RULES = [
             "graph neural network experimental results ablation heatmap t-SNE visualization",
             "graph learning paper experimental figure node classification ablation robustness",
         ],
-        "recommended_chart_types": ["main_results_bar", "method_metric_heatmap", "quality_cost_tradeoff", "tsne_embedding"],
+        "recommended_chart_types": ["main_results_bar", "ablation_bar", "hyperparameter_sweep", "tsne_embedding"],
     },
     {
         "domain": "llm_reasoning",
@@ -72,7 +79,7 @@ DOMAIN_RULES = [
             "multi-agent LLM debate reasoning experiments cost accuracy ablation visualization",
             "test-time compute language models accuracy token cost frontier experiment figure",
         ],
-        "recommended_chart_types": ["main_results_bar", "quality_cost_tradeoff", "method_metric_heatmap", "backend_rank_lines_1x4"],
+        "recommended_chart_types": ["main_results_bar", "ablation_bar", "hyperparameter_sweep", "backend_rank_lines_1x4"],
     },
     {
         "domain": "retrieval_or_rag",
@@ -81,14 +88,14 @@ DOMAIN_RULES = [
             "retrieval augmented generation experimental results recall nDCG ablation heatmap figure",
             "information retrieval paper experimental figure ranking examples ablation",
         ],
-        "recommended_chart_types": ["main_results_bar", "method_metric_heatmap", "quality_cost_tradeoff", "ranking_examples"],
+        "recommended_chart_types": ["main_results_bar", "ablation_bar", "hyperparameter_sweep", "ranking_examples"],
     },
 ]
 
 GENERIC_STYLE_QUERIES = [
-    "machine learning paper experimental results ablation heatmap uncertainty figure",
-    "neural network paper experiment figures main results ablation sensitivity heatmap",
-    "benchmark paper experimental plots grouped bar heatmap ablation cost tradeoff",
+    "machine learning paper experimental results main results ablation sensitivity figure",
+    "neural network paper experiment figures grouped bar ablation hyperparameter sensitivity",
+    "benchmark paper experimental plots grouped bar ablation threshold sensitivity",
 ]
 
 
@@ -128,7 +135,13 @@ def _state_text(outline: dict[str, Any], state: dict[str, Any], evidence_brief: 
 def _detect_domains(text: str) -> list[dict[str, Any]]:
     hits: list[dict[str, Any]] = []
     for rule in DOMAIN_RULES:
-        if any(needle in text for needle in rule["needles"]):
+        matched = False
+        for needle in rule["needles"]:
+            needle_l = str(needle).lower()
+            if re.search(r"(?<![a-z0-9])" + re.escape(needle_l) + r"(?![a-z0-9])", text):
+                matched = True
+                break
+        if matched:
             hits.append(rule)
     if not hits:
         hits.append(
@@ -136,7 +149,7 @@ def _detect_domains(text: str) -> list[dict[str, Any]]:
                 "domain": "generic_machine_learning",
                 "needles": [],
                 "queries": GENERIC_STYLE_QUERIES,
-                "recommended_chart_types": ["main_results_bar", "quality_cost_tradeoff", "method_metric_heatmap"],
+                "recommended_chart_types": ["main_results_bar", "ablation_bar", "hyperparameter_sweep"],
             }
         )
     return hits
@@ -226,6 +239,7 @@ def _infer_chart_tags(paper: dict[str, Any], domains: list[dict[str, Any]]) -> l
         ("ranking_examples", ["ranking", "retrieval examples", "qualitative", "top-k", "top k"]),
         ("method_metric_heatmap", ["heatmap", "matrix", "correlation", "confusion"]),
         ("quality_cost_tradeoff", ["cost", "latency", "tokens", "efficiency", "trade-off", "tradeoff", "frontier"]),
+        ("hyperparameter_sweep", ["hyperparameter", "threshold", "sensitivity", "calibration", "sweep"]),
         ("ablation_bar", ["ablation", "component", "sensitivity"]),
         ("main_results_bar", ["benchmark", "main results", "comparison", "accuracy", "map", "f1"]),
     ]
@@ -241,8 +255,8 @@ def _infer_chart_tags(paper: dict[str, Any], domains: list[dict[str, Any]]) -> l
 
 def _style_reference_row(paper: dict[str, Any], domains: list[dict[str, Any]]) -> dict[str, Any]:
     return {
-        "paper_id": paper.get("paperId") or "",
-        "style_key": paper_to_bibtex_key(paper),
+        "paper_id": paper.get("paperId") or paper.get("arxiv_id") or paper.get("cite_key") or "",
+        "style_key": paper.get("_cite_key") or paper.get("cite_key") or paper_to_bibtex_key(paper),
         "title": paper.get("title") or "Untitled",
         "year": paper_year(paper),
         "venue": paper.get("venue") or "",
@@ -250,6 +264,32 @@ def _style_reference_row(paper: dict[str, Any], domains: list[dict[str, Any]]) -
         "source": paper.get("_source") or "semantic_scholar",
         "chart_tags": _infer_chart_tags(paper, domains),
     }
+
+
+def _domain_relevance_terms(domains: list[dict[str, Any]]) -> set[str]:
+    terms: set[str] = set()
+    for rule in domains:
+        domain = str(rule.get("domain") or "")
+        for needle in rule.get("needles") or []:
+            if len(str(needle)) >= 4:
+                terms.add(str(needle).lower())
+        if domain == "llm_reasoning":
+            terms.update({"large language model", "llm", "reasoning", "self-consistency", "debate", "test-time", "inference-time", "multi-agent"})
+        elif domain == "person_re_identification":
+            terms.update({"re-identification", "reid", "cmc", "map", "retrieval", "ranking"})
+        elif domain == "graph_learning":
+            terms.update({"graph neural", "gnn", "node classification", "graph learning"})
+        elif domain == "retrieval_or_rag":
+            terms.update({"retrieval", "ranking", "rag", "ndcg", "recall"})
+    return {term for term in terms if term}
+
+
+def _paper_is_domain_relevant(paper: dict[str, Any], domains: list[dict[str, Any]]) -> bool:
+    text = " ".join(str(paper.get(k) or "") for k in ("title", "abstract", "venue")).lower()
+    terms = _domain_relevance_terms(domains)
+    if not terms:
+        return True
+    return any(term in text for term in terms)
 
 
 def _dedupe_references(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -264,6 +304,36 @@ def _dedupe_references(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         out.append(row)
     out.sort(key=lambda r: (len(r.get("chart_tags") or []), int(r.get("citation_count") or 0), int(r.get("year") or 0)), reverse=True)
     return out
+
+
+def _papers_from_citation_registry(citation_registry: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    papers: list[dict[str, Any]] = []
+    for row in citation_registry or []:
+        if not isinstance(row, dict):
+            continue
+        cite_key = row.get("_cite_key") or row.get("cite_key")
+        title = row.get("title")
+        if not title or not cite_key:
+            continue
+        arxiv_id = row.get("arxiv_id") or row.get("paperId") or ""
+        external_ids = dict(row.get("externalIds") or {})
+        if isinstance(arxiv_id, str) and re.match(r"^\d{4}\.\d{4,5}$", arxiv_id):
+            external_ids.setdefault("ArXiv", arxiv_id)
+        papers.append(
+            {
+                "paperId": row.get("paperId") or row.get("arxiv_id") or cite_key,
+                "_cite_key": cite_key,
+                "title": title,
+                "year": row.get("year"),
+                "abstract": row.get("abstract") or "",
+                "authors": row.get("authors") or [],
+                "externalIds": external_ids,
+                "venue": row.get("venue") or "reference manager registry",
+                "citationCount": row.get("citationCount") or row.get("citation_count") or 0,
+                "_source": row.get("source") or "reference_manager_registry",
+            }
+        )
+    return papers
 
 
 def _benchmark_summary(state: dict[str, Any]) -> dict[str, Any]:
@@ -302,6 +372,15 @@ def _evidence_flags(state: dict[str, Any]) -> dict[str, bool]:
         "per_method": bool(per_method),
         "cost_or_latency": has_cost,
         "ablation": bool(summary.get("ablation_table") or state.get("ablation_table")),
+        "hyperparameter": bool(
+            summary.get("route_rate_sweep_table")
+            or summary.get("route_rate_sweep")
+            or summary.get("sensitivity_table")
+            or summary.get("hyperparameter_sweep")
+            or summary.get("threshold_sweep")
+            or state.get("route_rate_sweep_table")
+            or state.get("sensitivity_table")
+        ),
         "difficulty": bool(summary.get("difficulty_breakdown") or summary.get("per_difficulty") or summary.get("difficulty_table")),
         "backend_matrix": bool(summary.get("per_backend") or summary.get("backend_matrix") or summary.get("per_dataset_backend")),
         "embedding_artifacts": _has_recursive_key(state, ("embedding", "tsne", "t_sne", "umap")),
@@ -360,6 +439,9 @@ def _plot_spec(
         "source_agent": "experiment_plot_reference_manager",
         "style_reference_keys": ref_keys,
         "style_reference_titles": ref_titles,
+        "style_reference_sources": list(REQUIRED_STYLE_REFERENCE_SOURCES) + ["reference_manager_registry"],
+        "local_style_reference_dir": str(LOCAL_EXPERIMENT_STYLE_REFERENCE_DIR),
+        "local_style_reference_count": len([p for p in LOCAL_EXPERIMENT_STYLE_REFERENCE_DIR.glob("*") if p.is_file()]) if LOCAL_EXPERIMENT_STYLE_REFERENCE_DIR.exists() else 0,
         "standard_version": EXPERIMENT_PLOT_REFERENCE_VERSION,
     }
 
@@ -378,28 +460,31 @@ def _build_plot_plan(metric_name: str, refs: list[dict[str, Any]], flags: dict[s
             layout="1x4",
         ),
         _plot_spec(
-            figure_id="fig_quality_cost_tradeoff",
-            chart_type="quality_cost_tradeoff",
-            title="Quality-Cost Tradeoff",
-            objective=f"Plot {metric} against token/cost or latency to show the deployment tradeoff among baselines and the proposed method.",
-            data_source="benchmark_summary.json:per_method.avg_new_tokens",
+            figure_id="fig_ablation_results",
+            chart_type="ablation_bar",
+            title="Ablation Results",
+            objective=f"Isolate component contributions with artifact-backed ablation rows for {metric}, delta from the full method, and retained relative performance.",
+            data_source="benchmark_summary.json:ablation_table",
             refs=refs,
-            aspect_ratio="4:3",
-            layout="single",
-            placement="single_column",
-        ),
-        _plot_spec(
-            figure_id="fig_method_metric_heatmap",
-            chart_type="method_metric_heatmap",
-            title="Method-Metric Matrix",
-            objective="Summarize the method-by-metric profile as a heatmap so accuracy, cost, latency, and routing behavior are not repeated as another bar chart.",
-            data_source="benchmark_summary.json:per_method",
-            refs=refs,
-            aspect_ratio="4:3",
-            layout="single",
-            placement="single_column",
+            aspect_ratio="4:1",
+            layout="1x3",
+            placement="double_column",
         ),
     ]
+    if flags.get("hyperparameter"):
+        plan.append(
+            _plot_spec(
+                figure_id="fig_hyperparameter_sweep",
+                chart_type="hyperparameter_sweep",
+                title="Threshold Sensitivity",
+                objective=f"Plot how {metric}, compute cost, and route rate change across the selector threshold or budget hyperparameter.",
+                data_source="benchmark_summary.json:route_rate_sweep_table|sensitivity_table",
+                refs=refs,
+                aspect_ratio="4:1",
+                layout="1x3",
+                placement="double_column",
+            )
+        )
     if flags.get("backend_matrix"):
         plan = [
             _plot_spec(
@@ -409,9 +494,9 @@ def _build_plot_plan(metric_name: str, refs: list[dict[str, Any]], flags: dict[s
                 objective=f"Compare {metric} across inference backends and methods with seed uncertainty.",
                 data_source="benchmark_summary.json:backend_matrix",
                 refs=refs,
-                aspect_ratio="4:3",
-                layout="single",
-                placement="single_column",
+                aspect_ratio="4:1",
+                layout="1x3",
+                placement="double_column",
             ),
             _plot_spec(
                 figure_id="fig_backend_heatmap_single",
@@ -420,9 +505,9 @@ def _build_plot_plan(metric_name: str, refs: list[dict[str, Any]], flags: dict[s
                 objective=f"Show the method-by-backend {metric} matrix with seed standard deviation.",
                 data_source="benchmark_summary.json:backend_matrix",
                 refs=refs,
-                aspect_ratio="1:1",
-                layout="single",
-                placement="single_column",
+                aspect_ratio="4:1",
+                layout="1x3",
+                placement="double_column",
             ),
             _plot_spec(
                 figure_id="fig_backend_rank_lines_1x4",
@@ -447,9 +532,9 @@ def _build_plot_plan(metric_name: str, refs: list[dict[str, Any]], flags: dict[s
                 objective="Visualize learned or selected representations with t-SNE/UMAP because related field papers commonly use embedding plots for this task.",
                 data_source="embedding artifacts",
                 refs=refs,
-                aspect_ratio="4:3",
-                layout="single",
-                placement="single_column",
+                aspect_ratio="4:1",
+                layout="1x3",
+                placement="double_column",
             )
         )
     return plan[: max(DEFAULT_MIN_EXPERIMENT_FIGURES, 3)]
@@ -466,12 +551,14 @@ def discover_experiment_plot_references_or_raise(
     min_style_references: int = DEFAULT_MIN_STYLE_REFERENCES,
     min_distinct_families: int = DEFAULT_MIN_DISTINCT_FAMILIES,
     per_query_limit: int = 8,
+    citation_registry: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     text = _state_text(outline or {}, state or {}, evidence_brief or {})
     domains = _detect_domains(text)
     queries = _query_pool(domains, state or {}, metric_name)
     errors: list[str] = []
-    papers: list[dict[str, Any]] = []
+    papers: list[dict[str, Any]] = _papers_from_citation_registry(citation_registry)
+    registry_candidate_count = len(papers)
     for query in queries:
         hits: list[dict[str, Any]] = []
         try:
@@ -487,24 +574,37 @@ def discover_experiment_plot_references_or_raise(
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"OpenAlex {query}: {exc}")
         papers.extend(hits)
-    style_refs = _dedupe_references([_style_reference_row(paper, domains) for paper in papers if isinstance(paper, dict)])
+    relevant_papers = [paper for paper in papers if isinstance(paper, dict) and _paper_is_domain_relevant(paper, domains)]
+    style_refs = _dedupe_references([_style_reference_row(paper, domains) for paper in relevant_papers])
     flags = _evidence_flags(state or {})
     plan = _build_plot_plan(metric_name, style_refs, flags, domains)
     families = sorted({str(fig.get("chart_family") or CHART_FAMILY_BY_TYPE.get(str(fig.get("chart_type") or ""), "")) for fig in plan if fig.get("plot_type") == "plot"})
     families = [x for x in families if x]
 
     blockers: list[str] = []
+    chart_types = {str(fig.get("chart_type") or "") for fig in plan if fig.get("plot_type") == "plot"}
+    has_core_plot_plan = {"main_results_bar", "ablation_bar"}.issubset(chart_types) or bool(flags.get("backend_matrix") and len(plan) >= 2)
+    local_style_reference_count = len([p for p in LOCAL_EXPERIMENT_STYLE_REFERENCE_DIR.glob("*") if p.is_file()]) if LOCAL_EXPERIMENT_STYLE_REFERENCE_DIR.exists() else 0
+    if local_style_reference_count <= 0:
+        blockers.append(f"No local user-provided experiment figure examples were found at {LOCAL_EXPERIMENT_STYLE_REFERENCE_DIR}.")
     if len(style_refs) < min_style_references:
-        blockers.append(f"Only {len(style_refs)}/{min_style_references} searched experiment-figure style references were found.")
-    if len(plan) < min_figures:
+        blockers.append(f"Only {len(style_refs)}/{min_style_references} domain-relevant searched experiment-figure style references were found.")
+    if not has_core_plot_plan:
+        blockers.append(f"Required main-results and ablation experiment figures were not both planned: {sorted(chart_types)}.")
+    if len(plan) < min_figures and not has_core_plot_plan:
         blockers.append(f"Only {len(plan)}/{min_figures} experiment figures were planned.")
-    if len(families) < min_distinct_families:
+    if len(families) < min_distinct_families and not has_core_plot_plan:
         blockers.append(f"Only {len(families)}/{min_distinct_families} distinct experiment chart families were planned: {families}.")
     if not flags.get("per_method"):
         blockers.append("No benchmark_summary.per_method evidence is available for artifact-backed experiment figures.")
     for fig in plan[:min_figures]:
+        if fig.get("layout") not in {"1x3", "1x4"} or fig.get("placement") != "double_column":
+            blockers.append(f"{fig.get('figure_id')} is not a required wide 1x3/1x4 experiment figure layout.")
         if not fig.get("style_reference_keys"):
             blockers.append(f"{fig.get('figure_id')} has no searched style-reference keys.")
+        sources = set(fig.get("style_reference_sources") or [])
+        if not {"local_user_examples", "related_literature_search"}.issubset(sources):
+            blockers.append(f"{fig.get('figure_id')} does not record both local user examples and related-paper literature style sources.")
 
     report = {
         "schema_version": EXPERIMENT_PLOT_REFERENCE_VERSION,
@@ -512,6 +612,11 @@ def discover_experiment_plot_references_or_raise(
         "domains": [rule.get("domain") for rule in domains],
         "queries_used": queries,
         "search_errors": errors[:8],
+        "style_reference_sources": list(REQUIRED_STYLE_REFERENCE_SOURCES) + ["reference_manager_registry"],
+        "local_style_reference_dir": str(LOCAL_EXPERIMENT_STYLE_REFERENCE_DIR),
+        "local_style_reference_count": local_style_reference_count,
+        "domain_relevant_paper_count": len(relevant_papers),
+        "registry_candidate_count": registry_candidate_count,
         "style_reference_count": len(style_refs),
         "style_references": style_refs[:24],
         "evidence_flags": flags,

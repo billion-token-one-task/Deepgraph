@@ -29,7 +29,7 @@ PAPERBANANA_PYTHON = PAPERBANANA_ROOT / ".venv" / "bin" / "python"
 PAPERBANANA_ENTRY = PAPERBANANA_ROOT / "skill" / "run.py"
 PAPERBANANA_CONFIG = PAPERBANANA_ROOT / "configs" / "model_config.yaml"
 
-SUPPORTED_RATIOS = ("21:9", "16:9", "3:2", "3:4")
+SUPPORTED_RATIOS = ("21:9", "16:9", "4:3", "3:2", "3:4")
 
 
 def _load_dotenv(path: Path) -> None:
@@ -107,6 +107,26 @@ def _ensure_paperbanana_env() -> None:
         if candidate:
             os.environ["OPENAI_BASE_URL"] = candidate
 
+    if image_protocol == "openai_compatible":
+        if not os.environ.get("OPENAI_API_KEY"):
+            candidate = _env_first(
+                "DEEPGRAPH_PAPERBANANA_IMAGE_API_KEY",
+                "DEEPGRAPH_PAPERBANANA_OPENAI_IMAGE_API_KEY",
+                "DEEPGRAPH_LLM_API_KEY",
+            )
+            if candidate:
+                os.environ["OPENAI_API_KEY"] = candidate
+        if not os.environ.get("OPENAI_BASE_URL"):
+            candidate = _normalize_openai_compatible_base_url(
+                _env_first(
+                    "DEEPGRAPH_PAPERBANANA_IMAGE_BASE_URL",
+                    "DEEPGRAPH_PAPERBANANA_OPENAI_IMAGE_BASE_URL",
+                    "DEEPGRAPH_LLM_BASE_URL",
+                )
+            )
+            if candidate:
+                os.environ["OPENAI_BASE_URL"] = candidate
+
     if image_protocol == "gemini_native":
         if not os.environ.get("GEMINI_NATIVE_API_KEY"):
             candidate = _env_first(
@@ -163,7 +183,7 @@ def _ensure_paperbanana_env() -> None:
             "DEEPGRAPH_PAPERBANANA_GEMINI_MODEL",
             "DEEPGRAPH_PAPERBANANA_OPENROUTER_MODEL",
         )
-        or "gemini-2.5-flash-image",
+        or "gpt-image-2",
     )
 
     if deepgraph_base_url:
@@ -179,7 +199,7 @@ def _ensure_model_config() -> None:
             [
                 "defaults:",
                 '  main_model_name: "gpt-5.4"',
-                '  image_gen_model_name: "gemini-2.5-flash-image"',
+                '  image_gen_model_name: "gpt-image-2"',
                 "api_keys:",
                 '  google_api_key: ""',
                 '  gemini_native_api_key: ""',
@@ -318,10 +338,21 @@ def _is_motivation_overview_spec(spec: dict[str, Any]) -> bool:
 
 def _check_credentials() -> tuple[bool, str]:
     image_protocol = (_env_first("DEEPGRAPH_PAPERBANANA_IMAGE_PROTOCOL") or "").strip().lower()
-    if image_protocol == "openai_compatible" and _env_first("DEEPGRAPH_PAPERBANANA_IMAGE_API_KEY") and _openai_image_base_url():
+    if (
+        image_protocol == "openai_compatible"
+        and _env_first(
+            "DEEPGRAPH_PAPERBANANA_IMAGE_API_KEY",
+            "DEEPGRAPH_PAPERBANANA_OPENAI_IMAGE_API_KEY",
+            "DEEPGRAPH_LLM_API_KEY",
+            "OPENAI_API_KEY",
+        )
+        and _openai_image_base_url()
+    ):
         return True, "openai_compatible_image"
-    if os.environ.get("GEMINI_NATIVE_API_KEY") and os.environ.get("GEMINI_NATIVE_BASE_URL"):
-        return True, "gemini_native"
+    if image_protocol == "openai_compatible":
+        return False, "missing_openai_compatible_image"
+    if image_protocol == "gemini_native":
+        return False, "gemini_native_disabled"
     if os.environ.get("OPENROUTER_API_KEY"):
         return True, "openrouter"
     if os.environ.get("GOOGLE_API_KEY"):
@@ -371,7 +402,7 @@ def _image_prompt(spec: dict[str, Any], *, caption: str, content: str) -> str:
         return "\n".join(
             [
                 "You are an experienced scientific figure designer preparing a camera-ready figure for a machine learning paper.",
-                f"Follow DeepGraph figure standard {FIGURE_STANDARD_VERSION}: motivation, overview, and mechanism diagrams must be generated through Gemini/PaperBanana only, never through local SVG/Pillow/manual drawing and never for quantitative experiment/result plots.",
+                f"Follow DeepGraph figure standard {FIGURE_STANDARD_VERSION}: motivation, overview, and mechanism diagrams must be generated through the OpenAI-compatible PaperBanana wrapper with gpt-image-2 only, never through Gemini, local SVG/Pillow/manual drawing, and never for quantitative experiment/result plots.",
                 "Do not draw bar charts, line plots, heatmaps, 3D plots, tables of metrics, fake axes, fake numeric values, or any experimental result visualization.",
                 "Do not invent modules, baselines, datasets, tools, retrieval systems, verifiers, memory, training steps, or external resources that are not explicitly present in the provided method summary or figure-specific intent.",
                 "Carefully read the paper context and the figure intent, fully understand the research content, and produce a figure suitable for academic publication.",
@@ -449,6 +480,7 @@ def _run_openai_compatible_image_generation(
     api_key = _env_first(
         "DEEPGRAPH_PAPERBANANA_IMAGE_API_KEY",
         "DEEPGRAPH_PAPERBANANA_OPENAI_IMAGE_API_KEY",
+        "DEEPGRAPH_LLM_API_KEY",
         "OPENAI_API_KEY",
     )
     base_url = _openai_image_base_url()
@@ -739,30 +771,56 @@ def _post_openai_image_payload_with_curl(
             payload_path.unlink(missing_ok=True)
 
 
+def _strip_data_url(value: str) -> str:
+    text = str(value or "").strip()
+    if text.startswith("data:image") and "," in text:
+        return text.split(",", 1)[1].strip()
+    return text
+
+
+def _find_image_payload(value: Any) -> tuple[str, str] | None:
+    if isinstance(value, dict):
+        for key in ("b64_json", "image_base64", "base64", "b64", "image", "image_data"):
+            raw = value.get(key)
+            if isinstance(raw, str) and raw.strip():
+                return "base64", _strip_data_url(raw)
+        for key in ("url", "output_url", "image_url"):
+            raw = value.get(key)
+            if isinstance(raw, str) and raw.strip():
+                return "url", raw.strip()
+        for child in value.values():
+            found = _find_image_payload(child)
+            if found:
+                return found
+    elif isinstance(value, list):
+        for item in value:
+            found = _find_image_payload(item)
+            if found:
+                return found
+    return None
+
+
 def _write_openai_image_response(*, output_path: Path, body: dict[str, Any]) -> int:
-    rows = body.get("data") if isinstance(body, dict) else None
-    item = rows[0] if isinstance(rows, list) and rows else {}
-    if not isinstance(item, dict):
-        print("Image generation returned no data rows.", file=sys.stderr)
-        return 4
-    b64_json = item.get("b64_json") or item.get("image_base64")
-    if b64_json:
+    found = _find_image_payload(body)
+    if found:
+        kind, payload = found
+        if kind == "base64":
+            try:
+                output_path.write_bytes(base64.b64decode(payload))
+                return 0
+            except Exception as exc:
+                print(f"Image base64 decode failed: {exc}", file=sys.stderr)
+                return 4
         try:
-            output_path.write_bytes(base64.b64decode(str(b64_json)))
-            return 0
-        except Exception as exc:
-            print(f"Image base64 decode failed: {exc}", file=sys.stderr)
-            return 4
-    url = item.get("url")
-    if url:
-        try:
-            with urllib.request.urlopen(str(url), timeout=600) as response:
+            with urllib.request.urlopen(payload, timeout=600) as response:
                 output_path.write_bytes(response.read())
             return 0
         except Exception as exc:
             print(f"Image download failed: {exc}", file=sys.stderr)
             return 4
-    print("Image generation response had neither b64_json nor url.", file=sys.stderr)
+
+    preview = _clip(json.dumps(body, ensure_ascii=False), 1200)
+    print(f"Image generation response had no recognized image payload. body={preview}", file=sys.stderr)
     return 4
 
 
@@ -811,16 +869,23 @@ def main() -> int:
 
     if not ready:
         print(
-            "PaperBanana is installed, but no image-capable credential is configured. "
-            "Set DEEPGRAPH_PAPERBANANA_IMAGE_PROTOCOL=gemini_native plus "
-            "DEEPGRAPH_PAPERBANANA_IMAGE_API_KEY and DEEPGRAPH_PAPERBANANA_IMAGE_BASE_URL "
-            "(or OPENROUTER_API_KEY / GOOGLE_API_KEY) in /home/billion-token/Deepgraph/.env.",
+            "PaperBanana is installed, but no OpenAI-compatible image credential is configured. "
+            "Set DEEPGRAPH_PAPERBANANA_IMAGE_PROTOCOL=openai_compatible, "
+            "DEEPGRAPH_PAPERBANANA_IMAGE_MODEL=gpt-image-2, and reuse "
+            "DEEPGRAPH_LLM_API_KEY / DEEPGRAPH_LLM_BASE_URL or provide matching "
+            "DEEPGRAPH_PAPERBANANA_IMAGE_API_KEY / DEEPGRAPH_PAPERBANANA_IMAGE_BASE_URL in .env.",
             file=sys.stderr,
         )
         return 3
 
     output_path = Path(args.out).resolve()
     output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if provider == "openai_compatible_image":
+        return _run_openai_compatible_image_generation(
+            output_path=output_path,
+            prompt=_image_prompt(spec, caption=caption, content=content),
+        )
 
     if not PAPERBANANA_PYTHON.exists() or not PAPERBANANA_ENTRY.exists():
         if provider == "gemini_native":
@@ -830,7 +895,7 @@ def main() -> int:
                 aspect_ratio=aspect_ratio,
                 spec=spec,
             )
-        if provider in {"openai", "openrouter", "openai_compatible_image"}:
+        if provider in {"openai", "openrouter"}:
             return _run_openai_compatible_image_generation(
                 output_path=output_path,
                 prompt=_image_prompt(spec, caption=caption, content=content),
