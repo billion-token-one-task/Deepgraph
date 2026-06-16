@@ -12,7 +12,7 @@ from agents.manuscript_length_policy import (
 )
 
 
-AUDITOR_VERSION = "deepgraph_manuscript_length_auditor_v1_2026_06_10"
+AUDITOR_VERSION = "deepgraph_manuscript_length_auditor_v2_2026_06_11"
 
 WORD_RE = re.compile(r"[A-Za-z][A-Za-z0-9\-']+")
 COMMAND_RE = re.compile(r"\\[a-zA-Z]+\*?(?:\[[^\]]*\])?(?:\{[^{}]*\})?")
@@ -105,6 +105,7 @@ def _budget_issue(
     name: str,
     count: int,
     budget: SectionBudget,
+    page_budget_binding: bool = False,
 ) -> dict[str, str] | None:
     label = name.replace("_", " ")
     if count <= 0 and budget.required:
@@ -116,12 +117,18 @@ def _budget_issue(
             f"Add a substantive {label} section within the target range {budget.target_min_words}-{budget.target_max_words} words.",
         )
     if count < budget.min_words:
+        severity = "medium" if page_budget_binding else "high"
+        fix = (
+            f"Improve {label} density without increasing page count; replace padding with concrete detail or move secondary material out."
+            if page_budget_binding
+            else f"Expand {label} with concrete problem framing, method detail, experiment protocol, analysis, limitations, or literature positioning as appropriate."
+        )
         return _issue(
-            "high",
+            severity,
             "Length auditor / section floor",
             f"{label} is below the hard floor for a complete paper.",
             f"{name}_words={count}; hard_floor={budget.min_words}; target={budget.target_min_words}-{budget.target_max_words}",
-            f"Expand {label} with concrete problem framing, method detail, experiment protocol, analysis, limitations, or literature positioning as appropriate.",
+            fix,
         )
     if count < budget.target_min_words:
         return _issue(
@@ -146,6 +153,7 @@ def audit_manuscript_length(
     *,
     main_tex: str,
     page_count: int | None,
+    main_body_page_count: int | None = None,
     venue_target: Any | None = None,
     bibliography_entry_count: int = 0,
 ) -> dict[str, Any]:
@@ -156,14 +164,30 @@ def audit_manuscript_length(
 
     reference_page_allowance = max(0, (int(bibliography_entry_count or 0) + 29) // 30)
     effective_total_page_limit = (policy.official_main_page_limit + reference_page_allowance) if policy.official_main_page_limit else None
-    if policy.official_main_page_limit and page_count is not None and effective_total_page_limit is not None and page_count > effective_total_page_limit:
+    page_budget_binding = bool(
+        policy.official_main_page_limit
+        and main_body_page_count is not None
+        and main_body_page_count > policy.official_main_page_limit
+    )
+    if page_budget_binding:
         issues.append(
             _issue(
                 "high",
+                "Length auditor / main-body page limit",
+                "Compiled main body exceeds the selected venue page budget before references.",
+                f"main_body_page_count={main_body_page_count}; official_main_page_limit={policy.official_main_page_limit}; venue={policy.label}",
+                "Shorten main text or move nonessential details to appendix before references; references do not count toward this limit.",
+            )
+        )
+    if policy.official_main_page_limit and page_count is not None and effective_total_page_limit is not None and page_count > effective_total_page_limit:
+        total_page_severity = "high" if main_body_page_count is None else "medium"
+        issues.append(
+            _issue(
+                total_page_severity,
                 "Length auditor / official page limit",
-                "Compiled PDF appears to exceed the selected venue page budget even after excluding an estimated bibliography allowance.",
+                "Compiled PDF appears to exceed the selected venue page budget after a rough bibliography allowance.",
                 f"page_count={page_count}; official_main_page_limit={policy.official_main_page_limit}; bibliography_entry_count={bibliography_entry_count}; reference_page_allowance={reference_page_allowance}; effective_total_page_limit={effective_total_page_limit}; venue={policy.label}",
-                "Shorten main text or move nonessential material to appendix before marking bundle_ready.",
+                "Use the measured main_body_page_count as the hard gate when references are excluded by the venue; inspect total PDF length as an advisory.",
             )
         )
     if page_count is not None and page_count < policy.complete_main_page_range[0]:
@@ -179,11 +203,11 @@ def audit_manuscript_length(
     if total_words < policy.main_word_range[0]:
         issues.append(
             _issue(
-                "high",
+                "medium" if page_budget_binding else "high",
                 "Length auditor / main-body word floor",
                 "Main manuscript body is too short for the venue-calibrated complete-paper target.",
                 f"word_count={total_words}; target={policy.main_word_range[0]}-{policy.main_word_range[1]}; venue={policy.label}",
-                "Expand the manuscript with method mechanics, protocol detail, full related work positioning, result interpretation, and limitations.",
+                "Improve information density under the page budget; do not expand while the official page limit is already exceeded." if page_budget_binding else "Expand the manuscript with method mechanics, protocol detail, full related work positioning, result interpretation, and limitations.",
             )
         )
     if total_words > policy.main_word_range[1] and not (policy.official_main_page_limit and page_count and page_count <= policy.official_main_page_limit):
@@ -198,7 +222,7 @@ def audit_manuscript_length(
         )
 
     for name, budget in policy.section_budgets.items():
-        issue = _budget_issue(name=name, count=int(section_words.get(name) or 0), budget=budget)
+        issue = _budget_issue(name=name, count=int(section_words.get(name) or 0), budget=budget, page_budget_binding=page_budget_binding)
         if issue:
             issues.append(issue)
 
@@ -215,6 +239,7 @@ def audit_manuscript_length(
         "venue_policy": policy.to_dict(),
         "word_count": total_words,
         "page_count": page_count,
+        "main_body_page_count": main_body_page_count,
         "bibliography_entry_count": int(bibliography_entry_count or 0),
         "reference_page_allowance": reference_page_allowance,
         "effective_total_page_limit": effective_total_page_limit,

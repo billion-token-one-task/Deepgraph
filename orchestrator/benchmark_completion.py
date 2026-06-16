@@ -7,23 +7,56 @@ from db import database as db
 BENCHMARK_COMPLETION_STAGE = "benchmark_completion_required"
 
 _BENCHMARK_BLOCKER_MARKERS = (
-    "full_benchmark",
-    "full benchmark",
-    "benchmark_summary",
     "benchmark artifact",
-    "required benchmark",
+    "benchmark_artifact_manifest.json is missing",
+    "missing or not linked",
+    "benchmark summary is missing",
+    "per_method must contain at least two",
+    "must include at least two methods",
+    "at least two methods/baselines",
+    "no metric",
+    "metric missing",
+)
+
+_SOFT_BENCHMARK_GAP_MARKERS = (
+    "full_benchmark_completed=false",
+    "full_benchmark_completed is false",
+    "full_benchmark_completed",
+    "full benchmark policy",
     "benchmark coverage",
-    "required baselines",
-    "required baseline",
+    "required benchmark coverage missing",
+    "required baselines missing",
+    "required baseline missing",
+    "required model coverage missing",
+    "model coverage",
+    "mip-nerf",
     "required ablation",
     "ablation table",
-    "num_seeds",
     "seed",
+    "num_seeds",
+    "seed(s) found",
+    "minimum_seeds",
+    "baseline",
+    "load_failures",
+    "code repair",
+    "proof repair",
 )
 
 
+def _is_benchmark_completion_blocker(blocker: str) -> bool:
+    text = str(blocker or "").strip().lower()
+    if not text:
+        return False
+    return any(marker in text for marker in (_BENCHMARK_BLOCKER_MARKERS + _SOFT_BENCHMARK_GAP_MARKERS))
+
+
 def benchmark_completion_blockers(bundle: dict | None) -> list[str]:
-    """Return submission blockers that should trigger another benchmark run."""
+    """Return blockers that need a benchmark/harness completion run.
+
+    Incomplete full-benchmark coverage, insufficient seeds, and missing
+    baselines/model families should go back to benchmark completion before
+    another manuscript attempt.
+    """
     if not isinstance(bundle, dict):
         return []
     raw_blockers = bundle.get("submission_blockers")
@@ -33,11 +66,7 @@ def benchmark_completion_blockers(bundle: dict | None) -> list[str]:
     error = str(bundle.get("error") or "").strip()
     if error:
         blockers.append(error)
-    return [
-        blocker
-        for blocker in blockers
-        if any(marker in blocker.lower() for marker in _BENCHMARK_BLOCKER_MARKERS)
-    ]
+    return [blocker for blocker in blockers if _is_benchmark_completion_blocker(blocker)]
 
 
 def schedule_benchmark_completion(

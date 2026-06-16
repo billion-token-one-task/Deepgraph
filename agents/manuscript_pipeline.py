@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,40 @@ from agents.benchmark_audit import best_iteration_benchmark_summary
 from agents.paper_completeness import audit_evidence_completeness
 from agents.paper_title_policy import normalize_paper_title
 from db import database as db
+
+
+
+
+def _citation_seeds_from_evidence_summary(value: Any) -> list[str]:
+    text = str(value or "")
+    seeds: list[str] = []
+    pattern = re.compile(r"(?i)\bPaper ID:\s*([^.;\n]+)")
+    for match in pattern.finditer(text):
+        seed = match.group(1).strip()
+        if seed:
+            seeds.append(seed)
+    return _dedupe(seeds)
+
+def _sync_normalized_paper_title(insight: dict, normalized_title: str, paper_intent: dict | None = None) -> None:
+    insight_id = insight.get("id") if isinstance(insight, dict) else None
+    previous = str((insight or {}).get("title") or "").strip()
+    title = str(normalized_title or "").strip()
+    if not insight_id or not title or previous == title:
+        return
+    if isinstance(paper_intent, dict):
+        paper_intent.setdefault("previous_title", previous)
+        paper_intent["paper_title"] = title
+        paper_intent["title_source"] = "manuscript_input_title_policy"
+    try:
+        db.execute(
+            "UPDATE deep_insights SET title=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            (title, int(insight_id)),
+        )
+        db.commit()
+        insight["title"] = title
+    except Exception:
+        # Unit tests and offline state builders may not have an initialized DB.
+        insight["title"] = title
 
 
 def _json_load(value, default):
@@ -459,9 +494,13 @@ def build_manuscript_input_state(run: dict, insight: dict, iterations: list[dict
     supporting_papers = [str(x) for x in _json_list(insight.get("supporting_papers")) if x]
     source_paper_ids = [str(x) for x in _json_list(insight.get("source_paper_ids")) if x]
     source_node_ids = [str(x) for x in _json_list(insight.get("source_node_ids")) if x]
-    citation_seed_paper_ids = _dedupe(supporting_papers + source_paper_ids)
-    evidence_packet = _json_dict(insight.get("evidence_packet"))
     evidence_summary = insight.get("evidence_summary") or insight.get("related_work_positioning") or ""
+    citation_seed_paper_ids = _dedupe(
+        supporting_papers
+        + source_paper_ids
+        + _citation_seeds_from_evidence_summary(evidence_summary)
+    )
+    evidence_packet = _json_dict(insight.get("evidence_packet"))
     best_iter = _best_iteration(iterations)
     result_packet = _load_result_packet(run, claims)
 
@@ -519,6 +558,7 @@ def build_manuscript_input_state(run: dict, insight: dict, iterations: list[dict
         or problem_awareness.get("central_question"),
         context={"result_packet": result_packet, "full_benchmark_completed": result_packet.get("full_benchmark_completed")},
     )
+    _sync_normalized_paper_title(insight, normalized_title, paper_intent)
 
     state = ManuscriptInputState(
         run_id=run.get("id"),

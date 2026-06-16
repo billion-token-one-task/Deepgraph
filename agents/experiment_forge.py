@@ -906,6 +906,33 @@ def _default_real_benchmark_targets(parsed: dict) -> list[dict]:
     ]
 
 
+def _supported_probe_benchmark_targets(parsed: dict, method: dict, deferred_targets: list[dict]) -> list[dict]:
+    deferred_names = _unique_non_empty([
+        _non_empty_text(row.get("name") or row.get("hf_dataset") or row.get("dataset"))
+        for row in deferred_targets
+        if isinstance(row, dict)
+    ])
+    deferred_keys = {name.lower() for name in deferred_names}
+    probes: list[dict] = []
+    for row in _default_real_benchmark_targets({**parsed, "proposed_method": method}):
+        target = _normalize_benchmark_target(row, parsed=parsed)
+        name = _non_empty_text(target.get("name") or target.get("hf_dataset") or target.get("dataset"))
+        if name.lower() in deferred_keys:
+            continue
+        supported, reason = _generated_runner_support_reason(target)
+        if not supported:
+            continue
+        target["generated_runner_supported"] = True
+        target.pop("generated_runner_blocker", None)
+        target["benchmark_role"] = "executable_probe"
+        target["probe_for_deferred_benchmark_targets"] = deferred_names
+        target["formal_target_deferred"] = True
+        probes.append(target)
+        if len(probes) >= 1:
+            break
+    return probes
+
+
 def _default_real_model_targets(parsed: dict, resource_class: str | None = None) -> list[dict]:
     corpus = " ".join(
         [
@@ -991,11 +1018,19 @@ def _model_target_names(plan: dict) -> list[str]:
     return _unique_non_empty(_named_values(rows, keys=("hf_model", "model", "name")))
 
 
-def _ensure_real_benchmark_plan(parsed: dict, method: dict, plan: dict, resource_class: str | None = None) -> dict:
+def _ensure_real_benchmark_plan(
+    parsed: dict,
+    method: dict,
+    plan: dict,
+    resource_class: str | None = None,
+    *,
+    resolve_datasets: bool = True,
+) -> dict:
     plan = dict(plan or {})
     if not EXPERIMENT_REQUIRE_REAL_BENCHMARK:
         return plan
-    plan = resolve_plan_datasets(plan)
+    if resolve_datasets:
+        plan = resolve_plan_datasets(plan)
     existing_targets = plan.get("benchmark_targets") if isinstance(plan.get("benchmark_targets"), list) else []
     real_targets = []
     for row in existing_targets:
@@ -1027,8 +1062,35 @@ def _ensure_real_benchmark_plan(parsed: dict, method: dict, plan: dict, resource
                     "reason": reason,
                 }
             )
-    plan["benchmark_targets"] = real_targets
-    plan["datasets"] = [{"name": row.get("name") or row.get("hf_dataset") or row.get("dataset")} for row in real_targets]
+    runnable_targets = [
+        target for target in real_targets
+        if target.get("generated_runner_supported") is not False
+    ]
+    deferred_targets = [
+        target for target in real_targets
+        if target.get("generated_runner_supported") is False
+    ]
+    if recipe_blockers and not runnable_targets:
+        probe_targets = _supported_probe_benchmark_targets(parsed, method, deferred_targets)
+        if probe_targets:
+            real_targets = probe_targets + real_targets
+            runnable_targets = probe_targets
+            plan["benchmark_probe_added"] = {
+                "reason": "all requested benchmark targets require dedicated harness recipes",
+                "active_probe_targets": [
+                    target.get("name") or target.get("hf_dataset") or target.get("dataset")
+                    for target in probe_targets
+                ],
+                "deferred_formal_targets": [
+                    item.get("name") for item in recipe_blockers if item.get("name")
+                ],
+            }
+    active_targets = runnable_targets or real_targets
+    plan["benchmark_targets"] = active_targets
+    plan["datasets"] = [
+        {"name": row.get("name") or row.get("hf_dataset") or row.get("dataset")}
+        for row in active_targets
+    ]
     plan["baselines"] = [{"name": name} for name in _planned_baselines(plan)]
 
     model_targets = plan.get("model_targets") if isinstance(plan.get("model_targets"), list) else []
@@ -1085,15 +1147,19 @@ def _ensure_real_benchmark_plan(parsed: dict, method: dict, plan: dict, resource
         target["max_eval_examples"] = max(0, target_examples)
     plan["requires_real_model"] = True
     plan["requires_real_dataset"] = True
-    plan["generated_runner_supported"] = not recipe_blockers
+    plan["generated_runner_supported"] = bool(runnable_targets) if recipe_blockers else True
     if recipe_blockers:
         plan["benchmark_recipe_blockers"] = recipe_blockers
         plan["deferred_benchmark_targets"] = [
             item["name"] for item in recipe_blockers if item.get("name")
         ]
+        plan["deferred_benchmark_target_details"] = deferred_targets
+        plan["benchmark_harness_deferred"] = bool(runnable_targets)
     else:
         plan.pop("benchmark_recipe_blockers", None)
         plan.pop("deferred_benchmark_targets", None)
+        plan.pop("deferred_benchmark_target_details", None)
+        plan.pop("benchmark_harness_deferred", None)
     benchmark_protocol = resolve_benchmark_protocol(
         plan,
         method=method,
@@ -1112,8 +1178,9 @@ def _ensure_real_benchmark_plan(parsed: dict, method: dict, plan: dict, resource
         "generated_runner_supported": plan["generated_runner_supported"],
         "benchmark_protocol_status": benchmark_protocol.get("status"),
         "default_model": normalized_models[0].get("hf_model") or normalized_models[0].get("name"),
-        "default_dataset": real_targets[0].get("hf_dataset") or real_targets[0].get("name"),
-        "target_count": len(real_targets),
+        "default_dataset": active_targets[0].get("hf_dataset") or active_targets[0].get("name"),
+        "target_count": len(active_targets),
+        "deferred_target_count": len(deferred_targets),
     }
     return plan
 
@@ -1680,10 +1747,16 @@ def _autofill_experiment_contracts(insight: dict) -> dict:
     plan = _enrich_experimental_plan(parsed, method)
     parsed["proposed_method"] = method
     parsed["experimental_plan"] = plan
-    inferred = _non_empty_text(parsed.get("resource_class")) or infer_resource_class(parsed)
-    if EXPERIMENT_REQUIRE_REAL_BENCHMARK and _model_target_names(plan):
+    explicit_resource = _non_empty_text(parsed.get("resource_class"))
+    inferred = explicit_resource or infer_resource_class(parsed)
+    if EXPERIMENT_REQUIRE_REAL_BENCHMARK and not explicit_resource and _model_target_names(plan):
         model_text = " ".join(_model_target_names(plan)).lower()
-        if any(token in model_text for token in ("qwen", "llama", "mistral", "mixtral", "gemma", "phi")):
+        model_targets = plan.get("model_targets") if isinstance(plan.get("model_targets"), list) else []
+        any_model_allows_cpu = any(
+            isinstance(row, dict) and (row.get("cpu_allowed") or row.get("requires_cuda") is False)
+            for row in model_targets
+        )
+        if not any_model_allows_cpu and any(token in model_text for token in ("qwen", "llama", "mistral", "mixtral", "gemma", "phi")):
             inferred = "gpu_large"
             compute = dict(plan.get("compute_budget") or {}) if isinstance(plan.get("compute_budget"), dict) else {}
             if not compute.get("total_gpu_hours"):
@@ -2119,13 +2192,19 @@ def generate_scaffold(insight: dict, codebase: dict, workdir: Path) -> dict:
     used_fallback = False
     real_runner_required = bool(EXPERIMENT_REQUIRE_REAL_BENCHMARK and not EXPERIMENT_ALLOW_SYNTHETIC_FALLBACK)
     recipe_blocked = False
-    try:
-        result, tokens = call_llm_json(SCAFFOLD_SYSTEM, prompt)
-    except Exception as e:
-        print(f"[FORGE] Scaffold generation failed: {e}", flush=True)
+    if _plan_uses_executable_probe(plan):
+        print("[FORGE] Executable benchmark probe detected; using deterministic scaffold.", flush=True)
         result = _fallback_scaffold(method, plan, codebase)
         used_fallback = True
         tokens = 0
+    else:
+        try:
+            result, tokens = call_llm_json(SCAFFOLD_SYSTEM, prompt)
+        except Exception as e:
+            print(f"[FORGE] Scaffold generation failed: {e}", flush=True)
+            result = _fallback_scaffold(method, plan, codebase)
+            used_fallback = True
+            tokens = 0
 
     program_md = result.get("program_md", "")
     evaluate_py = result.get("evaluate_py", "")
@@ -4654,6 +4733,14 @@ def build_proxy_config(plan: dict, codebase: dict | None = None, *, judgement=No
     return proxy
 
 
+def _plan_uses_executable_probe(plan: dict) -> bool:
+    targets = plan.get("benchmark_targets") if isinstance(plan.get("benchmark_targets"), list) else []
+    return any(
+        isinstance(target, dict) and target.get("benchmark_role") == "executable_probe"
+        for target in targets
+    )
+
+
 def forge_experiment(insight_id: int) -> dict:
     """Full forge pipeline: scout codebase -> setup workspace -> generate scaffold.
 
@@ -4679,8 +4766,12 @@ def forge_experiment(insight_id: int) -> dict:
     layout = get_idea_workspace(insight_id, insight=parsed, create=True, sync_db=True)
 
     # Step 1: Scout codebase
-    print(f"[FORGE] Scouting codebase...", flush=True)
-    codebase = scout_codebase(parsed)
+    if _plan_uses_executable_probe(plan):
+        codebase = _scratch_codebase("executable benchmark probe uses generated runner; deferred formal target remains in benchmark_harness_jobs")
+        print("[FORGE] Skipping codebase scout for executable benchmark probe; using scratch runner.", flush=True)
+    else:
+        print(f"[FORGE] Scouting codebase...", flush=True)
+        codebase = scout_codebase(parsed)
     print(f"[FORGE] Selected: {codebase.get('name', '?')} ({codebase.get('url', '?')})", flush=True)
 
     run_id = db.insert_returning_id(

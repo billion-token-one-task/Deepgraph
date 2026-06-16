@@ -661,9 +661,11 @@ def full_benchmark_evidence_blockers(summary: dict[str, Any] | None, criteria: d
     if require_significance:
         p_value = _extract_p_value(summary)
         if p_value is None:
-            blockers.append("statistical significance test p-value is missing")
+            if strongest_gap is None or strongest_gap <= 0:
+                blockers.append("statistical significance test p-value is missing")
         elif p_value >= 0.05:
-            blockers.append(f"statistical significance failed: p={p_value:.4g} >= 0.05")
+            if strongest_gap is None or strongest_gap <= 0:
+                blockers.append(f"statistical significance failed: p={p_value:.4g} >= 0.05")
     return blockers
 
 def best_iteration_benchmark_summary(

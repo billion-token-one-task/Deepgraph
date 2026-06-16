@@ -3,7 +3,7 @@
 This module is the single source of truth for figure generation policy:
 quantitative experiment figures are native matplotlib artifacts backed by
 benchmark data, while motivation/overview/mechanism diagrams are mandatory
-post-writing Gemini/PaperBanana assets.
+post-writing gpt-image-2 assets through the PaperBanana wrapper.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 
-FIGURE_STANDARD_VERSION = "paperorchestra_figure_standard_v15_2026_06_11"
+FIGURE_STANDARD_VERSION = "paperorchestra_figure_standard_v17_2026_06_12"
 
 EXPERIMENT_FIGURE_RULES = {
     "renderer": "python_matplotlib_only",
@@ -29,19 +29,18 @@ EXPERIMENT_FIGURE_RULES = {
     "chart_diversity_contract": {
         "enabled": True,
         "rule": "A paper's experiment figure pack must diversify by visual family, not merely by 2D versus 3D variants.",
-        "minimum_distinct_visual_families_when_multiple_experiment_figures": 3,
+        "minimum_distinct_visual_families_when_multiple_experiment_figures": 2,
         "visual_family_examples": {
             "bar_family": ["2D bar", "grouped bar", "stacked bar", "3D bar"],
             "line_family": ["line plot", "rank line", "trend line", "calibration curve"],
             "matrix_family": ["heatmap", "confusion matrix", "method-by-condition matrix"],
-            "distribution_family": ["scatter", "t-SNE", "UMAP", "violin", "box"],
+            "distribution_family": ["t-SNE", "UMAP", "violin", "box"],
             "radar_family": ["radar", "spider chart"],
         },
         "examples": [
-            "main results grouped bars + heatmap",
-            "main results grouped bars + line plot with uncertainty bands",
-            "main results grouped bars + radar analysis",
-            "heatmap + rank line panels for backend-aware studies",
+            "main results grouped bars + ablation bars + threshold/sensitivity line panels",
+            "main results grouped bars + ablation delta bars + hyperparameter sweep with uncertainty bands",
+            "field-specific embedding/ranking plot only when the required artifacts exist",
         ],
         "forbidden": [
             "2D bar main results plus 3D bar ablation or sensitivity as the only additional experiment figure",
@@ -56,21 +55,21 @@ EXPERIMENT_FIGURE_RULES = {
     "minimum_experiment_figures": 3,
     "style_reference_contract": [
         "Before rendering experiment figures, run real literature search for the paper's field and record searched style references in experiment_plot_reference.json.",
-        "The experiment plot pack must contain at least three artifact-backed figures and at least three distinct chart families; motivation/overview diagrams do not count.",
-        "Choose field-specific figure types from searched related papers when the required artifacts exist, e.g. person Re-ID commonly uses t-SNE/UMAP embeddings, CMC/mAP curves, and retrieval/ranking examples, while LLM reasoning papers often need accuracy-cost/frontier, ablation, and calibration or routing-profile plots.",
+        "The experiment plot pack must contain artifact-backed main-results and ablation figures; the target pack has at least three plots, adding hyperparameter/threshold sensitivity or a field-specific diagnostic when a verified artifact exists. Motivation/overview diagrams do not count.",
+        "Choose field-specific figure types from searched related papers when the required artifacts exist, e.g. person Re-ID commonly uses t-SNE/UMAP embeddings, CMC/mAP curves, and retrieval/ranking examples, while LLM reasoning papers normally need main-result comparisons, ablations, and calibration/routing/threshold sensitivity plots.",
         "Do not fabricate field-specific plots: t-SNE, CMC, ranking examples, confusion matrices, or qualitative panels require real embedding, ranking, prediction, or per-class artifacts.",
         "Use compact conference-style multi-panel layouts when the evidence naturally has multiple metrics, conditions, datasets, or hyperparameters.",
-        "Experiment figures should be multi-panel by default. Single-panel experiment figures are not allowed for ordinary result, ablation, sensitivity, or robustness plots.",
-        "For single-column paper layouts, prefer 1x4 experiment figures when there are four datasets, metrics, conditions, difficulty buckets, or ablation facets.",
+        "Experiment figures must be wide multi-panel plots. Single-panel 1x1 experiment figures are not allowed; accepted layouts are 1x3 and 1x4 only unless a human explicitly waives the rule.",
+        "For single-column paper layouts, still render experiment plots as wide figure* assets with 1x3 or 1x4 panels; do not insert narrow one-column 1x1 plots.",
         "For double-column papers, prefer wide figure* 1x4 experiment figures for dense comparisons; double-column single-width figures should still prefer 1x2 or 2x1 over single panels.",
         "Use grouped bar layouts whenever comparisons span datasets, scenarios, metrics, or ablation variants: x-axis groups are scenarios/datasets, and bars within each group are methods/variants.",
-        "Use a clean paper-plot style: white background, light gray grid lines, low-saturation pastel fills such as soft orange, soft red, soft purple, and soft blue, black or dark-gray bar edges, hatch patterns for every grouped-bar method, numeric value labels above each bar when space permits, shared legends, and concise panel titles.",
-        "Grouped-bar hatches must remain distinguishable in grayscale print, using patterns such as diagonal '/', horizontal '--', cross 'xx', and backslash '\\'.",
-        "Place grouped-bar legends below the plot in one horizontal row when possible; use matching color+hatch legend swatches and a subtle light-gray legend frame.",
+        "Use a clean paper-plot style: white background, light gray grid lines, low-saturation pastel fills such as soft orange, soft red, soft purple, and soft blue, black or dark-gray bar edges, direct value labels where useful, shared legends, and concise panel titles.",
+        "Do not use hatch, dot, stipple, stripe, or pattern textures in bars; distinguish methods by stable color, ordering, labels, and dark edges.",
+        "Place grouped-bar legends below the plot in one horizontal row when possible; use matching color legend swatches and a subtle light-gray legend frame.",
         "Grouped bar figures should resemble a carefully formatted conference plot rather than a decorative infographic: no tinted panel backgrounds, no pictorial icons, no large empty margins.",
         "Do not reserve a large bottom gutter for legends. For wide 1x4 figures, use a compact shared legend directly below the axes so the caption sits close to the plotted area.",
         "Save experiment figures with tight bounding boxes and minimal bottom whitespace; LaTeX captions should sit directly under the figure, not after a blank legend band.",
-        "Do not use quality-cost scatter plots as the sole main result; they are allowed as a separate experiment figure when the paper studies routing, inference-time compute, efficiency, latency, token cost, or deployment tradeoffs and the plotted coordinates come from verified artifacts.",
+        "Do not use quality-cost scatter plots in the default experiment pack. Scatter-style plots are allowed only as field-specific extras with verified artifacts, explicit approval, and four-sided boxed axes; they may not replace main-results or ablation plots.",
         "When a table is more informative than a plot, keep the table numeric and compact; move interpretation to prose.",
     ],
     "latex_spacing": {
@@ -88,7 +87,7 @@ EXPERIMENT_FIGURE_RULES = {
 CONCEPT_FIGURE_RULES = {
     "enabled": True,
     "required": True,
-    "renderer": "gemini_native_paperbanana_postwriting_only",
+    "renderer": "openai_compatible_gpt_image_2_postwriting_only",
     "scope": ["motivation", "overview", "mechanism"],
     "native_fallback_allowed": False,
     "block_if_missing": True,
@@ -327,6 +326,7 @@ BLOCKLISTED_INTERNAL_FIGURE_TOKENS = (
 
 
 def default_plot_plan(metric_name: str) -> list[dict[str, Any]]:
+    metric = str(metric_name or "metric")
     return [
         {
             "figure_id": "fig_main_results",
@@ -334,13 +334,39 @@ def default_plot_plan(metric_name: str) -> list[dict[str, Any]]:
             "role": "experiment_figure_pack",
             "chart_type": "main_results_bar",
             "title": "Main results",
-            "objective": f"Report verified {metric_name}, token cost, latency, and routing rate across methods with seed uncertainty.",
-            "data_source": "benchmark_summary.json",
+            "objective": f"Report verified {metric}, token cost, latency, and routing rate across methods with seed uncertainty.",
+            "data_source": "benchmark_summary.json:per_method",
             "aspect_ratio": "4:1",
             "layout": "1x4",
             "placement": "double_column",
             "standard_version": FIGURE_STANDARD_VERSION,
-        }
+        },
+        {
+            "figure_id": "fig_ablation_results",
+            "plot_type": "plot",
+            "role": "experiment_figure_pack",
+            "chart_type": "ablation_bar",
+            "title": "Ablation results",
+            "objective": f"Show component ablations for {metric}, including full-method performance, drops, and retained relative performance.",
+            "data_source": "benchmark_summary.json:ablation_table",
+            "aspect_ratio": "4:1",
+            "layout": "1x3",
+            "placement": "double_column",
+            "standard_version": FIGURE_STANDARD_VERSION,
+        },
+        {
+            "figure_id": "fig_hyperparameter_sweep",
+            "plot_type": "plot",
+            "role": "experiment_figure_pack",
+            "chart_type": "hyperparameter_sweep",
+            "title": "Threshold sensitivity",
+            "objective": f"Plot {metric}, compute cost, and route rate across the available threshold or budget sweep; skip when no verified sweep artifact exists.",
+            "data_source": "benchmark_summary.json:route_rate_sweep_table|sensitivity_table",
+            "aspect_ratio": "4:1",
+            "layout": "1x3",
+            "placement": "double_column",
+            "standard_version": FIGURE_STANDARD_VERSION,
+        },
     ]
 
 
@@ -355,8 +381,9 @@ def backend_plot_pack(metric_name: str) -> list[dict[str, Any]]:
             "title": "Backend accuracy bars",
             "objective": f"Compare {metric_title} across inference backends and methods with seed uncertainty.",
             "data_source": "benchmark_summary.json",
-            "aspect_ratio": "4:3",
-            "layout": "single",
+            "aspect_ratio": "4:1",
+            "layout": "1x3",
+            "placement": "double_column",
             "standard_version": FIGURE_STANDARD_VERSION,
         },
         {
@@ -367,8 +394,9 @@ def backend_plot_pack(metric_name: str) -> list[dict[str, Any]]:
             "title": "Backend accuracy heatmap",
             "objective": f"Show the method-by-backend {metric_title} matrix with seed standard deviation.",
             "data_source": "benchmark_summary.json",
-            "aspect_ratio": "1:1",
-            "layout": "single",
+            "aspect_ratio": "4:1",
+            "layout": "1x3",
+            "placement": "double_column",
             "standard_version": FIGURE_STANDARD_VERSION,
         },
         {

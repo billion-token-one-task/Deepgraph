@@ -95,6 +95,28 @@ class GpuSchedulerTests(unittest.TestCase):
         self.assertTrue(workers)
         self.assertEqual(job["resource_class"], "gpu_small")
 
+    def test_queue_run_downshifts_gpu_large_vram_to_schedulable_worker(self):
+        gpu_scheduler.GPU_VISIBLE_DEVICES = ["0"]
+        inventory = {"0": {"gpu_model": "NVIDIA GeForce RTX 3090", "total_mem_gb": 24.0}}
+
+        with mock.patch.object(gpu_scheduler, "_local_gpu_inventory", return_value=inventory):
+            workers = gpu_scheduler.register_default_workers()
+            job_id = gpu_scheduler.queue_run(
+                insight_id=1,
+                run_id=1,
+                resource_class="gpu_large",
+                priority=2,
+                vram_required_gb=40,
+            )
+            job = database.fetchone("SELECT * FROM gpu_jobs WHERE id=?", (job_id,))
+            claimed = gpu_scheduler._claim_idle_worker(job)
+
+        self.assertTrue(workers)
+        self.assertEqual(job["vram_required_gb"], 24.0)
+        self.assertIn("Adjusted vram_required_gb", job["error_message"])
+        self.assertIsNotNone(claimed)
+        self.assertEqual(claimed["id"], workers[0]["id"])
+
     def test_register_default_workers_does_not_fabricate_local_gpu_without_inventory_or_visible_devices(self):
         os.environ.pop("DEEPGRAPH_GPU_VISIBLE_DEVICES", None)
         gpu_scheduler.GPU_VISIBLE_DEVICES = ["0"]

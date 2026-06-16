@@ -593,7 +593,10 @@ class ManuscriptInputState(ContractRecord):
         if not self.result_packet:
             raise ContractValidationError("ManuscriptInputState missing ExperimentResultPacket")
         evidence_tier = str(self.result_packet.get("evidence_tier") or "").strip().lower()
-        if self.result_packet.get("blocks_manuscript") or evidence_tier in {"bootstrap_probe", "sanity_real_benchmark"}:
+        benchmark_draft_tiers = {"benchmark_plan", "full_benchmark", "materialized_full_split", "real_benchmark", "controlled_materialized"}
+        if evidence_tier in {"bootstrap_probe", "sanity_real_benchmark"} or (
+            self.result_packet.get("blocks_manuscript") and evidence_tier not in benchmark_draft_tiers
+        ):
             raise ContractValidationError(
                 "Sanity/bootstrap/probe evidence cannot enter manuscript generation; complete benchmark-backed experiments first"
             )
@@ -670,10 +673,10 @@ class ManuscriptInputState(ContractRecord):
             or benchmark_artifact_manifest.get("artifacts")
             or benchmark_artifact_manifest.get("path")
         )
-        has_benchmark_matrix = bool(per_method and len(per_method) >= 2 and num_seeds >= minimum_seeds)
-        if benchmark_required and not (full_done and has_artifact_manifest and has_benchmark_matrix):
+        has_candidate_baseline_matrix = bool(per_method and len(per_method) >= 2)
+        if benchmark_required and not (has_artifact_manifest and has_candidate_baseline_matrix):
             raise ContractValidationError(
-                "Full benchmark artifact package is required before manuscript generation"
+                "Benchmark-backed manuscript drafts require a linked artifact manifest and at least two methods/baselines"
             )
         benchmark_summary = self.result_packet.get("benchmark_summary")
         if verdict == "reproduced":

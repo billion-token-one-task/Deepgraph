@@ -35,6 +35,30 @@ class AutoResearchLoopTests(unittest.TestCase):
         self.assertEqual(result["status"], "already_running_elsewhere")
 
 
+class AutoResearchRoutingTests(unittest.TestCase):
+    def test_real_llm_benchmark_plan_upgrades_cpu_route_to_gpu_large(self):
+        insight = {
+            "id": 31,
+            "resource_class": "cpu",
+            "title": "Closed-loop benchmark routing",
+            "experimental_plan": json.dumps(
+                {
+                    "datasets": [{"name": "GSM8K"}],
+                    "baselines": [
+                        {"name": "Vanilla Direct Answering"},
+                        {"name": "Always-Reason Chain-of-Thought"},
+                    ],
+                }
+            ),
+        }
+
+        with mock.patch.object(auto_research, "gpu_resource_allowed", return_value=(True, "")):
+            resource_class, reason = auto_research.assess_experiment_route(insight)
+
+        self.assertEqual(resource_class, "gpu_large")
+        self.assertIn("upgraded cpu route to gpu_large", reason)
+
+
 class AutoResearchSchedulingTests(unittest.TestCase):
     def test_candidate_pool_query_does_not_treat_review_pending_as_ready_candidate(self):
         with mock.patch.object(auto_research.db, "fetchall", return_value=[] ) as fetchall:
@@ -108,6 +132,11 @@ class AutoResearchSchedulingTests(unittest.TestCase):
 
         with (
             mock.patch.object(auto_research.db, "fetchone", side_effect=fetches),
+            mock.patch.object(auto_research, "record_harness_required", return_value={
+                "harness_job_id": 11,
+                "benchmark_name": "custom benchmark",
+                "paths": {},
+            }),
             mock.patch.object(auto_research, "repair_experiment_plan_from_review") as repair,
             mock.patch.object(auto_research, "_upsert_job", side_effect=_capture_upsert),
             mock.patch.object(auto_research, "log_event"),
@@ -127,9 +156,9 @@ class AutoResearchSchedulingTests(unittest.TestCase):
 
         repair.assert_not_called()
         self.assertEqual(upserts[-1][0], 24)
-        self.assertEqual(upserts[-1][1]["status"], "blocked")
-        self.assertEqual(upserts[-1][1]["stage"], "experiment_review_blocked_final")
-        self.assertIn("attempt=2/2", upserts[-1][1]["last_note"])
+        self.assertEqual(upserts[-1][1]["status"], "harness_required")
+        self.assertEqual(upserts[-1][1]["stage"], "benchmark_harness_required")
+        self.assertIn("Benchmark harness job", upserts[-1][1]["last_note"])
 
     def test_review_blocked_with_harness_requirement_queues_harness_job(self):
         upserts = []
@@ -194,6 +223,11 @@ class AutoResearchSchedulingTests(unittest.TestCase):
         with (
             mock.patch.object(auto_research, "assess_experiment_route", return_value=("gpu_small", "ready")),
             mock.patch.object(auto_research.db, "fetchone", side_effect=_fake_fetchone),
+            mock.patch.object(auto_research, "record_harness_required", return_value={
+                "harness_job_id": 12,
+                "benchmark_name": "custom benchmark",
+                "paths": {},
+            }),
             mock.patch.object(auto_research, "forge_experiment") as forge,
             mock.patch.object(auto_research, "_upsert_job", side_effect=_capture_upsert),
             mock.patch.object(auto_research, "log_event"),
@@ -202,8 +236,38 @@ class AutoResearchSchedulingTests(unittest.TestCase):
 
         forge.assert_not_called()
         self.assertEqual(upserts[-1][0], 24)
-        self.assertEqual(upserts[-1][1]["status"], "blocked")
-        self.assertEqual(upserts[-1][1]["stage"], "experiment_review_blocked_final")
+        self.assertEqual(upserts[-1][1]["status"], "harness_required")
+        self.assertEqual(upserts[-1][1]["stage"], "benchmark_harness_required")
+
+    def test_refresh_keeps_benchmark_completion_queued_for_completed_run(self):
+        job = {
+            "deep_insight_id": 30,
+            "status": "queued_gpu",
+            "stage": auto_research.BENCHMARK_COMPLETION_STAGE,
+            "experiment_run_id": 7,
+            "resource_class": "gpu_large",
+        }
+        run = {
+            "id": 7,
+            "status": "completed",
+            "resource_class": "gpu_large",
+            "hypothesis_verdict": "confirmed",
+            "effect_pct": 4.2,
+        }
+
+        with (
+            mock.patch.object(auto_research.db, "fetchall", return_value=[job]),
+            mock.patch.object(auto_research.db, "fetchone", return_value=run),
+            mock.patch.object(auto_research, "_queue_benchmark_completion_run") as queue_completion,
+            mock.patch.object(auto_research, "_upsert_job") as upsert,
+            mock.patch.object(auto_research, "apply_experiment_finished_deep") as finish,
+        ):
+            auto_research._refresh_running_jobs()
+
+        queue_completion.assert_called_once_with(30, run, "gpu_large")
+        finish.assert_not_called()
+        completed_calls = [call for call in upsert.call_args_list if call.kwargs.get("stage") == "closed_loop_complete"]
+        self.assertEqual(completed_calls, [])
 
     def test_process_candidate_blocks_underspecified_verification(self):
         candidate = {"id": 12, "tier": 1, "novelty_status": "unchecked"}
@@ -619,6 +683,85 @@ class AutoResearchSchedulingTests(unittest.TestCase):
 
         queue_completion.assert_called_once_with(25, existing_run, "gpu_large")
 
+    def test_recover_soft_benchmark_completion_jobs_requeues_confirmed_rows(self):
+        rows = [
+            {
+                "id": 7,
+                "deep_insight_id": 4,
+                "experiment_run_id": 335,
+                "last_error": "benchmark_summary.full_benchmark_completed is false; required baselines missing: Extra",
+            }
+        ]
+
+        with (
+            mock.patch.object(auto_research.db, "fetchall", return_value=rows),
+            mock.patch.object(auto_research.db, "execute") as execute,
+            mock.patch.object(auto_research.db, "commit") as commit,
+            mock.patch.object(auto_research, "log_event"),
+        ):
+            recovered = auto_research.recover_soft_benchmark_completion_jobs()
+
+        self.assertEqual(recovered, 1)
+        self.assertIn("manuscript_retry_after_soft_benchmark_gate", execute.call_args.args[0])
+        commit.assert_called_once()
+
+    def test_recover_soft_benchmark_completion_jobs_keeps_hard_blockers(self):
+        rows = [
+            {
+                "id": 8,
+                "deep_insight_id": 9,
+                "experiment_run_id": 278,
+                "last_error": "Benchmark summary must include at least two methods/baselines.",
+            }
+        ]
+
+        with (
+            mock.patch.object(auto_research.db, "fetchall", return_value=rows),
+            mock.patch.object(auto_research.db, "execute") as execute,
+            mock.patch.object(auto_research.db, "commit") as commit,
+        ):
+            recovered = auto_research.recover_soft_benchmark_completion_jobs()
+
+        self.assertEqual(recovered, 0)
+        execute.assert_not_called()
+        commit.assert_not_called()
+
+    def test_process_candidate_writes_bundle_for_completed_confirmed_run(self):
+        candidate = {
+            "id": 26,
+            "tier": 2,
+            "novelty_status": "novel",
+            "canonical_run_id": 12,
+        }
+        existing_run = {
+            "id": 12,
+            "status": "completed",
+            "hypothesis_verdict": "confirmed",
+            "effect_pct": 8.5,
+            "proxy_config": '{"formal_experiment": true, "smoke_test_only": false}',
+            "resource_class": "gpu_large",
+        }
+        upserts = []
+
+        def _capture_upsert(insight_id, **fields):
+            upserts.append((insight_id, fields))
+
+        with (
+            mock.patch.object(auto_research, "assess_experiment_route", return_value=("gpu_large", "ready")),
+            mock.patch.object(auto_research, "evosci_available", return_value=False),
+            mock.patch.object(auto_research, "_existing_run_for_candidate", return_value=existing_run),
+            mock.patch.object(auto_research, "_auto_job_stage", return_value="manuscript_retry"),
+            mock.patch.object(auto_research, "generate_submission_bundle", return_value={"bundle_ids": [44]}),
+            mock.patch.object(auto_research, "schedule_benchmark_completion", return_value=False),
+            mock.patch.object(auto_research, "_upsert_job", side_effect=_capture_upsert),
+        ):
+            auto_research._process_candidate(candidate)
+
+        self.assertEqual(upserts[-1][0], 26)
+        self.assertEqual(upserts[-1][1]["status"], "bundle_ready")
+        self.assertEqual(upserts[-1][1]["stage"], "writing_submission")
+        self.assertEqual(upserts[-1][1]["artifact_bundle_id"], 44)
+
     def test_review_retry_reforges_failed_latest_run(self):
         insight = {"id": 24, "auto_stage": "review_retry"}
 
@@ -703,6 +846,48 @@ class AutoResearchSchedulingTests(unittest.TestCase):
             active = auto_research._active_job_count()
 
         self.assertEqual(active, 6)
+
+
+    def test_process_candidate_does_not_relaunch_optional_research_stage(self):
+        candidate = {
+            "id": 41,
+            "tier": 1,
+            "novelty_status": "verifying",
+            "auto_stage": "research_unavailable",
+        }
+        existing_run = {
+            "id": 319,
+            "status": "testing",
+            "workdir": "/tmp/run_319",
+            "proxy_config": "{\"formal_experiment\": true, \"smoke_test_only\": false}",
+            "program_md": "program",
+            "success_criteria": "{}",
+            "resource_class": "gpu_large",
+        }
+        upserts = []
+
+        def _capture_upsert(insight_id, **fields):
+            upserts.append((insight_id, fields))
+
+        with (
+            mock.patch.object(auto_research, "assess_experiment_route", return_value=("gpu_large", "ready")),
+            mock.patch.object(auto_research, "evosci_available", return_value=True),
+            mock.patch.object(auto_research, "launch_full_research") as launch_research,
+            mock.patch.object(auto_research, "_maybe_repair_preexisting_review_block", return_value=False),
+            mock.patch.object(auto_research, "_existing_run_for_candidate", return_value=existing_run),
+            mock.patch.object(auto_research, "_run_scaffold_ready", return_value=True),
+            mock.patch.object(auto_research, "_run_is_formal", return_value=True),
+            mock.patch.object(auto_research, "_upsert_job", side_effect=_capture_upsert),
+            mock.patch.object(auto_research.gpu_scheduler, "start"),
+            mock.patch.object(auto_research.gpu_scheduler, "queue_run", return_value=123),
+            mock.patch.object(auto_research, "log_event"),
+        ):
+            auto_research._process_candidate(candidate)
+
+        launch_research.assert_not_called()
+        self.assertEqual(upserts[-1][1]["status"], "queued_gpu")
+        self.assertEqual(upserts[-1][1]["experiment_run_id"], 319)
+
 
     def test_process_candidate_tier2_continues_to_experiment_while_research_starts(self):
         candidate = {"id": 31, "tier": 2, "novelty_status": "novel"}

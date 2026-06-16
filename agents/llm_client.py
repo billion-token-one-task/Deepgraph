@@ -367,6 +367,15 @@ def get_provider_models() -> list[dict]:
     ]
 
 
+def _should_omit_token_limit(provider: dict) -> bool:
+    """Return True for routes whose gateway rejects max token limit fields."""
+    if provider.get("omit_token_limit"):
+        return True
+    model = str(provider.get("model") or "").strip().lower()
+    model_name = model.rsplit("/", 1)[-1]
+    return model_name == "gpt-5.5" or model_name.startswith("gpt-5.5-")
+
+
 def _call_provider(provider: dict, system_prompt: str, user_prompt: str,
                    max_tokens: int) -> tuple[str, int, int, int]:
     """Call a specific provider. Returns (text, total_tokens, cached_tokens, input_tokens)."""
@@ -388,8 +397,9 @@ def _call_chat_completions(provider: dict, system_prompt: str, user_prompt: str,
             {"role": "user", "content": user_prompt},
         ],
         "stream": stream_chat,
-        "max_tokens": max_tokens,
     }
+    if max_tokens and not _should_omit_token_limit(provider):
+        payload["max_tokens"] = max_tokens
 
     headers = {
         "Authorization": f"Bearer {provider['api_key']}",
@@ -537,9 +547,10 @@ def _call_responses_api(provider: dict, system_prompt: str, user_prompt: str,
         "instructions": system_prompt,
         "input": input_items,
         "stream": True,
-        "max_output_tokens": max_tokens,
         "reasoning": {"effort": LLM_REASONING_EFFORT},
     }
+    if max_tokens and not _should_omit_token_limit(provider):
+        payload["max_output_tokens"] = max_tokens
 
     headers = {
         "Authorization": f"Bearer {provider['api_key']}",

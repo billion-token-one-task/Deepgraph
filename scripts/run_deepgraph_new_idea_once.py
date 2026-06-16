@@ -20,6 +20,7 @@ from agents.paper_idea_agent import discover_paper_ideas
 from agents.paradigm_agent import store_deep_insight
 from agents.compute_profile import detect_compute_profile, gpu_resource_allowed
 from agents.dataset_resolver import resolve_plan_datasets
+from agents.experiment_forge import _ensure_real_benchmark_plan
 from db import database as db
 from orchestrator import auto_research
 from orchestrator.discovery_scheduler import harvest_signals
@@ -79,11 +80,68 @@ def _execution_blocker(idea: dict) -> str | None:
     return None
 
 
+def _benchmark_recipe_blocker_judgement(idea: dict, reason: str) -> dict:
+    plan = _load_json(idea.get("experimental_plan"))
+    blockers = plan.get("benchmark_recipe_blockers") if isinstance(plan.get("benchmark_recipe_blockers"), list) else []
+    names: list[str] = []
+    for row in blockers:
+        if isinstance(row, dict):
+            name = str(row.get("name") or "").strip()
+        else:
+            name = str(row or "").strip()
+        if name:
+            names.append(name)
+    detail = ", ".join(names[:4]) if names else "the requested benchmark contract"
+    summary = (
+        "Generated idea has no executable benchmark recipe for "
+        f"{detail}; keep the idea in the loop and route it to Benchmark Manager "
+        "or experiment-design repair instead of discarding it."
+    )
+    return {
+        "summary": summary,
+        "blockers": [
+            (
+                "Generated real-benchmark runner does not support "
+                f"{detail}; a dedicated benchmark harness/recipe is required before execution."
+            )
+        ],
+        "warnings": [f"pre_store_execution_blocker={reason}"],
+        "environment_review": {
+            "benchmark_harness_required": True,
+            "unsupported_benchmark_targets": names,
+            "harness_queue": "benchmark_harness_jobs",
+        },
+    }
+
+
+def _queue_unexecutable_recipe(insight_id: int, idea: dict, reason: str) -> None:
+    judgement = _benchmark_recipe_blocker_judgement(idea, reason)
+    auto_research._handle_experiment_review_blocked(
+        insight_id,
+        {
+            "error": reason,
+            "route": "blocked",
+            "harness_required": True,
+            "judgement": judgement,
+        },
+        source="idea_generation",
+    )
+
+
 def _resolve_idea_datasets(idea: dict) -> dict:
     updated = dict(idea)
     plan = _load_json(updated.get("experimental_plan"))
     if isinstance(plan, dict) and plan:
         resolved = resolve_plan_datasets(plan)
+        method = _load_json(updated.get("proposed_method"))
+        if isinstance(method, dict):
+            resolved = _ensure_real_benchmark_plan(
+                updated,
+                method,
+                resolved,
+                updated.get("resource_class"),
+                resolve_datasets=False,
+            )
         updated["experimental_plan"] = resolved
     return updated
 
@@ -145,6 +203,7 @@ def main() -> int:
     print(_as_json({"event": "ideas_generated", "count": len(ideas)}), flush=True)
 
     stored: list[int] = []
+    harness_routed: set[int] = set()
     skipped: list[dict] = []
     compute_profile = detect_compute_profile()
     for idea in ideas:
@@ -164,7 +223,7 @@ def main() -> int:
             )
             continue
         execution_blocker = _execution_blocker(idea)
-        if execution_blocker:
+        if execution_blocker and execution_blocker != "no_executable_benchmark_recipe":
             skipped.append({"title": idea.get("title"), "reason": execution_blocker})
             continue
         insight_id = store_deep_insight(idea)
@@ -176,10 +235,24 @@ def main() -> int:
                         "event": "idea_stored",
                         "insight_id": insight_id,
                         "title": idea.get("title"),
+                        "execution_blocker": execution_blocker,
                     }
                 ),
                 flush=True,
             )
+            if execution_blocker == "no_executable_benchmark_recipe":
+                harness_routed.add(int(insight_id))
+                _queue_unexecutable_recipe(int(insight_id), idea, execution_blocker)
+                print(
+                    _as_json(
+                        {
+                            "event": "idea_routed_to_benchmark_harness",
+                            "insight_id": insight_id,
+                            "reason": execution_blocker,
+                        }
+                    ),
+                    flush=True,
+                )
         if len(stored) >= args.store_limit:
             break
 
@@ -189,6 +262,18 @@ def main() -> int:
         return 2
 
     for insight_id in stored:
+        if insight_id in harness_routed:
+            print(
+                _as_json(
+                    {
+                        "event": "auto_research_process_skipped",
+                        "insight_id": insight_id,
+                        "reason": "benchmark_harness_required",
+                    }
+                ),
+                flush=True,
+            )
+            continue
         row = db.fetchone("SELECT * FROM deep_insights WHERE id=?", (insight_id,))
         if not row:
             continue

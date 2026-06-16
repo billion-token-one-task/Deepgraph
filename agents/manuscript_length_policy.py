@@ -89,8 +89,8 @@ VENUE_LENGTH_POLICIES: dict[str, VenueLengthPolicy] = {
         official_main_page_limit=9,
         complete_main_page_range=(8, 9),
         main_word_range=(5200, 7800),
-        min_reference_count=50,
-        min_cited_reference_count=50,
+        min_reference_count=30,
+        min_cited_reference_count=30,
         section_budgets=_budgets(),
         official_sources=COMMON_OFFICIAL_SOURCES[:1],
         calibration_sources=BEST_PAPER_CALIBRATION_SOURCES,
@@ -103,8 +103,8 @@ VENUE_LENGTH_POLICIES: dict[str, VenueLengthPolicy] = {
         official_main_page_limit=9,
         complete_main_page_range=(8, 9),
         main_word_range=(5200, 7800),
-        min_reference_count=50,
-        min_cited_reference_count=50,
+        min_reference_count=30,
+        min_cited_reference_count=30,
         section_budgets=_budgets(),
         official_sources=COMMON_OFFICIAL_SOURCES[1:2],
         calibration_sources=BEST_PAPER_CALIBRATION_SOURCES,
@@ -117,8 +117,8 @@ VENUE_LENGTH_POLICIES: dict[str, VenueLengthPolicy] = {
         official_main_page_limit=8,
         complete_main_page_range=(7, 8),
         main_word_range=(4700, 7000),
-        min_reference_count=50,
-        min_cited_reference_count=50,
+        min_reference_count=30,
+        min_cited_reference_count=30,
         section_budgets=_budgets(
             introduction=(600, 760, 1150, 1450),
             related_work=(500, 620, 1000, 1300),
@@ -137,8 +137,8 @@ VENUE_LENGTH_POLICIES: dict[str, VenueLengthPolicy] = {
         official_main_page_limit=8,
         complete_main_page_range=(7, 8),
         main_word_range=(4700, 6900),
-        min_reference_count=50,
-        min_cited_reference_count=50,
+        min_reference_count=30,
+        min_cited_reference_count=30,
         section_budgets=_budgets(
             introduction=(650, 800, 1250, 1550),
             related_work=(700, 900, 1500, 1900),
@@ -157,8 +157,8 @@ VENUE_LENGTH_POLICIES: dict[str, VenueLengthPolicy] = {
         official_main_page_limit=8,
         complete_main_page_range=(7, 8),
         main_word_range=(4300, 6600),
-        min_reference_count=50,
-        min_cited_reference_count=50,
+        min_reference_count=30,
+        min_cited_reference_count=30,
         section_budgets=_budgets(
             introduction=(520, 680, 1050, 1350),
             related_work=(500, 650, 1100, 1450),
@@ -177,8 +177,8 @@ VENUE_LENGTH_POLICIES: dict[str, VenueLengthPolicy] = {
         official_main_page_limit=None,
         complete_main_page_range=(10, 25),
         main_word_range=(6500, 14000),
-        min_reference_count=50,
-        min_cited_reference_count=50,
+        min_reference_count=30,
+        min_cited_reference_count=30,
         section_budgets=_budgets(
             introduction=(800, 1000, 1700, 2200),
             related_work=(900, 1100, 2200, 2800),
@@ -227,6 +227,6 @@ def build_length_standard_text(target: Any | None = None) -> str:
             f"- {name}: target {budget.target_min_words}-{budget.target_max_words} words; hard floor {budget.min_words}; hard ceiling {budget.max_words}."
         )
     parts.append(
-        f"References: at least {policy.min_reference_count} bibliography entries and {policy.min_cited_reference_count} distinct cited entries in the main text."
+        f"References: at least {policy.min_reference_count} bibliography entries and {policy.min_cited_reference_count} distinct cited entries in the main text; aim for roughly 50 when enough topic-relevant literature is available."
     )
     return "\n".join(parts)

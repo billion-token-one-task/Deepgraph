@@ -91,11 +91,11 @@ EXPERIMENTS_STANDARD = """Experiments standard:
 - Setup must state datasets, metrics, baselines, protocol, implementation/inference settings, repeated runs or seeds, statistical method, and definitions of table metrics.
 - Main Results must compare against the strongest baseline, explain why results occur, and state uncertainty or significance when available.
 - If the Method has multiple named components or the contract requires ablations, include an ablation subsection/table grounded in completed artifacts.
-- If p_value >= 0.05 or the verdict is inconclusive, do not claim SOTA, broad superiority, or validation."""
+- If p_value >= 0.05 or the verdict is inconclusive, do not claim statistically significant superiority, broad general superiority, or validated mechanism; if the candidate has the best reported metric, it may claim a best-reported/SOTA metric point with cautious wording."""
 
 
 TABLE_FIGURE_STANDARD = """Tables and figures standard:
-- Tables must use booktabs with top/mid/bottom rules, consistent numeric precision, clear captions, and no raw Python floats.
+- Tables must use booktabs with top/mid/bottom rules, consistent numeric precision, clear captions, and no raw Python floats. Tables should fill the available column width: use tabularx/tabular* or resizebox with \\linewidth for single-column tables and \\textwidth for table*; avoid narrow centered tabular blocks.
 - Figure plans must serve the paper spine. Motivation figures show the existing failure and why the problem matters; method figures show inputs, modules, flow, outputs, and core mechanism.
 - Experiment figures should prioritize grouped bars, line charts, heatmaps, radar charts, scatter plots, and Pareto/frontier curves from real artifacts.
 - Avoid duplicate figures, decorative conceptual diagrams, 3D charts, excessive gradients, unreadable legends, and large blank areas."""

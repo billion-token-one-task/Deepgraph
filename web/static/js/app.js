@@ -2281,6 +2281,19 @@ async function loadPapers() {
     }
 }
 
+function paperIsComplete(paper) {
+    const status = String(paper.status || paper.manuscript_status || '').toLowerCase();
+    return Boolean(
+        paper.paper_complete ||
+        paper.bundle_count > 0 ||
+        paper.pdf_url ||
+        paper.tex_url ||
+        paper.main_pdf ||
+        paper.main_tex ||
+        ['bundle_ready', 'completed', 'paper_ready', 'ready', 'submitted', 'accepted'].includes(status)
+    );
+}
+
 function renderPapers() {
     const list = el('papersList');
     const detail = el('paperDetail');
@@ -2288,7 +2301,7 @@ function renderPapers() {
     const query = (el('papersSearch').value || '').toLowerCase();
     const status = el('papersStatus').value;
 
-    let filtered = allPapers;
+    let filtered = [...allPapers];
     if (query) {
         filtered = filtered.filter(p =>
             (p.title || '').toLowerCase().includes(query) ||
@@ -2300,6 +2313,11 @@ function renderPapers() {
     if (status) {
         filtered = filtered.filter(p => p.status === status);
     }
+    filtered.sort((a, b) => {
+        const completeDelta = Number(paperIsComplete(b)) - Number(paperIsComplete(a));
+        if (completeDelta) return completeDelta;
+        return String(b.updated_at || b.created_at || '').localeCompare(String(a.updated_at || a.created_at || ''));
+    });
     if (countBadge) countBadge.textContent = `${filtered.length} manuscript${filtered.length === 1 ? '' : 's'}`;
 
     if (filtered.length === 0) {

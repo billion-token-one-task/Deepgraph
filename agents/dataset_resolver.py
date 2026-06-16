@@ -576,17 +576,42 @@ def resolve_plan_datasets(plan: dict[str, Any]) -> dict[str, Any]:
         ]
         out["deferred_benchmark_targets"] = [row.get("name") for row in unresolved_rows if row.get("name")]
     elif resolved_rows:
-        resolved_names = {str(row.get("name") or "").lower() for row in resolved_rows}
+        resolved_names = {
+            str(row.get(key) or "").lower()
+            for row in resolved_rows
+            for key in ("name", "hf_dataset", "dataset")
+            if row.get(key)
+        }
         blockers = [
             row
             for row in _as_list(out.get("benchmark_recipe_blockers"))
             if not isinstance(row, dict) or str(row.get("name") or "").lower() not in resolved_names
         ]
+        seen_blockers = {
+            str(row.get("name") or "").lower()
+            for row in blockers
+            if isinstance(row, dict) and row.get("name")
+        }
+        for row in unresolved_rows:
+            name = row.get("name")
+            key = str(name or "").lower()
+            if name and key not in seen_blockers:
+                blockers.append({"name": name, "reason": row.get("reason")})
+                seen_blockers.add(key)
         if blockers:
             out["benchmark_recipe_blockers"] = blockers
+            out["deferred_benchmark_targets"] = [
+                row.get("name") if isinstance(row, dict) else str(row)
+                for row in blockers
+                if (row.get("name") if isinstance(row, dict) else str(row))
+            ]
+            out["deferred_benchmark_target_details"] = unresolved_rows
+            out["benchmark_harness_deferred"] = True
         else:
             out.pop("benchmark_recipe_blockers", None)
-        out.pop("deferred_benchmark_targets", None)
+            out.pop("deferred_benchmark_targets", None)
+            out.pop("deferred_benchmark_target_details", None)
+            out.pop("benchmark_harness_deferred", None)
         out["generated_runner_supported"] = True
     out["dataset_resolution"] = {
         "status": "resolved" if resolved_rows and not unresolved_rows else "partial" if resolved_rows else "unresolved",

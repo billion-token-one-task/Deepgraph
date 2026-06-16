@@ -54,3 +54,33 @@ def test_complete_section_word_profile_passes_length_auditor():
     )
     assert audit["status"] == "pass"
     assert audit["section_words"]["experiments_results"] >= 1800
+
+
+
+def test_main_body_page_count_excludes_references_but_blocks_body_over_limit():
+    tex = rf"""
+\begin{{abstract}}
+{_words(180)}
+\end{{abstract}}
+\section{{Introduction}}
+{_words(900)}
+\section{{Related Work}}
+{_words(900)}
+\section{{Method}}
+{_words(1400)}
+\section{{Experiments}}
+{_words(1800)}
+\section{{Discussion}}
+{_words(500)}
+\bibliography{{references}}
+"""
+    audit = audit_manuscript_length(
+        main_tex=tex,
+        page_count=15,
+        main_body_page_count=12,
+        venue_target={"family": "iclr"},
+        bibliography_entry_count=50,
+    )
+    assert audit["status"] == "fail"
+    assert audit["main_body_page_count"] == 12
+    assert any(issue["standard"] == "Length auditor / main-body page limit" for issue in audit["issues"])

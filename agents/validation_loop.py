@@ -61,7 +61,16 @@ _TELEMETRY_RESULT_KEYS = {
     "device",
     "method",
 }
-_AUTOMATION_FAILURE_ANOMALIES = {"no_candidate_diff", "pre_benchmark_guard"}
+_AUTOMATION_FAILURE_ANOMALIES = {
+    "no_candidate_diff",
+    "pre_benchmark_guard",
+    "benchmark_mismatch_or_redesign_required",
+    "implementation_drift",
+}
+_REDESIGN_REQUIRED_FILENAMES = (
+    "EXPERIMENT_REDESIGN_REQUIRED.json",
+    "IMPLEMENTATION_REDESIGN_REQUIRED.json",
+)
 try:
     AUTOMATION_FAILURE_PATIENCE = max(1, int(os.environ.get("DEEPGRAPH_AUTOMATION_FAILURE_PATIENCE", "3")))
 except ValueError:
@@ -2185,6 +2194,40 @@ def _blocked_pre_benchmark_diff_warnings(diff: str) -> list[str]:
     return warnings
 
 
+def _read_redesign_required_artifact(code_dir: Path, workdir: Path) -> dict | None:
+    """Return an explicit mechanism/benchmark mismatch artifact from the worker.
+
+    A missing repo module is implementable and should not be marked unsupported.
+    This artifact is for the narrower case where the locked benchmark/harness
+    cannot exercise the proposed mechanism, so the run needs reforge or harness
+    work rather than more hypothesis iterations.
+    """
+    for root in (code_dir, workdir):
+        for filename in _REDESIGN_REQUIRED_FILENAMES:
+            path = root / filename
+            if not path.exists() or not path.is_file():
+                continue
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                payload = {"raw_text": _safe_read_text(path)[:4000]}
+            if not isinstance(payload, dict):
+                payload = {"payload": payload}
+            payload.setdefault("artifact_path", str(path))
+            payload.setdefault("not_scientific_verdict", True)
+            payload.setdefault("recommended_route", "reforge_or_benchmark_harness")
+            return payload
+    return None
+
+
+def _persist_redesign_required_artifact(workdir: Path, iteration: int, payload: dict) -> str:
+    results_dir = workdir / "results"
+    results_dir.mkdir(parents=True, exist_ok=True)
+    path = results_dir / f"redesign_required_iter_{iteration:03d}.json"
+    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+    return str(path)
+
+
 def _write_iteration_packet(workdir: Path, packet: ExperimentIterationPacket, run_id: int) -> Path:
     packet_dir = workdir / "results" / "iteration_packets"
     packet_dir.mkdir(parents=True, exist_ok=True)
@@ -2335,6 +2378,7 @@ def _launch_coding_agent(workdir: Path, code_dir: Path, iteration: int,
                 "description": summary[:500],
                 "artifact_paths": codex_result.get("artifact_paths", {}),
                 "executor": "codex",
+                "validation_status": codex_result.get("validation_status", ""),
             }
         codex_failure = str(
             codex_result.get("error")
@@ -2348,6 +2392,7 @@ def _launch_coding_agent(workdir: Path, code_dir: Path, iteration: int,
             "artifact_paths": codex_result.get("artifact_paths", {}),
             "executor": "codex",
             "code_generation_failed": True,
+            "validation_status": codex_result.get("validation_status", ""),
         }
 
     train_file = _find_train_file(code_dir, proxy.get("main_train_file"))
@@ -3201,7 +3246,59 @@ def run_validation_loop(run_id: int, execution_context: dict | None = None) -> d
         best_before = best_value
         diff = _git_diff(code_dir) if commit_hash else ""
         pre_benchmark_warnings = _blocked_pre_benchmark_diff_warnings(diff)
-        if git_bin and not commit_hash:
+        redesign_payload = _read_redesign_required_artifact(code_dir, workdir)
+        validation_status = str(coding_step.get("validation_status") or "").strip().lower()
+        if validation_status in {"blocked_redesign_required", "redesign_required", "benchmark_mismatch"} and not redesign_payload:
+            redesign_payload = {
+                "reason": "Codex reported validation_status indicating redesign or benchmark mismatch.",
+                "validation_status": validation_status,
+                "mechanism_needed": method_desc[:800],
+                "benchmark_gap": "No structured redesign artifact was written by the worker.",
+                "why_not_scientific_failure": (
+                    "The method was not tested against a suitable locked benchmark/harness, "
+                    "so this is an operationalization issue rather than evidence against the idea."
+                ),
+                "not_scientific_verdict": True,
+            }
+        if redesign_payload:
+            redesign_path = _persist_redesign_required_artifact(workdir, i + 1, redesign_payload)
+            result = {
+                "status": "blocked",
+                "metric": None,
+                "error": str(
+                    redesign_payload.get("reason")
+                    or redesign_payload.get("benchmark_gap")
+                    or "Experiment redesign or benchmark harness work is required."
+                ),
+                "duration": 0.0,
+                "peak_memory_mb": None,
+                "redesign_required": redesign_payload,
+                "redesign_required_path": redesign_path,
+            }
+            metric = None
+            iteration_benchmark_summary = {}
+            result_judgement = {
+                "role": "ResultJudge",
+                "status": "discard",
+                "summary": (
+                    "Worker reported a mechanism/benchmark mismatch before evaluation. "
+                    "This iteration requires reforge or benchmark-harness work, not another "
+                    "score-only method tweak."
+                ),
+                "anomaly_type": "benchmark_mismatch_or_redesign_required",
+                "continue": True,
+                "terminate": False,
+                "stop_reason": "",
+                "metric": None,
+                "baseline": baseline,
+                "benchmark_semantic_warnings": [result["error"]],
+                "paper_evidence_warning": True,
+                "redesign_required_path": redesign_path,
+                "not_scientific_verdict": True,
+            }
+            status = "discard"
+            fairness_warnings = []
+        elif git_bin and not commit_hash:
             result = {
                 "status": "blocked",
                 "metric": None,
@@ -3345,6 +3442,11 @@ def run_validation_loop(run_id: int, execution_context: dict | None = None) -> d
             artifact_paths={
                 "log_path": result.get("log_path"),
                 "method_feedback": str(method_feedback_path),
+                **(
+                    {"redesign_required": result.get("redesign_required_path")}
+                    if result.get("redesign_required_path")
+                    else {}
+                ),
                 **supervisor_artifacts,
                 **coding_step.get("artifact_paths", {}),
             },

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
 import shlex
 import subprocess
 import textwrap
@@ -82,6 +84,34 @@ def _placeholder_diagram(path: Path, title: str, objective: str) -> None:
 
 def _clip(text: str, limit: int = 360) -> str:
     return text[:limit] + ("..." if len(text) > limit else "")
+
+
+def _diagram_asset_signature(fig: dict[str, Any], objective: str) -> str:
+    payload = {
+        "figure_id": str(fig.get("figure_id") or fig.get("title") or ""),
+        "title": str(fig.get("title") or ""),
+        "caption": str(fig.get("caption") or ""),
+        "objective": str(objective or "")[:4000],
+        "aspect_ratio": str(fig.get("aspect_ratio") or ""),
+    }
+    raw = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _diagram_meta_path(out_path: Path) -> Path:
+    return out_path.with_suffix(out_path.suffix + ".meta.json")
+
+
+def _write_diagram_meta(out_path: Path, fig: dict[str, Any], objective: str, note: str) -> None:
+    meta = {
+        "schema_version": "deepgraph_diagram_asset_meta_v1",
+        "signature": _diagram_asset_signature(fig, objective),
+        "figure_id": str(fig.get("figure_id") or fig.get("title") or ""),
+        "title": str(fig.get("title") or ""),
+        "caption": str(fig.get("caption") or ""),
+        "note": note,
+    }
+    _diagram_meta_path(out_path).write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def _diagram_safe_text(value: Any) -> Any:
@@ -228,6 +258,13 @@ def _setup_matplotlib() -> Any:
     return plt
 
 
+def _box_axis(ax: Any) -> None:
+    for side in ("top", "right", "left", "bottom"):
+        ax.spines[side].set_visible(True)
+        ax.spines[side].set_linewidth(0.72)
+        ax.spines[side].set_color("#4b5563")
+
+
 def _save_native_matplotlib_figure(fig_obj: Any, out_path: Path) -> dict[str, str]:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     svg_path = out_path.with_suffix(".svg")
@@ -240,6 +277,56 @@ def _save_native_matplotlib_figure(fig_obj: Any, out_path: Path) -> dict[str, st
         "svg_path": str(svg_path),
         "pdf_path": str(pdf_path),
     }
+
+
+def _text_overlap_count(fig_obj: Any, axes: list[Any]) -> int:
+    """Count obvious text bounding-box overlaps after matplotlib layout."""
+    try:
+        fig_obj.canvas.draw()
+        renderer = fig_obj.canvas.get_renderer()
+    except Exception:
+        return 0
+    overlaps = 0
+    for ax in axes:
+        texts = []
+        title = getattr(ax, "title", None)
+        if title is not None and title.get_text():
+            texts.append(title)
+        texts.extend([tick for tick in ax.get_xticklabels() if tick.get_visible() and tick.get_text()])
+        texts.extend([tick for tick in ax.get_yticklabels() if tick.get_visible() and tick.get_text()])
+        texts.extend([item for item in getattr(ax, "texts", []) if item.get_visible() and item.get_text()])
+        boxes = []
+        for item in texts:
+            try:
+                box = item.get_window_extent(renderer=renderer).expanded(1.02, 1.06)
+            except Exception:
+                continue
+            if box.width > 0 and box.height > 0:
+                boxes.append(box)
+        for idx, box in enumerate(boxes):
+            for other in boxes[idx + 1 :]:
+                if box.overlaps(other):
+                    overlaps += 1
+    return overlaps
+
+
+def _audit_and_relax_experiment_text(fig_obj: Any, axes: list[Any]) -> None:
+    """Relax labels when rendered text still collides inside dense experiment panels."""
+    if _text_overlap_count(fig_obj, axes) == 0:
+        return
+    for ax in axes:
+        ax.tick_params(axis="x", labelsize=5.6, pad=1)
+        ax.tick_params(axis="y", labelsize=6.2, pad=1)
+        ax.title.set_fontsize(7.2)
+        for item in getattr(ax, "texts", []):
+            item.set_fontsize(5.8)
+    if _text_overlap_count(fig_obj, axes) == 0:
+        return
+    for ax in axes:
+        for item in getattr(ax, "texts", []):
+            if item.get_gid() == "bar_value":
+                item.set_visible(False)
+    fig_obj.canvas.draw()
 
 
 def _wrap_label(text: str, width: int = 18) -> str:
@@ -268,6 +355,13 @@ def _metric_label(metric_name: str | None) -> str:
         "exact_match": "Exact Match",
         "em": "Exact Match",
         "utility": "Utility",
+        "cost_adjusted_accuracy": "Cost-Adj. Acc.",
+        "cost-adjusted accuracy": "Cost-Adj. Acc.",
+        "avg_new_tokens": "Tokens",
+        "average_new_tokens": "Tokens",
+        "avg_latency_seconds": "Latency",
+        "average_latency_seconds": "Latency",
+        "route_rate": "Route",
     }
     return aliases.get(name.lower(), name.replace("_", " ").title())
 
@@ -278,14 +372,23 @@ def _short_method_label(method: str) -> str:
         "vanilla direct answering": "Direct",
         "direct": "Direct",
         "naive": "Naive",
-        "confidence routing": "Conf.",
-        "confidence_weighted_majority": "Conf.",
+        "confidence gate": "Conf. Gate",
+        "confidence routing": "Conf. Gate",
+        "confidence_weighted_majority": "Conf. Gate",
         "disagreement routing": "Disagree",
         "disagreement_gated_consensus": "Disagree",
-        "random budget-matched routing": "Random",
+        "random budget-matched routing": "Rand. Budget",
         "random_two_agent": "Random",
         "always multi-agent majority": "Majority",
         "always_five_agents": "Majority",
+        "always-reason chain-of-thought": "Always-CoT",
+        "always reason chain of thought": "Always-CoT",
+        "self-consistency reasoning": "Self-Cons.",
+        "least-to-most prompting": "LtM",
+        "certified residual policy packets": "CRPP",
+        "rational-metareasoning voc routing": "VOC",
+        "car-style certainty adaptive routing": "CAR",
+        "self-route-style mode routing": "Self-Route",
         "diversity-preserving consensus (ours)": "DPC",
         "diversity-preserving consensus": "DPC",
         "diversity_preserving_consensus": "DPC",
@@ -295,13 +398,71 @@ def _short_method_label(method: str) -> str:
     key = str(method or "").strip()
     if key in lookup:
         return lookup[key]
-    lower_key = key.lower()
+    lower_key = key.lower().replace("_", " ")
     if lower_key in lookup:
         return lookup[lower_key]
+    if "latent threshold envelope" in lower_key or "counterfactual evidence locking" in lower_key:
+        return "LTECEL"
+    acronym_match = re.match(r"^([A-Z]{3,8})\b", key)
+    if acronym_match:
+        return acronym_match.group(1)
     words = key.replace("_", " ").replace("-", " ").split()
     if not words:
         return ""
-    return " ".join(word[:1].upper() + word[1:] for word in words[:3])
+    label = " ".join(word[:1].upper() + word[1:] for word in words[:2])
+    return label if len(label) <= 14 else "".join(word[:1].upper() for word in words[:4])
+
+
+def _short_ablation_label(label: str, idx: int | None = None) -> str:
+    raw = str(label or "").strip()
+    normalized = re.sub(r"[^a-z0-9]+", "_", raw.lower()).strip("_")
+    lookup = {
+        "remove_v_r": "No resid.",
+        "remove_vr": "No resid.",
+        "drop_v_r": "No resid.",
+        "remove_v7_direct_budget_cap": "No cap",
+        "direct_budget": "Direct",
+        "selector_confidence_gate": "Conf.",
+        "selector_family_confidence_gate": "Conf.",
+        "confidence_gate": "Conf.",
+        "selector_disagreement_gate": "Disagr.",
+        "selector_family_disagreement_routing": "Disagr.",
+        "disagreement_gate": "Disagr.",
+        "selector_random_budget_matching": "Random",
+        "selector_family_random_budget_matched_routing": "Random",
+        "random_budget_matching": "Random",
+        "random_budget_matched_routing": "Random",
+        "full": "Full",
+        "ours": "Full",
+        "crpp": "CRPP",
+    }
+    if normalized in lookup:
+        return lookup[normalized]
+    text = re.sub(r"^(remove|drop|without|no)_", "no_", normalized)
+    words = [
+        w
+        for w in text.split("_")
+        if w and w not in {"selector", "family", "routing", "matched", "matching", "candidate", "v7", "cap"}
+    ]
+    replacements = {
+        "confidence": "Conf.",
+        "disagreement": "Disagree",
+        "random": "Random",
+        "budget": "Budget",
+        "direct": "Direct",
+        "gate": "gate",
+        "remove": "No",
+        "drop": "No",
+        "without": "No",
+        "calibration": "Calib.",
+        "residual": "Resid.",
+        "policy": "Policy",
+    }
+    out = [replacements.get(w, w if len(w) <= 4 else w[:4].title() + ".") for w in words[:3]]
+    label_out = " ".join(out).replace("No V", "No v")
+    if not label_out and idx is not None:
+        label_out = f"A{idx + 1}"
+    return label_out[:16]
 
 
 def _method_palette(methods: list[str]) -> dict[str, str]:
@@ -464,9 +625,15 @@ def _native_asset(
         "aspect_ratio": fig.get("aspect_ratio"),
         "chart_type": fig.get("chart_type"),
         "chart_family": fig.get("chart_family"),
+        "layout": fig.get("layout"),
+        "placement": fig.get("placement"),
+        "uses_hatch": bool(fig.get("uses_hatch", False)),
         "source_agent": fig.get("source_agent"),
         "style_reference_keys": fig.get("style_reference_keys") or [],
         "style_reference_titles": fig.get("style_reference_titles") or [],
+        "style_reference_sources": fig.get("style_reference_sources") or [],
+        "local_style_reference_dir": fig.get("local_style_reference_dir") or "",
+        "local_style_reference_count": fig.get("local_style_reference_count") or 0,
         **(extras or {}),
     }
 
@@ -707,8 +874,7 @@ def _render_gain_threshold(fig: dict[str, Any], out_path: Path) -> None:
     ax.text(-0.26, 0.20, "LCB <= 0:\nstop", fontsize=9, color="#4b5563")
     ax.text(0.07, 0.20, "LCB > 0:\nroute to reasoning", fontsize=9, color="#047857")
     ax.grid(True, alpha=0.22)
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
+    _box_axis(ax)
     fig_obj.tight_layout()
     _save_native_matplotlib_figure(fig_obj, out_path)
     plt.close(fig_obj)
@@ -734,8 +900,7 @@ def _render_baseline_bar(fig: dict[str, Any], state: dict, rows: list[dict[str, 
     else:
         ax.text(0.5, 0.94, f"Delta: {best - base:+.4g}", transform=ax.transAxes, ha="center", fontsize=7.8)
     ax.grid(axis="y", alpha=0.20)
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
+    _box_axis(ax)
     fig_obj.tight_layout()
     _save_native_matplotlib_figure(fig_obj, out_path)
     plt.close(fig_obj)
@@ -764,11 +929,6 @@ def _render_main_results_bar(fig: dict[str, Any], state: dict, baseline: float |
 
     colors = _method_palette(methods)
     bar_colors = [colors[method] for method in methods]
-    hatch_cycle = ["//", "--", "xx", "\\\\", "..", "++", "oo", "///", "\\\\\\"]
-    hatches = [
-        "///" if _method_is_oracle(method) else hatch_cycle[idx % len(hatch_cycle)]
-        for idx, method in enumerate(methods)
-    ]
     x = np.arange(len(methods))
     labels = [_short_method_label(method) for method in methods]
     wide = str(fig.get("aspect_ratio") or "") == "4:1" or str(fig.get("chart_type") or "").endswith("1x4")
@@ -808,8 +968,6 @@ def _render_main_results_bar(fig: dict[str, Any], state: dict, baseline: float |
             linewidth=0.72,
             error_kw={"elinewidth": 0.8, "capthick": 0.8},
         )
-        for bar, hatch in zip(bars, hatches):
-            bar.set_hatch(hatch)
         if wide:
             ax.set_title(ylabel, fontweight="bold", pad=4, fontsize=9.2)
         else:
@@ -841,13 +999,12 @@ def _render_main_results_bar(fig: dict[str, Any], state: dict, baseline: float |
                 fontsize=7.2 if wide else 7.2,
                 rotation=0,
             )
-        ax.spines["top"].set_visible(False)
-        ax.spines["right"].set_visible(False)
+        _box_axis(ax)
     if wide:
         from matplotlib.patches import Patch
 
         handles = [
-            Patch(facecolor=bar_colors[idx], edgecolor="#1f2937", hatch=hatches[idx], label=labels[idx])
+            Patch(facecolor=bar_colors[idx], edgecolor="#1f2937", label=labels[idx])
             for idx in range(len(methods))
         ]
         fig_obj.legend(
@@ -931,13 +1088,19 @@ def _render_quality_cost_tradeoff(fig: dict[str, Any], state: dict, metric_name:
     summary = _state_benchmark_summary(state)
     per_method = summary.get("per_method") if isinstance(summary.get("per_method"), dict) else {}
     if not per_method:
-        _render_main_results_bar(fig, state, None, metric_name, out_path)
+        _render_main_results_bar({**fig, "aspect_ratio": "4:1", "layout": "1x4"}, state, None, metric_name, out_path)
         return
 
     plt = _setup_matplotlib()
     methods = list(per_method.keys())[:10]
     colors = _method_palette(methods)
-    fig_obj, ax = plt.subplots(figsize=_figure_size({"aspect_ratio": "4:3"}))
+    fig_obj, axes_raw = plt.subplots(1, 3, figsize=_figure_size({"aspect_ratio": "4:1"}), sharey=True)
+    axes = list(axes_raw)
+    panels = [
+        ("avg_new_tokens", "Average new tokens", "lower is cheaper"),
+        ("avg_latency_seconds", "Latency (s)", "lower is faster"),
+        ("route_rate", "Route rate", "lower routes less"),
+    ]
     label_overrides = {
         "vanilla direct answering": "Direct",
         "direct": "Direct",
@@ -949,152 +1112,343 @@ def _render_quality_cost_tradeoff(fig: dict[str, Any], state: dict, metric_name:
         "diversity preserving consensus": "DPC",
         "oracle routing": "Oracle",
     }
-    points: dict[str, tuple[float, float]] = {}
+    y_values = []
     for method in methods:
         row = per_method.get(method) if isinstance(per_method.get(method), dict) else {}
-        tokens = float(_as_float(row.get("avg_new_tokens") or row.get("tokens")) or 0.0)
-        score = float(_row_metric(row, metric_name) or 0.0)
-        std = float(_row_std(row, metric_name))
-        is_oracle = _method_is_oracle(method)
-        marker = "*" if is_oracle else "o"
-        size = 80 if is_oracle else 52
-        ax.errorbar(
-            tokens,
-            score,
-            yerr=std if std else None,
-            fmt="none",
-            ecolor="#9ca3af",
-            elinewidth=0.72,
-            capsize=2,
-            zorder=1,
-        )
-        ax.scatter(
-            tokens,
-            score,
-            s=size,
-            marker=marker,
-            color=colors[method],
-            edgecolor="#111827",
-            linewidth=0.55,
-            zorder=3,
-            alpha=0.95,
-        )
-        method_key = method.lower()
-        if "diversity" in method_key and "consensus" in method_key:
-            label = "DPC"
-        elif "confidence" in method_key and "routing" in method_key:
-            label = "Conf."
-        elif "disagreement" in method_key and "routing" in method_key:
-            label = "Disagree"
-        elif "random" in method_key:
-            label = "Random"
-        elif "majority" in method_key:
-            label = "Majority"
-        else:
-            label = label_overrides.get(method_key, _short_method_label(method))
-        dx = 5
-        ha = "left"
-        if label in {"Majority", "DPC"}:
-            dx = -8 if label == "DPC" else -18
-            ha = "right"
-        dy = -2 if label == "Oracle" else 2
-        ax.annotate(label, (tokens, score), xytext=(dx, dy), textcoords="offset points", ha=ha, va="center")
-        points[label] = (tokens, score)
-    if "Conf." in points and "DPC" in points:
-        ax.plot(
-            [points["Conf."][0], points["DPC"][0]],
-            [points["Conf."][1], points["DPC"][1]],
-            color="#64748b",
-            linestyle="--",
-            linewidth=0.8,
-            alpha=0.7,
-            zorder=0,
-        )
-    max_tokens = max((pt[0] for pt in points.values()), default=1.0)
-    y_values = [pt[1] for pt in points.values()] or [0.0, 1.0]
-    y_min, y_max = min(y_values), max(y_values)
-    y_pad = max(0.02, (y_max - y_min) * 0.18)
-    ax.set_xlabel("Average new tokens")
-    ax.set_ylabel(_metric_label(metric_name))
-    ax.set_xlim(0, max(1.0, max_tokens * 1.12))
-    if 0.0 <= y_min <= y_max <= 1.05:
-        ax.set_ylim(max(0.0, y_min - y_pad), min(1.05, y_max + y_pad))
-    else:
-        ax.set_ylim(y_min - y_pad, y_max + y_pad)
-    ax.grid(color="#e5e7eb", linewidth=0.65)
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-    ax.text(0.02, 0.97, "Higher is better; left is cheaper", transform=ax.transAxes, ha="left", va="top", fontsize=7.2, color="#374151")
-    fig_obj.tight_layout(pad=0.5)
+        y_values.append(float(_row_metric(row, metric_name) or 0.0))
+    for ax, (x_key, xlabel, note) in zip(axes, panels):
+        points: dict[str, tuple[float, float]] = {}
+        for method in methods:
+            row = per_method.get(method) if isinstance(per_method.get(method), dict) else {}
+            x_value = float(_as_float(row.get(x_key) or row.get("tokens" if x_key == "avg_new_tokens" else x_key)) or 0.0)
+            score = float(_row_metric(row, metric_name) or 0.0)
+            std = float(_row_std(row, metric_name))
+            is_oracle = _method_is_oracle(method)
+            marker = "*" if is_oracle else "o"
+            size = 58 if is_oracle else 38
+            if std:
+                ax.errorbar(x_value, score, yerr=std, fmt="none", ecolor="#9ca3af", elinewidth=0.58, capsize=1.8, zorder=1)
+            ax.scatter(x_value, score, s=size, marker=marker, color=colors[method], edgecolor="#111827", linewidth=0.45, zorder=3, alpha=0.94)
+            method_key = method.lower()
+            if "diversity" in method_key and "consensus" in method_key:
+                label = "DPC"
+            elif "confidence" in method_key and "routing" in method_key:
+                label = "Conf."
+            elif "disagreement" in method_key and "routing" in method_key:
+                label = "Disagree"
+            elif "random" in method_key:
+                label = "Random"
+            elif "majority" in method_key:
+                label = "Majority"
+            else:
+                label = label_overrides.get(method_key, _short_method_label(method))
+            ax.annotate(label, (x_value, score), xytext=(3, 2), textcoords="offset points", fontsize=6.2, ha="left", va="center")
+            points[label] = (x_value, score)
+        if "Conf." in points and "DPC" in points:
+            ax.plot([points["Conf."][0], points["DPC"][0]], [points["Conf."][1], points["DPC"][1]], color="#64748b", linestyle="--", linewidth=0.65, alpha=0.7, zorder=0)
+        x_vals = [pt[0] for pt in points.values()] or [0.0, 1.0]
+        ax.set_xlabel(xlabel)
+        ax.set_title(note, fontsize=7.0, fontweight="bold", pad=3)
+        ax.set_xlim(min(0.0, min(x_vals) * 0.92), max(1.0, max(x_vals) * 1.12))
+        ax.grid(color="#e5e7eb", linewidth=0.55)
+        _box_axis(ax)
+    if y_values:
+        y_min, y_max = min(y_values), max(y_values)
+        y_pad = max(0.02, (y_max - y_min) * 0.16)
+        axes[0].set_ylim(max(0.0, y_min - y_pad), min(1.05, y_max + y_pad) if y_max <= 1.05 else y_max + y_pad)
+    axes[0].set_ylabel(_metric_label(metric_name))
+    fig_obj.tight_layout(pad=0.35, w_pad=0.55)
     _save_native_matplotlib_figure(fig_obj, out_path)
     plt.close(fig_obj)
-
 
 def _render_method_metric_heatmap(fig: dict[str, Any], state: dict, metric_name: str, out_path: Path) -> None:
     summary = _state_benchmark_summary(state)
     per_method = summary.get("per_method") if isinstance(summary.get("per_method"), dict) else {}
     if not per_method:
-        _render_main_results_bar(fig, state, None, metric_name, out_path)
+        _render_main_results_bar({**fig, "aspect_ratio": "4:1", "layout": "1x4"}, state, None, metric_name, out_path)
         return
 
     plt = _setup_matplotlib()
     import numpy as np
 
     primary = str(summary.get("primary_metric") or summary.get("metric_name") or metric_name or "metric")
-    candidate_metrics = [
-        primary,
-        "accuracy",
-        "avg_new_tokens",
-        "avg_latency_seconds",
-        "route_rate",
-        "cost",
-        "q_struct",
-        "simple_regret",
-    ]
-    metrics: list[str] = []
     methods = list(per_method.keys())[:9]
-    for metric in candidate_metrics:
-        if metric in metrics:
-            continue
-        if any(isinstance(per_method.get(method), dict) and _as_float((per_method.get(method) or {}).get(metric)) is not None for method in methods):
-            metrics.append(metric)
-        if len(metrics) >= 5:
-            break
+    candidate_metrics = [primary, "avg_new_tokens", "avg_latency_seconds", "route_rate"]
+    metrics = [m for m in candidate_metrics if any(isinstance(per_method.get(method), dict) and _as_float((per_method.get(method) or {}).get(m)) is not None for method in methods)]
     if not metrics:
         metrics = [primary]
-
-    raw = np.array(
-        [
-            [float(_as_float((per_method.get(method) or {}).get(metric)) or 0.0) for metric in metrics]
-            for method in methods
-        ],
-        dtype=float,
-    )
+    raw = np.array([[float(_as_float((per_method.get(method) or {}).get(metric)) or 0.0) for metric in metrics] for method in methods], dtype=float)
     norm = np.zeros_like(raw)
     for j in range(raw.shape[1]):
         col = raw[:, j]
-        lo = float(np.nanmin(col))
-        hi = float(np.nanmax(col))
-        if abs(hi - lo) < 1e-12:
-            norm[:, j] = 0.5
-        else:
-            norm[:, j] = (col - lo) / (hi - lo)
+        lo = float(np.nanmin(col)); hi = float(np.nanmax(col))
+        norm[:, j] = 0.5 if abs(hi - lo) < 1e-12 else (col - lo) / (hi - lo)
         if metrics[j] in {"avg_new_tokens", "avg_latency_seconds", "cost", "simple_regret"}:
             norm[:, j] = 1.0 - norm[:, j]
 
-    fig_obj, ax = plt.subplots(figsize=_figure_size(fig))
+    fig_obj, axes_raw = plt.subplots(1, 3, figsize=_figure_size({"aspect_ratio": "4:1"}))
+    axes = list(axes_raw)
+    ax = axes[0]
     im = ax.imshow(norm, cmap="YlGnBu", aspect="auto", vmin=0.0, vmax=1.0)
-    ax.set_xticks(np.arange(len(metrics)), [_metric_label(m) for m in metrics], rotation=22, ha="right")
-    ax.set_yticks(np.arange(len(methods)), [_short_method_label(method) for method in methods])
+    ax.set_xticks(np.arange(len(metrics)), [_metric_label(m) for m in metrics], rotation=24, ha="right", fontsize=6.5)
+    ax.set_yticks(np.arange(len(methods)), [_short_method_label(method) for method in methods], fontsize=6.5)
     for i in range(raw.shape[0]):
         for j in range(raw.shape[1]):
             value = raw[i, j]
-            fmt = "{:.3f}" if abs(value) <= 1.2 else "{:.1f}"
-            ax.text(j, i, fmt.format(value), ha="center", va="center", fontsize=6.7, color="#111827")
-    cbar = fig_obj.colorbar(im, ax=ax, fraction=0.046, pad=0.035)
-    cbar.set_label("Column-normalized profile")
-    ax.set_title("Method-metric profile", fontweight="bold", pad=6)
-    fig_obj.tight_layout(pad=0.45)
+            fmt = "{:.3f}" if abs(value) <= 1.2 else "{:.0f}"
+            ax.text(j, i, fmt.format(value), ha="center", va="center", fontsize=5.8, color="#111827")
+    ax.set_title("Method profile", fontsize=7.2, fontweight="bold", pad=3)
+
+    ax = axes[1]
+    difficulty_methods = [m for m in methods if isinstance(per_method.get(m), dict) and isinstance((per_method.get(m) or {}).get("difficulty_breakdown"), dict)]
+    diff_keys = ["easy", "medium", "hard"]
+    if difficulty_methods:
+        diff_raw = np.array([[float(_as_float(((per_method.get(m) or {}).get("difficulty_breakdown") or {}).get(k)) or 0.0) for k in diff_keys] for m in difficulty_methods], dtype=float)
+        ax.imshow(diff_raw, cmap="PuBuGn", aspect="auto", vmin=max(0.0, float(np.nanmin(diff_raw)) - 0.03), vmax=min(1.0, float(np.nanmax(diff_raw)) + 0.03))
+        ax.set_xticks(np.arange(len(diff_keys)), [k.title() for k in diff_keys], fontsize=6.5)
+        ax.set_yticks(np.arange(len(difficulty_methods)), [_short_method_label(m) for m in difficulty_methods], fontsize=6.5)
+        for i in range(diff_raw.shape[0]):
+            for j in range(diff_raw.shape[1]):
+                ax.text(j, i, f"{diff_raw[i, j]:.2f}", ha="center", va="center", fontsize=5.8, color="#111827")
+    else:
+        ax.text(0.5, 0.5, "No difficulty\nbreakdown", ha="center", va="center", transform=ax.transAxes)
+        ax.set_xticks([]); ax.set_yticks([])
+    ax.set_title("Difficulty", fontsize=7.2, fontweight="bold", pad=3)
+
+    ax = axes[2]
+    ablations = summary.get("ablation_table") if isinstance(summary.get("ablation_table"), list) else []
+    if ablations:
+        labels = [_wrap_label(str((row or {}).get("method") or (row or {}).get("ablation") or f"A{i+1}"), 9) for i, row in enumerate(ablations[:5])]
+        vals = [float(_as_float((row or {}).get("metric_value") or (row or {}).get(primary)) or 0.0) for row in ablations[:5]]
+        x = np.arange(len(vals))
+        ax.bar(x, vals, color="#a7c7e7", edgecolor="#1f2937", linewidth=0.4)
+        ax.set_xticks(x, labels, rotation=20, ha="right", fontsize=6.2)
+        ax.set_ylim(max(0.0, min(vals) - 0.04), min(1.0, max(vals) + 0.04) if max(vals) <= 1.0 else max(vals) + 0.04)
+        ax.grid(axis="y", color="#e5e7eb", linewidth=0.55)
+    else:
+        ax.text(0.5, 0.5, "No ablation\nartifact", ha="center", va="center", transform=ax.transAxes)
+        ax.set_xticks([]); ax.set_yticks([])
+    ax.set_title("Ablations", fontsize=7.2, fontweight="bold", pad=3)
+    for axis in axes:
+        _box_axis(axis)
+    fig_obj.tight_layout(pad=0.35, w_pad=0.55)
+    _save_native_matplotlib_figure(fig_obj, out_path)
+    plt.close(fig_obj)
+
+
+def _rows_from_summary(summary: dict[str, Any], *keys: str) -> list[dict[str, Any]]:
+    for key in keys:
+        value = summary.get(key)
+        if isinstance(value, list):
+            return [row for row in value if isinstance(row, dict)]
+        if isinstance(value, dict):
+            for inner_key in ("rows", "table", "results", "sweep", "points"):
+                inner = value.get(inner_key)
+                if isinstance(inner, list):
+                    return [row for row in inner if isinstance(row, dict)]
+            rows: list[dict[str, Any]] = []
+            for setting, row in value.items():
+                if isinstance(row, dict):
+                    rows.append({"setting": setting, **row})
+            if rows:
+                return rows
+    return []
+
+
+def _full_method_metric_from_ablations(rows: list[dict[str, Any]], metric: str) -> float:
+    preferred = []
+    for row in rows:
+        label = str(row.get("ablation") or row.get("method") or row.get("variant") or "").lower()
+        value = _as_float(row.get("metric_value") or row.get(metric) or row.get("score") or row.get("accuracy"))
+        if value is None:
+            continue
+        if any(token in label for token in ("full", "ours", "complete", "proposed", "crpp", "voc")):
+            preferred.append(float(value))
+    if preferred:
+        return max(preferred)
+    values = [float(_as_float(row.get("metric_value") or row.get(metric) or row.get("score") or row.get("accuracy")) or 0.0) for row in rows]
+    return max(values) if values else 1.0
+
+
+def _line_axis_box(ax: Any) -> None:
+    _box_axis(ax)
+    ax.grid(axis="both", color="#e5e7eb", linewidth=0.55, alpha=0.78)
+    ax.set_axisbelow(True)
+
+
+def _render_ablation_results(fig: dict[str, Any], state: dict, metric_name: str, out_path: Path) -> None:
+    summary = _state_benchmark_summary(state)
+    rows = _rows_from_summary(summary, "ablation_table", "ablation_results", "ablations")
+    if not rows:
+        raise ValueError("ablation_table artifact missing")
+
+    plt = _setup_matplotlib()
+    import numpy as np
+
+    primary = str(summary.get("primary_metric") or summary.get("metric_name") or metric_name or "metric")
+    rows = rows[:7]
+    labels = [_short_ablation_label(str(row.get("ablation") or row.get("method") or row.get("variant") or f"A{i+1}"), i) for i, row in enumerate(rows)]
+    vals = [float(_as_float(row.get("metric_value") or row.get(primary) or row.get("score") or row.get("accuracy")) or 0.0) for row in rows]
+    full_value = _full_method_metric_from_ablations(rows, primary)
+    deltas = []
+    for row, value in zip(rows, vals):
+        raw_delta = _as_float(row.get("delta_vs_candidate") or row.get("delta_vs_full") or row.get("delta"))
+        deltas.append(float(raw_delta) if raw_delta is not None else float(value - full_value))
+    retained = [float(value / full_value) if full_value else 0.0 for value in vals]
+
+    fig_obj, axes_raw = plt.subplots(1, 3, figsize=_figure_size({"aspect_ratio": "4:1"}))
+    axes = list(axes_raw)
+    palette = ["#8ecae6", "#ffb4a2", "#bde0fe", "#cdb4db", "#ffd166", "#95d5b2", "#adb5bd"]
+    x = np.arange(len(rows))
+    panels = [
+        (_metric_label(primary), vals, "{:.3f}"),
+        ("Delta", deltas, "{:+.3f}"),
+        ("Retained", retained, "{:.2f}"),
+    ]
+    for ax, (title, values, fmt) in zip(axes, panels):
+        bars = ax.bar(x, values, color=palette[: len(rows)], edgecolor="#1f2937", linewidth=0.7, width=0.58)
+        ax.set_title(title, fontsize=7.7, fontweight="bold", pad=5)
+        ax.set_xticks(x, labels, rotation=0, ha="center", fontsize=6.1)
+        ax.tick_params(axis="x", pad=2)
+        ax.grid(axis="y", color="#e5e7eb", linewidth=0.55, alpha=0.74)
+        ax.set_axisbelow(True)
+        if title == "Delta":
+            lim = max(0.035, max(abs(v) for v in values) * 1.45)
+            ax.axhline(0, color="#111827", linewidth=0.7)
+            ax.set_ylim(-lim, lim)
+        elif title == "Retained":
+            ax.set_ylim(0, max(1.16, max(values) * 1.20 if values else 1.0))
+        else:
+            lo = min(values) if values else 0.0
+            hi = max(values) if values else 1.0
+            span = max(0.04, hi - lo)
+            pad = max(0.035, span * 0.42)
+            ax.set_ylim(max(0.0, lo - pad * 0.55), hi + pad)
+        ymin, ymax = ax.get_ylim()
+        yrange = max(1e-9, ymax - ymin)
+        for bar, value in zip(bars, values):
+            if value >= 0:
+                inside_y = value - yrange * 0.055
+                if inside_y > ymin + yrange * 0.05:
+                    y = inside_y
+                    va = "top"
+                else:
+                    y = min(value + yrange * 0.035, ymax - yrange * 0.08)
+                    va = "bottom"
+            else:
+                inside_y = value + yrange * 0.055
+                if inside_y < ymax - yrange * 0.05:
+                    y = inside_y
+                    va = "bottom"
+                else:
+                    y = max(value - yrange * 0.035, ymin + yrange * 0.08)
+                    va = "top"
+            txt = ax.text(
+                bar.get_x() + bar.get_width() / 2,
+                y,
+                fmt.format(value),
+                ha="center",
+                va=va,
+                fontsize=6.0,
+                color="#111827",
+                clip_on=True,
+            )
+            txt.set_gid("bar_value")
+        _box_axis(ax)
+    fig_obj.subplots_adjust(left=0.06, right=0.995, top=0.78, bottom=0.24, wspace=0.34)
+    _audit_and_relax_experiment_text(fig_obj, axes)
+    _save_native_matplotlib_figure(fig_obj, out_path)
+    plt.close(fig_obj)
+
+
+def _sweep_x_values(rows: list[dict[str, Any]]) -> tuple[list[float], list[str], str]:
+    keys = ("threshold", "tau", "margin", "budget", "lambda", "route_rate", "route_rate_target", "k", "setting", "param", "value")
+    chosen = next((key for key in keys if any(key in row for row in rows)), "setting")
+    numeric: list[float] = []
+    labels: list[str] = []
+    all_numeric = True
+    for idx, row in enumerate(rows):
+        raw = row.get(chosen, idx + 1)
+        value = _as_float(raw)
+        if value is None:
+            all_numeric = False
+            numeric.append(float(idx))
+            labels.append(str(raw))
+        else:
+            numeric.append(float(value))
+            labels.append(f"{float(value):.2g}")
+    if not all_numeric:
+        numeric = [float(idx) for idx in range(len(rows))]
+    return numeric, labels, chosen
+
+
+def _sweep_metric(row: dict[str, Any], metric: str) -> float:
+    value = _as_float(row.get("metric_value") or row.get(metric) or row.get("score") or row.get("accuracy") or row.get("cost_adjusted_accuracy"))
+    return float(value if value is not None else 0.0)
+
+
+def _render_hyperparameter_sweep(fig: dict[str, Any], state: dict, metric_name: str, out_path: Path) -> None:
+    summary = _state_benchmark_summary(state)
+    rows = _rows_from_summary(
+        summary,
+        "route_rate_sweep_table",
+        "route_rate_sweep",
+        "sensitivity_table",
+        "hyperparameter_sweep",
+        "threshold_sweep",
+    )
+    if not rows:
+        raise ValueError("threshold/sensitivity sweep artifact missing")
+    rows = rows[:10]
+
+    plt = _setup_matplotlib()
+    import numpy as np
+
+    primary = str(summary.get("primary_metric") or summary.get("metric_name") or metric_name or "metric")
+    xs, labels, x_key = _sweep_x_values(rows)
+    order = np.argsort(np.array(xs, dtype=float))
+    xs_arr = np.array(xs, dtype=float)[order]
+    labels_ordered = [labels[int(idx)] for idx in order]
+    metric_vals = np.array([_sweep_metric(row, primary) for row in rows], dtype=float)[order]
+    token_vals = np.array([float(_as_float(row.get("avg_new_tokens") or row.get("tokens") or row.get("cost") or row.get("avg_latency_seconds")) or 0.0) for row in rows], dtype=float)[order]
+    route_vals = np.array([float(_as_float(row.get("route_rate") or row.get("retention_rate") or row.get("invoke_rate")) or 0.0) for row in rows], dtype=float)[order]
+    metric_std = np.array([float(_row_std(row, primary)) for row in rows], dtype=float)[order]
+
+    fig_obj, axes_raw = plt.subplots(1, 3, figsize=_figure_size({"aspect_ratio": "4:1"}))
+    axes = list(axes_raw)
+    panels = [
+        (_metric_label(primary), metric_vals, metric_std, "#2563eb"),
+        ("Cost", token_vals, np.zeros_like(token_vals), "#f97316"),
+        ("Route Rate", route_vals, np.zeros_like(route_vals), "#16a34a"),
+    ]
+    for ax, (title, values, stds, color) in zip(axes, panels):
+        ax.plot(xs_arr, values, color=color, marker="o", linewidth=1.45, markersize=3.8)
+        if np.any(stds > 0):
+            ax.fill_between(xs_arr, values - stds, values + stds, color=color, alpha=0.18, linewidth=0)
+        ax.set_title(title, fontsize=8.4, fontweight="bold", pad=4)
+        span = float(np.nanmax(values) - np.nanmin(values)) if len(values) else 0.0
+        pad = max(0.015, span * 0.18)
+        if len(values):
+            ax.set_ylim(float(np.nanmin(values)) - pad, float(np.nanmax(values)) + pad)
+            best_idx = int(np.argmax(values))
+            ax.scatter([xs_arr[best_idx]], [values[best_idx]], s=28, color="#ffffff", edgecolor=color, linewidth=1.2, zorder=4)
+            upper = ax.get_ylim()[1]
+            yoff = -8 if values[best_idx] > upper - pad * 0.65 else 5
+            va = "top" if yoff < 0 else "bottom"
+            ax.annotate(
+                f"{values[best_idx]:.3g}",
+                xy=(xs_arr[best_idx], values[best_idx]),
+                xytext=(3, yoff),
+                textcoords="offset points",
+                fontsize=6.5,
+                va=va,
+                ha="left",
+            )
+        ax.set_xlabel(_metric_label(str(x_key)))
+        if len(xs_arr) <= 6:
+            ax.set_xticks(xs_arr, labels_ordered, rotation=0, fontsize=6.8)
+        _line_axis_box(ax)
+    fig_obj.subplots_adjust(left=0.055, right=0.995, top=0.84, bottom=0.20, wspace=0.28)
     _save_native_matplotlib_figure(fig_obj, out_path)
     plt.close(fig_obj)
 
@@ -1150,8 +1504,7 @@ def _render_backend_grouped_bars(fig: dict[str, Any], state: dict, metric_name: 
     pad = max(0.02, (upper - lower) * 0.24)
     ax.set_ylim(max(0.0, lower - pad), min(1.0, upper + pad) if upper <= 1.0 else upper + pad)
     ax.grid(axis="y", color="#e5e7eb", linewidth=0.65)
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
+    _box_axis(ax)
     ax.legend(frameon=False, ncol=min(3, len(methods)), loc="upper center", bbox_to_anchor=(0.5, -0.18))
     fig_obj.tight_layout(pad=0.45)
     _save_native_matplotlib_figure(fig_obj, out_path)
@@ -1237,8 +1590,7 @@ def _render_backend_rank_lines_1x4(fig: dict[str, Any], state: dict, metric_name
         ax.set_xticks(xs, backends, rotation=18, ha="right")
         ax.set_ylim(max_rank + 0.5, 0.5)
         ax.grid(axis="y", color="#e5e7eb", linewidth=0.7)
-        ax.spines["top"].set_visible(False)
-        ax.spines["right"].set_visible(False)
+        _box_axis(ax)
     axes[0].set_ylabel("Rank")
     handles, labels = axes[-1].get_legend_handles_labels()
     if handles:
@@ -1279,8 +1631,7 @@ def _render_trajectory(fig: dict[str, Any], state: dict, rows: list[dict[str, An
     ax.set_ylabel(metric_name)
     ax.grid(True, alpha=0.22)
     ax.legend(frameon=False, loc="best")
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
+    _box_axis(ax)
     fig_obj.tight_layout()
     _save_native_matplotlib_figure(fig_obj, out_path)
     plt.close(fig_obj)
@@ -1305,8 +1656,7 @@ def _render_keep_discard(fig: dict[str, Any], rows: list[dict[str, Any]], metric
     ax.set_ylabel(metric_name)
     ax.grid(True, alpha=0.22)
     ax.legend(frameon=False, loc="best")
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
+    _box_axis(ax)
     fig_obj.tight_layout()
     _save_native_matplotlib_figure(fig_obj, out_path)
     plt.close(fig_obj)
@@ -1425,8 +1775,7 @@ def _render_benchmark_method_panel(fig: dict[str, Any], state: dict, out_path: P
     ax.grid(axis="y", alpha=0.18)
 
     for ax in axes:
-        ax.spines["top"].set_visible(False)
-        ax.spines["right"].set_visible(False)
+        _box_axis(ax)
     fig_obj.tight_layout()
     _save_native_matplotlib_figure(fig_obj, out_path)
     plt.close(fig_obj)
@@ -1441,6 +1790,20 @@ def _has_plan_topic(plan: list[dict[str, Any]], *tokens: str) -> bool:
     return False
 
 
+def _has_hyperparameter_sweep(summary: dict[str, Any]) -> bool:
+    return bool(
+        summary.get("route_rate_sweep_table")
+        or summary.get("route_rate_sweep")
+        or summary.get("sensitivity_table")
+        or summary.get("hyperparameter_sweep")
+        or summary.get("threshold_sweep")
+    )
+
+
+def _has_optional_sensitivity_or_trend(summary: dict[str, Any]) -> bool:
+    return bool(summary.get("trend_table") or _has_hyperparameter_sweep(summary))
+
+
 def _allowed_optional_experiment_figure(fig: dict[str, Any], summary: dict[str, Any]) -> bool:
     text = " ".join(
         str(fig.get(key) or "")
@@ -1450,20 +1813,24 @@ def _allowed_optional_experiment_figure(fig: dict[str, Any], summary: dict[str, 
         return False
     chart_type = str(fig.get("chart_type") or "").lower()
     role = str(fig.get("role") or "").lower()
+    if role == "experiment_figure_pack" and chart_type in {"quality_cost_tradeoff", "method_metric_heatmap", "scatter"}:
+        return False
     if role == "experiment_figure_pack" and chart_type in {
         "main_results_bar",
         "main_results_bar_1x2",
-        "quality_cost_tradeoff",
-        "method_metric_heatmap",
         "backend_grouped_bars",
         "backend_heatmap_single",
         "backend_rank_lines_1x4",
     }:
         return bool(summary.get("per_method") or _has_backend_matrix(summary))
+    if role == "experiment_figure_pack" and chart_type in {"ablation_bar", "ablation_results"}:
+        return bool(summary.get("ablation_table") or summary.get("ablation_results"))
+    if role == "experiment_figure_pack" and chart_type in {"hyperparameter_sweep", "threshold_sweep"}:
+        return _has_hyperparameter_sweep(summary)
     if "ablation" in text:
-        return bool(summary.get("ablation_table"))
-    if any(token in text for token in ("trend", "sensitivity")):
-        return bool(summary.get("trend_table") or summary.get("sensitivity_table"))
+        return bool(summary.get("ablation_table") or summary.get("ablation_results"))
+    if any(token in text for token in ("trend", "sensitivity", "threshold", "sweep", "hyperparameter")):
+        return _has_optional_sensitivity_or_trend(summary)
     return False
 
 
@@ -1491,9 +1858,19 @@ def _augment_plotting_plan(plan: list[dict[str, Any]], state: dict, iterations: 
         if _allowed_optional_experiment_figure(fig, summary):
             cleaned.append(fig)
 
-    main = _main_results_figure_spec(metric_name, summary)
-    if not _has_plan_topic(cleaned, "main results", "fig_main_results"):
-        cleaned.insert(0, main)
+    required_defaults = _default_plot_plan(metric_name)
+    required_order = ["fig_main_results", "fig_ablation_results", "fig_hyperparameter_sweep"]
+    by_id = {str(fig.get("figure_id") or ""): fig for fig in cleaned}
+    for required in required_defaults:
+        fid = str(required.get("figure_id") or "")
+        chart_type = str(required.get("chart_type") or "").lower()
+        if fid == "fig_hyperparameter_sweep" or chart_type in {"hyperparameter_sweep", "threshold_sweep"}:
+            if not _has_hyperparameter_sweep(summary):
+                continue
+        if fid not in by_id:
+            cleaned.append(required)
+            by_id[fid] = required
+    cleaned.sort(key=lambda fig: required_order.index(str(fig.get("figure_id") or "")) if str(fig.get("figure_id") or "") in required_order else len(required_order))
     return cleaned[:3] + diagrams[:2]
 
 
@@ -1517,12 +1894,16 @@ def render_native_figure(
     chart_type = str(fig.get("chart_type") or "").lower()
     rows = _metric_points(iterations)
     try:
+        if fid == "fig_ablation_results" or chart_type in {"ablation_bar", "ablation_results"}:
+            _render_ablation_results(fig, state, metric_name, out_path)
+            return _native_asset(fid=fid, fig=fig, out_path=out_path, kind="plot", renderer="ablation_results", objective=objective)
+        if fid == "fig_hyperparameter_sweep" or chart_type in {"hyperparameter_sweep", "threshold_sweep"}:
+            _render_hyperparameter_sweep(fig, state, metric_name, out_path)
+            return _native_asset(fid=fid, fig=fig, out_path=out_path, kind="plot", renderer="hyperparameter_sweep", objective=objective)
         if fid == "fig_quality_cost_tradeoff" or chart_type == "quality_cost_tradeoff":
-            _render_quality_cost_tradeoff(fig, state, metric_name, out_path)
-            return _native_asset(fid=fid, fig=fig, out_path=out_path, kind="plot", renderer="quality_cost_tradeoff", objective=objective)
+            raise ValueError("quality_cost_tradeoff scatter is not allowed in the default experiment pack")
         if fid == "fig_method_metric_heatmap" or chart_type == "method_metric_heatmap":
-            _render_method_metric_heatmap(fig, state, metric_name, out_path)
-            return _native_asset(fid=fid, fig=fig, out_path=out_path, kind="plot", renderer="method_metric_heatmap", objective=objective)
+            raise ValueError("method_metric_heatmap is not allowed in the default experiment pack")
         if fid == "fig_backend_grouped_bars" or chart_type == "backend_grouped_bars":
             _render_backend_grouped_bars(fig, state, metric_name, out_path)
             return _native_asset(
@@ -1560,7 +1941,7 @@ def render_native_figure(
                 "code_path": "",
                 "notes": "postwriting_api_required",
                 "objective": objective,
-                "blocker": "Motivation/overview figures must be generated by Gemini/PaperBanana post-writing stage.",
+                "blocker": "Motivation/overview figures must be generated by the OpenAI-compatible PaperBanana gpt-image-2 post-writing stage.",
             }
         if "benchmark" in text or "method comparison" in text:
             _render_benchmark_method_panel(fig, state, out_path)
@@ -1609,6 +1990,7 @@ def render_native_figure(
             "code_path": "",
             "notes": f"native_failed:{exc}",
             "objective": objective,
+            "aspect_ratio": fig.get("aspect_ratio"),
         }
 
 
@@ -1624,7 +2006,7 @@ def infer_figure_spec_from_reference(path: str, caption: str = "") -> dict[str, 
         "title": title,
         "plot_type": plot_type,
         "objective": caption or title,
-        "aspect_ratio": "16:9" if any(token in text for token in ("trajectory", "framework", "dynamics")) else "4:3",
+        "aspect_ratio": "4:3",
     }
 
 
@@ -1632,6 +2014,63 @@ def _shell_quote(value: str) -> str:
     if os.name == "nt":
         return subprocess.list2cmdline([value])
     return shlex.quote(value)
+
+
+def _valid_existing_diagram_asset(
+    *,
+    fig: dict[str, Any],
+    fid: str,
+    out_path: Path,
+    objective: str,
+    note: str,
+) -> dict[str, Any] | None:
+    try:
+        if not out_path.exists() or out_path.stat().st_size <= 4096:
+            return None
+        header = out_path.read_bytes()[:16]
+    except OSError:
+        return None
+    if not (header.startswith(b"\x89PNG\r\n\x1a\n") or header.startswith(b"\xff\xd8\xff")):
+        return None
+    try:
+        meta = json.loads(_diagram_meta_path(out_path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if meta.get("signature") != _diagram_asset_signature(fig, objective):
+        return None
+    return {
+        "figure_id": fid,
+        "title": str(fig.get("title") or fid),
+        "kind": "diagram",
+        "path": str(out_path),
+        "svg_path": "",
+        "pdf_path": "",
+        "code_path": "",
+        "notes": note,
+        "objective": objective,
+        "aspect_ratio": fig.get("aspect_ratio"),
+    }
+
+
+def _failed_external_diagram_asset(
+    *,
+    fig: dict[str, Any],
+    fid: str,
+    objective: str,
+    notes: str,
+) -> dict[str, Any]:
+    return {
+        "figure_id": fid,
+        "title": str(fig.get("title") or fid),
+        "kind": "fallback",
+        "path": "",
+        "svg_path": "",
+        "pdf_path": "",
+        "code_path": "",
+        "notes": notes,
+        "objective": objective,
+        "aspect_ratio": fig.get("aspect_ratio"),
+    }
 
 
 def _run_external_diagram(
@@ -1644,20 +2083,31 @@ def _run_external_diagram(
     fid = _safe_filename(str(fig.get("figure_id") or fig.get("title") or "diagram"))
     out_path = figures_dir / f"{fid}.png"
     objective = str(fig.get("objective") or fig.get("title") or "")
+    existing = _valid_existing_diagram_asset(
+        fig=fig,
+        fid=fid,
+        out_path=out_path,
+        objective=objective,
+        note="paperbanana_reused_existing_png",
+    )
+    if existing:
+        return existing
     if not paperbanana_cmd:
-        placeholder = figures_dir / f"{fid}.svg"
-        _placeholder_diagram(placeholder, str(fig.get("title") or fid), objective)
-        return {
-            "figure_id": fid,
-            "title": str(fig.get("title") or fid),
-            "kind": "diagram",
-            "path": str(placeholder),
-            "svg_path": str(placeholder),
-            "pdf_path": "",
-            "code_path": "",
-            "notes": "paperbanana_not_configured",
-            "objective": objective,
-        }
+        existing = _valid_existing_diagram_asset(
+            fig=fig,
+            fid=fid,
+            out_path=out_path,
+            objective=objective,
+            note="paperbanana_missing_reused_existing_png",
+        )
+        if existing:
+            return existing
+        return _failed_external_diagram_asset(
+            fig=fig,
+            fid=fid,
+            objective=objective,
+            notes="paperbanana_not_configured",
+        )
 
     safe_state = _diagram_safe_text(state)
     spec = json.dumps(
@@ -1745,40 +2195,45 @@ def _run_external_diagram(
             command,
             shell=True,
             cwd=str(figures_dir),
-            timeout=600,
+            timeout=120,
             check=False,
             capture_output=True,
             text=True,
         )
     except Exception as exc:
-        placeholder = figures_dir / f"{fid}.svg"
-        _placeholder_diagram(placeholder, str(fig.get("title") or fid), objective)
-        return {
-            "figure_id": fid,
-            "title": str(fig.get("title") or fid),
-            "kind": "diagram",
-            "path": str(placeholder),
-            "svg_path": str(placeholder),
-            "pdf_path": "",
-            "code_path": "",
-            "notes": f"paperbanana_error:{exc}",
-            "objective": objective,
-        }
+        existing = _valid_existing_diagram_asset(
+            fig=fig,
+            fid=fid,
+            out_path=out_path,
+            objective=objective,
+            note=f"paperbanana_error_reused_existing_png:{exc}",
+        )
+        if existing:
+            return existing
+        return _failed_external_diagram_asset(
+            fig=fig,
+            fid=fid,
+            objective=objective,
+            notes=f"paperbanana_error:{exc}",
+        )
     if proc.returncode != 0 or not out_path.exists() or out_path.stat().st_size <= 0:
-        placeholder = figures_dir / f"{fid}.svg"
-        _placeholder_diagram(placeholder, str(fig.get("title") or fid), objective)
         detail = _clip(((proc.stderr or "") + "\n" + (proc.stdout or "")).strip())
-        return {
-            "figure_id": fid,
-            "title": str(fig.get("title") or fid),
-            "kind": "diagram",
-            "path": str(placeholder),
-            "svg_path": str(placeholder),
-            "pdf_path": "",
-            "code_path": "",
-            "notes": f"paperbanana_failed:{proc.returncode}:{detail}",
-            "objective": objective,
-        }
+        existing = _valid_existing_diagram_asset(
+            fig=fig,
+            fid=fid,
+            out_path=out_path,
+            objective=objective,
+            note=f"paperbanana_failed_reused_existing_png:{proc.returncode}:{detail}",
+        )
+        if existing:
+            return existing
+        return _failed_external_diagram_asset(
+            fig=fig,
+            fid=fid,
+            objective=objective,
+            notes=f"paperbanana_failed:{proc.returncode}:{detail}",
+        )
+    _write_diagram_meta(out_path, fig, objective, "paperbanana_ok")
     return {
         "figure_id": fid,
         "title": str(fig.get("title") or fid),
@@ -1789,6 +2244,7 @@ def _run_external_diagram(
         "code_path": "",
         "notes": "paperbanana_ok",
         "objective": objective,
+        "aspect_ratio": fig.get("aspect_ratio"),
     }
 
 
@@ -1849,7 +2305,7 @@ def run_figure_orchestra(
                     "code_path": "",
                     "notes": "paperbanana_required_missing",
                     "objective": objective,
-                    "blocker": "Motivation/overview figures must be generated by Gemini/PaperBanana post-writing stage.",
+                    "blocker": "Motivation/overview figures must be generated by the OpenAI-compatible PaperBanana gpt-image-2 post-writing stage.",
                 }
             else:
                 asset = render_native_figure(
@@ -1914,7 +2370,7 @@ def run_postwriting_api_figure_stage(
             "generated_count": 0,
             "assets": [],
             "notes": "missing_paperbanana_command",
-            "blockers": ["Motivation/overview figures are required and must be generated by Gemini/PaperBanana post-writing stage."],
+            "blockers": ["Motivation/overview figures are required and must be generated by the OpenAI-compatible PaperBanana gpt-image-2 post-writing stage."],
         }
         (figures_dir / "postwriting_api_figure_manifest.json").write_text(
             json.dumps(manifest, indent=2, ensure_ascii=False),
@@ -1937,6 +2393,86 @@ def run_postwriting_api_figure_stage(
         " ".join(str(row.get(key) or "") for key in ("figure_id", "title", "objective")).lower()
         for row in diagram_plan
     )
+    method_context = " ".join(
+        str(value or "")
+        for value in (
+            state.get("method_name"),
+            state.get("method_summary"),
+            (state.get("problem_awareness") or {}).get("method_answer") if isinstance(state.get("problem_awareness"), dict) else "",
+            paper_tex[:1600],
+        )
+    ).lower()
+    is_residual_packet_paper = any(
+        token in method_context
+        for token in ("certified residual", "residual policy packet", "policy packet", "crpp", "two-channel")
+    )
+    if is_residual_packet_paper and "motivation" not in plan_text:
+        diagram_plan.insert(
+            0,
+            {
+                "figure_id": "fig_motivation_symbolic",
+                "plot_type": "diagram",
+                "title": "Motivation",
+                "objective": (
+                    CONCEPT_REFERENCE_STYLE_NOTE
+                    + " Create a high-information compact 4:3 flat PPT-built motivation schematic for a residual-policy communication paper, not a horizontally stretched banner, poster scene, or plain input-output flowchart. "
+                    "Show one worked cooperative LLM example where a sender's prose message says a short answer, while hidden policy state contains an action distribution p(A/B/C), uncertainty u, and live alternatives H. Show the receiver trying to reconstruct that state from text-only prose and losing calibration. "
+                    "Make the central tension visual: prose-only channel drops policy mass and uncertainty; repeated reasoning is costly; CRPP adds a tiny residual packet beside the text message. Use agent/avatar icons as sender and receiver, a speech bubble, a small packet slip with p(a), u, H, eps, a distortion gauge, and a small token-cost bar. "
+                    "Use a compact tension-map or worked-example composition with at most two callouts, not three columns and not numbered panels. Keep in-image text to short labels/tags such as text msg, hidden policy, residual packet, distortion, route. "
+                    "Use rounded hand-written or marker-like sans labels, pure white canvas, local pale tints only, thick clean outlines, flat fills, dashed containers, crisp alignment, and minimal/no shading. Do not draw a title, Figure/Fig. text, caption text, line numbers, panel numbers, long explanations, generic Module/Decision/Output labels, dashboard panels, glossy objects, cast shadows, or full-scene cartoon illustrations."
+                ),
+                "caption": (
+                    "Motivation figure showing the prose-only communication bottleneck: natural language carries semantics, "
+                    "but calibrated action mass, uncertainty, and live alternatives are lost unless a residual packet is sent."
+                ),
+                "data_source": "postwriting manuscript draft plus figure caption intent",
+                "aspect_ratio": "4:3",
+                "image_prompt_override": (
+                    "Create a camera-ready 4:3 flat academic schematic on a pure white canvas for Certified Residual Policy Packets. "
+                    "Use a compact worked-example tension map, not a flowchart, banner, dashboard, title card, or poster scene. "
+                    "Show two small cooperating LLM agent icons: the sender has a hidden policy state with a tiny distribution table p(A)=.52 p(B)=.45 p(C)=.03, uncertainty u=high, and live hypotheses H; the prose-only speech bubble says a short answer and loses those quantities. "
+                    "Show the receiver reconstructing from text with a red distortion gauge, and beside it show CRPP adding a tiny residual packet slip carrying p(a), u, H, and eps=.03. "
+                    "Include a small token-cost bar and short tags only: text msg, hidden policy, lost state, residual packet, distortion, route. "
+                    "Use pale blue, green, red, and gray local tints, dashed rounded containers, thick clean outlines, small matrix/table callouts, marker-like sans labels, few arrows, and dense aligned content occupying most of the canvas. "
+                    "Do not include Figure text, captions, panel numbers, line numbers, long paragraphs, majority voting, retained/discarded traces, A x3 groups, generic modules, glossy objects, shadows, furniture, or full-scene illustration."
+                ),
+            },
+        )
+        plan_text += " motivation"
+    if is_residual_packet_paper and "overview" not in plan_text and "framework" not in plan_text:
+        diagram_plan.insert(
+            1 if diagram_plan else 0,
+            {
+                "figure_id": "fig_overview_symbolic",
+                "plot_type": "diagram",
+                "title": "Overview",
+                "objective": (
+                    CONCEPT_REFERENCE_STYLE_NOTE
+                    + " Create a mechanism-rich compact 4:3 overview of Certified Residual Policy Packets as a flat PPT-built structured academic schematic, not a horizontally stretched banner, generic pipeline, decision dashboard, rendered illustration, or poster scene. "
+                    "Show two cooperating LLM agents. The sender emits two aligned channels: a short text answer/rationale bubble plus a tiny residual packet card with fields p(a), uncertainty u, live hypotheses H, and consistency certificate eps. Show a receiver-side distortion checker comparing text answer vs packet distribution, a route gate with token budget, and the final answer/repair decision. "
+                    "Include concrete miniature values, e.g. p(A)=.52, p(B)=.45, u=high, eps=.03, route=1.9%, tokens=6.03, as small tags. Include a local zoom-in of the packet schema and a tiny before/after state: text-only loses policy state; CRPP preserves it. "
+                    "Agent/avatar icons must be visible and semantically meaningful as sender/receiver, but not mascot-dominated. Use few arrows, compact aligned modules, small matrix/table elements, rounded hand-written or marker-like sans labels, pure white canvas, pale local tints only, thick clean outlines, flat fills, dashed containers, and minimal/no shading. "
+                    "Do not show majority voting, consensus support, retained/discarded agent traces, A x3/B*/C groupings, selected by majority, title banners, Figure/Fig. text, caption text, line numbers, panel numbers, long paragraphs, generic module boxes, glossy objects, cast shadows, furniture, or full-scene lab illustrations."
+                ),
+                "caption": (
+                    "Overview figure of CRPP: ordinary text carries semantic content while a compact residual policy "
+                    "packet exposes distribution, uncertainty, live hypotheses, and consistency information for routing."
+                ),
+                "data_source": "postwriting manuscript draft plus figure caption intent",
+                "aspect_ratio": "4:3",
+                "image_prompt_override": (
+                    "Create a camera-ready 4:3 flat PPT-built overview schematic for Certified Residual Policy Packets on a pure white canvas. "
+                    "Do not make a generic pipeline, dashboard, poster, or horizontally stretched banner. "
+                    "Show two cooperating LLM agents as small sender and receiver icons. The sender emits two aligned channels: a short text answer bubble and a residual policy packet card. "
+                    "The packet card must visibly contain p(A)=.52, p(B)=.45, u=high, H={A,B}, eps=.03. Show a local zoom-in of this packet schema. "
+                    "At the receiver, show a distortion checker comparing text answer versus packet distribution, a compact route gate with budget tags route=1.9% and tokens=6.03, and a final answer/repair decision. "
+                    "Also show a tiny before/after strip: text-only loses policy state; CRPP preserves it. "
+                    "Use small tables, score chips, dashed rounded containers, pale local tints, thick clean outlines, marker-like sans labels, flat fills, minimal shading, few arrows, and high information density. "
+                    "Do not show majority voting, consensus support, retained/discarded agent traces, A x3/B*/C groupings, selected by majority, Figure text, captions, panel numbers, line numbers, long paragraphs, generic module labels, glossy objects, shadows, furniture, or lab scenes."
+                ),
+            },
+        )
+        plan_text += " overview"
     if "motivation" not in plan_text:
         diagram_plan.insert(
             0,
@@ -1946,7 +2482,7 @@ def run_postwriting_api_figure_stage(
                 "title": "Motivation",
                 "objective": (
                     CONCEPT_REFERENCE_STYLE_NOTE
-                    + " Create a high-information flat PPT-built motivation schematic, not a rendered illustration, poster scene, or plain process flow. "
+                    + " Create a high-information compact 4:3 flat PPT-built motivation schematic, not a horizontally stretched banner, rendered illustration, poster scene, or plain process flow. "
                     "Use one compact worked example or tension-map composition, not three side-by-side columns. Use the paper's own domain entities as icons; for this multi-agent reasoning setting, show five small agent/avatar icons A1-A5 producing answer bubbles A/A/A/B*/C, support counts, confidence chips, cost chips, token budget, and retained/lost marks. "
                     "Show the central tension visually: majority aggregation can lose a high-confidence B* dissent, keep-all preserves it but spends too much token/latency budget, and conditional retention keeps it only when disagreement is meaningful. These should be integrated around one focal mechanism or tension map, with at most two small callouts, not as numbered panels. "
                     "Use concrete numeric cues such as conf=.95, cost=20, m=(3-1)/5, and a budget bar as small tags. Keep all text inside the image to short labels of roughly 1-4 words. Do not draw a title, Figure/Fig. text, a caption, line numbers, panel numbers, or explanatory paragraphs inside the image. "
@@ -1959,7 +2495,7 @@ def run_postwriting_api_figure_stage(
                     "useful dissent, whereas keep-all reasoning spends unnecessary tokens, motivating conditional selection."
                 ),
                 "data_source": "postwriting manuscript draft plus figure caption intent",
-                "aspect_ratio": "16:9",
+                "aspect_ratio": "4:3",
             },
         )
     if "overview" not in plan_text and "framework" not in plan_text:
@@ -1971,7 +2507,7 @@ def run_postwriting_api_figure_stage(
                 "title": "Overview",
                 "objective": (
                     CONCEPT_REFERENCE_STYLE_NOTE
-                    + " Create a mechanism-rich overview as a flat PPT-built structured academic schematic, not an input-output pipeline, decision-board dashboard, rendered illustration, or poster scene. "
+                    + " Create a mechanism-rich compact 4:3 overview as a flat PPT-built structured academic schematic, not a horizontally stretched banner, input-output pipeline, decision-board dashboard, rendered illustration, or poster scene. "
                     "Show a worked multi-agent trace: five small agent/avatar icons A1-A5 each emitting an answer bubble with answer, confidence, and cost; a compact trace table; a grouping zoom-in with A x3, B* x1 high-conf, C x1; a central method rule card with a disagreement margin, confidence score, and budget score; a budget bar; retained agent traces {A,B*}; discarded agent trace C; selected answer. "
                     "Make the core mechanism visually central and content-rich with local zoom-ins, score tags, and small matrix/table elements. "
                     "Agent/avatar icons must be visible and relevant in this multi-agent paper: they are the sources of the candidate traces, with answer bubbles connected to them. They should be flat schematic avatars, not glossy mascots. "
@@ -1984,7 +2520,7 @@ def run_postwriting_api_figure_stage(
                     "consensus support, dissent evidence, and the selected answer are organized around the central selector."
                 ),
                 "data_source": "postwriting manuscript draft plus figure caption intent",
-                "aspect_ratio": "16:9",
+                "aspect_ratio": "4:3",
             },
         )
     if not diagram_plan:
@@ -2001,7 +2537,7 @@ def run_postwriting_api_figure_stage(
                     + str(pa.get("central_question") or state.get("problem_statement") or "")[:220]
                 ),
                 "data_source": "postwriting manuscript draft plus experiment result packet",
-                "aspect_ratio": "16:9",
+                "aspect_ratio": "4:3",
             }
         ]
 

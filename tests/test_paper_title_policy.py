@@ -26,3 +26,25 @@ def test_preserves_acronym_title_spacing():
 def test_experiment_design_prompt_embeds_title_standard():
     assert TITLE_NAMING_STANDARD_TEXT in EXPERIMENT_DESIGN_SYSTEM
     assert "{TITLE_NAMING_STANDARD_TEXT}" not in EXPERIMENT_DESIGN_SYSTEM
+
+def test_generic_colon_prefix_is_replaced_by_method_acronym():
+    title = normalize_paper_title(
+        "LLM: Certified Residual Policy Packets for Cooperative Inference",
+        method_name="Certified Residual Policy Packets",
+        context={"full_benchmark_completed": True},
+    )
+
+    assert title == "CRPP: Residual Policy Packets for Cooperative Inference"
+    assert "LLM:" not in title
+
+
+def test_generic_paper_prefix_does_not_survive_title_policy():
+    title = normalize_paper_title(
+        "Paper: Diversity-Preserving Consensus for Training-Free Multi-Agent Reasoning",
+        method_name="Diversity-Preserving Consensus",
+        context={"full_benchmark_completed": True},
+    )
+
+    assert not title.startswith("Paper:")
+    assert title.startswith("DPC: ")
+

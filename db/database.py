@@ -131,9 +131,10 @@ def get_conn():
         except (sqlite3.ProgrammingError, sqlite3.OperationalError):
             sc = None
     if sc is None:
-        _local.sqlite_conn = sqlite3.connect(str(DB_PATH), check_same_thread=False)
+        _local.sqlite_conn = sqlite3.connect(str(DB_PATH), check_same_thread=False, timeout=30.0)
         _local.sqlite_conn.row_factory = sqlite3.Row
         _local.sqlite_conn.execute("PRAGMA journal_mode=WAL")
+        _local.sqlite_conn.execute("PRAGMA busy_timeout=30000")
         _local.sqlite_conn.execute("PRAGMA foreign_keys=ON")
         _local.conn = _local.sqlite_conn  # backward compat: tests patch _local.conn
     return _local.sqlite_conn

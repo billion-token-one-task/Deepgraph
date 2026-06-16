@@ -9,7 +9,10 @@ The bar: a senior researcher reads it and says "this is a real paper, let me imp
   Call 3: Experimental Design — complete plan with baselines, datasets, ablations
 """
 import json
+import re
+from collections import Counter
 from dataclasses import asdict
+from difflib import SequenceMatcher
 from agents.compute_profile import detect_compute_profile
 from agents.discovery_metadata import build_evidence_packet, enrich_deep_insight
 from agents.idea_taste import (
@@ -23,7 +26,10 @@ from agents.llm_client import call_llm_json, is_llm_auth_error, is_llm_provider_
 from agents.paper_title_policy import TITLE_NAMING_STANDARD_TEXT, normalize_paper_title
 from agents.signal_harvester import get_tier2_signals
 from agents.tier2_review_refine import review_and_refine_tier2_idea
+from config import TIER2_EVOSCI_PREINSERT_REVIEW
 from db import database as db
+
+RECENT_TIER2_MEMORY_LIMIT = 120
 
 
 PROBLEM_SHARPENING_SYSTEM = """You are a senior ML researcher identifying SHARP, FORMAL research problems from evidence of contradictions, performance plateaus, recurring limitations, protocol artifacts, and explanation gaps across thousands of papers.
@@ -255,7 +261,238 @@ Return JSON:
 }"""
 
 
-def _build_problem_prompt(signals: dict) -> str:
+def _json_list(value) -> list:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return [value] if value.strip() else []
+        return parsed if isinstance(parsed, list) else []
+    return []
+
+
+def _problem_node_ids(problem: dict) -> list[str]:
+    nodes = _json_list(problem.get("related_node_ids"))
+    return [str(node).strip() for node in nodes if str(node).strip()]
+
+
+def _recent_tier2_memory(limit: int = RECENT_TIER2_MEMORY_LIMIT) -> list[dict]:
+    try:
+        rows = db.fetchall(
+            "SELECT title, mechanism_type, source_node_ids, proposed_method, "
+            "problem_statement, created_at "
+            "FROM deep_insights "
+            "WHERE tier IN (1, 2) "
+            "ORDER BY created_at DESC, id DESC "
+            "LIMIT ?",
+            (int(limit),),
+        )
+    except Exception:
+        return []
+
+    memory: list[dict] = []
+    for row in rows:
+        method = {}
+        try:
+            method = json.loads(row.get("proposed_method") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            method = {}
+        memory.append(
+            {
+                "title": row.get("title") or "",
+                "mechanism_type": row.get("mechanism_type") or "",
+                "source_node_ids": _json_list(row.get("source_node_ids")),
+                "method_name": method.get("name") or "",
+                "problem_statement": row.get("problem_statement") or "",
+                "created_at": row.get("created_at") or "",
+            }
+        )
+    return memory
+
+
+def _recent_idea_memory_block(memory: list[dict]) -> str:
+    if not memory:
+        return ""
+    lines = [
+        "## RECENT TIER-1/TIER-2 IDEAS TO AVOID REPEATING",
+        "The system has already generated these paper ideas. Prefer different source-node families, mechanism types, datasets, and failure mechanisms unless the evidence is materially stronger.",
+    ]
+    for item in memory[:20]:
+        nodes = ", ".join(str(node) for node in item.get("source_node_ids", [])[:4])
+        method = item.get("method_name") or "?"
+        title = str(item.get("title") or "")[:180]
+        mechanism = item.get("mechanism_type") or "?"
+        node_text = nodes or "?"
+        lines.append(
+            f"- {title} | mechanism={mechanism} | "
+            f"method={method[:80]} | nodes={node_text}"
+        )
+    return "\n".join(lines)
+
+
+def _text_similarity(a: str, b: str) -> float:
+    a = (a or "").lower().strip()
+    b = (b or "").lower().strip()
+    if not a or not b:
+        return 0.0
+    return SequenceMatcher(None, a, b).ratio()
+
+
+_DUPLICATE_STOPWORDS = {
+    "the", "and", "for", "are", "with", "from", "into", "over", "under",
+    "via", "whose", "that", "this", "same", "common", "shared", "unifies",
+    "unify", "based", "model", "models", "benchmark", "benchmarks",
+    "evaluation", "reasoning", "agent", "agents", "llm", "vlm", "code",
+    "proof", "closed", "open", "loop", "policy", "visual", "scene",
+    "graph", "relation", "relations", "method", "paper",
+    "selective", "audited", "typed", "evidence", "risk", "protocol",
+    "offline", "training", "free", "certified", "residual", "routing",
+}
+
+
+def _token_set(text: str) -> set[str]:
+    return {
+        token for token in re.findall(r"[a-z0-9]+", (text or "").lower())
+        if len(token) > 2 and token not in _DUPLICATE_STOPWORDS
+    }
+
+
+def _token_jaccard(a: str, b: str) -> float:
+    left = _token_set(a)
+    right = _token_set(b)
+    if not left or not right:
+        return 0.0
+    return len(left & right) / max(1, len(left | right))
+
+
+def _node_jaccard(a, b) -> float:
+    left = {str(x).strip() for x in _json_list(a) if str(x).strip()}
+    right = {str(x).strip() for x in _json_list(b) if str(x).strip()}
+    if not left or not right:
+        return 0.0
+    return len(left & right) / max(1, len(left | right))
+
+
+def _node_family_prefixes(nodes) -> set[str]:
+    prefixes: set[str] = set()
+    for raw in _json_list(nodes):
+        node = str(raw).strip()
+        if not node:
+            continue
+        parts = [part for part in node.split(".") if part]
+        for depth in range(2, min(len(parts), 5) + 1):
+            prefixes.add(".".join(parts[:depth]))
+    return prefixes
+
+
+def _node_family_jaccard(a, b) -> float:
+    left = _node_family_prefixes(a)
+    right = _node_family_prefixes(b)
+    if not left or not right:
+        return 0.0
+    return len(left & right) / max(1, len(left | right))
+
+
+def _find_existing_tier2_duplicate(candidate: dict) -> dict | None:
+    title = str(candidate.get("title") or "")
+    nodes = candidate.get("source_node_ids")
+    mechanism = str(candidate.get("mechanism_type") or "")
+    try:
+        rows = db.fetchall(
+            "SELECT id, title, source_node_ids, mechanism_type, status, novelty_status, outcome "
+            "FROM deep_insights WHERE tier IN (1, 2) ORDER BY id DESC LIMIT 400"
+        )
+    except Exception:
+        return None
+    for row in rows:
+        title_score = _token_jaccard(title, row.get("title") or "")
+        node_score = _node_jaccard(nodes, row.get("source_node_ids"))
+        family_score = _node_family_jaccard(nodes, row.get("source_node_ids"))
+        same_mechanism = mechanism and mechanism == str(row.get("mechanism_type") or "")
+        too_close = (
+            title_score >= 0.32
+            or (node_score >= 0.50 and same_mechanism)
+            or (node_score >= 0.62 and title_score >= 0.04)
+            or (family_score >= 0.42 and same_mechanism and title_score >= 0.02)
+            or (same_mechanism and title_score >= 0.18)
+        )
+        if too_close:
+            return {
+                "id": row.get("id"),
+                "title": row.get("title"),
+                "title_similarity": round(title_score, 3),
+                "node_overlap": round(node_score, 3),
+                "node_family_overlap": round(family_score, 3),
+            }
+    return None
+
+
+def _diversify_problems(problems: list[dict], budget: int, recent_memory: list[dict]) -> list[dict]:
+    # Greedily prefer problems that do not repeat recent nodes/mechanisms.
+    budget = min(max(0, int(budget)), len(problems))
+    if budget <= 0:
+        return []
+    if len(problems) <= 1:
+        return problems[:budget]
+
+    recent_mechanisms = Counter(str(item.get("mechanism_type") or "") for item in recent_memory)
+    recent_nodes = Counter(
+        str(node)
+        for item in recent_memory
+        for node in item.get("source_node_ids", [])
+        if str(node).strip()
+    )
+    recent_titles = [str(item.get("title") or "") for item in recent_memory]
+
+    candidates = [(idx, problem) for idx, problem in enumerate(problems) if isinstance(problem, dict)]
+    selected: list[tuple[int, dict]] = []
+    selected_mechanisms: Counter[str] = Counter()
+    selected_sources: Counter[str] = Counter()
+    selected_nodes: Counter[str] = Counter()
+
+    def score(idx: int, problem: dict) -> float:
+        mechanism = str(problem.get("mechanism_type") or problem.get("source_type") or "")
+        source = str(problem.get("source_type") or "")
+        nodes = _problem_node_ids(problem)
+        title = str(problem.get("title") or "")
+
+        value = -idx * 0.05
+        if mechanism:
+            value -= min(1.25, recent_mechanisms.get(mechanism, 0) * 0.25)
+            value -= selected_mechanisms.get(mechanism, 0) * 0.8
+        if source:
+            value -= selected_sources.get(source, 0) * 0.35
+        if nodes:
+            value += min(0.35, len(nodes) * 0.08)
+            value -= min(1.5, sum(recent_nodes.get(node, 0) for node in nodes) * 0.18)
+            value -= sum(selected_nodes.get(node, 0) for node in nodes) * 0.9
+        if any(_text_similarity(title, recent_title) >= 0.58 for recent_title in recent_titles):
+            value -= 2.0
+        return value
+
+    while candidates and len(selected) < budget:
+        idx, problem = max(candidates, key=lambda item: score(item[0], item[1]))
+        selected.append((idx, problem))
+        mechanism = str(problem.get("mechanism_type") or problem.get("source_type") or "")
+        source = str(problem.get("source_type") or "")
+        if mechanism:
+            selected_mechanisms[mechanism] += 1
+        if source:
+            selected_sources[source] += 1
+        for node in _problem_node_ids(problem):
+            selected_nodes[node] += 1
+        candidates = [(cand_idx, cand) for cand_idx, cand in candidates if cand_idx != idx]
+
+    return [problem for _idx, problem in selected]
+
+
+def _build_problem_prompt(signals: dict, recent_memory: list[dict] | None = None) -> str:
     """Build evidence prompt for Call 1 (Problem Sharpening)."""
     sections = ["# EVIDENCE FROM 10,000+ ML PAPERS\n"]
     compute = detect_compute_profile()
@@ -295,6 +532,9 @@ def _build_problem_prompt(signals: dict) -> str:
             "existing local artifacts or concrete public datasets with standard loaders. "
             "Do not invent benchmark names or require unavailable datasets."
         )
+    memory_block = _recent_idea_memory_block(recent_memory or [])
+    if memory_block:
+        sections.append("\n" + memory_block)
 
     # Contradiction clusters
     if signals["contradiction_clusters"]:
@@ -562,9 +802,11 @@ def discover_paper_ideas(
         print("[PAPER_IDEA] No signals available. Run signal_harvester first.", flush=True)
         return []
 
+    recent_memory = _recent_tier2_memory()
+
     # Stage 1: Problem Sharpening
     print("[PAPER_IDEA] Call 1/3: Problem Sharpening...", flush=True)
-    problem_prompt = _build_problem_prompt(signals)
+    problem_prompt = _build_problem_prompt(signals, recent_memory=recent_memory)
     try:
         result1, tokens1 = call_llm_json(PROBLEM_SHARPENING_SYSTEM, problem_prompt)
         total_tokens += tokens1
@@ -582,7 +824,7 @@ def discover_paper_ideas(
         return []
 
     problem_budget = min(len(problems), max_problems + max(2, max_papers // 2))
-    problems = problems[:problem_budget]
+    problems = _diversify_problems(problems, problem_budget, recent_memory)
     print(
         f"[PAPER_IDEA] {len(problems)} problems queued to produce up to {max_papers} accepted ideas",
         flush=True,
@@ -698,6 +940,9 @@ def discover_paper_ideas(
                 "expected_results": result3.get("expected_results", {}),
                 "compute_budget": result3.get("compute_budget", {}),
                 "risks": result3.get("risks", []),
+                "paper_title": normalized_paper_title,
+                "raw_paper_title": raw_paper_title,
+                "title_source": "paper_idea_title_policy",
             }),
             "related_work_positioning": json.dumps(result3.get("paper_outline", {})),
             "source_node_ids": json.dumps(problem.get("related_node_ids", [])),
@@ -726,6 +971,16 @@ def discover_paper_ideas(
             "llm_calls": total_calls,
         }
 
+        duplicate = _find_existing_tier2_duplicate(deep_insight)
+        if duplicate:
+            print(
+                f"[PAPER_IDEA] Rejected duplicate of idea {duplicate['id']} "
+                f"(title_sim={duplicate['title_similarity']}, node_overlap={duplicate['node_overlap']}): "
+                f"{method['name']}",
+                flush=True,
+            )
+            continue
+
         input_issue = get_evosci_input_issue(deep_insight, mode="verification")
         if input_issue:
             missing = ", ".join(input_issue.get("missing_fields") or [])
@@ -735,21 +990,37 @@ def discover_paper_ideas(
             )
             continue
 
-        print(f"[PAPER_IDEA] Pre-insert EvoScientist review + debate refinement for '{method['name']}'...", flush=True)
-        review_result = review_and_refine_tier2_idea(deep_insight)
-        if not review_result.get("accepted"):
+        refined_insight = deep_insight
+        if TIER2_EVOSCI_PREINSERT_REVIEW:
+            print(f"[PAPER_IDEA] Pre-insert EvoScientist review + debate refinement for '{method['name']}'...", flush=True)
+            review_result = review_and_refine_tier2_idea(deep_insight)
+            if not review_result.get("accepted"):
+                print(
+                    f"[PAPER_IDEA] Rejected after pre-insert review ({review_result.get('reason')}): {method['name']}",
+                    flush=True,
+                )
+                continue
+            refined_insight = review_result.get("insight") or deep_insight
+            duplicate = _find_existing_tier2_duplicate(refined_insight)
+            if duplicate:
+                print(
+                    f"[PAPER_IDEA] Rejected duplicate after review/refine of idea {duplicate['id']} "
+                    f"(title_sim={duplicate['title_similarity']}, node_overlap={duplicate['node_overlap']}): "
+                    f"{method['name']}",
+                    flush=True,
+                )
+                continue
             print(
-                f"[PAPER_IDEA] Rejected after pre-insert review ({review_result.get('reason')}): {method['name']}",
+                f"[PAPER_IDEA] Accepted after review/refine: {method['name']} — {refined_insight.get('title', title)[:60]}",
                 flush=True,
             )
-            continue
+        else:
+            print(
+                f"[PAPER_IDEA] Accepted without pre-insert EvoScientist review: {method['name']}",
+                flush=True,
+            )
 
-        refined_insight = review_result.get("insight") or deep_insight
         deep_insights.append(enrich_deep_insight(attach_graph_taste_to_insight(refined_insight)))
-        print(
-            f"[PAPER_IDEA] Accepted after review/refine: {method['name']} — {refined_insight.get('title', title)[:60]}",
-            flush=True,
-        )
 
     print(f"[PAPER_IDEA] Done: {len(deep_insights)} paper ideas from {len(problems)} problems. "
           f"Tokens: {total_tokens}, LLM calls: {total_calls}", flush=True)

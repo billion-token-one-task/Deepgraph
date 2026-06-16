@@ -30,6 +30,11 @@ _pipeline_running = False
 _pipeline_lock = threading.Lock()
 
 _ACTIVE_EXPERIMENT_STATUSES = {"pending", "scaffolding", "reproducing", "testing", "running_gpu", "running_cpu"}
+_PROTECTED_GENERATED_PAPER_IDS = {
+    int(part)
+    for part in re.split(r"[,\s]+", os.getenv("DEEPGRAPH_PROTECTED_GENERATED_PAPER_IDS", "3,4,8").strip())
+    if part.isdigit()
+}
 
 
 def _json_load(value: Any, default: Any) -> Any:
@@ -312,6 +317,24 @@ def _deep_insight_is_displayable(row: dict) -> bool:
         if not row.get("formal_structure") and not row.get("transformation") and not field_a and not field_b:
             return False
     return True
+
+
+def _deep_insight_is_archived(row: dict) -> bool:
+    """Hide soft-cleaned / archived ideas from live dashboards by default."""
+    status = str(row.get("status") or "").strip().lower()
+    novelty = str(row.get("novelty_status") or "").strip().lower()
+    outcome = str(row.get("outcome") or "").strip().lower()
+    submission = str(row.get("submission_status") or "").strip().lower()
+    return (
+        outcome in {"cleaned", "archived"}
+        or novelty in {"cleaned_similar_duplicate"}
+        or submission in {"stale"}
+        or status in {"exists"}
+    )
+
+
+def _include_archived_requested() -> bool:
+    return str(request.args.get("include_archived") or "").strip().lower() in {"1", "true", "yes"}
 
 
 def _plan_snapshot(insight: dict) -> dict[str, Any]:
@@ -752,7 +775,7 @@ def _automation_snapshot() -> dict:
     }
 
 
-def _load_experiment_groups() -> list[dict]:
+def _load_experiment_groups(*, include_archived: bool = False) -> list[dict]:
     insights = db.fetchall(
         """
         SELECT di.*, arj.id AS auto_job_id, arj.status AS auto_status, arj.stage AS auto_stage,
@@ -767,6 +790,13 @@ def _load_experiment_groups() -> list[dict]:
         ORDER BY COALESCE(arj.updated_at, di.updated_at, di.created_at) DESC
         """
     )
+    if not insights:
+        return []
+    if not include_archived:
+        insights = [
+            row for row in insights
+            if _deep_insight_is_displayable(row) and not _deep_insight_is_archived(row)
+        ]
     if not insights:
         return []
 
@@ -1776,6 +1806,8 @@ def api_deep_insights():
         rows = db.fetchall(sql, tuple(params))
         if request.args.get("include_placeholders") not in {"1", "true", "yes"}:
             rows = [row for row in rows if _deep_insight_is_displayable(row)]
+        if not _include_archived_requested():
+            rows = [row for row in rows if not _deep_insight_is_archived(row)]
         return jsonify(rows[:limit])
     except Exception as exc:
         return _api_failure("deep_insights", exc)
@@ -1936,7 +1968,7 @@ def api_experiment_groups():
     """List idea-centric experiment groups for the dashboard."""
     status = request.args.get("status", "")
     limit = request.args.get("limit", 50, type=int)
-    groups = _load_experiment_groups()
+    groups = _load_experiment_groups(include_archived=_include_archived_requested())
     if status:
         groups = [
             group
@@ -1949,7 +1981,7 @@ def api_experiment_groups():
 @app.route("/api/experiment_groups/<int:insight_id>")
 def api_experiment_group_detail(insight_id):
     """Get one idea-centric experiment group with run history."""
-    groups = _load_experiment_groups()
+    groups = _load_experiment_groups(include_archived=True)
     for group in groups:
         if int(group["insight"]["id"]) == insight_id:
             return jsonify(group)
@@ -2001,11 +2033,25 @@ def _extract_latex_title(tex: str) -> str:
     return _strip_latex_inline(match.group(1)) if match else ""
 
 
+def _paper_generation_complete(paper: dict[str, Any]) -> bool:
+    status = str(paper.get("status") or paper.get("manuscript_status") or "").strip().lower()
+    complete_statuses = {"bundle_ready", "completed", "paper_ready", "ready", "submitted", "accepted"}
+    return bool(
+        paper.get("bundle_count")
+        or paper.get("pdf_url")
+        or paper.get("tex_url")
+        or paper.get("main_pdf")
+        or paper.get("main_tex")
+        or status in complete_statuses
+    )
+
+
 @app.route("/api/generated_papers")
 def api_generated_papers():
     """List DeepGraph-generated manuscripts, not imported arXiv papers."""
     try:
         limit = request.args.get("limit", 100, type=int)
+        include_archived = _include_archived_requested()
         rows = db.fetchall(
             """
             SELECT *
@@ -2023,6 +2069,12 @@ def api_generated_papers():
             if not _deep_insight_is_displayable(insight):
                 continue
             insight_id = int(insight["id"])
+            if (
+                not include_archived
+                and insight_id not in _PROTECTED_GENERATED_PAPER_IDS
+                and _deep_insight_is_archived(insight)
+            ):
+                continue
             assets = list_paper_assets(insight_id, insight=insight)
             main_pdf = _pick_main_asset(assets, ".pdf")
             main_tex = _pick_main_asset(assets, ".tex")
@@ -2062,34 +2114,36 @@ def api_generated_papers():
             status = insight.get("submission_status") or latest_run.get("status") or "draft"
             title = _extract_latex_title(tex_source) or insight.get("title") or f"Idea {insight_id}"
             abstract = _extract_latex_abstract(tex_source) or insight.get("problem_statement") or insight.get("evidence_summary") or ""
-            papers.append(
-                {
-                    "id": f"idea_{insight_id}",
-                    "insight_id": insight_id,
-                    "title": title,
-                    "status": status,
-                    "tier": insight.get("tier"),
-                    "updated_at": insight.get("updated_at"),
-                    "created_at": insight.get("created_at"),
-                    "paper_root": insight.get("paper_root"),
-                    "preview_url": preview_urls.get("index"),
-                    "pdf_url": preview_urls.get("pdf"),
-                    "tex_url": preview_urls.get("tex"),
-                    "main_pdf": main_pdf,
-                    "main_tex": main_tex,
-                    "asset_count": len(assets),
-                    "assets": assets[:80],
-                    "bundle_count": len(bundle_rows),
-                    "bundles": bundle_rows[:8],
-                    "manuscript_status": latest_run.get("status"),
-                    "abstract": abstract,
-                    "problem_statement": insight.get("problem_statement"),
-                    "proposed_method": _json_load(insight.get("proposed_method"), {}),
-                    "evidence_summary": insight.get("evidence_summary"),
-                    "source_node_ids": _json_load(insight.get("source_node_ids"), []),
-                    "canonical_run_id": insight.get("canonical_run_id"),
-                }
-            )
+            paper = {
+                "id": f"idea_{insight_id}",
+                "insight_id": insight_id,
+                "title": title,
+                "status": status,
+                "tier": insight.get("tier"),
+                "updated_at": insight.get("updated_at"),
+                "created_at": insight.get("created_at"),
+                "paper_root": insight.get("paper_root"),
+                "preview_url": preview_urls.get("index"),
+                "pdf_url": preview_urls.get("pdf"),
+                "tex_url": preview_urls.get("tex"),
+                "main_pdf": main_pdf,
+                "main_tex": main_tex,
+                "asset_count": len(assets),
+                "assets": assets[:80],
+                "bundle_count": len(bundle_rows),
+                "bundles": bundle_rows[:8],
+                "manuscript_status": latest_run.get("status"),
+                "abstract": abstract,
+                "problem_statement": insight.get("problem_statement"),
+                "proposed_method": _json_load(insight.get("proposed_method"), {}),
+                "evidence_summary": insight.get("evidence_summary"),
+                "source_node_ids": _json_load(insight.get("source_node_ids"), []),
+                "canonical_run_id": insight.get("canonical_run_id"),
+            }
+            paper["paper_complete"] = _paper_generation_complete(paper)
+            papers.append(paper)
+        papers.sort(key=lambda paper: str(paper.get("updated_at") or paper.get("created_at") or ""), reverse=True)
+        papers.sort(key=lambda paper: not bool(paper.get("paper_complete")))
         return jsonify(papers)
     except Exception as exc:
         return _api_failure("generated_papers", exc)

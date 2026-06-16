@@ -24,11 +24,17 @@ PACKAGE_RE_TEMPLATE = r"\\usepackage(?:\[[^\]]*\])?\{%s\}\s*"
 _ALGORITHM_FALLBACK = r"""
 % TeX Code Agent fallback for environments normally provided by algorithm/algpseudocode.
 \usepackage{float}
-\newenvironment{algorithm}[1][]{\begin{figure}[t]\centering}{\end{figure}}
-\newenvironment{algorithmic}[1][]{\begin{list}{}{\leftmargin=1.5em\itemsep=0.12em\parsep=0pt}}{\end{list}}
-\newcommand{\State}{\item }
-\newcommand{\Require}{\item[\textbf{Input:}] }
-\newcommand{\Ensure}{\item[\textbf{Output:}] }
+\floatstyle{ruled}
+\newfloat{algorithm}{tbp}{loa}
+\floatname{algorithm}{Algorithm}
+\newenvironment{algorithmic}[1][]{%
+  \begin{list}{}{\leftmargin=1.7em\itemsep=0.16em\parsep=0pt\topsep=0.2em}%
+}{%
+  \end{list}%
+}
+\newcommand{\State}{\item}
+\newcommand{\Require}{\item[\textbf{Input:}]}
+\newcommand{\Ensure}{\item[\textbf{Output:}]}
 \newcommand{\Return}{\item \textbf{return} }
 \newcommand{\For}[1]{\item \textbf{for} #1 \textbf{do}}
 \newcommand{\EndFor}{\item \textbf{end for}}
@@ -45,6 +51,8 @@ _MISC_FALLBACKS = {
     "cleveref": r"\newcommand{\cref}[1]{\ref{#1}}\newcommand{\Cref}[1]{\ref{#1}}",
 }
 
+_REMOVABLE_OPTIONAL_PACKAGES = {"adjustbox"}
+
 
 def _insert_before_document(source: str, block: str) -> str:
     if not block.strip() or block.strip() in source:
@@ -60,6 +68,24 @@ def _remove_package(source: str, package: str) -> tuple[str, bool]:
     pattern = re.compile(PACKAGE_RE_TEMPLATE % re.escape(package))
     new_source, count = pattern.subn("", source)
     return new_source, bool(count)
+
+
+def _remove_duplicate_algorithm_fallback(source: str, actions: list[dict[str, Any]]) -> str:
+    marker = "% TeX Code Agent fallback for environments normally provided by algorithm/algpseudocode."
+    start = source.find(marker)
+    if start < 0:
+        return source
+    preamble_before_marker = source[:start]
+    if r"\newfloat{algorithm}" not in preamble_before_marker and r"\newenvironment{algorithm}" not in preamble_before_marker:
+        return source
+    doc_start = source.find(r"\begin{document}", start)
+    if doc_start < 0:
+        return source
+    fallback_block = source[start:doc_start]
+    if r"\newenvironment{algorithmic}" not in fallback_block:
+        return source
+    actions.append({"kind": "duplicate_algorithm_fallback_removed"})
+    return source[:start].rstrip() + "\n" + source[doc_start:]
 
 
 def _deduplicate_abstracts(source: str, actions: list[dict[str, Any]]) -> str:
@@ -123,20 +149,85 @@ def _remove_forced_question_spine(source: str, actions: list[dict[str, Any]]) ->
     return new_source
 
 
+_METRIC_TEXT_TOKENS = (
+    "cost_adjusted_accuracy",
+    "avg_new_tokens",
+    "avg_latency_seconds",
+    "route_rate",
+    "full_benchmark_completed",
+    "main_results_table",
+    "ablation_table",
+    "metric_value",
+    "delta_vs_candidate",
+    "selective_risk",
+    "pass_at_1",
+)
+
+
+def _repair_bare_metric_underscores(source: str, actions: list[dict[str, Any]]) -> str:
+    repaired = source or ""
+    changed_tokens: list[str] = []
+    for token in _METRIC_TEXT_TOKENS:
+        escaped = token.replace("_", r"\_")
+        pattern = re.compile(r"(?<!\\)\b" + re.escape(token) + r"\b")
+        repaired, count = pattern.subn(escaped, repaired)
+        if count:
+            changed_tokens.append(token)
+    if changed_tokens:
+        actions.append({"kind": "bare_metric_underscores_escaped", "tokens": sorted(set(changed_tokens))})
+    return repaired
+
+
+def _clean_xref_key(raw: str) -> str:
+    key = re.sub(r"\s+", "", str(raw or ""))
+    key = key.replace(r"\_", "_")
+    key = key.replace("\\", "")
+    return re.sub(r"[^A-Za-z0-9:_.-]", "", key)
+
+
+def _repair_cross_references(source: str, actions: list[dict[str, Any]]) -> str:
+    original = source or ""
+    repaired = re.sub(r"(?<=[~(\s])(?:\r|\n|\x0c)+\s*ef\{", r"\\ref{", original)
+
+    def normalize_command(command: str, text: str) -> str:
+        pattern = re.compile(r"\\" + command + r"\{([^{}]*)\}", re.DOTALL)
+
+        def replace(match: re.Match[str]) -> str:
+            key = _clean_xref_key(match.group(1))
+            return "\\" + command + "{" + key + "}" if key else match.group(0)
+
+        return pattern.sub(replace, text)
+
+    for command in ("ref", "pageref", "label"):
+        repaired = normalize_command(command, repaired)
+    if repaired != original:
+        actions.append({"kind": "cross_reference_normalized"})
+    return repaired
+
+
 def _repair_missing_packages(source: str, compile_log: str, actions: list[dict[str, Any]]) -> str:
     normalized_log = (compile_log or "").replace(chr(39), "`").replace("’", "`")
     missing = set(re.findall(r"File\s+`?([^`\s]+)\.sty`?\s+not\s+found", normalized_log, re.IGNORECASE))
-    uses_algorithm = any(token in source for token in (r"\begin{algorithm}", r"\begin{algorithmic}", r"\State", r"\Require"))
-    if uses_algorithm or {"algorithm", "algpseudocode", "algorithmic"}.intersection(missing):
+    source = _remove_duplicate_algorithm_fallback(source, actions)
+    algorithm_missing = {"algorithm", "algpseudocode", "algorithmic"}.intersection(missing)
+    if algorithm_missing:
         changed = False
         for package in ("algorithm", "algpseudocode", "algorithmic"):
             source, removed = _remove_package(source, package)
             changed = changed or removed
-        if "TeX Code Agent fallback for environments normally provided by algorithm" not in source:
+        has_algorithm_float = r"\newfloat{algorithm}" in source
+        has_algorithmic = r"\newenvironment{algorithmic}" in source
+        if not (has_algorithm_float and has_algorithmic):
             source = _insert_before_document(source, _ALGORITHM_FALLBACK)
             changed = True
         if changed:
-            actions.append({"kind": "algorithm_package_fallback", "missing": sorted(missing)})
+            actions.append({"kind": "algorithm_package_fallback", "missing": sorted(algorithm_missing)})
+    for package in sorted(_REMOVABLE_OPTIONAL_PACKAGES):
+        if package not in missing:
+            continue
+        source, removed = _remove_package(source, package)
+        if removed:
+            actions.append({"kind": "package_removed", "package": package, "reason": "missing_optional_package"})
     for package, fallback in _MISC_FALLBACKS.items():
         if package not in missing:
             continue
@@ -154,6 +245,8 @@ def repair_latex_source(source: str, *, compile_log: str = "") -> tuple[str, dic
     repaired = _deduplicate_abstracts(repaired, actions)
     repaired = _deduplicate_top_sections(repaired, actions)
     repaired = _remove_forced_question_spine(repaired, actions)
+    repaired = _repair_bare_metric_underscores(repaired, actions)
+    repaired = _repair_cross_references(repaired, actions)
     repaired = _repair_missing_packages(repaired, compile_log, actions)
     changed = repaired != (source or "")
     return repaired, {

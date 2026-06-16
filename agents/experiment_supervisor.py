@@ -301,6 +301,7 @@ def build_supervisor_plan(
     else:
         next_actions = [
             "Implement the smallest end-to-end version of the proposed method.",
+            "If the required module is missing, add a minimal real implementation and wire it into the candidate path.",
             "Preserve the current training/evaluation pipeline shape where possible.",
             "Keep the code change local and easy to reason about.",
         ]
@@ -312,6 +313,9 @@ def build_supervisor_plan(
         "Honor the evidence plan and do not invent disabled analyses.",
         "Respect the budget block; do not reduce models, datasets, seeds, examples, or baselines just to make a run pass.",
         "Keep changes hypothesis-directed and minimal.",
+        "A missing repo module is an implementation task, not an unsupported-method verdict; implement the missing component when the benchmark can exercise it.",
+        "If the locked benchmark cannot exercise the proposed mechanism, produce an explicit redesign/blocker artifact instead of treating the scientific idea as refuted.",
+        "Do not drift from the proposed mechanism into unrelated prompt, token-cap, or routing micro-tuning just because it is easier to score.",
         "Do not break the existing baseline execution path.",
         "Do not silently modify locked benchmark contract fields; request a contract revision instead.",
     ]

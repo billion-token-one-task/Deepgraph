@@ -1,5 +1,6 @@
 import time
 import unittest
+import unittest.mock
 
 import httpx
 
@@ -220,6 +221,102 @@ class LlmClientCooldownTests(unittest.TestCase):
         }
 
         self.assertEqual(llm_client._extract_responses_output_text(response), "final answer")
+
+    def test_gpt55_responses_payload_omits_max_output_tokens(self):
+        captured_payloads = []
+
+        class FakeStreamResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def raise_for_status(self):
+                return None
+
+            def iter_lines(self):
+                yield 'data: {"type":"response.output_text.delta","delta":"valid enough response"}'
+                yield 'data: {"type":"response.completed","response":{"usage":{"total_tokens":7,"input_tokens":3}}}'
+                yield 'data: [DONE]'
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def stream(self, method, url, json, headers):
+                captured_payloads.append(dict(json))
+                return FakeStreamResponse()
+
+        provider = {
+            "name": "tabcode",
+            "base_url": "https://example.invalid/v1",
+            "api_key": "test-key",
+            "model": "gpt-5.5",
+            "protocol": "responses",
+        }
+
+        with unittest.mock.patch.object(llm_client.httpx, "Client", FakeClient):
+            text, tokens, cached, input_tokens = llm_client._call_responses_api(provider, "system", "user", 1234)
+
+        self.assertEqual(text, "valid enough response")
+        self.assertEqual(tokens, 7)
+        self.assertEqual(cached, 0)
+        self.assertEqual(input_tokens, 3)
+        self.assertEqual(captured_payloads[0]["model"], "gpt-5.5")
+        self.assertNotIn("max_output_tokens", captured_payloads[0])
+
+    def test_gpt55_chat_payload_omits_max_tokens(self):
+        captured_payloads = []
+
+        class FakeResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {
+                    "choices": [{"message": {"content": "valid enough response"}}],
+                    "usage": {"total_tokens": 5, "prompt_tokens": 2},
+                }
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def post(self, url, json, headers):
+                captured_payloads.append(dict(json))
+                return FakeResponse()
+
+        provider = {
+            "name": "tabcode",
+            "base_url": "https://example.invalid/v1",
+            "api_key": "test-key",
+            "model": "openai/gpt-5.5",
+            "protocol": "chat_completions",
+            "stream_chat_completions": False,
+        }
+
+        with unittest.mock.patch.object(llm_client.httpx, "Client", FakeClient):
+            text, tokens, cached, input_tokens = llm_client._call_chat_completions(provider, "system", "user", 1234)
+
+        self.assertEqual(text, "valid enough response")
+        self.assertEqual(tokens, 5)
+        self.assertEqual(cached, 0)
+        self.assertEqual(input_tokens, 2)
+        self.assertEqual(captured_payloads[0]["model"], "openai/gpt-5.5")
+        self.assertNotIn("max_tokens", captured_payloads[0])
 
 
 if __name__ == "__main__":

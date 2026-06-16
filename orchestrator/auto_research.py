@@ -20,7 +20,7 @@ from pathlib import Path
 
 from agents.discovery_metadata import infer_experimentability, infer_resource_class
 from agents.compute_profile import detect_compute_profile, gpu_resource_allowed
-from agents.experiment_forge import forge_experiment, repair_experiment_plan_from_review
+from agents.experiment_forge import forge_experiment, repair_experiment_plan_from_review, _ensure_real_benchmark_plan
 from agents.benchmark_manager import (
     HARNESS_REQUIRED_STAGE,
     HARNESS_REQUIRED_STATUS,
@@ -60,6 +60,7 @@ from db.insight_outcomes import (
 )
 from orchestrator.benchmark_completion import (
     BENCHMARK_COMPLETION_STAGE,
+    benchmark_completion_blockers,
     schedule_benchmark_completion,
 )
 from orchestrator import gpu_scheduler
@@ -78,6 +79,8 @@ AUTO_RESEARCH_CONSUMER = "auto_research"
 VERIFY_STALE_SECONDS = 60 * 60
 RESEARCH_STALE_SECONDS = 6 * 60 * 60
 REVIEW_PENDING_STALE_SECONDS = 15 * 60
+REVIEW_WORKER_STALE_SECONDS = int(os.environ.get("DEEPGRAPH_REVIEW_WORKER_STALE_SECONDS", "600"))
+SCAFFOLD_STALE_SECONDS = int(os.environ.get("DEEPGRAPH_SCAFFOLD_STALE_SECONDS", str(15 * 60)))
 EXECUTION_STALE_SECONDS = int(os.environ.get("DEEPGRAPH_EXECUTION_STALE_SECONDS", "600"))
 MAX_EXPERIMENT_REVIEW_REPAIR_ATTEMPTS = int(os.environ.get("DEEPGRAPH_EXPERIMENT_REVIEW_REPAIR_ATTEMPTS", "2"))
 MAX_FAILED_RUN_REPAIR_ATTEMPTS = int(os.environ.get("DEEPGRAPH_FAILED_RUN_REPAIR_ATTEMPTS", "1"))
@@ -93,6 +96,23 @@ QUEUE_WAITING = "waiting"
 QUEUE_DONE = "done"
 QUEUE_BLOCKED = "blocked"
 QUEUE_ORDER = (QUEUE_REPAIR, QUEUE_VERIFICATION, QUEUE_EXECUTION, QUEUE_REVIEW)
+
+
+def _insight_is_archived_or_cleaned(row: dict | None) -> bool:
+    if not row:
+        return False
+    status = str(row.get("status") or "").strip().lower()
+    novelty = str(row.get("novelty_status") or "").strip().lower()
+    outcome = str(row.get("outcome") or "").strip().lower()
+    submission = str(row.get("submission_status") or "").strip().lower()
+    return (
+        status in {"exists"}
+        or novelty in {"cleaned_similar_duplicate", "exists"}
+        or outcome in {"cleaned", "archived"}
+        or submission in {"stale"}
+    )
+
+
 TERMINAL_RUN_STATUSES = {
     "completed",
     "failed",
@@ -115,6 +135,17 @@ MANUAL_RERUN_COMPLETED_STAGES = {
     "paper_blocked_benchmark_completion",
     "manuscript_blocked",
     "reset_completed_experiments",
+}
+MANUSCRIPT_RETRY_STAGES = {
+    "manuscript_retry_after_quality_gate",
+    "manuscript_retry_after_soft_benchmark_gate",
+    "manuscript_blocked",
+}
+OPTIONAL_RESEARCH_NONBLOCKING_STAGES = {
+    "deep_research_background",
+    "research_launch_failed",
+    "research_unavailable",
+    "research_skipped_input_missing",
 }
 IGNORED_EXISTING_RUN_STATUSES = {"superseded", "reset", "archived", "cancelled"}
 
@@ -169,6 +200,280 @@ def _run_scaffold_ready(run: dict | None) -> bool:
         and (run.get("program_md") or "").strip()
         and (run.get("success_criteria") or "").strip()
     )
+
+
+def _run_has_incomplete_review_scaffold(run: dict | None) -> bool:
+    if not run:
+        return False
+    if str(run.get("status") or "") != "scaffolding":
+        return False
+    if str(run.get("phase") or "") != "review_decision_ready":
+        return False
+    if _run_age_seconds(run) < SCAFFOLD_STALE_SECONDS:
+        return False
+    return not (run.get("program_md") or "").strip() or not (run.get("success_criteria") or "").strip()
+
+
+def _json_mapping(value) -> dict:
+    data = _load_json(value, {}) if isinstance(value, str) or value is None else value
+    return dict(data) if isinstance(data, dict) else {}
+
+
+
+def _json_list(value) -> list:
+    data = _load_json(value, []) if isinstance(value, str) or value is None else value
+    return list(data) if isinstance(data, list) else []
+
+
+def _supported_harness_targets_from_task(task: dict) -> tuple[list[dict], list[dict]]:
+    refs = task.get("dataset_refs") if isinstance(task.get("dataset_refs"), list) else []
+    supported: list[dict] = []
+    deferred: list[dict] = []
+    supported_task_types = {"math_qa", "qa", "multiple_choice", "code_generation", "translation"}
+    for raw in refs:
+        if not isinstance(raw, dict):
+            continue
+        target = dict(raw)
+        name = str(target.get("name") or target.get("hf_dataset") or target.get("dataset") or "").strip()
+        task_type = str(target.get("task_type") or "").strip().lower()
+        hf_dataset = str(target.get("hf_dataset") or "").strip()
+        marked_supported = target.get("generated_runner_supported") is True
+        known_supported = bool(hf_dataset) and (marked_supported or task_type in supported_task_types)
+        if known_supported:
+            target["generated_runner_supported"] = True
+            supported.append(target)
+        elif name:
+            deferred.append(target)
+    return supported, deferred
+
+
+def _reset_review_repair_history_after_harness_recovery(plan: dict) -> dict:
+    """Give a harness-recovered runnable subset one fresh review/forge attempt."""
+    repaired = dict(plan or {})
+    history = repaired.get("review_repair_history")
+    if isinstance(history, list) and history:
+        archived = repaired.get("harness_recovery_archived_review_repair_history")
+        archived_rows = list(archived) if isinstance(archived, list) else []
+        archived_rows.extend(item for item in history if isinstance(item, dict))
+        repaired["harness_recovery_archived_review_repair_history"] = archived_rows[-20:]
+    repaired["review_repair_history"] = []
+    repaired["harness_recovery_fresh_forge"] = True
+    repaired["harness_recovery_fresh_forge_at"] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    return repaired
+
+
+def _repair_harness_job_from_task_plan(row: dict) -> dict | None:
+    task = _json_mapping(row.get("task_plan"))
+    if not task:
+        return None
+    supported, deferred = _supported_harness_targets_from_task(task)
+    if not supported:
+        return None
+    insight = db.fetchone("SELECT * FROM deep_insights WHERE id=?", (int(row["deep_insight_id"]),))
+    if not insight:
+        return None
+    plan = _json_mapping(insight.get("experimental_plan"))
+    method = _json_mapping(insight.get("proposed_method"))
+    plan["benchmark_targets"] = supported
+    plan["datasets"] = [{"name": t.get("name") or t.get("hf_dataset") or t.get("dataset")} for t in supported]
+    plan["generated_runner_supported"] = True
+    plan["real_benchmark_required"] = True
+    plan["benchmark_harness_deferred"] = bool(deferred)
+    if deferred:
+        plan["deferred_benchmark_targets"] = [
+            t.get("name") or t.get("hf_dataset") or t.get("dataset")
+            for t in deferred
+            if t.get("name") or t.get("hf_dataset") or t.get("dataset")
+        ]
+        plan["deferred_benchmark_target_details"] = deferred
+    repaired = _ensure_real_benchmark_plan(
+        {**dict(insight), "experimental_plan": plan, "proposed_method": method},
+        method,
+        plan,
+        row.get("resource_class"),
+        resolve_datasets=False,
+    )
+    if repaired.get("generated_runner_supported") is not True or not repaired.get("benchmark_targets"):
+        return None
+    return _reset_review_repair_history_after_harness_recovery(repaired)
+
+
+def process_benchmark_harness_jobs(limit: int = 10) -> int:
+    """Consume harness_required rows that already contain a runnable subset.
+
+    The dedicated custom-harness path remains explicit for unsupported targets,
+    but supported probes such as GSM8K/MBPP/MATH-500 should not sit forever in
+    benchmark_harness_jobs just because the full formal target needs a custom
+    harness later.
+    """
+    rows = db.fetchall(
+        """
+        SELECT bhj.*, arj.resource_class
+        FROM benchmark_harness_jobs bhj
+        LEFT JOIN auto_research_jobs arj ON arj.deep_insight_id=bhj.deep_insight_id
+        WHERE bhj.status='harness_required'
+        ORDER BY bhj.updated_at ASC, bhj.id ASC
+        LIMIT ?
+        """,
+        (int(limit),),
+    )
+    recovered = 0
+    for row in rows:
+        insight_id = int(row["deep_insight_id"])
+        try:
+            repaired = _repair_harness_job_from_task_plan(dict(row))
+        except Exception as exc:  # pragma: no cover - defensive guard
+            log_event("warning", {"step": "benchmark_harness_consumer_failed", "insight_id": insight_id, "error": str(exc)})
+            continue
+        if not repaired:
+            continue
+        try:
+            db.execute(
+                "UPDATE deep_insights SET experimental_plan=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (json.dumps(repaired, ensure_ascii=False, default=str), insight_id),
+            )
+            db.execute(
+                """
+                UPDATE benchmark_harness_jobs
+                SET status='deferred_supported_subset_recovered',
+                    last_error=NULL,
+                    last_note='Benchmark harness consumer recovered a generated-runner-supported subset; custom formal targets remain deferred.',
+                    updated_at=CURRENT_TIMESTAMP
+                WHERE id=?
+                """,
+                (int(row["id"]),),
+            )
+            db.commit()
+            _upsert_job(
+                insight_id,
+                status="queued",
+                stage="harness_supported_subset_recovered",
+                experiment_run_id=None,
+                assigned_worker=None,
+                last_error=None,
+                last_note="Benchmark harness consumer recovered a supported runnable subset and requeued fresh forge.",
+            )
+        except Exception as exc:  # pragma: no cover - lock/contention guard
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            log_event(
+                "warning",
+                {
+                    "step": "benchmark_harness_consumer_write_failed",
+                    "insight_id": insight_id,
+                    "error": str(exc),
+                },
+            )
+            continue
+        log_event(
+            "auto_research",
+            {
+                "step": "benchmark_harness_consumer_requeued",
+                "insight_id": insight_id,
+                "benchmark_targets": [
+                    t.get("name") or t.get("hf_dataset") or t.get("dataset")
+                    for t in repaired.get("benchmark_targets", [])
+                    if isinstance(t, dict)
+                ],
+            },
+        )
+        recovered += 1
+    return recovered
+
+def _repair_harness_plan_for_supported_subset(row: dict) -> dict | None:
+    plan = _json_mapping(row.get("experimental_plan"))
+    if not plan or plan.get("generated_runner_supported") is not False:
+        return None
+    method = _json_mapping(row.get("proposed_method"))
+    parsed = dict(row)
+    parsed["experimental_plan"] = plan
+    parsed["proposed_method"] = method
+    repaired = _ensure_real_benchmark_plan(
+        parsed,
+        method,
+        plan,
+        row.get("resource_class"),
+        resolve_datasets=False,
+    )
+    if repaired.get("generated_runner_supported") is not True:
+        return None
+    if not repaired.get("benchmark_targets"):
+        return None
+    return repaired
+
+
+def recover_partially_supported_harness_jobs(limit: int = 25) -> int:
+    """Requeue harness jobs when a supported benchmark subset can run now.
+
+    Benchmark Manager still owns the deferred unsupported targets; this only
+    prevents one unsupported benchmark from freezing otherwise runnable work.
+    """
+
+    rows = db.fetchall(
+        """
+        SELECT di.*, arj.resource_class, arj.experiment_run_id
+        FROM auto_research_jobs arj
+        JOIN deep_insights di ON di.id = arj.deep_insight_id
+        WHERE arj.status=? AND arj.stage=?
+        ORDER BY arj.updated_at ASC
+        LIMIT ?
+        """,
+        (HARNESS_REQUIRED_STATUS, HARNESS_REQUIRED_STAGE, int(limit)),
+    )
+    recovered = 0
+    for row in rows:
+        insight_id = int(row["id"])
+        try:
+            repaired = _repair_harness_plan_for_supported_subset(dict(row))
+        except Exception as exc:  # pragma: no cover - defensive recovery guard
+            log_event("warning", {"step": "harness_partial_recovery_failed", "insight_id": insight_id, "error": str(exc)})
+            continue
+        if not repaired:
+            continue
+        db.execute(
+            "UPDATE deep_insights SET experimental_plan=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            (json.dumps(repaired, ensure_ascii=False, default=str), insight_id),
+        )
+        db.execute(
+            """
+            UPDATE benchmark_harness_jobs
+            SET status='deferred_supported_subset_recovered',
+                last_error=NULL,
+                last_note='Supported benchmark subset recovered for automatic execution; unsupported targets remain deferred for Benchmark Manager.',
+                updated_at=CURRENT_TIMESTAMP
+            WHERE deep_insight_id=?
+            """,
+            (insight_id,),
+        )
+        db.commit()
+        _upsert_job(
+            insight_id,
+            status="queued",
+            stage="harness_supported_subset_recovered",
+            experiment_run_id=None,
+            last_error=None,
+            last_note=(
+                "Recovered from benchmark_harness_required: supported benchmark subset "
+                "will run automatically; unsupported targets remain deferred for Benchmark Manager."
+            ),
+        )
+        log_event(
+            "auto_research",
+            {
+                "step": "harness_supported_subset_recovered",
+                "insight_id": insight_id,
+                "active_targets": [
+                    target.get("name") or target.get("hf_dataset")
+                    for target in repaired.get("benchmark_targets", [])
+                    if isinstance(target, dict)
+                ],
+                "deferred_targets": repaired.get("deferred_benchmark_targets") or [],
+            },
+        )
+        recovered += 1
+    return recovered
 
 
 def _manual_reforge_requested(insight: dict, run: dict | None) -> bool:
@@ -273,6 +578,15 @@ def _job_age_seconds(job: dict) -> float:
     now = datetime.now(ts.tzinfo) if ts.tzinfo else datetime.now()
     return max(0.0, (now - ts).total_seconds())
 
+
+def _run_age_seconds(run: dict | None) -> float:
+    if not run:
+        return 0.0
+    ts = _coerce_datetime(run.get("created_at") or run.get("started_at"))
+    if ts is None:
+        return 0.0
+    now = datetime.now(ts.tzinfo) if ts.tzinfo else datetime.now()
+    return max(0.0, (now - ts).total_seconds())
 
 
 def _repair_attempt_from_note(note: str | None, kind: str) -> int:
@@ -430,13 +744,24 @@ def _handle_experiment_review_blocked(insight_id: int, forged: dict | None, *, s
     max_attempts = max(0, MAX_EXPERIMENT_REVIEW_REPAIR_ATTEMPTS)
     if next_attempt > max_attempts:
         tag = _repair_tag("experiment_review", previous_attempt, max_attempts)
+        exhausted_summary = (
+            f"{tag} automatic review repair exhausted; routing to benchmark/code harness agents. {summary}"
+        )
+        if _queue_benchmark_harness_required(
+            insight_id,
+            forged or {"judgement": judgement, "error": summary},
+            judgement=judgement,
+            source=f"{source}_repair_exhausted",
+            summary=exhausted_summary,
+        ):
+            return
         _upsert_job(
             insight_id,
             status="blocked",
             stage="experiment_review_blocked_final",
             experiment_run_id=None,
             last_error=(forged or {}).get("error") or summary,
-            last_note=f"{tag} automatic review repair exhausted; manual benchmark/design intervention required. {summary}",
+            last_note=exhausted_summary,
         )
         log_event(
             "warning",
@@ -495,7 +820,7 @@ def _maybe_repair_preexisting_review_block(insight: dict) -> bool:
     if str(insight.get("auto_status") or "") != "blocked":
         return False
     stage = str(insight.get("auto_stage") or "")
-    if stage not in {"experiment_review_blocked", "experiment_review_repair_failed"}:
+    if stage not in {"experiment_review_blocked", "experiment_review_repair_failed", "experiment_review_blocked_final"}:
         return False
     error = str(insight.get("auto_last_error") or insight.get("auto_last_note") or "Experiment review blocked formalization.")
     _handle_experiment_review_blocked(
@@ -504,6 +829,21 @@ def _maybe_repair_preexisting_review_block(insight: dict) -> bool:
         source="blocked_recovery",
     )
     return True
+
+
+def _run_has_automation_failure(run: dict) -> bool:
+    error = str(run.get("error_message") or "").lower()
+    verdict = str(run.get("hypothesis_verdict") or "").lower()
+    if verdict != "inconclusive":
+        return False
+    markers = (
+        "automation failed:",
+        "no benchmarked candidate method change",
+        "no benchmarked candidate method changes",
+        "code_repair_required",
+        "experiment_reforge_required",
+    )
+    return any(marker in error for marker in markers)
 
 
 def _retry_failed_run_with_repair(insight_id: int, run: dict, resource_class: str) -> bool:
@@ -596,6 +936,21 @@ def _is_execution_live_in_process(run_id: int | None) -> bool:
     if active_run_id is None or run_id is None:
         return False
     return active_run_id == int(run_id)
+
+
+def _gpu_execution_live_for_run(run_id: int | None) -> bool:
+    if run_id is None:
+        return False
+    row = db.fetchone(
+        """
+        SELECT COUNT(*) AS count
+        FROM gpu_jobs
+        WHERE experiment_run_id=?
+          AND status='running'
+        """,
+        (int(run_id),),
+    )
+    return bool(row and int(row.get("count") or 0) > 0)
 
 
 def _requeue_stale_execution_job(job: dict, reason: str) -> None:
@@ -718,6 +1073,84 @@ def _upsert_job(insight_id: int, *, touch_updated_at: bool = True, **fields) -> 
     db.commit()
 
 
+def _bundle_failure_retry_fields(bundle: dict | None) -> dict | None:
+    if not isinstance(bundle, dict) or "error" not in bundle:
+        return None
+    status = str(bundle.get("status") or "").strip()
+    if status not in {"manuscript_blocked", "needs_revision"}:
+        return None
+    blockers = bundle.get("submission_blockers") if isinstance(bundle.get("submission_blockers"), list) else []
+    blocker_text = "; ".join(str(item) for item in blockers[:8]) or str(bundle.get("error") or "Manuscript quality gate failed")
+    return {
+        "status": "queued",
+        "stage": "manuscript_retry_after_quality_gate",
+        "last_note": "Manuscript quality gate failed; queued targeted manuscript revision instead of closing the loop.",
+        "last_error": blocker_text[:4000],
+    }
+
+
+def _run_manuscript_retry_job(insight_id: int, run_id: int, resource_class: str | None) -> None:
+    _upsert_job(
+        insight_id,
+        status="running_cpu",
+        stage="manuscript_revision",
+        experiment_run_id=run_id,
+        resource_class=resource_class,
+        assigned_worker=None,
+        last_note="Running targeted manuscript revision from previous quality-gate blockers.",
+        last_error=None,
+    )
+    try:
+        bundle = generate_submission_bundle(run_id)
+    except Exception as exc:
+        _upsert_job(
+            insight_id,
+            status="queued",
+            stage="manuscript_retry_after_quality_gate",
+            experiment_run_id=run_id,
+            resource_class=resource_class,
+            assigned_worker=None,
+            last_note="Manuscript revision raised an exception; queued another targeted writing repair.",
+            last_error=str(exc)[:4000],
+        )
+        log_event("error", {"step": "manuscript_retry_failed", "insight_id": insight_id, "run_id": run_id, "error": str(exc)})
+        return
+    if schedule_benchmark_completion(
+        insight_id,
+        run_id,
+        bundle,
+        source="auto_research_manuscript_retry",
+        resource_class=resource_class,
+    ):
+        log_event("auto_research", {"step": "benchmark_completion_queued_from_manuscript_retry", "insight_id": insight_id, "run_id": run_id})
+        return
+    retry_fields = _bundle_failure_retry_fields(bundle if isinstance(bundle, dict) else None)
+    if retry_fields:
+        _upsert_job(
+            insight_id,
+            experiment_run_id=run_id,
+            resource_class=resource_class,
+            assigned_worker=None,
+            **retry_fields,
+        )
+        log_event("auto_research", {"step": "manuscript_retry_requeued", "insight_id": insight_id, "run_id": run_id})
+        return
+    bundle_ok = isinstance(bundle, dict) and "error" not in bundle
+    status_text = "ok" if bundle_ok else "failed"
+    _upsert_job(
+        insight_id,
+        status="bundle_ready" if bundle_ok else "completed",
+        stage="writing_submission" if bundle_ok else "closed_loop_complete",
+        experiment_run_id=run_id,
+        resource_class=resource_class,
+        artifact_bundle_id=(bundle.get("bundle_ids") or [None])[-1] if isinstance(bundle, dict) else None,
+        assigned_worker=None,
+        last_note=f"Manuscript retry completed. Submission bundle status={status_text}.",
+        last_error=None if bundle_ok else str(bundle.get("error") if isinstance(bundle, dict) else bundle),
+    )
+    log_event("auto_research", {"step": "manuscript_retry_completed", "insight_id": insight_id, "run_id": run_id, "bundle_ok": bundle_ok})
+
+
 def _parse_gpu_hours(plan: dict) -> float | None:
     compute = plan.get("compute_budget", {}) if isinstance(plan, dict) else {}
     raw = (
@@ -744,10 +1177,59 @@ def _parse_gpu_hours(plan: dict) -> float | None:
         return None
 
 
+def _json_object(value) -> dict:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _requires_llm_real_benchmark_route(insight: dict) -> bool:
+    plan = _json_object(insight.get("experimental_plan"))
+    if bool(plan.get("real_benchmark_required") or plan.get("benchmark_targets") or plan.get("model_targets")):
+        return True
+    contract = plan.get("publication_evidence_contract") if isinstance(plan.get("publication_evidence_contract"), dict) else {}
+    if contract.get("required_real_benchmarks") or contract.get("benchmark_manifest"):
+        return True
+    corpus = " ".join(
+        str(part or "")
+        for part in (
+            insight.get("title"),
+            insight.get("problem_statement"),
+            insight.get("existing_weakness"),
+            json.dumps(plan.get("datasets", []), ensure_ascii=False),
+            json.dumps(plan.get("baselines", []), ensure_ascii=False),
+            json.dumps(plan.get("metrics", {}), ensure_ascii=False),
+        )
+    ).lower()
+    benchmark_terms = ("gsm8k", "mmlu", "bbh", "math", "humaneval", "mbpp", "arc-challenge", "truthfulqa")
+    llm_terms = (
+        "qwen",
+        "llama",
+        "mistral",
+        "transformers",
+        "direct answering",
+        "chain-of-thought",
+        "self-consistency",
+        "prompting",
+    )
+    return any(term in corpus for term in benchmark_terms) and any(term in corpus for term in llm_terms)
+
+
 def assess_experiment_route(insight: dict) -> tuple[str, str]:
     """Route insights into cpu / gpu_small / gpu_large lanes."""
-    resource_class = infer_resource_class(insight)
-    experimentability = infer_experimentability(insight)
+    inferred_resource = str(insight.get("resource_class") or "").strip() or infer_resource_class(insight)
+    resource_class = inferred_resource
+    route_note = ""
+    if resource_class == "cpu" and _requires_llm_real_benchmark_route(insight):
+        resource_class = "gpu_large"
+        route_note = " real LLM benchmark detected; upgraded cpu route to gpu_large."
+    experimentability = infer_experimentability({**insight, "resource_class": resource_class})
     allowed, block_reason = gpu_resource_allowed(resource_class)
     if not allowed:
         profile = detect_compute_profile()
@@ -760,7 +1242,7 @@ def assess_experiment_route(insight: dict) -> tuple[str, str]:
                 f"remote_gpu={profile.remote_gpu_configured}."
             ),
         )
-    return resource_class, f"Experimentability={experimentability}; routed to {resource_class}."
+    return resource_class, f"Experimentability={experimentability}; routed to {resource_class}.{route_note}"
 
 
 def _research_report_ready(workdir: str | None) -> bool:
@@ -888,7 +1370,12 @@ def _review_pending_job_count() -> int:
 
 
 def _active_job_count() -> int:
-    return _execution_active_job_count() + _verification_job_count() + _research_job_count()
+    return (
+        _execution_active_job_count()
+        + _verification_job_count()
+        + _research_job_count()
+        + _review_pending_job_count()
+    )
 
 
 def _queue_active_counts() -> dict[str, int]:
@@ -962,6 +1449,7 @@ def _candidate_repair_stage(status: str, stage: str) -> bool:
             "research_input_missing",
             "experiment_review_blocked",
             "experiment_review_repair_failed",
+            "experiment_review_blocked_final",
         }
     ):
         return True
@@ -983,6 +1471,8 @@ def _candidate_queue_decision(candidate: dict) -> QueueDecision:
         return QueueDecision(QUEUE_DONE, False, "terminal or non-formal job")
     if status in {"running_experiment", "running_gpu", "running_cpu", "queued_gpu"}:
         return QueueDecision(QUEUE_EXECUTION, False, "execution already active")
+    if status == "queued" and stage in MANUSCRIPT_RETRY_STAGES and candidate.get("auto_experiment_run_id"):
+        return QueueDecision(QUEUE_REPAIR, True, "manuscript quality-gate retry")
     if status == "review_pending":
         return QueueDecision(QUEUE_REVIEW, False, "review already pending")
     if status == "researching":
@@ -1046,12 +1536,16 @@ def _candidate_pool() -> list[dict]:
                   arj.status AS auto_status,
                   arj.stage AS auto_stage,
                   arj.cpu_eligible AS auto_cpu_eligible,
+                  arj.resource_class AS auto_resource_class,
                   arj.experiment_run_id AS auto_experiment_run_id,
                   arj.last_note AS auto_last_note,
                   arj.last_error AS auto_last_error
            FROM deep_insights di
            LEFT JOIN auto_research_jobs arj ON arj.deep_insight_id = di.id
            WHERE COALESCE(di.status, 'candidate') NOT IN ('exists')
+             AND COALESCE(di.outcome, 'pending') NOT IN ('cleaned', 'archived')
+             AND COALESCE(di.novelty_status, '') NOT IN ('cleaned_similar_duplicate', 'exists')
+             AND COALESCE(di.submission_status, 'not_started') NOT IN ('stale')
              AND (
                arj.status IS NULL
                OR arj.status IN ('queued', 'eligible', 'queued_cpu', 'queued_gpu')
@@ -1081,12 +1575,26 @@ def _candidate_pool() -> list[dict]:
                         'verification_input_missing',
                         'research_input_missing',
                         'experiment_review_blocked',
-                        'experiment_review_repair_failed'
+                        'experiment_review_repair_failed',
+                        'experiment_review_blocked_final'
                       )
                     )
                   )
              )
-           ORDER BY di.tier DESC, di.created_at DESC
+           ORDER BY
+             CASE
+               WHEN arj.status='queued' AND arj.stage IN (
+                 'review_incomplete_reforge',
+                 'schema_exception_repair',
+                 'retry_failed_run',
+                 'execution_retry'
+               ) THEN 0
+               WHEN arj.status='queued' AND arj.stage='review_retry' THEN 1
+               WHEN arj.status='queued' AND arj.stage='harness_supported_subset_recovered' THEN 3
+               ELSE 2
+             END,
+             di.tier DESC,
+             di.created_at DESC
            LIMIT 20"""
     )
     return rows
@@ -1103,6 +1611,14 @@ def _resource_experimentability(resource_class: str) -> str:
 
 
 def _route_recovered_legacy_job(insight: dict) -> tuple[str, str]:
+    if initial_auto_stage in MANUSCRIPT_RETRY_STAGES and insight.get("auto_experiment_run_id"):
+        _run_manuscript_retry_job(
+            int(insight_id),
+            int(insight["auto_experiment_run_id"]),
+            insight.get("auto_resource_class") or insight.get("resource_class"),
+        )
+        return
+
     resource_class, reason = assess_experiment_route(insight)
     note = str(insight.get("auto_last_note") or "").lower()
     if resource_class == "cpu" and ("gpu-heavy" in note or "looks gpu" in note):
@@ -1120,6 +1636,9 @@ def recover_legacy_cpu_ineligible_jobs(limit: int = 50) -> int:
            WHERE arj.status='blocked'
              AND arj.stage='cpu_ineligible'
              AND COALESCE(di.status, 'candidate') NOT IN ('exists')
+             AND COALESCE(di.outcome, 'pending') NOT IN ('cleaned', 'archived')
+             AND COALESCE(di.novelty_status, '') NOT IN ('cleaned_similar_duplicate', 'exists')
+             AND COALESCE(di.submission_status, 'not_started') NOT IN ('stale')
            ORDER BY arj.updated_at ASC
            LIMIT ?""",
         (limit,),
@@ -1254,6 +1773,13 @@ def _refresh_running_jobs() -> None:
             run = None
             if job.get("experiment_run_id"):
                 run = db.fetchone("SELECT * FROM experiment_runs WHERE id=?", (job["experiment_run_id"],))
+            if not run:
+                run = db.fetchone(
+                    """SELECT * FROM experiment_runs
+                       WHERE deep_insight_id=? AND status='scaffolding'
+                       ORDER BY id DESC LIMIT 1""",
+                    (insight_id,),
+                )
             if run and _run_scaffold_ready(run):
                 _upsert_job(
                     insight_id,
@@ -1281,7 +1807,25 @@ def _refresh_running_jobs() -> None:
                     "warning",
                     {"step": "auto_research_review_failed_recovered", "insight_id": insight_id, "run_id": run["id"]},
                 )
-            elif run and _job_age_seconds(job) >= REVIEW_PENDING_STALE_SECONDS:
+            elif run and _run_has_incomplete_review_scaffold(run):
+                reason = (
+                    "Recovered incomplete review scaffold: review decision exists but program_md or "
+                    "success_criteria is empty; reforge required."
+                )
+                _supersede_stale_scaffold_run(int(run["id"]), reason)
+                _upsert_job(
+                    insight_id,
+                    status="queued",
+                    stage="review_incomplete_reforge",
+                    experiment_run_id=None,
+                    last_error=None,
+                    last_note=reason,
+                )
+                log_event(
+                    "warning",
+                    {"step": "auto_research_review_incomplete_reforge", "insight_id": insight_id, "run_id": run["id"]},
+                )
+            elif run and _run_age_seconds(run) >= REVIEW_PENDING_STALE_SECONDS:
                 reason = (
                     "Recovered stale review/scaffold run: no complete review decision, "
                     "program, or success criteria appeared before the stale timeout."
@@ -1299,6 +1843,17 @@ def _refresh_running_jobs() -> None:
                     "warning",
                     {"step": "auto_research_review_scaffold_stale", "insight_id": insight_id, "run_id": run["id"]},
                 )
+            elif run and str(run.get("status") or "") == "scaffolding":
+                _upsert_job(
+                    insight_id,
+                    touch_updated_at=False,
+                    status="review_pending",
+                    stage="experiment_review",
+                    experiment_run_id=run["id"],
+                    resource_class=run.get("resource_class") or job.get("resource_class"),
+                    last_error=None,
+                    last_note="Experiment forge is still generating scaffold metadata; waiting before stale recovery.",
+                )
             elif job.get("last_error") and not job.get("experiment_run_id"):
                 note = job.get("last_note") or job["last_error"]
                 _handle_experiment_review_blocked(
@@ -1309,20 +1864,30 @@ def _refresh_running_jobs() -> None:
                     },
                     source="review_pending_error",
                 )
-            elif _job_age_seconds(job) >= REVIEW_PENDING_STALE_SECONDS and not job.get("experiment_run_id"):
+            elif _job_age_seconds(job) >= REVIEW_WORKER_STALE_SECONDS and not job.get("experiment_run_id"):
                 _upsert_job(
                     insight_id,
                     status="queued",
                     stage="review_retry",
                     last_error=None,
-                    last_note="Structured experiment review stalled; requeued for retry.",
+                    last_note=(
+                        "Structured experiment review worker did not produce a run or blocker "
+                        "before the worker stale timeout; requeued for retry."
+                    ),
                 )
-                log_event("warning", {"step": "auto_research_review_stale", "insight_id": insight_id})
+                log_event("warning", {"step": "auto_research_review_worker_stale", "insight_id": insight_id})
         elif job["status"] in {"running_experiment", "running_gpu", "running_cpu", "queued_gpu"} and job.get("experiment_run_id"):
             run = db.fetchone("SELECT * FROM experiment_runs WHERE id=?", (job["experiment_run_id"],))
             if not run:
                 _upsert_job(insight_id, status="failed", stage="missing_run", last_error="Experiment run missing.")
             elif run["status"] == "completed":
+                if job.get("stage") == BENCHMARK_COMPLETION_STAGE:
+                    _queue_benchmark_completion_run(
+                        insight_id,
+                        run,
+                        str(job.get("resource_class") or run.get("resource_class") or "gpu_large"),
+                    )
+                    continue
                 note = f"Verdict={run.get('hypothesis_verdict')}, effect_pct={run.get('effect_pct')}"
                 _upsert_job(insight_id, status="completed", stage="closed_loop_complete", last_note=note)
                 v = (run.get("hypothesis_verdict") or "").lower()
@@ -1352,7 +1917,8 @@ def _refresh_running_jobs() -> None:
                     touch_updated_at=False,
                 )
             elif run["status"] in {"reproducing", "testing"}:
-                if not _is_execution_live_in_process(run.get("id")):
+                gpu_lane = job["status"] in {"running_gpu", "queued_gpu"}
+                if not _is_execution_live_in_process(run.get("id")) and not (gpu_lane and _gpu_execution_live_for_run(run.get("id"))):
                     _requeue_stale_execution_job(
                         job,
                         (
@@ -1361,7 +1927,7 @@ def _refresh_running_jobs() -> None:
                         ),
                     )
                     continue
-                lane_status = "running_gpu" if job["status"] in {"running_gpu", "queued_gpu"} else "running_cpu"
+                lane_status = "running_gpu" if gpu_lane else "running_cpu"
                 phase = run.get("phase") or "validation_loop"
                 note = f"SciForge {phase}: best={run.get('best_metric_value')}, baseline={run.get('baseline_metric_value')}."
                 _upsert_job(
@@ -1374,8 +1940,64 @@ def _refresh_running_jobs() -> None:
                 )
 
 
+def recover_soft_benchmark_completion_jobs(limit: int = 50) -> int:
+    """Release confirmed runs that were blocked only by extended benchmark gaps."""
+    rows = db.fetchall(
+        """
+        SELECT arj.*, er.status AS run_status, er.hypothesis_verdict
+        FROM auto_research_jobs arj
+        JOIN experiment_runs er ON er.id = arj.experiment_run_id
+        WHERE arj.status='queued'
+          AND arj.stage=?
+          AND er.status='completed'
+          AND LOWER(COALESCE(er.hypothesis_verdict, '')) IN ('confirmed', 'supported')
+        ORDER BY arj.updated_at ASC
+        LIMIT ?
+        """,
+        (BENCHMARK_COMPLETION_STAGE, limit),
+    )
+    recovered = 0
+    for row in rows:
+        raw_error = str(row.get("last_error") or "").strip()
+        blocker_items = [item.strip() for item in raw_error.split(";") if item.strip()]
+        bundle = {"error": raw_error, "submission_blockers": blocker_items}
+        if benchmark_completion_blockers(bundle):
+            continue
+        db.execute(
+            """
+            UPDATE auto_research_jobs
+            SET status='queued',
+                stage='manuscript_retry_after_soft_benchmark_gate',
+                assigned_worker=NULL,
+                last_error=NULL,
+                last_note=?,
+                last_checked_at=CURRENT_TIMESTAMP,
+                updated_at=CURRENT_TIMESTAMP
+            WHERE id=?
+            """,
+            (
+                "Recovered from soft benchmark-completion gate; confirmed run can draft manuscript while extra baselines/seeds/ablations remain follow-up work.",
+                row["id"],
+            ),
+        )
+        log_event(
+            "auto_research",
+            {
+                "step": "soft_benchmark_completion_recovered",
+                "insight_id": row.get("deep_insight_id"),
+                "run_id": row.get("experiment_run_id"),
+            },
+        )
+        recovered += 1
+    if recovered:
+        db.commit()
+    return recovered
+
+
 def _launch_candidates_to_capacity() -> dict:
     recovered_execution = recover_stale_execution_jobs()
+    recovered_harness = recover_partially_supported_harness_jobs()
+    consumed_harness = process_benchmark_harness_jobs()
     _refresh_running_jobs()
     scheduled: list[int] = []
     seen_candidates: set[int] = set()
@@ -1400,8 +2022,25 @@ def _launch_candidates_to_capacity() -> dict:
             _process_candidate(candidate)
             scheduled.append(candidate_id)
         except Exception as exc:  # pragma: no cover - defensive background guard
-            _upsert_job(candidate_id, status="failed", stage="exception", last_error=str(exc))
-            log_event("error", {"step": "auto_research", "insight_id": candidate_id, "error": str(exc)})
+            error = str(exc)
+            if "object has no attribute 'get'" in error:
+                _upsert_job(
+                    candidate_id,
+                    status="queued",
+                    stage="schema_exception_repair",
+                    experiment_run_id=None,
+                    assigned_worker=None,
+                    last_error=None,
+                    last_note=(
+                        "Recovered schema exception from a list/dict mismatch; "
+                        "requeued for structured review/forge with normalized inputs. "
+                        f"Original error: {error[:300]}"
+                    ),
+                )
+                log_event("warning", {"step": "auto_research_schema_exception_requeued", "insight_id": candidate_id, "error": error})
+                continue
+            _upsert_job(candidate_id, status="failed", stage="exception", last_error=error)
+            log_event("error", {"step": "auto_research", "insight_id": candidate_id, "error": error})
             break
 
     active_counts = _queue_active_counts()
@@ -1416,12 +2055,20 @@ def _launch_candidates_to_capacity() -> dict:
         "queue_counts": queue_counts,
         "selected_queue": last_selection.get("selected_queue") if isinstance(last_selection, dict) else None,
         "recovered_execution": recovered_execution,
+        "recovered_harness": recovered_harness,
+        "consumed_harness": consumed_harness,
     }
 
 
 def _process_candidate(insight: dict) -> None:
     insight_id = insight["id"]
     tier = insight.get("tier")
+    initial_auto_stage = str(insight.get("auto_stage") or "").strip()
+    preserve_queue_stage = (
+        initial_auto_stage == BENCHMARK_COMPLETION_STAGE
+        or initial_auto_stage in MANUAL_REFORGE_STAGES
+        or initial_auto_stage in MANUSCRIPT_RETRY_STAGES
+    )
 
     resource_class, reason = assess_experiment_route(insight)
     if resource_class == "gpu_unavailable":
@@ -1585,12 +2232,13 @@ def _process_candidate(insight: dict) -> None:
                 last_error=None,
             )
             return
-        _upsert_job(
-            insight_id,
-            stage="novelty_verification_background",
-            last_note="Novelty verification still running in background; proceeding to experiment pipeline.",
-            last_error=None,
-        )
+        if not preserve_queue_stage:
+            _upsert_job(
+                insight_id,
+                stage="novelty_verification_background",
+                last_note="Novelty verification still running in background; proceeding to experiment pipeline.",
+                last_error=None,
+            )
     if novelty == "exists":
         _upsert_job(insight_id, status="blocked", stage="prior_work_exists", last_note="Insight already exists in prior work.")
         return
@@ -1687,7 +2335,8 @@ def _process_candidate(insight: dict) -> None:
             return
         background_research_note = "EvoScientist final_report.md ready; proceeding to experiment forge."
     else:
-        if evosci_available():
+        optional_research_already_tried = initial_auto_stage in OPTIONAL_RESEARCH_NONBLOCKING_STAGES
+        if evosci_available() and not preserve_queue_stage and not optional_research_already_tried:
             workdir = insight.get("evoscientist_workdir")
             if not _research_report_ready(workdir):
                 result = launch_full_research(insight_id)
@@ -1744,7 +2393,7 @@ def _process_candidate(insight: dict) -> None:
                         last_error=None,
                     )
                     log_event("auto_research", {"step": "deep_research_started", "insight_id": insight_id})
-        else:
+        elif not optional_research_already_tried:
             _upsert_job(
                 insight_id,
                 stage="research_unavailable",
@@ -1766,16 +2415,30 @@ def _process_candidate(insight: dict) -> None:
         max_review_repairs = max(0, MAX_EXPERIMENT_REVIEW_REPAIR_ATTEMPTS)
         if max_review_repairs and prior_review_repairs >= max_review_repairs:
             tag = _repair_tag("experiment_review", max_review_repairs, max_review_repairs)
+            summary = (
+                f"{tag} automatic review repair exhausted before another forge attempt; "
+                "routing to benchmark/code harness agents."
+            )
+            judgement = {
+                "summary": summary,
+                "blockers": ["Experiment review repair exhausted before forge; benchmark/code harness intervention required."],
+                "warnings": [],
+            }
+            if _queue_benchmark_harness_required(
+                insight_id,
+                {"error": judgement["blockers"][0], "judgement": judgement},
+                judgement=judgement,
+                source="experiment_review_repair_exhausted_pre_forge",
+                summary=summary,
+            ):
+                return
             _upsert_job(
                 insight_id,
                 status="blocked",
                 stage="experiment_review_blocked_final",
                 experiment_run_id=None,
-                last_error="Experiment review repair exhausted before forge; dedicated benchmark/code harness intervention required.",
-                last_note=(
-                    f"{tag} automatic review repair exhausted before another forge attempt; "
-                    "manual benchmark/code-harness intervention required."
-                ),
+                last_error=judgement["blockers"][0],
+                last_note=summary,
             )
             log_event(
                 "warning",
@@ -1835,16 +2498,33 @@ def _process_candidate(insight: dict) -> None:
         )
         db.commit()
     elif not _run_scaffold_ready(existing_run) and existing_run.get("status") in {"scaffolding"}:
-        _upsert_job(
-            insight_id,
-            status="review_pending",
-            stage="experiment_review",
-            experiment_run_id=existing_run["id"],
-            resource_class=resource_class,
-            last_note="Experiment forge is still preparing workspace, review, or scaffold metadata.",
-            last_error=None,
-        )
-        return
+        if _run_has_incomplete_review_scaffold(existing_run):
+            reason = (
+                "Existing review scaffold is incomplete: review decision exists but program_md or "
+                "success_criteria is empty; superseding and reforge is required."
+            )
+            _supersede_stale_scaffold_run(int(existing_run["id"]), reason)
+            _upsert_job(
+                insight_id,
+                status="queued",
+                stage="review_incomplete_reforge",
+                experiment_run_id=None,
+                resource_class=resource_class,
+                last_note=reason,
+                last_error=None,
+            )
+            return
+        else:
+            _upsert_job(
+                insight_id,
+                status="review_pending",
+                stage="experiment_review",
+                experiment_run_id=existing_run["id"],
+                resource_class=resource_class,
+                last_note="Experiment forge is still preparing workspace, review, or scaffold metadata.",
+                last_error=None,
+            )
+            return
     elif not _run_is_formal(existing_run):
         _upsert_job(
             insight_id,
@@ -1873,6 +2553,62 @@ def _process_candidate(insight: dict) -> None:
         return
 
     if existing_run["status"] in {"completed"}:
+        if _run_has_automation_failure(existing_run):
+            if _retry_failed_run_with_repair(insight_id, existing_run, resource_class):
+                return
+            _upsert_job(
+                insight_id,
+                status="blocked",
+                stage="experiment_automation_failed_final",
+                experiment_run_id=existing_run["id"],
+                resource_class=resource_class,
+                last_error=existing_run.get("error_message"),
+                last_note="Automation produced no benchmarked candidate method change and automatic repair attempts are exhausted.",
+            )
+            return
+        verdict = str(existing_run.get("hypothesis_verdict") or "").strip().lower()
+        if verdict in {"confirmed", "supported"}:
+            try:
+                bundle = generate_submission_bundle(existing_run["id"])
+            except Exception as exc:
+                bundle = {"error": str(exc)}
+            if schedule_benchmark_completion(
+                insight_id,
+                existing_run["id"],
+                bundle,
+                source="auto_research_completed_run",
+                resource_class=resource_class,
+            ):
+                log_event(
+                    "auto_research",
+                    {
+                        "step": "benchmark_completion_queued_from_completed_run",
+                        "insight_id": insight_id,
+                        "run_id": existing_run["id"],
+                    },
+                )
+                return
+            bundle_ok = "error" not in bundle
+            retry_fields = _bundle_failure_retry_fields(bundle if isinstance(bundle, dict) else None)
+            if retry_fields:
+                _upsert_job(
+                    insight_id,
+                    experiment_run_id=existing_run["id"],
+                    resource_class=resource_class,
+                    **retry_fields,
+                )
+            else:
+                _upsert_job(
+                    insight_id,
+                    status="bundle_ready" if bundle_ok else "completed",
+                    stage="writing_submission" if bundle_ok else "closed_loop_complete",
+                    experiment_run_id=existing_run["id"],
+                    resource_class=resource_class,
+                    artifact_bundle_id=(bundle.get("bundle_ids") or [None])[-1] if isinstance(bundle, dict) else None,
+                    last_note=f"Completed confirmed run reused. Submission bundle status={'ok' if bundle_ok else 'failed'}.",
+                    last_error=None if bundle_ok else str(bundle.get("error") if isinstance(bundle, dict) else bundle),
+                )
+            return
         note = f"Verdict={existing_run.get('hypothesis_verdict')}, effect_pct={existing_run.get('effect_pct')}"
         _upsert_job(insight_id, status="completed", stage="closed_loop_complete", experiment_run_id=existing_run["id"], last_note=note)
         return
@@ -1972,14 +2708,24 @@ def _process_candidate(insight: dict) -> None:
             },
         )
         return
-    _upsert_job(
-        insight_id,
-        status="bundle_ready" if "error" not in bundle else "completed",
-        stage="writing_submission" if "error" not in bundle else "closed_loop_complete",
-        experiment_run_id=existing_run["id"],
-        artifact_bundle_id=(bundle.get("bundle_ids") or [None])[-1],
-        last_note=f"Completed with verdict={result.get('verdict', 'unknown')}. Submission bundle status={'ok' if 'error' not in bundle else 'failed'}.",
-    )
+    retry_fields = _bundle_failure_retry_fields(bundle if isinstance(bundle, dict) else None)
+    if retry_fields:
+        _upsert_job(
+            insight_id,
+            experiment_run_id=existing_run["id"],
+            resource_class=resource_class,
+            **retry_fields,
+        )
+    else:
+        _upsert_job(
+            insight_id,
+            status="bundle_ready" if "error" not in bundle else "completed",
+            stage="writing_submission" if "error" not in bundle else "closed_loop_complete",
+            experiment_run_id=existing_run["id"],
+            artifact_bundle_id=(bundle.get("bundle_ids") or [None])[-1],
+            last_note=f"Completed with verdict={result.get('verdict', 'unknown')}. Submission bundle status={'ok' if 'error' not in bundle else 'failed'}.",
+            last_error=None if "error" not in bundle else str(bundle.get("error")),
+        )
     log_event("auto_research", {"step": "experiment_completed", "insight_id": insight_id, "run_id": existing_run["id"], "verdict": result.get("verdict")})
 
 
@@ -2008,7 +2754,10 @@ def consume_pipeline_events_once(limit: int = 50) -> dict:
         event_type = event.get("event_type")
         if event_type == "deep_insight_created":
             insight_id = payload.get("insight_id")
-            insight = db.fetchone("SELECT id FROM deep_insights WHERE id=?", (insight_id,))
+            insight = db.fetchone("SELECT * FROM deep_insights WHERE id=?", (insight_id,))
+            if insight and _insight_is_archived_or_cleaned(insight):
+                processed += 1
+                continue
             if insight:
                 _upsert_job(
                     int(insight_id),
@@ -2028,6 +2777,7 @@ def consume_pipeline_events_once(limit: int = 50) -> dict:
 def run_cycle() -> dict:
     db.init_db()
     recovered = recover_legacy_cpu_ineligible_jobs()
+    recovered_soft_benchmark = recover_soft_benchmark_completion_jobs()
     try:
         manuscript_audit = manuscript_watchdog.audit_ready_submission_bundles(limit=50, mark_stale=True)
     except Exception as exc:  # pragma: no cover - defensive background guard
@@ -2040,6 +2790,9 @@ def run_cycle() -> dict:
             "insight_ids": launch_stats["scheduled"],
             "queues": launch_stats.get("queue_counts", {}),
             "recovered_legacy": recovered,
+            "recovered_soft_benchmark": recovered_soft_benchmark,
+            "recovered_harness": launch_stats.get("recovered_harness", 0),
+            "consumed_harness": launch_stats.get("consumed_harness", 0),
             "manuscript_audit": manuscript_audit,
         }
     queue_counts = launch_stats.get("queue_counts", {}) or {}
@@ -2053,6 +2806,9 @@ def run_cycle() -> dict:
             "status": "busy",
             "queues": queue_counts,
             "recovered_legacy": recovered,
+            "recovered_soft_benchmark": recovered_soft_benchmark,
+            "recovered_harness": launch_stats.get("recovered_harness", 0),
+            "consumed_harness": launch_stats.get("consumed_harness", 0),
             "manuscript_audit": manuscript_audit,
         }
     candidate, selection = _select_candidate_from_queues()
@@ -2061,12 +2817,18 @@ def run_cycle() -> dict:
             "status": "idle",
             "queues": selection.get("queue_counts", {}),
             "recovered_legacy": recovered,
+            "recovered_soft_benchmark": recovered_soft_benchmark,
+            "recovered_harness": launch_stats.get("recovered_harness", 0),
+            "consumed_harness": launch_stats.get("consumed_harness", 0),
             "manuscript_audit": manuscript_audit,
         }
     return {
         "status": "pending",
         "queues": selection.get("queue_counts", {}),
         "recovered_legacy": recovered,
+        "recovered_soft_benchmark": recovered_soft_benchmark,
+        "recovered_harness": launch_stats.get("recovered_harness", 0),
+        "consumed_harness": launch_stats.get("consumed_harness", 0),
         "manuscript_audit": manuscript_audit,
     }
 

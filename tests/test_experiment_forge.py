@@ -104,7 +104,7 @@ class GenerateScaffoldTests(unittest.TestCase):
         self.assertFalse(target["generated_runner_supported"])
         self.assertIn("no concrete Hugging Face dataset id", target["generated_runner_blocker"])
 
-    def test_restricted_benchmark_targets_block_generated_runner(self):
+    def test_restricted_benchmark_targets_add_executable_probe_and_defer_formal_targets(self):
         plan = experiment_forge._ensure_real_benchmark_plan(
             {
                 "title": "FOIA privilege selector",
@@ -122,11 +122,51 @@ class GenerateScaffoldTests(unittest.TestCase):
             "gpu_large",
         )
 
-        self.assertFalse(plan["generated_runner_supported"])
+        self.assertTrue(plan["generated_runner_supported"])
+        self.assertTrue(plan["benchmark_harness_deferred"])
+        self.assertEqual(plan["benchmark_targets"][0]["benchmark_role"], "executable_probe")
         self.assertEqual(plan["deferred_benchmark_targets"], ["TREC 2010 Legal Track - Privilege Task", "FOIA-Ex5-Privilege"])
         self.assertEqual([row["name"] for row in plan["benchmark_recipe_blockers"]], ["TREC 2010 Legal Track - Privilege Task", "FOIA-Ex5-Privilege"])
-        with self.assertRaisesRegex(ValueError, "executable recipes"):
-            experiment_forge._real_benchmark_defaults(plan)
+        defaults = experiment_forge._real_benchmark_defaults(plan)
+        self.assertEqual(defaults["dataset_id"], plan["benchmark_targets"][0]["hf_dataset"])
+        self.assertEqual(defaults["targets"][0]["benchmark_role"], "executable_probe")
+
+    def test_partial_benchmark_support_runs_supported_subset(self):
+        plan = experiment_forge._ensure_real_benchmark_plan(
+            {
+                "title": "Code repair selector",
+                "problem_statement": "Code repair needs executable and deferred proof benchmarks.",
+            },
+            {
+                "name": "RepairSelector",
+                "definition": "Select repairs using verifier feedback.",
+            },
+            {
+                "benchmark_targets": [
+                    {
+                        "name": "MBPP",
+                        "hf_dataset": "google-research-datasets/mbpp",
+                        "split": "test",
+                        "task_type": "code_generation",
+                    },
+                    {
+                        "name": "HumanEval",
+                        "hf_dataset": "openai/openai_humaneval",
+                        "split": "test",
+                        "task_type": "python_code_generation_with_unit_tests",
+                    },
+                ],
+                "baselines": [{"name": "Direct"}],
+                "metrics": {"primary": "pass_at_1"},
+            },
+            "gpu_large",
+        )
+
+        self.assertTrue(plan["generated_runner_supported"])
+        self.assertEqual([row["name"] for row in plan["benchmark_targets"]], ["MBPP"])
+        self.assertEqual(plan["deferred_benchmark_targets"], ["HumanEval"])
+        self.assertTrue(plan["benchmark_harness_deferred"])
+        self.assertEqual(plan["benchmark_execution"]["deferred_target_count"], 1)
 
     def test_generate_scaffold_accepts_evidence_plan(self):
         insight = {
