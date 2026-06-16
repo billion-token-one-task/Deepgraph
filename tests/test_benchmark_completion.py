@@ -1,7 +1,7 @@
 from orchestrator.benchmark_completion import benchmark_completion_blockers
 
 
-def test_soft_full_benchmark_gaps_do_not_trigger_blocking_completion():
+def test_full_benchmark_gaps_trigger_completion():
     bundle = {
         "error": "benchmark_summary.full_benchmark_completed is false",
         "submission_blockers": [
@@ -12,7 +12,13 @@ def test_soft_full_benchmark_gaps_do_not_trigger_blocking_completion():
         ],
     }
 
-    assert benchmark_completion_blockers(bundle) == []
+    assert benchmark_completion_blockers(bundle) == [
+        "required baselines missing: Extra Baseline",
+        "Only 1 seed(s) found; required minimum is 3.",
+        "Required ablation table/results are missing.",
+        "full benchmark policy: required model coverage missing: DeBERTa",
+        "benchmark_summary.full_benchmark_completed is false",
+    ]
 
 
 def test_hard_benchmark_gaps_trigger_blocking_completion():
