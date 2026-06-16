@@ -1907,7 +1907,13 @@ def _refresh_running_jobs() -> None:
                     triggered_by="experiment",
                 )
             elif run["status"] == "running_gpu":
-                _upsert_job(insight_id, status="running_gpu", stage="gpu_scheduler", last_note="GPU job running.")
+                running_stage = BENCHMARK_COMPLETION_STAGE if job.get("stage") == BENCHMARK_COMPLETION_STAGE else "gpu_scheduler"
+                running_note = (
+                    "Full benchmark completion GPU job running."
+                    if running_stage == BENCHMARK_COMPLETION_STAGE
+                    else "GPU job running."
+                )
+                _upsert_job(insight_id, status="running_gpu", stage=running_stage, last_note=running_note)
             elif run["status"] == "running_cpu":
                 _upsert_job(
                     insight_id,
@@ -1938,6 +1944,91 @@ def _refresh_running_jobs() -> None:
                     last_error=None,
                     touch_updated_at=False,
                 )
+
+
+def recover_blocked_manuscript_jobs(limit: int = 50) -> int:
+    """Queue latest blocked manuscript runs for targeted writing repair."""
+    rows = db.fetchall(
+        """
+        SELECT mr.deep_insight_id,
+               mr.experiment_run_id,
+               mr.status AS manuscript_status,
+               mr.workdir AS manuscript_workdir,
+               arj.id AS auto_job_id,
+               arj.status AS auto_status,
+               arj.stage AS auto_stage,
+               arj.resource_class AS auto_resource_class,
+               er.resource_class AS run_resource_class,
+               er.error_message AS run_error_message
+        FROM manuscript_runs mr
+        JOIN (
+            SELECT deep_insight_id, MAX(id) AS latest_id
+            FROM manuscript_runs
+            WHERE status IN ('manuscript_blocked', 'needs_revision')
+            GROUP BY deep_insight_id
+        ) latest ON latest.latest_id = mr.id
+        JOIN deep_insights di ON di.id = mr.deep_insight_id
+        LEFT JOIN auto_research_jobs arj ON arj.deep_insight_id = mr.deep_insight_id
+        LEFT JOIN experiment_runs er ON er.id = mr.experiment_run_id
+        WHERE COALESCE(di.status, 'candidate') NOT IN ('exists')
+          AND COALESCE(di.outcome, 'pending') NOT IN ('cleaned', 'archived')
+          AND COALESCE(di.novelty_status, '') NOT IN ('cleaned_similar_duplicate', 'exists')
+          AND COALESCE(di.submission_status, 'not_started') NOT IN ('stale')
+          AND mr.experiment_run_id IS NOT NULL
+        ORDER BY mr.updated_at ASC
+        LIMIT ?
+        """,
+        (limit,),
+    )
+    recovered = 0
+    active_statuses = {
+        "queued",
+        "queued_cpu",
+        "queued_gpu",
+        "running_cpu",
+        "running_gpu",
+        "running_experiment",
+        "review_pending",
+        "researching",
+        "verifying",
+    }
+    active_stages = set(MANUSCRIPT_RETRY_STAGES) | {
+        BENCHMARK_COMPLETION_STAGE,
+        "manuscript_revision",
+        "gpu_scheduler",
+        "validation_loop",
+        "experiment_review",
+    }
+    for row in rows:
+        auto_status = str(row.get("auto_status") or "").strip()
+        auto_stage = str(row.get("auto_stage") or "").strip()
+        if auto_status in active_statuses and (not auto_stage or auto_stage in active_stages):
+            continue
+        insight_id = int(row["deep_insight_id"])
+        run_id = int(row["experiment_run_id"])
+        blocker = str(row.get("run_error_message") or row.get("manuscript_status") or "Manuscript quality gate failed.").strip()
+        _upsert_job(
+            insight_id,
+            status="queued",
+            stage="manuscript_retry_after_quality_gate",
+            experiment_run_id=run_id,
+            resource_class=row.get("auto_resource_class") or row.get("run_resource_class") or "cpu",
+            assigned_worker=None,
+            last_note="Recovered blocked manuscript and queued targeted writing/TeX/figure revision.",
+            last_error=blocker[:4000],
+        )
+        log_event(
+            "auto_research",
+            {
+                "step": "blocked_manuscript_recovered",
+                "insight_id": insight_id,
+                "run_id": run_id,
+                "manuscript_status": row.get("manuscript_status"),
+                "workdir": row.get("manuscript_workdir"),
+            },
+        )
+        recovered += 1
+    return recovered
 
 
 def recover_soft_benchmark_completion_jobs(limit: int = 50) -> int:
@@ -2777,6 +2868,7 @@ def consume_pipeline_events_once(limit: int = 50) -> dict:
 def run_cycle() -> dict:
     db.init_db()
     recovered = recover_legacy_cpu_ineligible_jobs()
+    recovered_manuscript = recover_blocked_manuscript_jobs()
     recovered_soft_benchmark = recover_soft_benchmark_completion_jobs()
     try:
         manuscript_audit = manuscript_watchdog.audit_ready_submission_bundles(limit=50, mark_stale=True)
@@ -2791,6 +2883,7 @@ def run_cycle() -> dict:
             "queues": launch_stats.get("queue_counts", {}),
             "recovered_legacy": recovered,
             "recovered_soft_benchmark": recovered_soft_benchmark,
+            "recovered_manuscript": recovered_manuscript,
             "recovered_harness": launch_stats.get("recovered_harness", 0),
             "consumed_harness": launch_stats.get("consumed_harness", 0),
             "manuscript_audit": manuscript_audit,
@@ -2807,6 +2900,7 @@ def run_cycle() -> dict:
             "queues": queue_counts,
             "recovered_legacy": recovered,
             "recovered_soft_benchmark": recovered_soft_benchmark,
+            "recovered_manuscript": recovered_manuscript,
             "recovered_harness": launch_stats.get("recovered_harness", 0),
             "consumed_harness": launch_stats.get("consumed_harness", 0),
             "manuscript_audit": manuscript_audit,
@@ -2818,6 +2912,7 @@ def run_cycle() -> dict:
             "queues": selection.get("queue_counts", {}),
             "recovered_legacy": recovered,
             "recovered_soft_benchmark": recovered_soft_benchmark,
+            "recovered_manuscript": recovered_manuscript,
             "recovered_harness": launch_stats.get("recovered_harness", 0),
             "consumed_harness": launch_stats.get("consumed_harness", 0),
             "manuscript_audit": manuscript_audit,
@@ -2827,6 +2922,7 @@ def run_cycle() -> dict:
         "queues": selection.get("queue_counts", {}),
         "recovered_legacy": recovered,
         "recovered_soft_benchmark": recovered_soft_benchmark,
+        "recovered_manuscript": recovered_manuscript,
         "recovered_harness": launch_stats.get("recovered_harness", 0),
         "consumed_harness": launch_stats.get("consumed_harness", 0),
         "manuscript_audit": manuscript_audit,

@@ -683,7 +683,29 @@ class AutoResearchSchedulingTests(unittest.TestCase):
 
         queue_completion.assert_called_once_with(25, existing_run, "gpu_large")
 
-    def test_recover_soft_benchmark_completion_jobs_requeues_confirmed_rows(self):
+    def test_recover_soft_benchmark_completion_jobs_requeues_non_benchmark_rows(self):
+        rows = [
+            {
+                "id": 7,
+                "deep_insight_id": 4,
+                "experiment_run_id": 335,
+                "last_error": "Only manuscript polish blockers remain after benchmark evidence passed.",
+            }
+        ]
+
+        with (
+            mock.patch.object(auto_research.db, "fetchall", return_value=rows),
+            mock.patch.object(auto_research.db, "execute") as execute,
+            mock.patch.object(auto_research.db, "commit") as commit,
+            mock.patch.object(auto_research, "log_event"),
+        ):
+            recovered = auto_research.recover_soft_benchmark_completion_jobs()
+
+        self.assertEqual(recovered, 1)
+        self.assertIn("manuscript_retry_after_soft_benchmark_gate", execute.call_args.args[0])
+        commit.assert_called_once()
+
+    def test_recover_soft_benchmark_completion_jobs_keeps_full_benchmark_gaps(self):
         rows = [
             {
                 "id": 7,
@@ -701,9 +723,9 @@ class AutoResearchSchedulingTests(unittest.TestCase):
         ):
             recovered = auto_research.recover_soft_benchmark_completion_jobs()
 
-        self.assertEqual(recovered, 1)
-        self.assertIn("manuscript_retry_after_soft_benchmark_gate", execute.call_args.args[0])
-        commit.assert_called_once()
+        self.assertEqual(recovered, 0)
+        execute.assert_not_called()
+        commit.assert_not_called()
 
     def test_recover_soft_benchmark_completion_jobs_keeps_hard_blockers(self):
         rows = [
@@ -725,6 +747,59 @@ class AutoResearchSchedulingTests(unittest.TestCase):
         self.assertEqual(recovered, 0)
         execute.assert_not_called()
         commit.assert_not_called()
+
+    def test_recover_blocked_manuscript_jobs_requeues_latest_blocked_run(self):
+        rows = [
+            {
+                "deep_insight_id": 8,
+                "experiment_run_id": 13,
+                "manuscript_status": "manuscript_blocked",
+                "manuscript_workdir": "/tmp/idea8/papers/current",
+                "auto_status": "completed",
+                "auto_stage": "experiment_confirmed",
+                "auto_resource_class": "cpu",
+                "run_resource_class": "gpu_small",
+                "run_error_message": "Manuscript quality gate failed",
+            }
+        ]
+        upserts = []
+
+        def _capture_upsert(insight_id, **fields):
+            upserts.append((insight_id, fields))
+
+        with (
+            mock.patch.object(auto_research.db, "fetchall", return_value=rows),
+            mock.patch.object(auto_research, "_upsert_job", side_effect=_capture_upsert),
+            mock.patch.object(auto_research, "log_event"),
+        ):
+            recovered = auto_research.recover_blocked_manuscript_jobs()
+
+        self.assertEqual(recovered, 1)
+        self.assertEqual(upserts[-1][0], 8)
+        self.assertEqual(upserts[-1][1]["status"], "queued")
+        self.assertEqual(upserts[-1][1]["stage"], "manuscript_retry_after_quality_gate")
+        self.assertEqual(upserts[-1][1]["experiment_run_id"], 13)
+
+    def test_recover_blocked_manuscript_jobs_skips_active_retry(self):
+        rows = [
+            {
+                "deep_insight_id": 4,
+                "experiment_run_id": 335,
+                "manuscript_status": "manuscript_blocked",
+                "auto_status": "queued",
+                "auto_stage": "manuscript_retry_after_quality_gate",
+            }
+        ]
+
+        with (
+            mock.patch.object(auto_research.db, "fetchall", return_value=rows),
+            mock.patch.object(auto_research, "_upsert_job") as upsert,
+            mock.patch.object(auto_research, "log_event"),
+        ):
+            recovered = auto_research.recover_blocked_manuscript_jobs()
+
+        self.assertEqual(recovered, 0)
+        upsert.assert_not_called()
 
     def test_process_candidate_writes_bundle_for_completed_confirmed_run(self):
         candidate = {
