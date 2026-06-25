@@ -984,7 +984,7 @@ def _repair_harness_plan_for_supported_subset(row: dict) -> dict | None:
     if not task["dataset_refs"]:
         task = {"dataset_refs": [item for item in _json_list(plan.get("datasets")) if isinstance(item, dict)]}
     supported, deferred = _supported_harness_targets_from_task(task)
-    if not supported:
+    if not supported or deferred:
         return None
     repaired = dict(plan)
     repaired["benchmark_targets"] = supported
@@ -996,6 +996,7 @@ def _repair_harness_plan_for_supported_subset(row: dict) -> dict | None:
         repaired["deferred_benchmark_targets"] = [_target_name(target) for target in deferred if _target_name(target)]
         repaired["deferred_benchmark_target_details"] = deferred
     else:
+        repaired.pop("benchmark_harness_deferred", None)
         repaired.pop("deferred_benchmark_targets", None)
         repaired.pop("deferred_benchmark_target_details", None)
     return _reset_review_repair_history_after_harness_recovery(repaired)

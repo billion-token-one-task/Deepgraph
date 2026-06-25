@@ -1506,7 +1506,7 @@ class AutoResearchSchedulingTests(unittest.TestCase):
         ensure.assert_not_called()
         self.assertIsNone(repaired)
 
-    def test_harness_partial_recovery_uses_only_concrete_generated_runner_subset(self):
+    def test_harness_partial_recovery_refuses_when_formal_targets_are_deferred(self):
         row = {
             "id": 81,
             "experimental_plan": json.dumps(
@@ -1533,9 +1533,32 @@ class AutoResearchSchedulingTests(unittest.TestCase):
             repaired = auto_research._repair_harness_plan_for_supported_subset(row)
 
         ensure.assert_not_called()
+        self.assertIsNone(repaired)
+
+    def test_harness_recovery_allows_fully_supported_generated_runner_plan(self):
+        row = {
+            "id": 82,
+            "experimental_plan": json.dumps(
+                {
+                    "generated_runner_supported": False,
+                    "benchmark_targets": [
+                        {
+                            "name": "GSM8K",
+                            "hf_dataset": "openai/gsm8k",
+                            "task_type": "math_qa",
+                        }
+                    ],
+                }
+            ),
+            "proposed_method": json.dumps({"name": "Reasoning Repair"}),
+        }
+
+        repaired = auto_research._repair_harness_plan_for_supported_subset(row)
+
         self.assertTrue(repaired["generated_runner_supported"])
         self.assertEqual([target["name"] for target in repaired["benchmark_targets"]], ["GSM8K"])
-        self.assertEqual(repaired["deferred_benchmark_targets"], ["BIRD"])
+        self.assertNotIn("benchmark_harness_deferred", repaired)
+
 
     def test_candidate_queues_skip_harness_required_and_select_execution(self):
         harness = {
