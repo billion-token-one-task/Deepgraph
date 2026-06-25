@@ -14,6 +14,7 @@ class LlmClientCooldownTests(unittest.TestCase):
         self.old_provider_stats = dict(llm_client._provider_stats)
         self.old_rate_limiters = dict(llm_client._rate_limiters)
         self.old_provider_cooldown = dict(llm_client._provider_cooldown)
+        self.old_prompt_cache_unsupported = set(llm_client._prompt_cache_unsupported)
         self.old_llm_use_tabcode = llm_client.LLM_USE_TABCODE
         self.old_llm_extra_providers_json = llm_client.LLM_EXTRA_PROVIDERS_JSON
         self.old_llm_api_key = llm_client.LLM_API_KEY
@@ -21,6 +22,9 @@ class LlmClientCooldownTests(unittest.TestCase):
         self.old_llm_model = llm_client.LLM_MODEL
         self.old_llm_protocol = llm_client.LLM_PROTOCOL
         self.old_llm_rpm = llm_client.LLM_RPM
+        self.old_llm_prompt_cache_enabled = llm_client.LLM_PROMPT_CACHE_ENABLED
+        self.old_llm_prompt_cache_key = llm_client.LLM_PROMPT_CACHE_KEY
+        self.old_llm_prompt_cache_retention = llm_client.LLM_PROMPT_CACHE_RETENTION
         self.old_secondary_enabled = llm_client.LLM_SECONDARY_ENABLED
         self.old_secondary_api_key = llm_client.LLM_SECONDARY_API_KEY
         self.old_secondary_base_url = llm_client.LLM_SECONDARY_BASE_URL
@@ -37,6 +41,7 @@ class LlmClientCooldownTests(unittest.TestCase):
         llm_client._provider_stats = self.old_provider_stats
         llm_client._rate_limiters = self.old_rate_limiters
         llm_client._provider_cooldown = self.old_provider_cooldown
+        llm_client._prompt_cache_unsupported = self.old_prompt_cache_unsupported
         llm_client.LLM_USE_TABCODE = self.old_llm_use_tabcode
         llm_client.LLM_EXTRA_PROVIDERS_JSON = self.old_llm_extra_providers_json
         llm_client.LLM_API_KEY = self.old_llm_api_key
@@ -44,6 +49,9 @@ class LlmClientCooldownTests(unittest.TestCase):
         llm_client.LLM_MODEL = self.old_llm_model
         llm_client.LLM_PROTOCOL = self.old_llm_protocol
         llm_client.LLM_RPM = self.old_llm_rpm
+        llm_client.LLM_PROMPT_CACHE_ENABLED = self.old_llm_prompt_cache_enabled
+        llm_client.LLM_PROMPT_CACHE_KEY = self.old_llm_prompt_cache_key
+        llm_client.LLM_PROMPT_CACHE_RETENTION = self.old_llm_prompt_cache_retention
         llm_client.LLM_SECONDARY_ENABLED = self.old_secondary_enabled
         llm_client.LLM_SECONDARY_API_KEY = self.old_secondary_api_key
         llm_client.LLM_SECONDARY_BASE_URL = self.old_secondary_base_url
@@ -317,6 +325,176 @@ class LlmClientCooldownTests(unittest.TestCase):
         self.assertEqual(input_tokens, 2)
         self.assertEqual(captured_payloads[0]["model"], "openai/gpt-5.5")
         self.assertNotIn("max_tokens", captured_payloads[0])
+
+    def test_responses_payload_includes_prompt_cache_options(self):
+        captured_payloads = []
+        llm_client.LLM_PROMPT_CACHE_ENABLED = True
+        llm_client.LLM_PROMPT_CACHE_KEY = "DeepGraph Cache!"
+        llm_client.LLM_PROMPT_CACHE_RETENTION = "24h"
+
+        class FakeStreamResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def raise_for_status(self):
+                return None
+
+            def iter_lines(self):
+                yield 'data: {"type":"response.output_text.delta","delta":"valid enough response"}'
+                yield 'data: {"type":"response.completed","response":{"usage":{"total_tokens":11,"input_tokens":7,"input_tokens_details":{"cached_tokens":3}}}}'
+                yield 'data: [DONE]'
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def stream(self, method, url, json, headers):
+                captured_payloads.append(dict(json))
+                return FakeStreamResponse()
+
+        provider = {
+            "name": "tabcode",
+            "base_url": "https://example.invalid/v1",
+            "api_key": "test-key",
+            "model": "gpt-5.4",
+            "protocol": "responses",
+        }
+
+        with unittest.mock.patch.object(llm_client.httpx, "Client", FakeClient):
+            text, tokens, cached, input_tokens = llm_client._call_responses_api(provider, "stable system", "user", 1234)
+
+        self.assertEqual(text, "valid enough response")
+        self.assertEqual(tokens, 11)
+        self.assertEqual(cached, 3)
+        self.assertEqual(input_tokens, 7)
+        self.assertIn("prompt_cache_key", captured_payloads[0])
+        self.assertLessEqual(len(captured_payloads[0]["prompt_cache_key"]), 64)
+        self.assertTrue(captured_payloads[0]["prompt_cache_key"].startswith("deepgraph-cache:"))
+        self.assertEqual(captured_payloads[0]["prompt_cache_retention"], "24h")
+
+    def test_chat_payload_includes_prompt_cache_options(self):
+        captured_payloads = []
+        llm_client.LLM_PROMPT_CACHE_ENABLED = True
+        llm_client.LLM_PROMPT_CACHE_KEY = "deepgraph-test"
+        llm_client.LLM_PROMPT_CACHE_RETENTION = "24h"
+
+        class FakeResponse:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {
+                    "choices": [{"message": {"content": "valid enough response"}}],
+                    "usage": {
+                        "total_tokens": 9,
+                        "prompt_tokens": 6,
+                        "prompt_tokens_details": {"cached_tokens": 2},
+                    },
+                }
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def post(self, url, json, headers):
+                captured_payloads.append(dict(json))
+                return FakeResponse()
+
+        provider = {
+            "name": "tabcode",
+            "base_url": "https://example.invalid/v1",
+            "api_key": "test-key",
+            "model": "gpt-5.4",
+            "protocol": "chat_completions",
+            "stream_chat_completions": False,
+        }
+
+        with unittest.mock.patch.object(llm_client.httpx, "Client", FakeClient):
+            text, tokens, cached, input_tokens = llm_client._call_chat_completions(provider, "stable system", "user", 1234)
+
+        self.assertEqual(text, "valid enough response")
+        self.assertEqual(tokens, 9)
+        self.assertEqual(cached, 2)
+        self.assertEqual(input_tokens, 6)
+        self.assertIn("prompt_cache_key", captured_payloads[0])
+        self.assertEqual(captured_payloads[0]["prompt_cache_retention"], "24h")
+
+    def test_responses_prompt_cache_options_fallback_on_unsupported_400(self):
+        captured_payloads = []
+        llm_client.LLM_PROMPT_CACHE_ENABLED = True
+        llm_client.LLM_PROMPT_CACHE_KEY = "deepgraph-test"
+        llm_client.LLM_PROMPT_CACHE_RETENTION = "24h"
+        llm_client._prompt_cache_unsupported = set()
+
+        class FakeStreamResponse:
+            def __init__(self, should_fail):
+                self.should_fail = should_fail
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def raise_for_status(self):
+                if self.should_fail:
+                    request = httpx.Request("POST", "https://example.invalid/v1/responses")
+                    response = httpx.Response(400, request=request)
+                    raise httpx.HTTPStatusError("unknown parameter: prompt_cache_key", request=request, response=response)
+
+            def iter_lines(self):
+                yield 'data: {"type":"response.output_text.delta","delta":"valid enough response"}'
+                yield 'data: {"type":"response.completed","response":{"usage":{"total_tokens":5,"input_tokens":4}}}'
+                yield 'data: [DONE]'
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def stream(self, method, url, json, headers):
+                captured_payloads.append(dict(json))
+                return FakeStreamResponse(should_fail=len(captured_payloads) == 1)
+
+        provider = {
+            "name": "tabcode",
+            "base_url": "https://example.invalid/v1",
+            "api_key": "test-key",
+            "model": "gpt-5.4",
+            "protocol": "responses",
+        }
+
+        with unittest.mock.patch.object(llm_client.httpx, "Client", FakeClient):
+            text, tokens, cached, input_tokens = llm_client._call_responses_api(provider, "stable system", "user", 1234)
+
+        self.assertEqual(text, "valid enough response")
+        self.assertEqual(tokens, 5)
+        self.assertEqual(cached, 0)
+        self.assertEqual(input_tokens, 4)
+        self.assertIn("prompt_cache_key", captured_payloads[0])
+        self.assertNotIn("prompt_cache_key", captured_payloads[1])
+        self.assertNotIn("prompt_cache_retention", captured_payloads[1])
+        self.assertIn("tabcode", llm_client._prompt_cache_unsupported)
 
 
 if __name__ == "__main__":

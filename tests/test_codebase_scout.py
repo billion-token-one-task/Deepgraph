@@ -5,6 +5,12 @@ from agents import codebase_scout
 
 
 class CodebaseScoutTests(unittest.TestCase):
+    def setUp(self):
+        codebase_scout._GITHUB_API_DISABLED_REASON = ""
+        codebase_scout._GITHUB_API_FAILURES = 0
+        codebase_scout._ARXIV_API_DISABLED_REASON = ""
+        codebase_scout._ARXIV_API_FAILURES = 0
+
     def test_dedupe_candidates_prefers_paper_linked_repos(self):
         rows = codebase_scout._dedupe_candidates(
             [
@@ -161,6 +167,27 @@ class CodebaseScoutTests(unittest.TestCase):
         self.assertEqual(rows[0]["url"], "https://github.com/Skytliang/Multi-Agents-Debate")
         self.assertEqual(rows[0]["source_kind"], "paper_github_search")
 
+    def test_auto_pick_skips_paper_repo_unrelated_to_plan(self):
+        parsed = {
+            "proposed_method": {"name": "SQL verifier", "type": "text_to_sql"},
+        }
+        plan = {
+            "baselines": [{"name": "ACE-SQL"}],
+            "datasets": [{"name": "BIRD Dev"}, {"name": "Spider"}],
+        }
+        comet_repo = {
+            "full_name": "Unbabel/COMET",
+            "url": "https://github.com/Unbabel/COMET",
+            "description": "machine translation evaluation metric",
+            "source_kind": "baseline_paper",
+        }
+
+        with mock.patch.object(codebase_scout, "_verify_codebase_download") as verify:
+            picked = codebase_scout._try_auto_pick_verified_paper_repo([comet_repo], parsed=parsed, plan=plan)
+
+        self.assertIsNone(picked)
+        verify.assert_not_called()
+
     def test_scout_auto_picks_verified_paper_repo(self):
         insight = {
             "id": 100,
@@ -204,6 +231,44 @@ class CodebaseScoutTests(unittest.TestCase):
             picked = codebase_scout.scout_codebase_agentic(insight)
 
         self.assertEqual(picked["url"], paper_repo["url"])
+        llm_mock.assert_not_called()
+
+    def test_github_get_disables_after_repeated_network_failures(self):
+        class FailingClient:
+            def get(self, *args, **kwargs):
+                raise codebase_scout.httpx.ConnectError("offline")
+
+        with mock.patch.object(codebase_scout, "SCOUT_GITHUB_FAILURE_LIMIT", 2):
+            self.assertIsNone(codebase_scout._github_get(FailingClient(), "/search/repositories"))
+            self.assertFalse(codebase_scout._github_api_disabled())
+            self.assertIsNone(codebase_scout._github_get(FailingClient(), "/search/repositories"))
+
+        self.assertTrue(codebase_scout._github_network_disabled())
+        self.assertIn("network failures", codebase_scout._GITHUB_API_DISABLED_REASON)
+
+    def test_agentic_scout_falls_back_to_scratch_when_github_network_disabled(self):
+        insight = {
+            "id": 101,
+            "tier": 2,
+            "title": "Offline scout experiment",
+            "resource_class": "cpu",
+            "proposed_method": {"name": "Router", "type": "algorithm", "one_line": "x"},
+            "experimental_plan": {"baselines": [{"name": "Direct"}], "datasets": [{"name": "GSM8K"}]},
+            "source_node_ids": [],
+        }
+        codebase_scout._GITHUB_API_DISABLED_REASON = "network failures (2)"
+
+        with (
+            mock.patch.object(codebase_scout, "search_paper_repositories_complete", return_value=[]) as paper_search,
+            mock.patch.object(codebase_scout, "call_llm_json") as llm_mock,
+            mock.patch("agents.experiment_forge._parse_insight_fields", side_effect=lambda insight: dict(insight)),
+            mock.patch("agents.experiment_forge._ensure_real_benchmark_plan", side_effect=lambda parsed, method, plan, resource_class: dict(plan)),
+        ):
+            picked = codebase_scout.scout_codebase_agentic(insight)
+
+        self.assertEqual(picked["url"], "scratch")
+        self.assertIn("network failures", picked["reason"])
+        paper_search.assert_called_once()
         llm_mock.assert_not_called()
 
     def test_scout_codebase_agentic_verifies_llm_pick(self):

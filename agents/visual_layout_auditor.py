@@ -510,6 +510,7 @@ def audit_visual_layout(
     main_tex: str,
     figure_assets: list[dict[str, Any]] | None = None,
     page_count: int | None = None,
+    allow_deterministic_concept_fallback: bool = False,
 ) -> dict[str, Any]:
     tex = main_tex or ""
     issues: list[dict[str, str]] = []
@@ -681,14 +682,17 @@ def audit_visual_layout(
                 )
             )
             continue
-        if asset.get("kind") != "diagram" or asset.get("stage") != "postwriting_api_figures":
+        accepted_concept_stages = {"postwriting_api_figures"}
+        if allow_deterministic_concept_fallback:
+            accepted_concept_stages.add("deterministic_concept_fallback")
+        if asset.get("kind") != "diagram" or asset.get("stage") not in accepted_concept_stages:
             issues.append(
                 _issue(
                     "high",
                     "Visual layout auditor / required concept figures",
-                    f"Required {label} figure was not produced by the post-writing gpt-image-2 diagram stage.",
+                    f"Required {label} figure was not produced by an accepted post-writing diagram stage.",
                     f"figure_id={required_id}; kind={asset.get('kind')}; stage={asset.get('stage')}",
-                    "Regenerate the concept figure through run_postwriting_api_figure_stage; native or early placeholders are not accepted.",
+                    "Regenerate the concept figure through run_postwriting_api_figure_stage, or route controlled-scope reports through the deterministic concept fallback.",
                 )
             )
         aspect = str(asset.get("aspect_ratio") or "").strip().lower().replace(" ", "")
@@ -703,7 +707,7 @@ def audit_visual_layout(
                 )
             )
         notes = str(asset.get("notes") or "").lower()
-        if asset.get("kind") == "fallback" or not asset.get("path") or "paperbanana_failed" in notes or "paperbanana_error" in notes or "paperbanana_not_configured" in notes:
+        if asset.get("kind") == "fallback" or not asset.get("path") or ((not allow_deterministic_concept_fallback) and ("paperbanana_failed" in notes or "paperbanana_error" in notes or "paperbanana_not_configured" in notes)):
             issues.append(
                 _issue(
                     "high",

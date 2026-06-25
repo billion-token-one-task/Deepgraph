@@ -40,6 +40,16 @@ def _banana_motivation_overview_enabled() -> bool:
     return bool(CONCEPT_FIGURE_RULES["required"])
 
 
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+PAPERBANANA_EXTERNAL_TIMEOUT_SECONDS = max(30, _env_int("DEEPGRAPH_PAPERBANANA_TIMEOUT_SECONDS", 420))
+
+
 CONCEPT_REFERENCE_STYLE_NOTE = (
     "Before drawing, follow the PaperOrchestra concept-figure style reference at "
     "{project_root}/动机图和框架图例子: learn the tidy high-information schematic language, "
@@ -214,6 +224,11 @@ def _state_benchmark_summary(state: dict) -> dict[str, Any]:
         if isinstance(summary, dict) and (
             isinstance(summary.get("per_method"), dict)
             or _has_backend_matrix(summary)
+            or isinstance(summary.get("per_dataset"), dict)
+            or isinstance(summary.get("per_dataset_results"), (dict, list))
+            or isinstance(summary.get("per_seed"), list)
+            or isinstance(summary.get("per_seed_results"), list)
+            or isinstance(summary.get("seed_results"), list)
         ):
             return summary
     return {}
@@ -1276,6 +1291,118 @@ def _line_axis_box(ax: Any) -> None:
     ax.set_axisbelow(True)
 
 
+def _render_dataset_breakdown(fig: dict[str, Any], state: dict, metric_name: str, out_path: Path) -> None:
+    summary = _state_benchmark_summary(state)
+    dataset_rows = _rows_from_summary(summary, "per_dataset", "per_dataset_results", "per_dataset_table")
+    seed_rows = _rows_from_summary(summary, "per_seed", "per_seed_results", "seed_results")
+    objective_rows = _rows_from_summary(summary, "per_objective", "objective_results", "objective_table")
+    if not dataset_rows and not seed_rows:
+        raise ValueError("per-dataset/per-seed artifact missing")
+
+    plt = _setup_matplotlib()
+    import numpy as np
+
+    primary = str(summary.get("primary_metric") or summary.get("metric_name") or metric_name or "metric")
+
+    def first_float(row: dict[str, Any], keys: tuple[str, ...], default: float | None = None) -> float | None:
+        for key in keys:
+            value = _as_float(row.get(key))
+            if value is not None:
+                return float(value)
+        return default
+
+    def candidate_value(row: dict[str, Any]) -> float:
+        return float(first_float(row, ("candidate_cosine", "candidate_metric", primary, "metric_value", "score", "accuracy"), 0.0) or 0.0)
+
+    def no_rank_value(row: dict[str, Any]) -> float:
+        return float(first_float(row, ("no_rank_control_cosine", "no_rank_control_metric", "no_rank", "baseline_metric", "baseline"), 0.0) or 0.0)
+
+    def random_rank_value(row: dict[str, Any]) -> float:
+        return float(first_float(row, ("random_rank_control_cosine", "random_rank_control_metric", "random_rank"), no_rank_value(row)) or 0.0)
+
+    fig_obj, axes_raw = plt.subplots(1, 3, figsize=_figure_size({"aspect_ratio": "4:1"}))
+    axes = list(axes_raw)
+
+    rows = dataset_rows[:6]
+    ax = axes[0]
+    if rows:
+        labels = [_wrap_label(str(row.get("dataset") or row.get("name") or row.get("setting") or f"D{i + 1}"), 12) for i, row in enumerate(rows)]
+        cand = np.array([candidate_value(row) for row in rows], dtype=float)
+        no_rank = np.array([no_rank_value(row) for row in rows], dtype=float)
+        random_rank = np.array([random_rank_value(row) for row in rows], dtype=float)
+        x = np.arange(len(rows))
+        width = 0.24
+        ax.bar(x - width, cand, width, color="#2563eb", edgecolor="#1f2937", linewidth=0.45, label="rank")
+        ax.bar(x, no_rank, width, color="#f59e0b", edgecolor="#1f2937", linewidth=0.45, label="no rank")
+        ax.bar(x + width, random_rank, width, color="#10b981", edgecolor="#1f2937", linewidth=0.45, label="random")
+        ax.set_xticks(x, labels, fontsize=6.0)
+        lo = float(np.nanmin([cand.min(), no_rank.min(), random_rank.min()])) if len(rows) else 0.0
+        hi = float(np.nanmax([cand.max(), no_rank.max(), random_rank.max()])) if len(rows) else 1.0
+        pad = max(0.04, (hi - lo) * 0.22)
+        ax.set_ylim(max(-0.05, lo - pad), hi + pad)
+        ax.legend(frameon=False, fontsize=6.1, loc="best")
+    else:
+        ax.text(0.5, 0.5, "No per-dataset\nartifact", ha="center", va="center", transform=ax.transAxes, fontsize=8)
+        ax.set_xticks([]); ax.set_yticks([])
+    ax.set_title("Dataset controls", fontsize=7.8, fontweight="bold", pad=4)
+    ax.set_ylabel(_metric_label(primary), fontsize=7.0)
+    ax.grid(axis="y", color="#e5e7eb", linewidth=0.55, alpha=0.74)
+
+    ax = axes[1]
+    if seed_rows:
+        seeds = [str(row.get("seed") if row.get("seed") is not None else i) for i, row in enumerate(seed_rows[:8])]
+        gaps = []
+        controls = []
+        candidates = []
+        for row in seed_rows[:8]:
+            cand_v = candidate_value(row)
+            ctrl_v = max(no_rank_value(row), random_rank_value(row), float(first_float(row, ("baseline_metric",), 0.0) or 0.0))
+            candidates.append(cand_v)
+            controls.append(ctrl_v)
+            gaps.append(cand_v - ctrl_v)
+        x = np.arange(len(gaps))
+        ax.bar(x, gaps, color="#8ecae6", edgecolor="#1f2937", linewidth=0.55, width=0.58)
+        ax.plot(x, candidates, color="#2563eb", marker="o", linewidth=1.0, markersize=3.0, label="rank")
+        ax.plot(x, controls, color="#f97316", marker="s", linewidth=1.0, markersize=3.0, label="best control")
+        ax.axhline(0, color="#111827", linewidth=0.65)
+        ax.set_xticks(x, seeds, fontsize=6.5)
+        ax.legend(frameon=False, fontsize=6.0, loc="best")
+        lim = max(0.05, max(abs(v) for v in gaps) * 1.30 if gaps else 0.05)
+        ax.set_ylim(-lim * 0.20, max(lim, max(candidates + controls) * 1.08 if candidates else lim))
+    else:
+        ax.text(0.5, 0.5, "No per-seed\nartifact", ha="center", va="center", transform=ax.transAxes, fontsize=8)
+        ax.set_xticks([]); ax.set_yticks([])
+    ax.set_title("Seed stability", fontsize=7.8, fontweight="bold", pad=4)
+    ax.grid(axis="y", color="#e5e7eb", linewidth=0.55, alpha=0.74)
+
+    ax = axes[2]
+    if objective_rows:
+        rows_obj = objective_rows[:7]
+        labels = [_wrap_label(str(row.get("objective") or row.get("name") or row.get("setting") or f"O{i + 1}"), 10) for i, row in enumerate(rows_obj)]
+        matrix = np.array([[candidate_value(row), no_rank_value(row), random_rank_value(row)] for row in rows_obj], dtype=float)
+        im = ax.imshow(matrix, cmap="YlGnBu", aspect="auto")
+        ax.set_xticks(np.arange(3), ["Rank", "No rank", "Random"], fontsize=6.2)
+        ax.set_yticks(np.arange(len(labels)), labels, fontsize=6.0)
+        for i in range(matrix.shape[0]):
+            for j in range(matrix.shape[1]):
+                ax.text(j, i, f"{matrix[i, j]:.2f}", ha="center", va="center", fontsize=5.8, color="#111827")
+        try:
+            fig_obj.colorbar(im, ax=ax, fraction=0.046, pad=0.03)
+        except Exception:
+            pass
+    else:
+        ax.text(0.5, 0.5, "No per-objective\nartifact", ha="center", va="center", transform=ax.transAxes, fontsize=8)
+        ax.set_xticks([]); ax.set_yticks([])
+    ax.set_title("Objective families", fontsize=7.8, fontweight="bold", pad=4)
+
+    for axis in axes:
+        _box_axis(axis)
+    fig_obj.subplots_adjust(left=0.06, right=0.985, top=0.78, bottom=0.25, wspace=0.34)
+    _audit_and_relax_experiment_text(fig_obj, axes)
+    _save_native_matplotlib_figure(fig_obj, out_path)
+    plt.close(fig_obj)
+
+
 def _render_ablation_results(fig: dict[str, Any], state: dict, metric_name: str, out_path: Path) -> None:
     summary = _state_benchmark_summary(state)
     rows = _rows_from_summary(summary, "ablation_table", "ablation_results", "ablations")
@@ -1800,6 +1927,17 @@ def _has_hyperparameter_sweep(summary: dict[str, Any]) -> bool:
     )
 
 
+def _has_dataset_breakdown(summary: dict[str, Any]) -> bool:
+    return bool(
+        summary.get("per_dataset")
+        or summary.get("per_dataset_results")
+        or summary.get("per_dataset_table")
+        or summary.get("per_seed")
+        or summary.get("per_seed_results")
+        or summary.get("seed_results")
+    )
+
+
 def _has_optional_sensitivity_or_trend(summary: dict[str, Any]) -> bool:
     return bool(summary.get("trend_table") or _has_hyperparameter_sweep(summary))
 
@@ -1827,6 +1965,8 @@ def _allowed_optional_experiment_figure(fig: dict[str, Any], summary: dict[str, 
         return bool(summary.get("ablation_table") or summary.get("ablation_results"))
     if role == "experiment_figure_pack" and chart_type in {"hyperparameter_sweep", "threshold_sweep"}:
         return _has_hyperparameter_sweep(summary)
+    if role == "experiment_figure_pack" and chart_type in {"dataset_breakdown", "dataset_seed_breakdown", "per_dataset_breakdown"}:
+        return _has_dataset_breakdown(summary)
     if "ablation" in text:
         return bool(summary.get("ablation_table") or summary.get("ablation_results"))
     if any(token in text for token in ("trend", "sensitivity", "threshold", "sweep", "hyperparameter")):
@@ -1859,13 +1999,16 @@ def _augment_plotting_plan(plan: list[dict[str, Any]], state: dict, iterations: 
             cleaned.append(fig)
 
     required_defaults = _default_plot_plan(metric_name)
-    required_order = ["fig_main_results", "fig_ablation_results", "fig_hyperparameter_sweep"]
+    required_order = ["fig_main_results", "fig_ablation_results", "fig_hyperparameter_sweep", "fig_dataset_breakdown"]
     by_id = {str(fig.get("figure_id") or ""): fig for fig in cleaned}
     for required in required_defaults:
         fid = str(required.get("figure_id") or "")
         chart_type = str(required.get("chart_type") or "").lower()
         if fid == "fig_hyperparameter_sweep" or chart_type in {"hyperparameter_sweep", "threshold_sweep"}:
             if not _has_hyperparameter_sweep(summary):
+                continue
+        if fid == "fig_dataset_breakdown" or chart_type in {"dataset_breakdown", "dataset_seed_breakdown", "per_dataset_breakdown"}:
+            if not _has_dataset_breakdown(summary) or _has_hyperparameter_sweep(summary):
                 continue
         if fid not in by_id:
             cleaned.append(required)
@@ -1900,6 +2043,17 @@ def render_native_figure(
         if fid == "fig_hyperparameter_sweep" or chart_type in {"hyperparameter_sweep", "threshold_sweep"}:
             _render_hyperparameter_sweep(fig, state, metric_name, out_path)
             return _native_asset(fid=fid, fig=fig, out_path=out_path, kind="plot", renderer="hyperparameter_sweep", objective=objective)
+        if fid == "fig_dataset_breakdown" or chart_type in {"dataset_breakdown", "dataset_seed_breakdown", "per_dataset_breakdown"}:
+            _render_dataset_breakdown(fig, state, metric_name, out_path)
+            return _native_asset(
+                fid=fid,
+                fig=fig,
+                out_path=out_path,
+                kind="plot",
+                renderer="dataset_breakdown",
+                objective=objective,
+                extras={"data_source": fig.get("data_source") or "benchmark_summary.json:per_dataset|per_seed|per_objective"},
+            )
         if fid == "fig_quality_cost_tradeoff" or chart_type == "quality_cost_tradeoff":
             raise ValueError("quality_cost_tradeoff scatter is not allowed in the default experiment pack")
         if fid == "fig_method_metric_heatmap" or chart_type == "method_metric_heatmap":
@@ -2001,13 +2155,23 @@ def infer_figure_spec_from_reference(path: str, caption: str = "") -> dict[str, 
     title = " ".join(acronyms.get(word, word) for word in title_words) or "Generated figure"
     text = f"{stem} {caption}".lower()
     plot_type = "diagram" if any(token in text for token in ("framework", "overview", "constraint", "tradeoff", "gating", "concept")) else "plot"
-    return {
+    chart_type = "dataset_breakdown" if any(token in text for token in ("dataset_breakdown", "dataset and seed", "per-dataset", "per dataset")) else ""
+    spec = {
         "figure_id": stem,
         "title": title,
         "plot_type": plot_type,
         "objective": caption or title,
-        "aspect_ratio": "4:3",
+        "aspect_ratio": "4:1" if chart_type else "4:3",
     }
+    if chart_type:
+        spec.update({
+            "role": "experiment_figure_pack",
+            "chart_type": chart_type,
+            "chart_family": "matrix_family",
+            "layout": "1x3",
+            "placement": "double_column",
+        })
+    return spec
 
 
 def _shell_quote(value: str) -> str:
@@ -2195,7 +2359,7 @@ def _run_external_diagram(
             command,
             shell=True,
             cwd=str(figures_dir),
-            timeout=120,
+            timeout=PAPERBANANA_EXTERNAL_TIMEOUT_SECONDS,
             check=False,
             capture_output=True,
             text=True,

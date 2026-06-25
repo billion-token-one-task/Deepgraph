@@ -1,4 +1,5 @@
 """Multi-provider LLM client with load balancing and per-provider rate limiting."""
+import hashlib
 import json
 import threading
 import time
@@ -10,6 +11,9 @@ from config import (
     LLM_EXTRA_PROVIDERS_JSON,
     LLM_MAX_OUTPUT_TOKENS,
     LLM_MODEL,
+    LLM_PROMPT_CACHE_ENABLED,
+    LLM_PROMPT_CACHE_KEY,
+    LLM_PROMPT_CACHE_RETENTION,
     LLM_PROTOCOL,
     LLM_REASONING_EFFORT,
     LLM_RPM,
@@ -34,6 +38,8 @@ _providers = []
 _provider_idx = 0
 _provider_lock = threading.Lock()
 _provider_stats = {}
+_prompt_cache_unsupported = set()
+_prompt_cache_lock = threading.Lock()
 
 _rate_limiters = {}       # name -> _RateLimiter
 _provider_cooldown = {}   # name -> resume_timestamp (epoch)
@@ -64,6 +70,71 @@ class _RateLimiter:
 
 def _http_timeout() -> httpx.Timeout:
     return httpx.Timeout(float(LLM_REQUEST_TIMEOUT_SECONDS), connect=float(LLM_CONNECT_TIMEOUT_SECONDS))
+
+
+def _safe_prompt_cache_piece(value: str, max_len: int) -> str:
+    cleaned = []
+    prev_dash = False
+    for ch in str(value or "").strip().lower():
+        if ch.isascii() and (ch.isalnum() or ch in "._:"):
+            cleaned.append(ch)
+            prev_dash = False
+        elif not prev_dash:
+            cleaned.append("-")
+            prev_dash = True
+        if len(cleaned) >= max_len:
+            break
+    return "".join(cleaned).strip("-")[:max_len]
+
+
+def _prompt_cache_key(provider: dict, system_prompt: str) -> str:
+    base = _safe_prompt_cache_piece(LLM_PROMPT_CACHE_KEY, 40)
+    if not base:
+        return ""
+    model_piece = _safe_prompt_cache_piece(provider.get("model", ""), 18)
+    prompt_digest = hashlib.sha256((system_prompt or "").encode("utf-8")).hexdigest()[:12]
+    suffix = f"{model_piece}:{prompt_digest}" if model_piece else prompt_digest
+    budget = max(1, 64 - len(suffix) - 1)
+    return f"{base[:budget]}:{suffix}"[:64]
+
+
+def _prompt_cache_disabled(provider: dict) -> bool:
+    with _prompt_cache_lock:
+        return provider.get("name") in _prompt_cache_unsupported
+
+
+def _mark_prompt_cache_unsupported(provider: dict) -> None:
+    with _prompt_cache_lock:
+        name = provider.get("name")
+        if not name or name in _prompt_cache_unsupported:
+            return
+        _prompt_cache_unsupported.add(name)
+    print(f"[LLM] {name} does not accept prompt cache request fields; retrying without them", flush=True)
+
+
+def _apply_prompt_cache_options(payload: dict, provider: dict, system_prompt: str) -> None:
+    if not LLM_PROMPT_CACHE_ENABLED or _prompt_cache_disabled(provider):
+        return
+    cache_key = _prompt_cache_key(provider, system_prompt)
+    if not cache_key:
+        return
+    payload["prompt_cache_key"] = cache_key
+    retention = str(LLM_PROMPT_CACHE_RETENTION or "").strip()
+    if retention.lower() not in {"", "0", "false", "none", "off", "disabled"}:
+        payload["prompt_cache_retention"] = retention
+
+
+def _without_prompt_cache_options(payload: dict) -> dict | None:
+    if "prompt_cache_key" not in payload and "prompt_cache_retention" not in payload:
+        return None
+    stripped = dict(payload)
+    stripped.pop("prompt_cache_key", None)
+    stripped.pop("prompt_cache_retention", None)
+    return stripped
+
+
+def _is_http_400(exc: Exception) -> bool:
+    return isinstance(exc, httpx.HTTPStatusError) and exc.response is not None and exc.response.status_code == 400
 
 
 def _extra_openai_providers() -> list[dict]:
@@ -400,6 +471,7 @@ def _call_chat_completions(provider: dict, system_prompt: str, user_prompt: str,
     }
     if max_tokens and not _should_omit_token_limit(provider):
         payload["max_tokens"] = max_tokens
+    _apply_prompt_cache_options(payload, provider, system_prompt)
 
     headers = {
         "Authorization": f"Bearer {provider['api_key']}",
@@ -411,92 +483,119 @@ def _call_chat_completions(provider: dict, system_prompt: str, user_prompt: str,
     total_tokens = 0
     cached_tokens = 0
     input_tokens = 0
-
     endpoint = provider.get("chat_endpoint", "/chat/completions")
     chunk_count = 0
     all_lines = []
-    with httpx.Client(timeout=_http_timeout()) as client:
-        if not stream_chat:
-            resp = client.post(f"{provider['base_url']}{endpoint}", json=payload, headers=headers)
-            resp.raise_for_status()
-            body = resp.json()
-            choices = body.get("choices", [])
+
+    def _reset_response_state() -> None:
+        nonlocal response_text, total_tokens, cached_tokens, input_tokens, chunk_count, all_lines
+        response_text = ""
+        total_tokens = 0
+        cached_tokens = 0
+        input_tokens = 0
+        chunk_count = 0
+        all_lines = []
+
+    def _consume_body(body: dict) -> None:
+        nonlocal response_text, total_tokens, cached_tokens, input_tokens
+        choices = body.get("choices", [])
+        if choices:
+            message = choices[0].get("message", {})
+            reasoning = message.get("reasoning_content") or ""
+            content = message.get("content")
+            if isinstance(content, str):
+                response_text = content.strip() or reasoning
+            elif isinstance(content, list):
+                parts = []
+                for item in content:
+                    if isinstance(item, dict):
+                        text = item.get("text") or item.get("content") or ""
+                        if text:
+                            parts.append(text)
+                joined = "".join(parts)
+                response_text = joined.strip() or reasoning
+            else:
+                response_text = reasoning
+        usage = body.get("usage") or {}
+        total_tokens = usage.get("total_tokens", 0)
+        input_tokens = usage.get("prompt_tokens", 0)
+        ptd = usage.get("prompt_tokens_details") or {}
+        cached_tokens = ptd.get("cached_tokens", 0)
+
+    def _consume_stream(resp) -> None:
+        nonlocal response_text, total_tokens, cached_tokens, input_tokens, chunk_count, all_lines
+        for line in resp.iter_lines():
+            if line.startswith("data: "):
+                data_str = line[6:]
+            elif line.startswith("data:"):
+                data_str = line[5:]
+            else:
+                all_lines.append(line)
+                continue
+            if data_str.strip() == "[DONE]":
+                break
+            try:
+                chunk = json.loads(data_str)
+            except json.JSONDecodeError:
+                continue
+            chunk_count += 1
+
+            # MiniMax embeds rate limit errors in SSE body (HTTP 200)
+            if chunk.get("type") == "error":
+                err_info = chunk.get("error", {})
+                err_type = err_info.get("type", "")
+                err_msg = err_info.get("message", "")
+                if "rate_limit" in err_type or "usage limit" in err_msg.lower():
+                    print(f"[LLM] {provider['name']} SSE rate limit: {err_msg}", flush=True)
+                    raise httpx.HTTPStatusError(
+                        f"SSE rate limit: {err_msg}",
+                        request=httpx.Request("POST", provider["base_url"]),
+                        response=httpx.Response(429),
+                    )
+                print(f"[LLM] {provider['name']} SSE error: {err_type}: {err_msg}", flush=True)
+                raise RuntimeError(f"{provider['name']} API error: {err_type}: {err_msg}")
+
+            choices = chunk.get("choices", [])
             if choices:
-                message = choices[0].get("message", {})
-                reasoning = message.get("reasoning_content") or ""
-                content = message.get("content")
-                if isinstance(content, str):
-                    response_text = content.strip() or reasoning
-                elif isinstance(content, list):
-                    parts = []
-                    for item in content:
-                        if isinstance(item, dict):
-                            text = item.get("text") or item.get("content") or ""
-                            if text:
-                                parts.append(text)
-                    joined = "".join(parts)
-                    response_text = joined.strip() or reasoning
-                else:
-                    response_text = reasoning
-            usage = body.get("usage") or {}
-            total_tokens = usage.get("total_tokens", 0)
-            input_tokens = usage.get("prompt_tokens", 0)
-            ptd = usage.get("prompt_tokens_details") or {}
-            cached_tokens = ptd.get("cached_tokens", 0)
-        else:
-            with client.stream("POST", f"{provider['base_url']}{endpoint}",
-                               json=payload, headers=headers) as resp:
-                if resp.status_code >= 400:
-                    resp.read()
+                delta = choices[0].get("delta", {})
+                # MiniMax (and similar) stream thinking in reasoning_content; final answer in content.
+                # Concatenate so JSON in either stream is preserved for downstream parsing.
+                reasoning = delta.get("reasoning_content") or ""
+                content = delta.get("content") or ""
+                piece = reasoning + content
+                if piece:
+                    response_text += piece
+            usage = chunk.get("usage")
+            if usage:
+                total_tokens = usage.get("total_tokens", 0)
+                input_tokens = usage.get("prompt_tokens", 0)
+                # MiniMax cache info: usage.prompt_tokens_details.cached_tokens
+                ptd = usage.get("prompt_tokens_details") or {}
+                cached_tokens = ptd.get("cached_tokens", 0)
+
+    def _send_once(request_payload: dict) -> None:
+        _reset_response_state()
+        with httpx.Client(timeout=_http_timeout()) as client:
+            if not stream_chat:
+                resp = client.post(f"{provider['base_url']}{endpoint}", json=request_payload, headers=headers)
                 resp.raise_for_status()
-                for line in resp.iter_lines():
-                    if line.startswith("data: "):
-                        data_str = line[6:]
-                    elif line.startswith("data:"):
-                        data_str = line[5:]
-                    else:
-                        all_lines.append(line)
-                        continue
-                    if data_str.strip() == "[DONE]":
-                        break
-                    try:
-                        chunk = json.loads(data_str)
-                    except json.JSONDecodeError:
-                        continue
-                    chunk_count += 1
+                _consume_body(resp.json())
+            else:
+                with client.stream("POST", f"{provider['base_url']}{endpoint}",
+                                   json=request_payload, headers=headers) as resp:
+                    if resp.status_code >= 400:
+                        resp.read()
+                    resp.raise_for_status()
+                    _consume_stream(resp)
 
-                    # MiniMax embeds rate limit errors in SSE body (HTTP 200)
-                    if chunk.get("type") == "error":
-                        err_info = chunk.get("error", {})
-                        err_type = err_info.get("type", "")
-                        err_msg = err_info.get("message", "")
-                        if "rate_limit" in err_type or "usage limit" in err_msg.lower():
-                            print(f"[LLM] {provider['name']} SSE rate limit: {err_msg}", flush=True)
-                            raise httpx.HTTPStatusError(
-                                f"SSE rate limit: {err_msg}",
-                                request=httpx.Request("POST", provider["base_url"]),
-                                response=httpx.Response(429),
-                            )
-                        print(f"[LLM] {provider['name']} SSE error: {err_type}: {err_msg}", flush=True)
-                        raise RuntimeError(f"{provider['name']} API error: {err_type}: {err_msg}")
-
-                    choices = chunk.get("choices", [])
-                    if choices:
-                        delta = choices[0].get("delta", {})
-                        # MiniMax (and similar) stream thinking in reasoning_content; final answer in content.
-                        # Concatenate so JSON in either stream is preserved for downstream parsing.
-                        reasoning = delta.get("reasoning_content") or ""
-                        content = delta.get("content") or ""
-                        piece = reasoning + content
-                        if piece:
-                            response_text += piece
-                    usage = chunk.get("usage")
-                    if usage:
-                        total_tokens = usage.get("total_tokens", 0)
-                        input_tokens = usage.get("prompt_tokens", 0)
-                        # MiniMax cache info: usage.prompt_tokens_details.cached_tokens
-                        ptd = usage.get("prompt_tokens_details") or {}
-                        cached_tokens = ptd.get("cached_tokens", 0)
+    try:
+        _send_once(payload)
+    except httpx.HTTPStatusError as exc:
+        fallback_payload = _without_prompt_cache_options(payload)
+        if not (_is_http_400(exc) and fallback_payload is not None):
+            raise
+        _send_once(fallback_payload)
+        _mark_prompt_cache_unsupported(provider)
 
     if not response_text:
         non_data = [l for l in all_lines if l.strip()][:5]
@@ -551,6 +650,7 @@ def _call_responses_api(provider: dict, system_prompt: str, user_prompt: str,
     }
     if max_tokens and not _should_omit_token_limit(provider):
         payload["max_output_tokens"] = max_tokens
+    _apply_prompt_cache_options(payload, provider, system_prompt)
 
     headers = {
         "Authorization": f"Bearer {provider['api_key']}",
@@ -563,8 +663,16 @@ def _call_responses_api(provider: dict, system_prompt: str, user_prompt: str,
     cached_tokens = 0
     input_tokens = 0
 
+    def _reset_response_state() -> None:
+        nonlocal response_text, total_tokens, cached_tokens, input_tokens
+        response_text = ""
+        total_tokens = 0
+        cached_tokens = 0
+        input_tokens = 0
+
     def _stream_response(request_payload: dict) -> None:
         nonlocal response_text, total_tokens, cached_tokens, input_tokens
+        _reset_response_state()
         with httpx.Client(timeout=_http_timeout()) as client:
             with client.stream("POST", f"{provider['base_url']}/responses",
                                json=request_payload, headers=headers) as resp:
@@ -594,31 +702,44 @@ def _call_responses_api(provider: dict, system_prompt: str, user_prompt: str,
                         itd = usage.get("input_tokens_details") or {}
                         cached_tokens = itd.get("cached_tokens", 0)
 
+    def _add_fallback(candidates: list[tuple[str, dict]], label: str, candidate: dict | None) -> None:
+        if not candidate or candidate == payload:
+            return
+        for _, existing in candidates:
+            if existing == candidate:
+                return
+        candidates.append((label, candidate))
+
     try:
         _stream_response(payload)
     except httpx.HTTPStatusError as exc:
-        body = ""
-        if exc.response is not None:
-            try:
-                exc.response.read()
-            except Exception:
-                pass
-            try:
-                body = exc.response.text
-            except Exception:
-                body = ""
-        if exc.response is None or exc.response.status_code != 400:
+        if not _is_http_400(exc):
             raise
+        candidates: list[tuple[str, dict]] = []
+        _add_fallback(candidates, "prompt_cache", _without_prompt_cache_options(payload))
+
         compat_payload = dict(payload)
         compat_payload.pop("max_output_tokens", None)
         compat_payload.pop("reasoning", None)
-        response_text = ""
-        total_tokens = 0
-        cached_tokens = 0
-        input_tokens = 0
-        _stream_response(compat_payload)
+        _add_fallback(candidates, "compat", compat_payload)
+        _add_fallback(candidates, "compat_prompt_cache", _without_prompt_cache_options(compat_payload))
+
+        last_exc = exc
+        for label, candidate in candidates:
+            try:
+                _stream_response(candidate)
+            except httpx.HTTPStatusError as retry_exc:
+                if not _is_http_400(retry_exc):
+                    raise
+                last_exc = retry_exc
+                continue
+            if "prompt_cache" in label:
+                _mark_prompt_cache_unsupported(provider)
+            return response_text, total_tokens, cached_tokens, input_tokens
+        raise last_exc
 
     return response_text, total_tokens, cached_tokens, input_tokens
+
 
 def _is_rate_limit_error(exc: Exception) -> bool:
     """Check if an exception is an HTTP 429 rate limit error."""

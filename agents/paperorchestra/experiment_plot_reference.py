@@ -10,7 +10,9 @@ only when verified sweep artifacts exist.
 from __future__ import annotations
 
 import json
+import os
 import re
+import time
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +36,7 @@ CHART_FAMILY_BY_TYPE = {
     "backend_rank_lines_1x4": "line_family",
     "ablation_bar": "bar_family",
     "ablation_results": "bar_family",
+    "dataset_breakdown": "matrix_family",
     "hyperparameter_sweep": "line_family",
     "threshold_sweep": "line_family",
     "tsne_embedding": "distribution_family",
@@ -382,6 +385,14 @@ def _evidence_flags(state: dict[str, Any]) -> dict[str, bool]:
             or state.get("sensitivity_table")
         ),
         "difficulty": bool(summary.get("difficulty_breakdown") or summary.get("per_difficulty") or summary.get("difficulty_table")),
+        "dataset_breakdown": bool(
+            summary.get("per_dataset")
+            or summary.get("per_dataset_results")
+            or summary.get("per_dataset_table")
+            or summary.get("per_seed")
+            or summary.get("per_seed_results")
+            or summary.get("seed_results")
+        ),
         "backend_matrix": bool(summary.get("per_backend") or summary.get("backend_matrix") or summary.get("per_dataset_backend")),
         "embedding_artifacts": _has_recursive_key(state, ("embedding", "tsne", "t_sne", "umap")),
         "retrieval_examples": _has_recursive_key(state, ("retrieval_examples", "ranking_examples", "topk", "top_k", "cmc")),
@@ -485,6 +496,20 @@ def _build_plot_plan(metric_name: str, refs: list[dict[str, Any]], flags: dict[s
                 placement="double_column",
             )
         )
+    elif flags.get("dataset_breakdown"):
+        plan.append(
+            _plot_spec(
+                figure_id="fig_dataset_breakdown",
+                chart_type="dataset_breakdown",
+                title="Dataset and Seed Breakdown",
+                objective=f"Check {metric} across datasets, seeds, and objective families using stored per-dataset and per-seed artifacts.",
+                data_source="benchmark_summary.json:per_dataset|per_seed|per_objective",
+                refs=refs,
+                aspect_ratio="4:1",
+                layout="1x3",
+                placement="double_column",
+            )
+        )
     if flags.get("backend_matrix"):
         plan = [
             _plot_spec(
@@ -557,12 +582,24 @@ def discover_experiment_plot_references_or_raise(
     domains = _detect_domains(text)
     queries = _query_pool(domains, state or {}, metric_name)
     errors: list[str] = []
+    max_seconds = float(os.getenv("PAPERORCHESTRA_PLOT_REFERENCE_MAX_SECONDS", "30") or "30")
+    query_timeout = float(os.getenv("PAPERORCHESTRA_PLOT_REFERENCE_QUERY_TIMEOUT", "5") or "5")
+    registry_first = os.getenv("PAPERORCHESTRA_PLOT_REFERENCE_REGISTRY_FIRST", "1").strip().lower() not in {"0", "false", "no", "off"}
+    started_at = time.monotonic()
     papers: list[dict[str, Any]] = _papers_from_citation_registry(citation_registry)
     registry_candidate_count = len(papers)
+    registry_relevant = [paper for paper in papers if isinstance(paper, dict) and _paper_is_domain_relevant(paper, domains)]
+    registry_style_refs = _dedupe_references([_style_reference_row(paper, domains) for paper in registry_relevant])
+    if registry_first and len(registry_style_refs) >= min_style_references:
+        errors.append("registry_first: skipped external plot-style search because reference_manager supplied enough domain-relevant style references")
+        queries = []
     for query in queries:
+        if max_seconds > 0 and time.monotonic() - started_at > max_seconds:
+            errors.append(f"plot reference search budget exceeded after {max_seconds:.1f}s")
+            break
         hits: list[dict[str, Any]] = []
         try:
-            hits = search_papers(query, limit=per_query_limit, api_key=api_key, timeout=18.0)
+            hits = search_papers(query, limit=per_query_limit, api_key=api_key, timeout=query_timeout)
             for hit in hits:
                 if isinstance(hit, dict):
                     hit.setdefault("_source", "semantic_scholar")
@@ -570,7 +607,7 @@ def discover_experiment_plot_references_or_raise(
             errors.append(f"Semantic Scholar {query}: {exc}")
         if not hits:
             try:
-                hits = _search_openalex(query, limit=per_query_limit)
+                hits = _search_openalex(query, limit=per_query_limit, timeout=query_timeout)
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"OpenAlex {query}: {exc}")
         papers.extend(hits)

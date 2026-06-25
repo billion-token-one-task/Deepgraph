@@ -1,6 +1,7 @@
 import os
 import json
 import shutil
+import threading
 import unittest
 import uuid
 from unittest import mock
@@ -8,6 +9,7 @@ from pathlib import Path
 
 from agents.manuscript_pipeline import generate_submission_bundle
 from agents.paperorchestra.figure_orchestra import run_postwriting_api_figure_stage
+from agents.paperorchestra.full_pipeline import _postwriting_api_manifest_is_reusable
 from agents import workspace_layout
 from db import database
 
@@ -657,6 +659,139 @@ Candidate & 0.61 & 1.5 \\
         self.assertEqual(result["generated_count"], 0)
         self.assertTrue(result["blockers"])
         self.assertTrue((figures_dir / "postwriting_api_figure_manifest.json").exists())
+
+    def test_failed_postwriting_api_figure_manifest_is_not_reused(self):
+        figures_dir = self.tmpdir_path / "figures_failed_cache"
+        figures_dir.mkdir(parents=True, exist_ok=True)
+        fallback_path = figures_dir / "fig_motivation_symbolic.png"
+        fallback_path.write_text("placeholder", encoding="utf-8")
+        manifest = {
+            "stage": "postwriting_api_figures",
+            "generated_count": 2,
+            "blockers": ["Post-writing figure generation failed for fig_motivation_symbolic."],
+            "assets": [
+                {
+                    "figure_id": "fig_motivation_symbolic",
+                    "path": str(fallback_path),
+                    "kind": "fallback",
+                    "notes": "paperbanana_error_timeout",
+                },
+                {
+                    "figure_id": "fig_overview_symbolic",
+                    "path": str(fallback_path),
+                    "kind": "diagram",
+                    "notes": "paperbanana_ok",
+                },
+            ],
+        }
+
+        self.assertFalse(_postwriting_api_manifest_is_reusable(manifest, figures_dir))
+
+    def test_successful_postwriting_api_figure_manifest_is_reused(self):
+        figures_dir = self.tmpdir_path / "figures_success_cache"
+        figures_dir.mkdir(parents=True, exist_ok=True)
+        motivation_path = figures_dir / "fig_motivation_symbolic.png"
+        overview_path = figures_dir / "fig_overview_symbolic.png"
+        motivation_path.write_bytes(b"png")
+        overview_path.write_bytes(b"png")
+        manifest = {
+            "stage": "postwriting_api_figures",
+            "generated_count": 2,
+            "blockers": [],
+            "assets": [
+                {"figure_id": "fig_motivation_symbolic", "path": str(motivation_path), "kind": "diagram", "notes": "paperbanana_ok"},
+                {"figure_id": "fig_overview_symbolic", "path": str(overview_path), "kind": "diagram", "notes": "paperbanana_ok"},
+            ],
+        }
+
+        self.assertTrue(_postwriting_api_manifest_is_reusable(manifest, figures_dir))
+
+    def test_paperorchestra_tracing_deadline_supports_worker_threads(self):
+        from agents.paperorchestra import tracing
+
+        result = {}
+
+        def _target():
+            try:
+                result["value"] = tracing._call_llm_with_deadline(
+                    "system",
+                    "user",
+                    temperature=0.0,
+                    max_tokens=32,
+                    timeout_seconds=1,
+                )
+            except Exception as exc:  # pragma: no cover - asserted below
+                result["error"] = exc
+
+        with mock.patch.object(tracing, "call_llm", return_value=("ok", 3)):
+            thread = threading.Thread(target=_target)
+            thread.start()
+            thread.join(timeout=5)
+
+        self.assertFalse(thread.is_alive())
+        self.assertNotIn("error", result)
+        self.assertEqual(result["value"], ("ok", 3))
+
+    def test_manuscript_llm_timeout_wrapper_supports_worker_threads(self):
+        from agents import paper_orchestra_pipeline as pipeline
+
+        result = {}
+
+        def _target():
+            try:
+                result["value"] = pipeline._call_llm_with_timeout(
+                    "system",
+                    "user",
+                    temperature=0.0,
+                    max_tokens=32,
+                    timeout_seconds=1,
+                )
+            except Exception as exc:  # pragma: no cover - asserted below
+                result["error"] = exc
+
+        with mock.patch.object(pipeline, "call_llm", return_value=("ok", 3)):
+            thread = threading.Thread(target=_target)
+            thread.start()
+            thread.join(timeout=5)
+
+        self.assertFalse(thread.is_alive())
+        self.assertNotIn("error", result)
+        self.assertEqual(result["value"], ("ok", 3))
+
+    def test_manuscript_revision_llm_branch_is_reachable_for_authorable_issues(self):
+        from agents import paper_orchestra_pipeline as pipeline
+
+        main_tex = r"\documentclass{article}\begin{document}\section{Introduction}Old text.\end{document}"
+        body = "Revised text with the problem, method, result, and limitation. " * 80
+        revised = r"\documentclass{article}\begin{document}\section{Introduction}" + body + r"\end{document}"
+        feedback = {
+            "attempt": 1,
+            "authorable_issues": [
+                {
+                    "severity": "high",
+                    "standard": "Problem-motivation-method-result spine",
+                    "issue": "The manuscript spine is missing.",
+                    "fix": "Make the paper narrative explicit.",
+                }
+            ],
+            "stage_blockers": [],
+        }
+
+        with mock.patch.object(pipeline, "MANUSCRIPT_REVISION_ENABLE_LLM", True), mock.patch.object(
+            pipeline, "_call_llm_with_timeout", return_value=(revised, 123)
+        ):
+            tex, meta = pipeline._revise_main_tex_from_quality_feedback(
+                bundle_dir=self.tmpdir_path,
+                main_tex=main_tex,
+                bibtex="@inproceedings{a,title={A}}",
+                figure_assets=[],
+                feedback=feedback,
+                manuscript_state={"title": "T", "method_name": "M"},
+                venue_target=pipeline.target_from_key("iclr2026"),
+            )
+
+        self.assertIn("Revised text", tex)
+        self.assertEqual(meta["status"], "llm_revision_applied")
 
 
 if __name__ == "__main__":

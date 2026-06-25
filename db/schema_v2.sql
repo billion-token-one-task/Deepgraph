@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS deep_insights (
     evoscientist_workdir TEXT,                -- path to EvoScientist run
     generation_run_id TEXT,
     source_signal_ids TEXT,
+    source_signal_refs TEXT,
     source_paper_ids TEXT,
     prompt_version TEXT,
     model_version TEXT,
@@ -58,6 +59,7 @@ CREATE TABLE IF NOT EXISTS deep_insights (
     plan_root TEXT,
     paper_root TEXT,
     canonical_run_id INTEGER,
+    research_problem_id INTEGER,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -72,6 +74,12 @@ CREATE TABLE IF NOT EXISTS node_entity_overlap (
     shared_entity_types TEXT,                 -- JSON {type: count}
     taxonomic_distance INTEGER DEFAULT 0,     -- hops in taxonomy tree
     overlap_score REAL DEFAULT 0,             -- normalized overlap
+    content_hash TEXT,
+    signal_role TEXT DEFAULT 'solution',
+    empirical_posterior REAL,
+    confirm_count INTEGER DEFAULT 0,
+    refute_count INTEGER DEFAULT 0,
+    last_outcome_at TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(node_a_id, node_b_id)
 );
@@ -85,6 +93,12 @@ CREATE TABLE IF NOT EXISTS pattern_matches (
     node_a_id TEXT,
     node_b_id TEXT,
     shared_tokens TEXT,                       -- JSON array of overlapping keywords
+    content_hash TEXT,
+    signal_role TEXT DEFAULT 'solution',
+    empirical_posterior REAL,
+    confirm_count INTEGER DEFAULT 0,
+    refute_count INTEGER DEFAULT 0,
+    last_outcome_at TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(pattern_a_id, pattern_b_id)
 );
@@ -97,6 +111,12 @@ CREATE TABLE IF NOT EXISTS contradiction_clusters (
     shared_entities TEXT,                     -- JSON array of entity names
     cluster_size INTEGER DEFAULT 0,
     node_ids TEXT,                            -- JSON array of affected nodes
+    content_hash TEXT,
+    signal_role TEXT DEFAULT 'problem',
+    empirical_posterior REAL,
+    confirm_count INTEGER DEFAULT 0,
+    refute_count INTEGER DEFAULT 0,
+    last_outcome_at TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -115,6 +135,12 @@ CREATE TABLE IF NOT EXISTS performance_plateaus (
     plateau_level TEXT,                       -- high|mid|low
     max_value REAL,
     min_value REAL,
+    content_hash TEXT,
+    signal_role TEXT DEFAULT 'problem',
+    empirical_posterior REAL,
+    confirm_count INTEGER DEFAULT 0,
+    refute_count INTEGER DEFAULT 0,
+    last_outcome_at TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(node_id, dataset_name, metric_name)
 );
@@ -220,6 +246,36 @@ CREATE TABLE IF NOT EXISTS auto_research_jobs (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS research_problems (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    problem_statement TEXT,
+    source_signal_ref TEXT,
+    node_ids TEXT,
+    paper_ids TEXT,
+    problem_quality_score REAL,
+    status TEXT DEFAULT 'open',
+    attempts_count INTEGER DEFAULT 0,
+    ruled_out_approaches TEXT DEFAULT '[]',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS experimental_evidence_edges (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    experimental_claim_id INTEGER,
+    run_id INTEGER,
+    deep_insight_id INTEGER,
+    research_problem_id INTEGER,
+    empirical_entity_id TEXT,
+    target_kind TEXT,
+    target_id TEXT,
+    relation TEXT,
+    verdict TEXT,
+    effect_size REAL,
+    conditions TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_deep_insights_tier ON deep_insights(tier);
 CREATE INDEX IF NOT EXISTS idx_deep_insights_status ON deep_insights(status);
@@ -234,6 +290,14 @@ CREATE INDEX IF NOT EXISTS idx_experiment_iterations_run ON experiment_iteration
 CREATE INDEX IF NOT EXISTS idx_experimental_claims_run ON experimental_claims(run_id);
 CREATE INDEX IF NOT EXISTS idx_experimental_claims_insight ON experimental_claims(deep_insight_id);
 CREATE INDEX IF NOT EXISTS idx_auto_research_jobs_status ON auto_research_jobs(status);
+CREATE INDEX IF NOT EXISTS idx_research_problems_status ON research_problems(status);
+CREATE INDEX IF NOT EXISTS idx_research_problems_source ON research_problems(source_signal_ref);
+CREATE INDEX IF NOT EXISTS idx_experimental_edges_run ON experimental_evidence_edges(run_id);
+CREATE INDEX IF NOT EXISTS idx_experimental_edges_target ON experimental_evidence_edges(target_kind, target_id);
+CREATE INDEX IF NOT EXISTS idx_node_entity_overlap_hash ON node_entity_overlap(content_hash);
+CREATE INDEX IF NOT EXISTS idx_pattern_matches_hash ON pattern_matches(content_hash);
+CREATE INDEX IF NOT EXISTS idx_contradiction_clusters_hash ON contradiction_clusters(content_hash);
+CREATE INDEX IF NOT EXISTS idx_performance_plateaus_hash ON performance_plateaus(content_hash);
 
 -- Mechanism-first discovery signal tables
 CREATE TABLE IF NOT EXISTS mechanism_mismatches (
@@ -243,6 +307,12 @@ CREATE TABLE IF NOT EXISTS mechanism_mismatches (
     explanation_variants TEXT,              -- JSON array
     paper_ids TEXT,                         -- JSON array
     support_count INTEGER DEFAULT 0,
+    content_hash TEXT,
+    signal_role TEXT DEFAULT 'derived',
+    empirical_posterior REAL,
+    confirm_count INTEGER DEFAULT 0,
+    refute_count INTEGER DEFAULT 0,
+    last_outcome_at TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -253,6 +323,12 @@ CREATE TABLE IF NOT EXISTS protocol_artifacts (
     summary TEXT NOT NULL,
     paper_ids TEXT,                         -- JSON array
     support_count INTEGER DEFAULT 0,
+    content_hash TEXT,
+    signal_role TEXT DEFAULT 'problem',
+    empirical_posterior REAL,
+    confirm_count INTEGER DEFAULT 0,
+    refute_count INTEGER DEFAULT 0,
+    last_outcome_at TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -263,6 +339,12 @@ CREATE TABLE IF NOT EXISTS negative_space_gaps (
     summary TEXT NOT NULL,
     paper_ids TEXT,                         -- JSON array
     support_count INTEGER DEFAULT 0,
+    content_hash TEXT,
+    signal_role TEXT DEFAULT 'problem',
+    empirical_posterior REAL,
+    confirm_count INTEGER DEFAULT 0,
+    refute_count INTEGER DEFAULT 0,
+    last_outcome_at TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -276,6 +358,12 @@ CREATE TABLE IF NOT EXISTS hidden_variable_bridges (
     factor_idf REAL,
     pair_rarity REAL,
     shared_factor_count INTEGER,
+    content_hash TEXT,
+    signal_role TEXT DEFAULT 'solution',
+    empirical_posterior REAL,
+    confirm_count INTEGER DEFAULT 0,
+    refute_count INTEGER DEFAULT 0,
+    last_outcome_at TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(node_a_id, node_b_id, shared_factor)
 );
@@ -286,6 +374,12 @@ CREATE TABLE IF NOT EXISTS claim_method_gaps (
     summary TEXT NOT NULL,
     paper_ids TEXT,                         -- JSON array
     support_count INTEGER DEFAULT 0,
+    content_hash TEXT,
+    signal_role TEXT DEFAULT 'problem',
+    empirical_posterior REAL,
+    confirm_count INTEGER DEFAULT 0,
+    refute_count INTEGER DEFAULT 0,
+    last_outcome_at TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -386,6 +480,11 @@ CREATE INDEX IF NOT EXISTS idx_protocol_artifacts_node ON protocol_artifacts(nod
 CREATE INDEX IF NOT EXISTS idx_negative_space_node ON negative_space_gaps(node_id);
 CREATE INDEX IF NOT EXISTS idx_hidden_bridges_score ON hidden_variable_bridges(score DESC);
 CREATE INDEX IF NOT EXISTS idx_claim_method_gaps_node ON claim_method_gaps(node_id);
+CREATE INDEX IF NOT EXISTS idx_mechanism_mismatches_hash ON mechanism_mismatches(content_hash);
+CREATE INDEX IF NOT EXISTS idx_protocol_artifacts_hash ON protocol_artifacts(content_hash);
+CREATE INDEX IF NOT EXISTS idx_negative_space_gaps_hash ON negative_space_gaps(content_hash);
+CREATE INDEX IF NOT EXISTS idx_hidden_variable_bridges_hash ON hidden_variable_bridges(content_hash);
+CREATE INDEX IF NOT EXISTS idx_claim_method_gaps_hash ON claim_method_gaps(content_hash);
 CREATE INDEX IF NOT EXISTS idx_gpu_workers_status ON gpu_workers(status);
 CREATE INDEX IF NOT EXISTS idx_gpu_jobs_status ON gpu_jobs(status);
 CREATE INDEX IF NOT EXISTS idx_experiment_artifacts_run ON experiment_artifacts(run_id);

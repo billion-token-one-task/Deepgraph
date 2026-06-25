@@ -148,7 +148,9 @@ def _entry_issues(key: str, entry: dict[str, Any], *, current_year: int) -> list
     year = str(fields.get("year") or "")
     authors = fields.get("author") or fields.get("editor") or fields.get("organization")
     venue = fields.get("journal") or fields.get("booktitle") or fields.get("venue") or fields.get("publisher")
-    identifier = fields.get("doi") or fields.get("url") or fields.get("eprint") or fields.get("arxiv") or fields.get("archiveprefix")
+    note = fields.get("note") or ""
+    note_identifier = note if re.search(r"(?:arxiv|doi|https?://)", note, flags=re.IGNORECASE) else ""
+    identifier = fields.get("doi") or fields.get("url") or fields.get("eprint") or fields.get("arxiv") or fields.get("archiveprefix") or note_identifier
     issues: list[dict[str, str]] = []
     if not title:
         issues.append(_issue("high", "Reference auditor / metadata", "Bibliography entry is missing a title.", key, "Replace with verified paper metadata."))
@@ -161,7 +163,7 @@ def _entry_issues(key: str, entry: dict[str, Any], *, current_year: int) -> list
     if not venue and not identifier:
         issues.append(_issue("medium", "Reference auditor / metadata", "Bibliography entry lacks venue and DOI/arXiv/URL identifiers.", key, "Add venue plus DOI, arXiv ID, or URL when available."))
     raw = " ".join(str(x) for x in [key, title, authors, venue, identifier]).lower()
-    if any(term in raw for term in PLACEHOLDER_TERMS):
+    if any(re.search(rf"(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])", raw) for term in PLACEHOLDER_TERMS):
         issues.append(_issue("high", "Reference auditor / authenticity", "Bibliography entry looks like a placeholder or fabricated citation.", key, "Remove placeholder references and replace them with verified literature."))
     return issues
 
@@ -266,10 +268,11 @@ def audit_references(
             )
         )
 
+    citation_floor_scale = max(0.0, min(1.0, float(min_cited_references or 30) / 30.0))
     placement_requirements = {
-        "introduction": 8,
-        "related_work": 20,
-        "method": 5,
+        "introduction": max(4, round(8 * citation_floor_scale)),
+        "related_work": max(8, round(20 * citation_floor_scale)),
+        "method": max(3, round(5 * citation_floor_scale)),
     }
     for section, required in placement_requirements.items():
         actual = int(distribution[section]["unique_count"])

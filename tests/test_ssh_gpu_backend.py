@@ -22,6 +22,39 @@ class SshGpuBackendTests(unittest.TestCase):
             },
         }
 
+    def test_remote_experiment_omits_shell_timeout_when_uncapped(self):
+        worker = self._worker()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            code = root / "code"
+            code.mkdir()
+            captured = {}
+
+            def fake_run_ssh(_worker, script, *, timeout=None):
+                captured["script"] = script
+                captured["timeout"] = timeout
+                return subprocess.CompletedProcess(["ssh"], 0, stdout="FINAL_RESULTS: {}", stderr="")
+
+            with (
+                mock.patch.object(ssh_gpu_backend, "cleanup_remote_run_processes"),
+                mock.patch.object(ssh_gpu_backend, "sync_workdir_to_remote"),
+                mock.patch.object(ssh_gpu_backend, "sync_workdir_from_remote"),
+                mock.patch.object(ssh_gpu_backend, "_install_remote_repo_deps"),
+                mock.patch.object(ssh_gpu_backend, "_run_ssh", side_effect=fake_run_ssh),
+            ):
+                ssh_gpu_backend.run_remote_experiment(
+                    worker=worker,
+                    run_id=7,
+                    local_workdir=root,
+                    local_code_dir=code,
+                    time_budget=0,
+                    command_tokens=["python", "train.py"],
+                    local_python="python",
+                )
+
+        self.assertNotIn("timeout --kill-after", captured["script"])
+        self.assertIsNone(captured["timeout"])
+
     def test_remote_launcher_marks_and_cleans_one_run_process_group(self):
         script = ssh_gpu_backend._remote_launcher_script(
             run_id=7,

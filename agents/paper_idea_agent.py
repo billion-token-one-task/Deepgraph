@@ -23,8 +23,13 @@ from agents.idea_taste import (
 )
 from agents.insight_validation import get_evosci_input_issue
 from agents.llm_client import call_llm_json, is_llm_auth_error, is_llm_provider_unavailable_error
+from agents.problem_first import (
+    discover_research_problems,
+    match_problem_to_research_problem,
+    select_problem_first_candidates,
+)
 from agents.paper_title_policy import TITLE_NAMING_STANDARD_TEXT, normalize_paper_title
-from agents.signal_harvester import get_tier2_signals
+from agents.signal_harvester import get_solution_signals, get_tier2_signals, signal_refs_from_rows
 from agents.tier2_review_refine import review_and_refine_tier2_idea
 from config import TIER2_EVOSCI_PREINSERT_REVIEW
 from db import database as db
@@ -280,6 +285,44 @@ def _json_list(value) -> list:
 def _problem_node_ids(problem: dict) -> list[str]:
     nodes = _json_list(problem.get("related_node_ids"))
     return [str(node).strip() for node in nodes if str(node).strip()]
+
+
+def _problem_source_refs(problem: dict) -> dict:
+    refs = problem.get("source_signal_refs")
+    if isinstance(refs, dict):
+        return refs
+    if isinstance(refs, str):
+        try:
+            parsed = json.loads(refs)
+        except (json.JSONDecodeError, TypeError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _problem_ruled_out(problem: dict) -> list[dict]:
+    rows = _json_list(problem.get("ruled_out_approaches"))
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def _attach_research_problem_context(problem: dict, research_problems: list[dict], fallback_refs: dict) -> dict:
+    enriched = dict(problem)
+    matched = match_problem_to_research_problem(problem, research_problems)
+    if matched:
+        source_ref = matched.get("source_signal_ref") or {}
+        enriched["research_problem_id"] = matched.get("id")
+        enriched["problem_statement"] = matched.get("problem_statement") or enriched.get("formal_statement") or enriched.get("title")
+        enriched["ruled_out_approaches"] = matched.get("ruled_out_approaches") or []
+        enriched["source_signal_refs"] = {
+            "signals": [source_ref] if source_ref else [],
+            "node_ids": matched.get("node_ids") or enriched.get("related_node_ids") or [],
+            "paper_ids": matched.get("paper_ids") or [],
+        }
+        enriched["source_paper_ids"] = matched.get("paper_ids") or []
+    else:
+        enriched["source_signal_refs"] = fallback_refs
+        enriched["source_paper_ids"] = fallback_refs.get("paper_ids", [])
+    return enriched
 
 
 def _recent_tier2_memory(limit: int = RECENT_TIER2_MEMORY_LIMIT) -> list[dict]:
@@ -640,10 +683,35 @@ def _build_problem_prompt(signals: dict, recent_memory: list[dict] | None = None
     return "\n".join(sections)
 
 
-def _build_method_prompt(problem: dict) -> str:
+def _build_method_prompt(problem: dict, solution_signals: list[dict] | None = None) -> str:
     """Build prompt for Call 2 (Method Invention)."""
     compute = detect_compute_profile()
     compute_constraint = ""
+    ruled_out = _problem_ruled_out(problem)
+    ruled_out_block = ""
+    if ruled_out:
+        lines = ["## Ruled-Out Approaches"]
+        for item in ruled_out[:6]:
+            approach = str(item.get("approach") or "").strip()
+            failed = json.dumps(item.get("failed_under") or {}, ensure_ascii=False, default=str)[:240]
+            if approach:
+                lines.append(f"- {approach} | failed_under={failed}")
+        ruled_out_block = "\n" + "\n".join(lines) + "\n"
+    solution_block = ""
+    if solution_signals:
+        lines = ["## Candidate Solution Signals From The Graph"]
+        for signal in solution_signals[:8]:
+            table = str(signal.get("_signal_table") or signal.get("source") or "solution_signal")
+            title = (
+                signal.get("title")
+                or signal.get("summary")
+                or signal.get("theme")
+                or signal.get("shared_factor")
+                or ""
+            )
+            nodes = ", ".join(str(node) for node in signal.get("_node_ids") or [] if str(node).strip())
+            lines.append(f"- [{table}] {title[:200]} | nodes={nodes or '?'}")
+        solution_block = "\n" + "\n".join(lines) + "\n"
     if not compute.gpu_allowed:
         compute_constraint = """
 ## Local Execution Constraint
@@ -676,6 +744,8 @@ depend on a new benchmark recipe that is not already available.
 {problem['impact_scope']}
 
 ## Related Areas: {', '.join(problem.get('related_node_ids', []))}
+{ruled_out_block}
+{solution_block}
 {compute_constraint}
 
 Design a NEW method that addresses this specific failure mode.
@@ -787,6 +857,10 @@ def discover_paper_ideas(
         plateau_limit=tier2_plateau_limit,
         limitation_node_limit=tier2_limitation_nodes,
     )
+    fallback_problem_refs = signal_refs_from_rows(
+        getattr(signals, "payload", signals),
+        roles={"problem", "derived"},
+    )
     has_signals = (
         signals["contradiction_clusters"]
         or signals["performance_plateaus"]
@@ -803,26 +877,37 @@ def discover_paper_ideas(
         return []
 
     recent_memory = _recent_tier2_memory()
-
-    # Stage 1: Problem Sharpening
-    print("[PAPER_IDEA] Call 1/3: Problem Sharpening...", flush=True)
-    problem_prompt = _build_problem_prompt(signals, recent_memory=recent_memory)
-    try:
-        result1, tokens1 = call_llm_json(PROBLEM_SHARPENING_SYSTEM, problem_prompt)
-        total_tokens += tokens1
-        total_calls += 1
-    except Exception as e:
-        if _llm_temporarily_unavailable(e):
-            print(f"[PAPER_IDEA] Problem sharpening skipped: LLM unavailable ({e})", flush=True)
+    problems = select_problem_first_candidates(limit=max(max_problems * 2, max_problems), refresh=True)
+    if problems:
+        print(
+            f"[PAPER_IDEA] Problem-first pool selected {len(problems)} persisted research problems",
+            flush=True,
+        )
+    else:
+        print("[PAPER_IDEA] Call 1/3: Problem Sharpening...", flush=True)
+        problem_prompt = _build_problem_prompt(signals, recent_memory=recent_memory)
+        try:
+            result1, tokens1 = call_llm_json(PROBLEM_SHARPENING_SYSTEM, problem_prompt)
+            total_tokens += tokens1
+            total_calls += 1
+        except Exception as e:
+            if _llm_temporarily_unavailable(e):
+                print(f"[PAPER_IDEA] Problem sharpening skipped: LLM unavailable ({e})", flush=True)
+                return []
+            print(f"[PAPER_IDEA] Problem sharpening failed: {e}", flush=True)
             return []
-        print(f"[PAPER_IDEA] Problem sharpening failed: {e}", flush=True)
-        return []
 
-    problems = result1.get("problems", [])
-    if not problems:
-        print("[PAPER_IDEA] No problems extracted", flush=True)
-        return []
+        problems = result1.get("problems", [])
+        if not problems:
+            print("[PAPER_IDEA] No problems extracted", flush=True)
+            return []
 
+        research_problems = discover_research_problems(limit=max(max_problems * 2, len(problems)), persist=True)
+        problems = [
+            _attach_research_problem_context(problem, research_problems, fallback_problem_refs)
+            for problem in problems
+            if isinstance(problem, dict)
+        ]
     problem_budget = min(len(problems), max_problems + max(2, max_papers // 2))
     problems = _diversify_problems(problems, problem_budget, recent_memory)
     print(
@@ -841,7 +926,36 @@ def discover_paper_ideas(
 
         # Stage 2: Method Invention
         print(f"[PAPER_IDEA] Call 2/3: Inventing method for '{title[:50]}'...", flush=True)
-        method_prompt = _build_method_prompt(problem)
+        solution_signals = get_solution_signals(
+            {"node_ids": problem.get("related_node_ids") or problem.get("source_node_ids") or []},
+            limit=12,
+        )
+        solution_signal_refs = {
+            "signals": [
+                signal.get("_source_ref")
+                for signal in solution_signals
+                if isinstance(signal, dict) and isinstance(signal.get("_source_ref"), dict)
+            ],
+            "node_ids": list(
+                dict.fromkeys(
+                    str(node)
+                    for signal in solution_signals
+                    if isinstance(signal, dict)
+                    for node in signal.get("_node_ids") or []
+                    if str(node).strip()
+                )
+            ),
+            "paper_ids": list(
+                dict.fromkeys(
+                    str(pid)
+                    for signal in solution_signals
+                    if isinstance(signal, dict)
+                    for pid in signal.get("_paper_ids") or []
+                    if str(pid).strip()
+                )
+            ),
+        }
+        method_prompt = _build_method_prompt(problem, solution_signals=solution_signals)
         try:
             result2, tokens2 = call_llm_json(METHOD_INVENTION_SYSTEM, method_prompt)
             total_tokens += tokens2
@@ -865,7 +979,7 @@ def discover_paper_ideas(
 
         precheck = {
             "title": title,
-            "problem_statement": problem.get("formal_statement", ""),
+            "problem_statement": problem.get("problem_statement") or problem.get("formal_statement", ""),
             "proposed_method": json.dumps(method),
             "source_node_ids": json.dumps(problem.get("related_node_ids", [])),
             "mechanism_type": problem.get("mechanism_type", "mechanism_mismatch"),
@@ -929,7 +1043,7 @@ def discover_paper_ideas(
             "tier": 2,
             "status": "candidate",
             "title": normalized_paper_title,
-            "problem_statement": problem.get("formal_statement", ""),
+            "problem_statement": problem.get("problem_statement") or problem.get("formal_statement", ""),
             "existing_weakness": problem.get("current_failure_mode", ""),
             "proposed_method": json.dumps(method),
             "experimental_plan": json.dumps({
@@ -945,10 +1059,43 @@ def discover_paper_ideas(
                 "title_source": "paper_idea_title_policy",
             }),
             "related_work_positioning": json.dumps(result3.get("paper_outline", {})),
+            "supporting_papers": json.dumps(problem.get("source_paper_ids", [])),
             "source_node_ids": json.dumps(problem.get("related_node_ids", [])),
+            "source_paper_ids": json.dumps(problem.get("source_paper_ids", [])),
+            "source_signal_ids": json.dumps(
+                [
+                    ref.get("content_hash")
+                    for ref in (
+                        _problem_source_refs(problem).get("signals", [])
+                        + solution_signal_refs.get("signals", [])
+                    )
+                    if isinstance(ref, dict) and ref.get("content_hash")
+                ]
+            ),
+            "source_signal_refs": json.dumps(
+                {
+                    "signals": (
+                        _problem_source_refs(problem).get("signals", [])
+                        + solution_signal_refs.get("signals", [])
+                    ),
+                    "node_ids": list(
+                        dict.fromkeys(
+                            (problem.get("related_node_ids") or [])
+                            + solution_signal_refs.get("node_ids", [])
+                        )
+                    ),
+                    "paper_ids": list(
+                        dict.fromkeys(
+                            (problem.get("source_paper_ids") or [])
+                            + solution_signal_refs.get("paper_ids", [])
+                        )
+                    ),
+                }
+            ),
             "evidence_summary": problem.get("source_evidence", ""),
             "mechanism_type": problem.get("mechanism_type", "mechanism_mismatch"),
             "problem_awareness": json.dumps(problem_awareness),
+            "research_problem_id": problem.get("research_problem_id"),
             "signal_mix": json.dumps(
                 sorted(
                     {

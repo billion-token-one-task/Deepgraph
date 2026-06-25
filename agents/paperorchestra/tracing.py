@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import signal
+import threading
 import time
 from pathlib import Path
 from typing import Any, Callable
@@ -59,6 +60,8 @@ def _call_llm_with_deadline(
 ) -> tuple[str, int]:
     """Run a single LLM call with an optional wall-clock deadline."""
     if not timeout_seconds or timeout_seconds <= 0:
+        return call_llm(system_prompt, user_prompt, temperature=temperature, max_tokens=max_tokens)
+    if threading.current_thread() is not threading.main_thread() or not hasattr(signal, "SIGALRM"):
         return call_llm(system_prompt, user_prompt, temperature=temperature, max_tokens=max_tokens)
 
     old_handler = signal.getsignal(signal.SIGALRM)

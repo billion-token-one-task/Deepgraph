@@ -16,6 +16,7 @@ VALID_ENTITY_TYPES = {
     "dataset",
     "metric",
     "artifact",
+    "empirical_result",
     "material",
     "gene",
     "protein",

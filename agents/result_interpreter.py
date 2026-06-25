@@ -17,6 +17,7 @@ from agents.benchmark_audit import (
     benchmark_semantic_warnings,
     best_iteration_benchmark_summary,
 )
+from agents.problem_first import writeback_experiment_result
 from contracts import ExperimentResultPacket
 from db import database as db
 
@@ -384,7 +385,8 @@ def interpret_run(run_id: int) -> dict:
 
     insight = db.fetchone(
         """
-        SELECT title, tier, source_paper_ids, supporting_papers, source_node_ids
+        SELECT title, tier, source_paper_ids, supporting_papers, source_node_ids,
+               source_signal_refs, research_problem_id
         FROM deep_insights WHERE id=?
         """,
         (insight_id,),
@@ -437,6 +439,8 @@ def interpret_run(run_id: int) -> dict:
         "direction": direction,
         "source_paper_ids": json.loads(insight.get("source_paper_ids") or "[]") if insight.get("source_paper_ids") else json.loads(insight.get("supporting_papers") or "[]") if insight.get("supporting_papers") else [],
         "source_node_ids": json.loads(insight.get("source_node_ids") or "[]") if insight.get("source_node_ids") else [],
+        "source_signal_refs": _json_load(insight.get("source_signal_refs"), {}) if insight else {},
+        "research_problem_id": insight.get("research_problem_id") if insight else None,
         "benchmark_summary": benchmark_summary,
         "benchmark_artifact_manifest": benchmark_artifact_manifest,
         "evidence_tier": evidence_tier,
@@ -525,19 +529,21 @@ def interpret_run(run_id: int) -> dict:
         (run_id, insight_id))
 
     if existing:
+        claim_id = int(existing["id"])
         db.execute(
             """UPDATE experimental_claims
                SET claim_text=?, verdict=?, effect_size=?, confidence=?,
                    p_value=?, supporting_data=?, source_paper_ids=?, source_node_ids=?
                WHERE id=?""",
             (claim_text, verdict, effect, confidence, p_value,
-             json.dumps(supporting_data), source_paper_ids, source_node_ids, existing["id"]))
+             json.dumps(supporting_data), source_paper_ids, source_node_ids, claim_id))
     else:
-        db.execute(
+        claim_id = db.insert_returning_id(
             """INSERT INTO experimental_claims
                (run_id, deep_insight_id, claim_text, claim_type, verdict,
                 effect_size, confidence, p_value, supporting_data, source_paper_ids, source_node_ids)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               RETURNING id""",
             (run_id, insight_id, claim_text, "experimental", verdict,
              effect, confidence, p_value, json.dumps(supporting_data), source_paper_ids, source_node_ids))
     db.commit()
@@ -550,6 +556,22 @@ def interpret_run(run_id: int) -> dict:
         "UPDATE experiment_runs SET hypothesis_verdict=?, effect_size=?, effect_pct=? WHERE id=?",
         (verdict, effect, effect_pct, run_id))
     db.commit()
+    writeback_summary = writeback_experiment_result(
+        run_id=run_id,
+        deep_insight_id=insight_id,
+        verdict=verdict,
+        effect_size=effect,
+        p_value=p_value,
+        conditions={
+            "metric_name": metric_name,
+            "baseline": baseline,
+            "best": best,
+            "direction": direction,
+            "total_iterations": total_iters,
+        },
+        source_signal_refs=supporting_data.get("source_signal_refs") or {},
+        experimental_claim_id=claim_id,
+    )
 
     print(f"[INTERPRET] Run {run_id}: {verdict} (effect={effect:+.6f}, p={p_value:.4f}, "
           f"confidence={confidence:.4f})", flush=True)
@@ -567,5 +589,6 @@ def interpret_run(run_id: int) -> dict:
         "confidence": confidence,
         "total_iterations": total_iters,
         "kept_count": kept_count,
+        "writeback": writeback_summary,
         "result_packet": result_packet.to_dict(),
     }

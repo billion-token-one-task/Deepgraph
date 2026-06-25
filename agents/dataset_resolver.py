@@ -19,6 +19,7 @@ from config import (
     DATASET_RESOLVER_ALLOW_NETWORK,
     DATASET_RESOLVER_ENABLED,
     DATASET_RESOLVER_HF_LIMIT,
+    DATASET_RESOLVER_METADATA_PROBE_ENABLED,
     DATASET_RESOLVER_MIN_CONFIDENCE,
     DATASET_RESOLVER_TIMEOUT_SECONDS,
     EXPERIMENT_REAL_BENCHMARK_MAX_EXAMPLES,
@@ -134,13 +135,217 @@ COMMON_HF_DATASETS: dict[str, dict[str, Any]] = {
         "answer_field": "code",
         "confidence": 0.92,
     },
+    "spider": {
+        "name": "Spider",
+        "hf_dataset": "",
+        "config": "",
+        "split": "dev",
+        "task_type": "text_to_sql",
+        "requires_harness": True,
+        "generated_runner_supported": False,
+        "source": "official_benchmark_registry",
+        "official_url": "https://yale-lily.github.io/spider",
+        "license": "CC BY-SA 4.0",
+        "materialization_requirements": [
+            "official dataset zip",
+            "SQLite database files",
+            "official/test-suite SQL evaluator",
+        ],
+        "confidence": 0.99,
+    },
+    "bird": {
+        "name": "BIRD",
+        "hf_dataset": "",
+        "config": "",
+        "split": "dev",
+        "task_type": "text_to_sql",
+        "requires_harness": True,
+        "generated_runner_supported": False,
+        "source": "official_benchmark_registry",
+        "official_url": "https://bird-bench.github.io/",
+        "license": "CC BY-SA 4.0",
+        "materialization_requirements": [
+            "official BIRD data package",
+            "database files",
+            "official execution evaluator",
+        ],
+        "confidence": 0.99,
+    },
+    "agentdojo": {
+        "name": "AgentDojo",
+        "hf_dataset": "",
+        "config": "",
+        "split": "benchmark",
+        "task_type": "agent_tool_safety",
+        "requires_harness": True,
+        "generated_runner_supported": False,
+        "source": "official_benchmark_registry",
+        "official_url": "https://github.com/ethz-spylab/agentdojo",
+        "materialization_requirements": [
+            "official AgentDojo package/repository",
+            "task suites and tool environments",
+            "security/utility evaluator",
+        ],
+        "confidence": 0.97,
+    },
+    "harmbench": {
+        "name": "HarmBench",
+        "hf_dataset": "",
+        "config": "",
+        "split": "benchmark",
+        "task_type": "safety_evaluation",
+        "requires_harness": True,
+        "generated_runner_supported": False,
+        "source": "official_benchmark_registry",
+        "official_url": "https://github.com/centerforaisafety/HarmBench",
+        "materialization_requirements": [
+            "official HarmBench repository/data",
+            "behavior and classifier assets",
+            "official attack success/refusal evaluator",
+        ],
+        "confidence": 0.96,
+    },
+    "advbench": {
+        "name": "AdvBench",
+        "hf_dataset": "",
+        "config": "",
+        "split": "benchmark",
+        "task_type": "safety_evaluation",
+        "requires_harness": True,
+        "generated_runner_supported": False,
+        "source": "official_benchmark_registry",
+        "official_url": "https://github.com/llm-attacks/llm-attacks",
+        "materialization_requirements": [
+            "official harmful behavior prompt set",
+            "jailbreak/refusal scoring adapter",
+        ],
+        "confidence": 0.94,
+    },
+    "longmemeval": {
+        "name": "LongMemEval",
+        "hf_dataset": "xiaowu0162/longmemeval-cleaned",
+        "config": "default",
+        "split": "longmemeval_oracle",
+        "task_type": "long_context_memory",
+        "requires_harness": True,
+        "generated_runner_supported": False,
+        "source": "official_benchmark_registry",
+        "official_url": "https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned",
+        "materialization_requirements": [
+            "materialized LongMemEval split with schema/count manifest",
+            "long-memory retrieval/evidence evaluator",
+            "budget-matched compression and retrieval baselines",
+        ],
+        "confidence": 0.94,
+    },
+    "clevrer": {
+        "name": "CLEVRER",
+        "hf_dataset": "zechen-nlp/clevrer",
+        "config": "descriptive",
+        "split": "validation",
+        "task_type": "visual_physical_reasoning",
+        "requires_harness": True,
+        "generated_runner_supported": False,
+        "source": "official_benchmark_registry",
+        "official_url": "http://clevrer.csail.mit.edu/",
+        "materialization_requirements": [
+            "official videos/questions or verified HF mirror",
+            "visual/video model adapter",
+            "descriptive/explanatory/predictive/counterfactual split reporting",
+        ],
+        "confidence": 0.96,
+    },
+    "prm800k": {
+        "name": "PRM800K",
+        "hf_dataset": "",
+        "config": "",
+        "split": "test",
+        "task_type": "process_reward_evaluation",
+        "requires_harness": True,
+        "generated_runner_supported": False,
+        "source": "official_benchmark_registry",
+        "official_url": "https://github.com/openai/prm800k",
+        "materialization_requirements": [
+            "official PRM800K process-supervision annotations",
+            "step-level correctness/reward evaluator",
+            "answer accuracy and process-label metrics",
+        ],
+        "confidence": 0.97,
+    },
+    "processbench": {
+        "name": "ProcessBench",
+        "hf_dataset": "Qwen/ProcessBench",
+        "config": "",
+        "split": "test",
+        "task_type": "process_reward_evaluation",
+        "requires_harness": True,
+        "generated_runner_supported": False,
+        "source": "official_benchmark_registry",
+        "official_url": "https://huggingface.co/datasets/Qwen/ProcessBench",
+        "materialization_requirements": [
+            "official ProcessBench examples",
+            "process error localization evaluator",
+            "per-domain math reasoning breakdown",
+        ],
+        "confidence": 0.95,
+    },
+    "t2icompbench": {
+        "name": "T2I-CompBench",
+        "hf_dataset": "",
+        "config": "",
+        "split": "benchmark",
+        "task_type": "text_to_image_compositionality",
+        "requires_harness": True,
+        "generated_runner_supported": False,
+        "source": "official_benchmark_registry",
+        "official_url": "https://karine-h.github.io/T2I-CompBench/",
+        "materialization_requirements": [
+            "official prompt subsets",
+            "image generation protocol",
+            "attribute/relation/scoring models",
+        ],
+        "confidence": 0.97,
+    },
+    "t2i compbench": {
+        "name": "T2I-CompBench",
+        "hf_dataset": "",
+        "config": "",
+        "split": "benchmark",
+        "task_type": "text_to_image_compositionality",
+        "requires_harness": True,
+        "generated_runner_supported": False,
+        "source": "official_benchmark_registry",
+        "official_url": "https://karine-h.github.io/T2I-CompBench/",
+        "materialization_requirements": [
+            "official prompt subsets",
+            "image generation protocol",
+            "attribute/relation/scoring models",
+        ],
+        "confidence": 0.97,
+    },
     "cifar10": {
         "name": "CIFAR-10",
-        "hf_dataset": "cifar10",
+        "hf_dataset": "",
         "config": "",
         "split": "test",
         "task_type": "image_classification",
-        "confidence": 0.92,
+        "requires_harness": True,
+        "generated_runner_supported": False,
+        "source": "official_benchmark_registry",
+        "official_url": "https://www.cs.toronto.edu/~kriz/cifar.html",
+        "direct_files": [
+            {
+                "url": "https://www.cs.toronto.edu/~kriz/cifar-10-python.tar.gz",
+                "kind": "official_tarball"
+            }
+        ],
+        "download_strategy": "torchvision.datasets.CIFAR10 or official Toronto tarball",
+        "materialization_requirements": [
+            "official CIFAR-10 tarball or torchvision cache",
+            "image classification dataloader",
+            "label mapping and corruption/external-test adapters if claimed",
+        ],
+        "confidence": 0.99,
     },
 }
 
@@ -191,11 +396,29 @@ def _common_recipe(name: str) -> dict[str, Any] | None:
         if key == alias or alias in key or key in alias:
             out = dict(recipe)
             out["requested_name"] = name
-            out["source"] = "local_registry"
+            out.setdefault("source", "local_registry")
             out["resolved"] = True
-            out["url"] = f"https://huggingface.co/datasets/{out['hf_dataset']}"
+            if not out.get("url"):
+                if out.get("hf_dataset"):
+                    out["url"] = f"https://huggingface.co/datasets/{out['hf_dataset']}"
+                elif out.get("official_url"):
+                    out["url"] = out["official_url"]
             return out
     return None
+
+
+def resolve_known_dataset_recipe(name: str) -> dict[str, Any] | None:
+    """Resolve a dataset name from the local official registry without network search."""
+
+    return _common_recipe(name)
+
+
+def _hf_endpoint() -> str:
+    return (
+        os.getenv("DEEPGRAPH_HF_ENDPOINT")
+        or os.getenv("HF_ENDPOINT")
+        or "https://huggingface.co"
+    ).strip().rstrip("/")
 
 
 def _auth_headers() -> dict[str, str]:
@@ -248,7 +471,7 @@ def search_huggingface_datasets(
     client = client or httpx.Client(timeout=timeout or DATASET_RESOLVER_TIMEOUT_SECONDS)
     try:
         response = client.get(
-            "https://huggingface.co/api/datasets",
+            f"{_hf_endpoint()}/api/datasets",
             params={"search": clean_query, "limit": limit or DATASET_RESOLVER_HF_LIMIT, "full": "true"},
             headers=_auth_headers(),
         )
@@ -355,6 +578,11 @@ def refine_recipe_with_hf_metadata(recipe: dict[str, Any], *, client: httpx.Clie
     dataset_id = _text(out.get("hf_dataset"))
     if not DATASET_RESOLVER_ENABLED or not DATASET_RESOLVER_ALLOW_NETWORK or not dataset_id:
         return out
+    if not DATASET_RESOLVER_METADATA_PROBE_ENABLED:
+        out.setdefault("metadata_probe", {"status": "skipped", "reason": "metadata_probe_disabled"})
+        return out
+    os.environ.setdefault("HF_HUB_ETAG_TIMEOUT", str(DATASET_RESOLVER_TIMEOUT_SECONDS))
+    os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", str(max(DATASET_RESOLVER_TIMEOUT_SECONDS, 30)))
     try:
         from datasets import get_dataset_config_names, get_dataset_split_names, load_dataset_builder
     except Exception as exc:
@@ -512,6 +740,80 @@ def _dataset_names(plan: dict[str, Any]) -> list[str]:
     return names
 
 
+def _requires_literature_selected_recipe(row: dict[str, Any] | None) -> bool:
+    if not isinstance(row, dict):
+        return False
+    policy = _text(row.get("resolver_policy")).lower()
+    source = _text(row.get("dataset_selection_source")).lower()
+    return bool(row.get("requires_harness")) or policy in {"validate_only", "manual", "literature_selected"} or source in {
+        "llm_literature_design",
+        "domain_literature",
+        "literature_review",
+    }
+
+
+def _literature_recipe_blocker(name: str, row: dict[str, Any]) -> dict[str, Any]:
+    if row.get("requires_harness"):
+        reason = "benchmark requires a dedicated domain harness; resolver search is disabled"
+    else:
+        reason = "benchmark design requires an explicit LLM/literature-selected dataset recipe; resolver search is disabled"
+    return {
+        "name": name,
+        "resolved": False,
+        "reason": reason,
+        "source": row.get("dataset_selection_source") or row.get("source") or "benchmark_design",
+    }
+
+
+_GENERATED_RUNNER_TASK_TYPES = {
+    "",
+    "qa",
+    "math_qa",
+    "multihop_qa",
+    "boolean_qa",
+    "code_generation",
+    "derived_stress_split",
+}
+
+
+def _recipe_generated_runner_supported(row: dict[str, Any]) -> bool:
+    if row.get("generated_runner_supported") is False:
+        return False
+    if row.get("requires_harness"):
+        return False
+    task_type = _text(row.get("task_type")).lower()
+    if task_type == "benchmark":
+        task_type = ""
+    if task_type not in _GENERATED_RUNNER_TASK_TYPES:
+        return False
+    if row.get("derive_from_loaded_benchmarks"):
+        return True
+    hf_dataset = _text(row.get("hf_dataset") or row.get("dataset_id"))
+    if hf_dataset and "/" in hf_dataset:
+        return True
+    if row.get("direct_files") and task_type in _GENERATED_RUNNER_TASK_TYPES:
+        return True
+    return False
+
+
+def _resolved_runner_blocker(row: dict[str, Any]) -> dict[str, Any]:
+    name = row.get("name") or row.get("hf_dataset") or row.get("dataset") or "benchmark"
+    if row.get("requires_harness"):
+        reason = "benchmark source is resolved, but it requires dedicated harness/materialization before execution"
+    elif row.get("generated_runner_supported") is False:
+        reason = "benchmark recipe explicitly disables the built-in generated runner"
+    else:
+        reason = "benchmark recipe is not supported by the built-in generated text/code runner"
+    return {
+        "name": name,
+        "resolved": True,
+        "reason": reason,
+        "source": row.get("source") or row.get("dataset_selection_source") or "dataset_resolver",
+        "official_url": row.get("official_url") or row.get("url") or "",
+        "materialization_requirements": row.get("materialization_requirements") or [],
+    }
+
+
 def resolve_plan_datasets(plan: dict[str, Any]) -> dict[str, Any]:
     """Return a copy of ``plan`` with public dataset recipes attached when possible."""
 
@@ -537,6 +839,10 @@ def resolve_plan_datasets(plan: dict[str, Any]) -> dict[str, Any]:
             row.setdefault("resolved", True)
             resolved_rows.append(row)
             continue
+        if current and _requires_literature_selected_recipe(current):
+            unresolved_rows.append(_literature_recipe_blocker(name, current))
+            targets.append(current)
+            continue
         recipe = resolve_dataset_name(name)
         if recipe.get("resolved"):
             merged = {**(current or {}), **recipe}
@@ -556,6 +862,8 @@ def resolve_plan_datasets(plan: dict[str, Any]) -> dict[str, Any]:
             continue
         seen.add(name)
         merged_targets.append(row)
+    runnable_rows = [row for row in resolved_rows if _recipe_generated_runner_supported(row)]
+    non_runnable_resolved_rows = [row for row in resolved_rows if not _recipe_generated_runner_supported(row)]
     if resolved_rows:
         out["benchmark_targets"] = merged_targets
         out["datasets"] = [
@@ -564,66 +872,84 @@ def resolve_plan_datasets(plan: dict[str, Any]) -> dict[str, Any]:
                 "hf_dataset": row.get("hf_dataset"),
                 "split": row.get("split"),
                 "source": row.get("source"),
+                "official_url": row.get("official_url") or row.get("url") or "",
+                "requires_harness": bool(row.get("requires_harness")),
+                "materialization_requirements": row.get("materialization_requirements") or [],
             }
             for row in resolved_rows
         ]
-    if unresolved_rows and not resolved_rows:
-        out["generated_runner_supported"] = False
+
+    blockers = [
+        row
+        for row in _as_list(out.get("benchmark_recipe_blockers"))
+        if isinstance(row, dict)
+    ]
+    resolved_names = {
+        str(row.get(key) or "").lower()
+        for row in resolved_rows
+        for key in ("name", "hf_dataset", "dataset")
+        if row.get(key)
+    }
+    blockers = [
+        row for row in blockers
+        if str(row.get("name") or "").lower() not in resolved_names
+    ]
+    seen_blockers = {
+        str(row.get("name") or "").lower()
+        for row in blockers
+        if row.get("name")
+    }
+    for row in [*_as_list(unresolved_rows), *non_runnable_resolved_rows]:
+        if not isinstance(row, dict):
+            continue
+        blocker = _resolved_runner_blocker(row) if row in non_runnable_resolved_rows else row
+        name = blocker.get("name")
+        key = str(name or "").lower()
+        if name and key not in seen_blockers:
+            blockers.append(blocker)
+            seen_blockers.add(key)
+
+    if blockers:
         out["benchmark_recipe_blockers"] = [
-            {"name": row.get("name"), "reason": row.get("reason")}
-            for row in unresolved_rows
+            {
+                "name": row.get("name"),
+                "reason": row.get("reason"),
+                "source": row.get("source"),
+                "official_url": row.get("official_url") or "",
+                "materialization_requirements": row.get("materialization_requirements") or [],
+            }
+            for row in blockers
             if row.get("name")
         ]
-        out["deferred_benchmark_targets"] = [row.get("name") for row in unresolved_rows if row.get("name")]
-    elif resolved_rows:
-        resolved_names = {
-            str(row.get(key) or "").lower()
-            for row in resolved_rows
-            for key in ("name", "hf_dataset", "dataset")
-            if row.get(key)
-        }
-        blockers = [
-            row
-            for row in _as_list(out.get("benchmark_recipe_blockers"))
-            if not isinstance(row, dict) or str(row.get("name") or "").lower() not in resolved_names
-        ]
-        seen_blockers = {
-            str(row.get("name") or "").lower()
-            for row in blockers
-            if isinstance(row, dict) and row.get("name")
-        }
-        for row in unresolved_rows:
-            name = row.get("name")
-            key = str(name or "").lower()
-            if name and key not in seen_blockers:
-                blockers.append({"name": name, "reason": row.get("reason")})
-                seen_blockers.add(key)
-        if blockers:
-            out["benchmark_recipe_blockers"] = blockers
-            out["deferred_benchmark_targets"] = [
-                row.get("name") if isinstance(row, dict) else str(row)
-                for row in blockers
-                if (row.get("name") if isinstance(row, dict) else str(row))
-            ]
-            out["deferred_benchmark_target_details"] = unresolved_rows
-            out["benchmark_harness_deferred"] = True
-        else:
-            out.pop("benchmark_recipe_blockers", None)
-            out.pop("deferred_benchmark_targets", None)
-            out.pop("deferred_benchmark_target_details", None)
-            out.pop("benchmark_harness_deferred", None)
-        out["generated_runner_supported"] = True
+        out["deferred_benchmark_targets"] = [row.get("name") for row in blockers if row.get("name")]
+        out["deferred_benchmark_target_details"] = blockers
+        out["benchmark_harness_deferred"] = True
+    else:
+        out.pop("benchmark_recipe_blockers", None)
+        out.pop("deferred_benchmark_targets", None)
+        out.pop("deferred_benchmark_target_details", None)
+        out.pop("benchmark_harness_deferred", None)
+
+    if resolved_rows or unresolved_rows:
+        out["generated_runner_supported"] = bool(runnable_rows)
+
     out["dataset_resolution"] = {
         "status": "resolved" if resolved_rows and not unresolved_rows else "partial" if resolved_rows else "unresolved",
+        "generated_runner_supported": bool(runnable_rows),
         "resolved": [
             {
                 "name": row.get("name"),
                 "hf_dataset": row.get("hf_dataset"),
                 "source": row.get("source"),
                 "confidence": row.get("confidence"),
+                "generated_runner_supported": _recipe_generated_runner_supported(row),
+                "requires_harness": bool(row.get("requires_harness")),
+                "official_url": row.get("official_url") or row.get("url") or "",
+                "materialization_requirements": row.get("materialization_requirements") or [],
             }
             for row in resolved_rows
         ],
         "unresolved": unresolved_rows,
+        "runner_blockers": [_resolved_runner_blocker(row) for row in non_runnable_resolved_rows],
     }
     return out

@@ -367,6 +367,19 @@ def default_plot_plan(metric_name: str) -> list[dict[str, Any]]:
             "placement": "double_column",
             "standard_version": FIGURE_STANDARD_VERSION,
         },
+        {
+            "figure_id": "fig_dataset_breakdown",
+            "plot_type": "plot",
+            "role": "experiment_figure_pack",
+            "chart_type": "dataset_breakdown",
+            "title": "Dataset and seed breakdown",
+            "objective": f"Check {metric} across datasets, seeds, and objective families when per-dataset or per-seed artifacts are available.",
+            "data_source": "benchmark_summary.json:per_dataset|per_seed|per_objective",
+            "aspect_ratio": "4:1",
+            "layout": "1x3",
+            "placement": "double_column",
+            "standard_version": FIGURE_STANDARD_VERSION,
+        },
     ]
 
 

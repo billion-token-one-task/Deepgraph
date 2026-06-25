@@ -27,7 +27,7 @@ from agents.llm_client import (
     is_llm_provider_unavailable_error,
 )
 from contracts import DeepInsightSpec, normalize_deep_insight_storage
-from agents.signal_harvester import get_tier1_signals
+from agents.signal_harvester import get_tier1_signals, signal_refs_from_rows
 from config import LLM_MODEL, PROMPT_VERSION
 from db import database as db
 from db.insight_outcomes import new_generation_run_id, record_created
@@ -383,6 +383,7 @@ def discover_paradigm_insights(
     signals = get_tier1_signals(
         top_overlaps=tier1_top_overlaps, top_patterns=tier1_top_patterns
     )
+    source_signal_refs = signal_refs_from_rows(getattr(signals, "payload", signals))
     if not signals["entity_overlaps"] and not signals["pattern_matches"]:
         print("[PARADIGM] No signals available. Run signal_harvester first.", flush=True)
         return []
@@ -518,6 +519,10 @@ def discover_paradigm_insights(
                 candidate.get("field_a", {}).get("node_id", ""),
                 candidate.get("field_b", {}).get("node_id", ""),
             ]),
+            "source_signal_ids": json.dumps(
+                [ref["content_hash"] for ref in source_signal_refs.get("signals", []) if ref.get("content_hash")]
+            ),
+            "source_signal_refs": json.dumps(source_signal_refs),
             "evidence_summary": candidate.get("evidence_from_graph", ""),
             "mechanism_type": _guess_mechanism_type(candidate, result2),
             "signal_mix": json.dumps(
@@ -602,10 +607,10 @@ def store_deep_insight(insight: dict) -> int:
             resource_class, submission_status,
             novelty_status, novelty_report,
             generation_tokens, llm_calls,
-            generation_run_id, source_signal_ids, source_paper_ids,
+            generation_run_id, source_signal_ids, source_signal_refs, source_paper_ids,
             prompt_version, model_version, exemplars_used,
-            token_cost_usd, wall_clock_seconds, outcome)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            token_cost_usd, wall_clock_seconds, outcome, research_problem_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            RETURNING id""",
         (
             insight.get("tier", 1),
@@ -640,6 +645,7 @@ def store_deep_insight(insight: dict) -> int:
             insight.get("llm_calls", 0),
             insight.get("generation_run_id"),
             _jsonify(insight.get("source_signal_ids")),
+            _jsonify(insight.get("source_signal_refs")),
             _jsonify(insight.get("source_paper_ids")),
             insight.get("prompt_version"),
             insight.get("model_version"),
@@ -647,6 +653,7 @@ def store_deep_insight(insight: dict) -> int:
             insight.get("token_cost_usd"),
             insight.get("wall_clock_seconds"),
             insight.get("outcome", "pending"),
+            insight.get("research_problem_id"),
         ),
     )
     db.commit()
