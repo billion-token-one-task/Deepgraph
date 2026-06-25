@@ -734,6 +734,16 @@ def run_remote_experiment(
     delimiter = f"DEEPGRAPH_REMOTE_LAUNCHER_{int(run_id)}"
     while delimiter in launcher:
         delimiter += "_END"
+    try:
+        budget = int(time_budget or 0)
+    except (TypeError, ValueError):
+        budget = 0
+    launch_command = (
+        f"timeout --kill-after=30s {max(1, budget + 60)}s {shlex.quote(paths['launcher'])}"
+        if budget > 0
+        else shlex.quote(paths['launcher'])
+    )
+    ssh_timeout = max(120, budget + 180) if budget > 0 else None
     remote_lines = [
         "set -euo pipefail",
         f"mkdir -p {shlex.quote(remote_workdir)}",
@@ -741,11 +751,11 @@ def run_remote_experiment(
         launcher,
         delimiter,
         f"chmod +x {shlex.quote(paths['launcher'])}",
-        f"timeout --kill-after=30s {max(1, int(time_budget) + 60)}s {shlex.quote(paths['launcher'])}",
+        launch_command,
     ]
     result: subprocess.CompletedProcess[str] | None = None
     try:
-        result = _run_ssh(worker, "\n".join(remote_lines), timeout=max(120, int(time_budget) + 180))
+        result = _run_ssh(worker, "\n".join(remote_lines), timeout=ssh_timeout)
     except subprocess.TimeoutExpired as exc:
         cleanup_remote_run_processes(worker=worker, run_id=run_id, remote_workdir=remote_workdir)
         try:

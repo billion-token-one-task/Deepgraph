@@ -5,8 +5,14 @@ ROOT="${DEEPGRAPH_ROOT:-/root/hf_models/hk_backup/Deepgraph}"
 PYTHON="${DEEPGRAPH_PYTHON:-/root/anaconda3/bin/python3}"
 LOG_DIR="$ROOT/logs"
 WEB_LOG="$LOG_DIR/web_8081.log"
+LOCK_FILE="${DEEPGRAPH_WEB_FOREVER_LOCK:-/tmp/deepgraph-web-8081.forever.lock}"
 
 mkdir -p "$LOG_DIR"
+exec 209>"$LOCK_FILE"
+if ! flock -n 209; then
+  echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] another deepgraph web wrapper is already running; exiting" >> "$WEB_LOG"
+  exit 0
+fi
 
 if [[ -f "$ROOT/.env" ]]; then
   set -a

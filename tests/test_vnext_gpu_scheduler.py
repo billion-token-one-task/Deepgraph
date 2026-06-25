@@ -1,3 +1,4 @@
+import json
 import tempfile
 import os
 import unittest
@@ -6,6 +7,26 @@ from unittest import mock
 
 from db import database
 from orchestrator import gpu_scheduler
+
+
+class GpuSchedulerTimeoutPolicyTests(unittest.TestCase):
+    def test_queue_run_preserves_zero_timeout_as_uncapped(self):
+        with (
+            mock.patch.object(gpu_scheduler.db, "init_db"),
+            mock.patch.object(gpu_scheduler, "_effective_vram_required_gb", return_value=(24, None)),
+            mock.patch.object(gpu_scheduler.db, "insert_returning_id", return_value=123) as insert,
+            mock.patch.object(gpu_scheduler.db, "commit"),
+            mock.patch.object(gpu_scheduler.db, "emit_pipeline_event"),
+        ):
+            gpu_scheduler.queue_run(
+                insight_id=1,
+                run_id=2,
+                resource_class="gpu_large",
+                timeout_s=0,
+            )
+
+        params = insert.call_args.args[1]
+        self.assertEqual(params[5], 0)
 
 
 class GpuSchedulerTests(unittest.TestCase):
@@ -126,6 +147,252 @@ class GpuSchedulerTests(unittest.TestCase):
 
         self.assertEqual(workers, [])
 
+    def _write_legacy_gsm8k_manifest(self):
+        workdir = Path(self.tmpdir.name) / "run1"
+        spec_dir = workdir / "spec"
+        spec_dir.mkdir(parents=True, exist_ok=True)
+        (spec_dir / "benchmark_manifest.json").write_text(
+            json.dumps(
+                {
+                    "benchmark_protocol": {
+                        "dataset_protocols": [
+                            {"name": "GSM8K", "hf_dataset": "openai/gsm8k", "task_family": "math_qa"}
+                        ],
+                        "full_benchmark_requirements": {"required_dataset_names": ["GSM8K"]},
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def _write_legacy_mbpp_manifest(self):
+        workdir = Path(self.tmpdir.name) / "run1"
+        spec_dir = workdir / "spec"
+        spec_dir.mkdir(parents=True, exist_ok=True)
+        (spec_dir / "benchmark_manifest.json").write_text(
+            json.dumps(
+                {
+                    "benchmark_protocol": {
+                        "dataset_protocols": [
+                            {"name": "MBPP", "hf_dataset": "google-research-datasets/mbpp", "task_family": "code_generation"}
+                        ],
+                        "full_benchmark_requirements": {"required_dataset_names": ["MBPP"]},
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def test_next_job_blocks_legacy_gsm8k_manifest_for_formal_run(self):
+        self._write_legacy_gsm8k_manifest()
+        database.execute(
+            """
+            UPDATE deep_insights
+            SET title=?, proposed_method=?, experimental_plan=?
+            WHERE id=1
+            """,
+            (
+                "Formal code reasoning over Lean proof-state lattices",
+                json.dumps({"name": "Verifier search", "definition": "Use Lean proof-state verifier feedback."}),
+                json.dumps({"datasets": [{"name": "GSM8K"}]}),
+            ),
+        )
+        database.execute(
+            """
+            INSERT INTO auto_research_jobs (deep_insight_id, status, stage, experiment_run_id)
+            VALUES (1, 'queued_gpu', 'gpu_scheduler', 1)
+            """
+        )
+        job_id = gpu_scheduler.queue_run(
+            insight_id=1,
+            run_id=1,
+            resource_class="gpu_small",
+            priority=1,
+            vram_required_gb=16,
+        )
+
+        job = gpu_scheduler._next_job()
+
+        self.assertIsNone(job)
+        queued = database.fetchone("SELECT status, error_message FROM gpu_jobs WHERE id=?", (job_id,))
+        self.assertEqual(queued["status"], "failed")
+        self.assertIn("legacy benchmark manifest uses GSM8K", queued["error_message"])
+
+    def test_next_job_blocks_legacy_gsm8k_manifest_for_agent_workflow_run(self):
+        self._write_legacy_gsm8k_manifest()
+        database.execute(
+            """
+            UPDATE deep_insights
+            SET title=?, problem_statement=?, proposed_method=?, experimental_plan=?
+            WHERE id=1
+            """,
+            (
+                "Self-evolving agents and workflow self-optimization as typed stochastic program synthesis",
+                "Agent workflows need executable tool-use and workflow benchmarks, not math word problems.",
+                json.dumps({"name": "WorkflowSynth", "definition": "Optimize executable policy code for agent workflows."}),
+                json.dumps({"datasets": [{"name": "GSM8K"}]}),
+            ),
+        )
+        database.execute(
+            """
+            INSERT INTO auto_research_jobs (deep_insight_id, status, stage, experiment_run_id)
+            VALUES (1, 'queued_gpu', 'gpu_scheduler', 1)
+            """
+        )
+        job_id = gpu_scheduler.queue_run(
+            insight_id=1,
+            run_id=1,
+            resource_class="gpu_small",
+            priority=1,
+            vram_required_gb=16,
+        )
+
+        job = gpu_scheduler._next_job()
+
+        self.assertIsNone(job)
+        queued = database.fetchone("SELECT status, error_message FROM gpu_jobs WHERE id=?", (job_id,))
+        self.assertEqual(queued["status"], "failed")
+        self.assertIn("agent_workflow_optimization", queued["error_message"])
+
+    def test_next_job_blocks_legacy_gsm8k_manifest_for_physical_spatial_run(self):
+        self._write_legacy_gsm8k_manifest()
+        database.execute(
+            """
+            UPDATE deep_insights
+            SET title=?, problem_statement=?, proposed_method=?, experimental_plan=?
+            WHERE id=1
+            """,
+            (
+                "Causal Scene Competence and Physical-Spatial Benchmark Validity",
+                "Physical-spatial visual reasoning needs causal scene and intervention benchmarks, not math word problems.",
+                json.dumps({"name": "Scene Intervention", "definition": "Audit support/contact intervention identifiability."}),
+                json.dumps({"datasets": [{"name": "GSM8K"}]}),
+            ),
+        )
+        database.execute(
+            """
+            INSERT INTO auto_research_jobs (deep_insight_id, status, stage, experiment_run_id)
+            VALUES (1, 'queued_gpu', 'gpu_scheduler', 1)
+            """
+        )
+        job_id = gpu_scheduler.queue_run(
+            insight_id=1,
+            run_id=1,
+            resource_class="gpu_small",
+            priority=1,
+            vram_required_gb=16,
+        )
+
+        job = gpu_scheduler._next_job()
+
+        self.assertIsNone(job)
+        queued = database.fetchone("SELECT status, error_message FROM gpu_jobs WHERE id=?", (job_id,))
+        self.assertEqual(queued["status"], "failed")
+        self.assertIn("physical_spatial_reasoning", queued["error_message"])
+
+    def test_next_job_blocks_legacy_mbpp_manifest_for_molecular_equivariant_run(self):
+        self._write_legacy_mbpp_manifest()
+        database.execute(
+            """
+            UPDATE deep_insights
+            SET title=?, problem_statement=?, proposed_method=?, experimental_plan=?
+            WHERE id=1
+            """,
+            (
+                "Equivariant message-passing control and conformation sampling",
+                "GEOM-QM9 molecular conformation and 3D equivariant dynamics need molecular benchmarks, not code generation.",
+                json.dumps({"name": "Equivariant Dynamics", "definition": "Train EGNN-style coordinate denoising on GEOM-QM9."}),
+                json.dumps({"datasets": [{"name": "MBPP"}]}),
+            ),
+        )
+        database.execute(
+            """
+            INSERT INTO auto_research_jobs (deep_insight_id, status, stage, experiment_run_id)
+            VALUES (1, 'queued_gpu', 'gpu_scheduler', 1)
+            """
+        )
+        job_id = gpu_scheduler.queue_run(
+            insight_id=1,
+            run_id=1,
+            resource_class="gpu_small",
+            priority=1,
+            vram_required_gb=16,
+        )
+
+        job = gpu_scheduler._next_job()
+
+        self.assertIsNone(job)
+        queued = database.fetchone("SELECT status, error_message FROM gpu_jobs WHERE id=?", (job_id,))
+        self.assertEqual(queued["status"], "failed")
+        self.assertIn("generic benchmark MBPP", queued["error_message"])
+        self.assertIn("molecular_equivariant_dynamics", queued["error_message"])
+
+    def test_next_job_allows_legacy_mbpp_manifest_for_formal_code_run(self):
+        self._write_legacy_mbpp_manifest()
+        database.execute(
+            """
+            UPDATE deep_insights
+            SET title=?, proposed_method=?, experimental_plan=?
+            WHERE id=1
+            """,
+            (
+                "Formal code reasoning with verifier-guided Python repair",
+                json.dumps({"name": "Verifier repair", "definition": "Use code reasoning and program repair."}),
+                json.dumps({"datasets": [{"name": "MBPP"}]}),
+            ),
+        )
+        database.execute(
+            """
+            INSERT INTO auto_research_jobs (deep_insight_id, status, stage, experiment_run_id)
+            VALUES (1, 'queued_gpu', 'gpu_scheduler', 1)
+            """
+        )
+        job_id = gpu_scheduler.queue_run(
+            insight_id=1,
+            run_id=1,
+            resource_class="gpu_small",
+            priority=1,
+            vram_required_gb=16,
+        )
+
+        job = gpu_scheduler._next_job()
+
+        self.assertIsNotNone(job)
+        self.assertEqual(job["id"], job_id)
+
+    def test_next_job_allows_legacy_gsm8k_manifest_for_math_prm_run(self):
+        self._write_legacy_gsm8k_manifest()
+        database.execute(
+            """
+            UPDATE deep_insights
+            SET title=?, proposed_method=?, experimental_plan=?
+            WHERE id=1
+            """,
+            (
+                "Process Reward Models as Bellman Factorizations for math reasoning",
+                json.dumps({"name": "PRM Bellman", "definition": "Use process reward models over chain-of-thought."}),
+                json.dumps({"datasets": [{"name": "GSM8K"}]}),
+            ),
+        )
+        database.execute(
+            """
+            INSERT INTO auto_research_jobs (deep_insight_id, status, stage, experiment_run_id)
+            VALUES (1, 'queued_gpu', 'gpu_scheduler', 1)
+            """
+        )
+        job_id = gpu_scheduler.queue_run(
+            insight_id=1,
+            run_id=1,
+            resource_class="gpu_small",
+            priority=1,
+            vram_required_gb=16,
+        )
+
+        job = gpu_scheduler._next_job()
+
+        self.assertIsNotNone(job)
+        self.assertEqual(job["id"], job_id)
+
     def test_next_job_fails_recipe_blocked_run_without_launching(self):
         database.execute(
             """
@@ -195,6 +462,101 @@ class GpuSchedulerTests(unittest.TestCase):
         self.assertIsNone(job["assigned_worker"])
         self.assertIn("stale local running", job["error_message"])
         self.assertEqual(auto_job["status"], "queued_gpu")
+        self.assertIsNone(auto_job["assigned_worker"])
+
+    def test_recover_skips_active_local_job_without_gpu_process(self):
+        workers = gpu_scheduler.register_default_workers()
+        worker = workers[0]
+        job_id = gpu_scheduler.queue_run(
+            insight_id=1,
+            run_id=1,
+            resource_class="gpu_small",
+            priority=1,
+            vram_required_gb=16,
+        )
+        database.execute(
+            """
+            UPDATE gpu_jobs
+            SET status='running', assigned_worker=?, started_at=CURRENT_TIMESTAMP
+            WHERE id=?
+            """,
+            (worker["id"], job_id),
+        )
+        database.execute(
+            """
+            INSERT INTO auto_research_jobs (deep_insight_id, status, stage, experiment_run_id, assigned_worker)
+            VALUES (1, 'running_gpu', 'gpu_scheduler', 1, ?)
+            """,
+            (worker["id"],),
+        )
+        database.commit()
+
+        gpu_scheduler._mark_job_active(job_id)
+        try:
+            with mock.patch.object(gpu_scheduler, "_local_run_has_live_process", return_value=False):
+                recovered = gpu_scheduler.recover_stale_local_running_jobs(workers)
+        finally:
+            gpu_scheduler._mark_job_inactive(job_id)
+
+        job = database.fetchone("SELECT status, assigned_worker FROM gpu_jobs WHERE id=?", (job_id,))
+        auto_job = database.fetchone("SELECT status, stage FROM auto_research_jobs WHERE deep_insight_id=1")
+        self.assertEqual(recovered, 0)
+        self.assertEqual(job["status"], "running")
+        self.assertEqual(job["assigned_worker"], worker["id"])
+        self.assertEqual(auto_job["status"], "running_gpu")
+
+    def test_recover_completed_experiment_with_open_manuscript_requeues(self):
+        workers = gpu_scheduler.register_default_workers()
+        worker = workers[0]
+        job_id = gpu_scheduler.queue_run(
+            insight_id=1,
+            run_id=1,
+            resource_class="gpu_small",
+            priority=1,
+            vram_required_gb=16,
+        )
+        database.execute(
+            """
+            UPDATE experiment_runs
+            SET status='completed', hypothesis_verdict='confirmed'
+            WHERE id=1
+            """
+        )
+        database.execute(
+            """
+            INSERT INTO manuscript_runs (experiment_run_id, deep_insight_id, status, workdir)
+            VALUES (1, 1, 'drafting', ?)
+            """,
+            (str(Path(self.tmpdir.name) / "paper_current"),),
+        )
+        database.execute(
+            """
+            UPDATE gpu_jobs
+            SET status='running', assigned_worker=?, started_at=CURRENT_TIMESTAMP
+            WHERE id=?
+            """,
+            (worker["id"], job_id),
+        )
+        database.execute(
+            """
+            INSERT INTO auto_research_jobs (deep_insight_id, status, stage, experiment_run_id, assigned_worker)
+            VALUES (1, 'running_gpu', 'gpu_scheduler', 1, ?)
+            """,
+            (worker["id"],),
+        )
+        database.commit()
+
+        with mock.patch.object(gpu_scheduler, "_local_run_has_live_process", return_value=False):
+            recovered = gpu_scheduler.recover_stale_local_running_jobs(workers)
+
+        job = database.fetchone("SELECT status, assigned_worker, error_message FROM gpu_jobs WHERE id=?", (job_id,))
+        auto_job = database.fetchone("SELECT status, stage, assigned_worker, last_note FROM auto_research_jobs WHERE deep_insight_id=1")
+        self.assertEqual(recovered, 1)
+        self.assertEqual(job["status"], "queued")
+        self.assertIsNone(job["assigned_worker"])
+        self.assertIn("stale local running", job["error_message"])
+        self.assertEqual(auto_job["status"], "queued_gpu")
+        self.assertEqual(auto_job["stage"], "gpu_scheduler")
         self.assertIsNone(auto_job["assigned_worker"])
 
     def test_periodic_recovery_runs_after_poll_interval(self):
@@ -378,9 +740,72 @@ class GpuSchedulerTests(unittest.TestCase):
         self.assertEqual(run["hypothesis_verdict"], "confirmed")
         self.assertEqual(gpu_job["status"], "completed")
         self.assertIn("latex failed", gpu_job["error_message"])
-        self.assertEqual(auto_job["status"], "completed")
-        self.assertEqual(auto_job["stage"], "closed_loop_complete")
+        self.assertEqual(auto_job["status"], "queued")
+        self.assertEqual(auto_job["stage"], "manuscript_retry_after_quality_gate")
         self.assertIn("latex failed", auto_job["last_error"])
+
+
+    def test_run_job_blocks_manuscript_until_benchmark_manifest_is_complete(self):
+        workers = gpu_scheduler.register_default_workers()
+        worker = workers[0]
+        workdir = Path(self.tmpdir.name) / "run1"
+        results_dir = workdir / "results"
+        results_dir.mkdir(parents=True, exist_ok=True)
+        (results_dir / "benchmark_artifact_manifest.json").write_text(
+            json.dumps(
+                {
+                    "full_benchmark_completed": False,
+                    "readiness_blockers": ["required baselines missing: Extra Baseline"],
+                }
+            ),
+            encoding="utf-8",
+        )
+        job_id = gpu_scheduler.queue_run(
+            insight_id=1,
+            run_id=1,
+            resource_class="gpu_small",
+            priority=1,
+            vram_required_gb=16,
+        )
+        database.execute(
+            """
+            INSERT INTO auto_research_jobs (deep_insight_id, status, stage, experiment_run_id)
+            VALUES (1, 'queued_gpu', 'queued', 1)
+            """
+        )
+        database.commit()
+        job = database.fetchone("SELECT * FROM gpu_jobs WHERE id=?", (job_id,))
+
+        def _fake_validation_loop(run_id, execution_context=None):
+            database.execute(
+                """
+                UPDATE experiment_runs
+                SET status='completed', hypothesis_verdict='confirmed', effect_pct=12.5
+                WHERE id=?
+                """,
+                (run_id,),
+            )
+            database.commit()
+            return {"run_id": run_id, "verdict": "confirmed"}
+
+        with (
+            mock.patch.object(gpu_scheduler, "run_validation_loop", side_effect=_fake_validation_loop),
+            mock.patch.object(gpu_scheduler, "process_completed_run"),
+            mock.patch.object(gpu_scheduler, "collect_run_artifacts", return_value=[]),
+            mock.patch.object(gpu_scheduler, "generate_submission_bundle") as generate_bundle,
+            mock.patch.object(gpu_scheduler, "log_metrics"),
+            mock.patch.object(gpu_scheduler, "log_artifact"),
+        ):
+            gpu_scheduler._run_job(job, worker)
+
+        generate_bundle.assert_not_called()
+        gpu_job = database.fetchone("SELECT status, error_message FROM gpu_jobs WHERE id=?", (job_id,))
+        auto_job = database.fetchone("SELECT status, stage, last_error FROM auto_research_jobs WHERE deep_insight_id=1")
+        self.assertEqual(gpu_job["status"], "completed")
+        self.assertIsNone(gpu_job["error_message"])
+        self.assertEqual(auto_job["status"], "queued")
+        self.assertEqual(auto_job["stage"], "benchmark_completion_required")
+        self.assertIn("required baselines missing", auto_job["last_error"])
 
     def test_run_job_handles_none_validation_result(self):
         workers = gpu_scheduler.register_default_workers()
@@ -416,9 +841,9 @@ class GpuSchedulerTests(unittest.TestCase):
 
         self.assertEqual(gpu_job["status"], "completed")
         self.assertIn("no bundle", gpu_job["error_message"])
-        self.assertEqual(auto_job["status"], "completed")
-        self.assertEqual(auto_job["stage"], "closed_loop_complete")
-        self.assertIn("verdict=failed", auto_job["last_note"])
+        self.assertEqual(auto_job["status"], "queued")
+        self.assertEqual(auto_job["stage"], "manuscript_retry_after_quality_gate")
+        self.assertIn("no bundle", auto_job["last_error"])
 
     def test_run_job_uses_full_benchmark_completion_stage(self):
         workers = gpu_scheduler.register_default_workers()

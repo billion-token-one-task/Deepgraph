@@ -14,6 +14,21 @@ from agents.benchmark_audit import (
 from agents import validation_loop
 
 
+class ValidationTimeoutPolicyTests(unittest.TestCase):
+    def test_full_benchmark_defaults_to_uncapped_time_budget(self):
+        self.assertEqual(validation_loop._full_benchmark_time_budget({}), 0)
+        self.assertEqual(
+            validation_loop._process_timeout_seconds(0, full_benchmark=True),
+            None,
+        )
+
+    def test_proxy_experiments_keep_timeout_guard(self):
+        self.assertEqual(
+            validation_loop._process_timeout_seconds(30, full_benchmark=False),
+            90,
+        )
+
+
 class ValidationMetricParsingTests(unittest.TestCase):
     def test_parse_metric_from_final_results_line(self):
         with tempfile.TemporaryDirectory() as tmpdir:

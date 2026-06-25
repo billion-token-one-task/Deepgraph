@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 import threading
+import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -30,6 +32,13 @@ _pg_init_lock = threading.Lock()
 _pg_init_done = False
 _backend_notice_lock = threading.Lock()
 _backend_notice_emitted = False
+SQLITE_BUSY_TIMEOUT_MS = int(os.environ.get("DEEPGRAPH_SQLITE_BUSY_TIMEOUT_MS", "120000"))
+SQLITE_LOCK_RETRY_SECONDS = float(os.environ.get("DEEPGRAPH_SQLITE_LOCK_RETRY_SECONDS", "120"))
+_SQLITE_LOCK_ERROR_MARKERS = (
+    "database is locked",
+    "database table is locked",
+    "database schema is locked",
+)
 
 
 def _use_pg() -> bool:
@@ -131,13 +140,34 @@ def get_conn():
         except (sqlite3.ProgrammingError, sqlite3.OperationalError):
             sc = None
     if sc is None:
-        _local.sqlite_conn = sqlite3.connect(str(DB_PATH), check_same_thread=False, timeout=30.0)
+        timeout_seconds = max(1.0, SQLITE_BUSY_TIMEOUT_MS / 1000.0)
+        _local.sqlite_conn = sqlite3.connect(str(DB_PATH), check_same_thread=False, timeout=timeout_seconds)
         _local.sqlite_conn.row_factory = sqlite3.Row
         _local.sqlite_conn.execute("PRAGMA journal_mode=WAL")
-        _local.sqlite_conn.execute("PRAGMA busy_timeout=30000")
+        _local.sqlite_conn.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
+        _local.sqlite_conn.execute("PRAGMA synchronous=NORMAL")
         _local.sqlite_conn.execute("PRAGMA foreign_keys=ON")
         _local.conn = _local.sqlite_conn  # backward compat: tests patch _local.conn
     return _local.sqlite_conn
+
+
+def _is_sqlite_lock_error(exc: BaseException) -> bool:
+    return isinstance(exc, sqlite3.OperationalError) and any(
+        marker in str(exc).lower() for marker in _SQLITE_LOCK_ERROR_MARKERS
+    )
+
+
+def _sqlite_with_lock_retry(operation):
+    deadline = time.monotonic() + max(0.0, SQLITE_LOCK_RETRY_SECONDS)
+    delay = 0.05
+    while True:
+        try:
+            return operation()
+        except sqlite3.OperationalError as exc:
+            if not _is_sqlite_lock_error(exc) or time.monotonic() >= deadline:
+                raise
+            time.sleep(delay)
+            delay = min(delay * 1.5, 2.0)
 
 
 def _apply_postgres_schema_file() -> None:
@@ -356,6 +386,152 @@ def _ensure_vnext_migrations() -> None:
     _execute_startup_statement(
         conn,
         "CREATE INDEX IF NOT EXISTS idx_auto_research_jobs_resource ON auto_research_jobs(resource_class)",
+        best_effort_if_locked=_use_pg(),
+    )
+    conn.commit()
+
+
+HARVEST_SIGNAL_ROLES = {
+    "node_entity_overlap": "solution",
+    "pattern_matches": "solution",
+    "contradiction_clusters": "problem",
+    "performance_plateaus": "problem",
+    "mechanism_mismatches": "derived",
+    "protocol_artifacts": "problem",
+    "negative_space_gaps": "problem",
+    "hidden_variable_bridges": "solution",
+    "claim_method_gaps": "problem",
+}
+
+
+def _ensure_problem_first_schema() -> None:
+    """Problem-first discovery, lineage, and signal feedback schema."""
+    _ensure_columns(
+        "deep_insights",
+        {
+            "source_signal_refs": "TEXT",
+            "research_problem_id": "INTEGER",
+        },
+    )
+    for table, role in HARVEST_SIGNAL_ROLES.items():
+        _ensure_columns(
+            table,
+            {
+                "content_hash": "TEXT",
+                "signal_role": f"TEXT DEFAULT '{role}'",
+                "empirical_posterior": "REAL",
+                "confirm_count": "INTEGER DEFAULT 0",
+                "refute_count": "INTEGER DEFAULT 0",
+                "last_outcome_at": "TIMESTAMP",
+            },
+        )
+        if _table_exists(table):
+            _execute_startup_statement(
+                get_conn(),
+                f"UPDATE {table} SET signal_role=? WHERE signal_role IS NULL OR signal_role=''",
+                (role,),
+                best_effort_if_locked=_use_pg(),
+            )
+            _execute_startup_statement(
+                get_conn(),
+                f"CREATE INDEX IF NOT EXISTS idx_{table}_content_hash ON {table}(content_hash)",
+                best_effort_if_locked=_use_pg(),
+            )
+            _execute_startup_statement(
+                get_conn(),
+                f"CREATE INDEX IF NOT EXISTS idx_{table}_signal_role ON {table}(signal_role)",
+                best_effort_if_locked=_use_pg(),
+            )
+
+    conn = get_conn()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS research_problems (
+            id BIGSERIAL PRIMARY KEY,
+            problem_statement TEXT,
+            source_signal_ref TEXT,
+            node_ids TEXT,
+            paper_ids TEXT,
+            problem_quality_score DOUBLE PRECISION,
+            status TEXT DEFAULT 'open',
+            attempts_count INTEGER DEFAULT 0,
+            ruled_out_approaches TEXT DEFAULT '[]',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+        if _use_pg()
+        else """
+        CREATE TABLE IF NOT EXISTS research_problems (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            problem_statement TEXT,
+            source_signal_ref TEXT,
+            node_ids TEXT,
+            paper_ids TEXT,
+            problem_quality_score REAL,
+            status TEXT DEFAULT 'open',
+            attempts_count INTEGER DEFAULT 0,
+            ruled_out_approaches TEXT DEFAULT '[]',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS experimental_evidence_edges (
+            id BIGSERIAL PRIMARY KEY,
+            experimental_claim_id INTEGER,
+            run_id INTEGER,
+            deep_insight_id INTEGER,
+            research_problem_id INTEGER,
+            empirical_entity_id TEXT,
+            target_kind TEXT,
+            target_id TEXT,
+            relation TEXT,
+            verdict TEXT,
+            effect_size DOUBLE PRECISION,
+            conditions TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+        if _use_pg()
+        else """
+        CREATE TABLE IF NOT EXISTS experimental_evidence_edges (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            experimental_claim_id INTEGER,
+            run_id INTEGER,
+            deep_insight_id INTEGER,
+            research_problem_id INTEGER,
+            empirical_entity_id TEXT,
+            target_kind TEXT,
+            target_id TEXT,
+            relation TEXT,
+            verdict TEXT,
+            effect_size REAL,
+            conditions TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    _execute_startup_statement(
+        conn,
+        "CREATE INDEX IF NOT EXISTS idx_research_problems_status ON research_problems(status)",
+        best_effort_if_locked=_use_pg(),
+    )
+    _execute_startup_statement(
+        conn,
+        "CREATE INDEX IF NOT EXISTS idx_research_problems_source ON research_problems(source_signal_ref)",
+        best_effort_if_locked=_use_pg(),
+    )
+    _execute_startup_statement(
+        conn,
+        "CREATE INDEX IF NOT EXISTS idx_experimental_edges_run ON experimental_evidence_edges(run_id)",
+        best_effort_if_locked=_use_pg(),
+    )
+    _execute_startup_statement(
+        conn,
+        "CREATE INDEX IF NOT EXISTS idx_experimental_edges_target ON experimental_evidence_edges(target_kind, target_id)",
         best_effort_if_locked=_use_pg(),
     )
     conn.commit()
@@ -639,6 +815,7 @@ def init_db():
             try:
                 _apply_postgres_schema_file()
                 _ensure_vnext_migrations()
+                _ensure_problem_first_schema()
                 _ensure_grounding_schema()
                 schema_feedback = Path(__file__).parent / "schema_insight_feedback.sql"
                 if schema_feedback.exists():
@@ -676,10 +853,14 @@ def init_db():
     _ensure_legacy_migrations()
     schema_path = Path(__file__).parent / "schema.sql"
     conn.executescript(schema_path.read_text(encoding="utf-8"))
+    # Upgrade legacy SQLite harvest tables before schema_v2 creates indexes on
+    # new problem-first columns such as content_hash.
+    _ensure_problem_first_schema()
     schema_v2_path = Path(__file__).parent / "schema_v2.sql"
     if schema_v2_path.exists():
         conn.executescript(schema_v2_path.read_text(encoding="utf-8"))
     _ensure_vnext_migrations()
+    _ensure_problem_first_schema()
     _ensure_grounding_schema()
     schema_feedback = Path(__file__).parent / "schema_insight_feedback.sql"
     if schema_feedback.exists():
@@ -816,7 +997,7 @@ def execute(sql: str, params: tuple = ()):
             conn.rollback()
             raise
         return cur
-    return conn.execute(sql_a, params_a)
+    return _sqlite_with_lock_retry(lambda: conn.execute(sql_a, params_a))
 
 
 def executemany(sql: str, params_list: list):
@@ -831,11 +1012,15 @@ def executemany(sql: str, params_list: list):
             conn.rollback()
             raise
         return cur
-    return conn.executemany(sql_a, params_a)
+    return _sqlite_with_lock_retry(lambda: conn.executemany(sql_a, params_a))
 
 
 def commit():
-    get_conn().commit()
+    conn = get_conn()
+    if _use_pg():
+        conn.commit()
+    else:
+        _sqlite_with_lock_retry(conn.commit)
 
 
 def rollback():

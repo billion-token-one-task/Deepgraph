@@ -175,6 +175,22 @@ VENUE_POLICIES: dict[str, SubmissionTarget] = {
             "complete reproducibility detail, and a less space-constrained narrative."
         ),
     ),
+    "technical_report": _target(
+        key="technical_report",
+        label="technical report",
+        family="technical_report",
+        template="technical_report_generic",
+        bibliography_style="plainnat",
+        page_limit="technical-report length; target a complete evidence-bounded manuscript rather than a top-conference submission",
+        double_blind=False,
+        style_marker="technical_report",
+        guidelines=(
+            "Route controlled or materialized-trace evidence here when it is useful "
+            "but not strong enough for a main-conference empirical claim. Keep the "
+            "paper complete, reproducible, and explicit about evidence scope, "
+            "missing baselines, and limitations."
+        ),
+    ),
 }
 
 
@@ -227,16 +243,48 @@ def infer_submission_target(
     configured_template: str | None = "auto",
 ) -> SubmissionTarget:
     """Infer a target venue/journal from paper intent, contract, and config."""
+    state = state or {}
     configured = (configured_template or "auto").strip().lower()
     explicit = target_from_key(configured)
     if explicit and configured not in {"auto", "default"}:
         return _target_with_reason(explicit, f"configured template={configured_template}")
 
     text = _candidate_target_text(state, "" if configured in {"auto", "default"} else configured)
+    publication_contract = (
+        state.get("publication_evidence_contract")
+        if isinstance((state or {}).get("publication_evidence_contract"), dict)
+        else {}
+    )
+    result_packet = (
+        state.get("result_packet")
+        if isinstance((state or {}).get("result_packet"), dict)
+        else {}
+    )
+    claim_route = (
+        result_packet.get("claim_route")
+        if isinstance(result_packet.get("claim_route"), dict)
+        else publication_contract.get("claim_route")
+        if isinstance(publication_contract.get("claim_route"), dict)
+        else {}
+    )
     if str(bundle_format or "").lower() == "journal":
         return _target_with_reason(VENUE_POLICIES["journal_generic"], "bundle_format=journal")
+    if str(bundle_format or "").lower() in {"technical_report", "report", "preprint"}:
+        return _target_with_reason(VENUE_POLICIES["technical_report"], f"bundle_format={bundle_format}")
     if re.search(r"\b(tmlr|journal|transactions|journal article)\b", text):
         return _target_with_reason(VENUE_POLICIES["journal_generic"], "paper intent names a journal target")
+    if re.search(r"\b(technical report|technical_report|report|preprint)\b", text):
+        return _target_with_reason(VENUE_POLICIES["technical_report"], "paper intent names a technical report")
+    evidence_tier = " ".join(
+        str(x or "")
+        for x in (
+            result_packet.get("evidence_tier"),
+            publication_contract.get("evidence_tier"),
+            claim_route.get("route"),
+        )
+    ).lower()
+    if configured in {"auto", "default"} and any(token in evidence_tier for token in ("controlled_materialized", "materialized", "technical_report")):
+        return _target_with_reason(VENUE_POLICIES["technical_report"], "controlled/materialized evidence routes to technical report")
     if re.search(r"\b(neurips|nips)\b", text) and re.search(r"\b(position|position-paper|position paper)\b", text):
         return _target_with_reason(VENUE_POLICIES["neurips2026_position"], "paper intent names NeurIPS position paper")
     if re.search(r"\b(neurips|nips)\b", text):

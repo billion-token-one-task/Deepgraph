@@ -9,20 +9,22 @@ from agents.experiment_review import review_experiment_candidate
 
 class GenerateScaffoldTests(unittest.TestCase):
     def test_autofill_experiment_contracts_fills_missing_review_fields(self):
-        enriched = experiment_forge._autofill_experiment_contracts(
-            {
-                "id": 7,
-                "tier": 2,
-                "title": "Secure linguistic communication and linguistic steganography as measure-preserving coding",
-                "proposed_method": None,
-                "experimental_plan": {
-                    "models": ["gpt2-medium", "roberta-base", "sentence-transformers/all-mpnet-base-v2"],
-                    "datasets": ["WikiText-103", "CNN/DailyMail"],
-                    "procedure": "Compare coders, measure BER and detector AUC, and report bits/token.",
-                },
-                "supporting_papers": ["ACF", "Discop"],
-            }
-        )
+        llm_gate = {"status": "literature_review_required", "blockers": ["needs domain benchmark review"]}
+        with mock.patch("agents.benchmark_design_agent.call_llm_json", return_value=(llm_gate, 0)):
+            enriched = experiment_forge._autofill_experiment_contracts(
+                {
+                    "id": 7,
+                    "tier": 2,
+                    "title": "Secure linguistic communication and linguistic steganography as measure-preserving coding",
+                    "proposed_method": None,
+                    "experimental_plan": {
+                        "models": ["gpt2-medium", "roberta-base", "sentence-transformers/all-mpnet-base-v2"],
+                        "datasets": ["WikiText-103", "CNN/DailyMail"],
+                        "procedure": "Compare coders, measure BER and detector AUC, and report bits/token.",
+                    },
+                    "supporting_papers": ["ACF", "Discop"],
+                }
+            )
 
         self.assertTrue(enriched["proposed_method"]["definition"])
         self.assertGreaterEqual(len(enriched["experimental_plan"]["baselines"]), 2)
@@ -32,38 +34,42 @@ class GenerateScaffoldTests(unittest.TestCase):
         self.assertIn("paper_intent", enriched["experimental_plan"])
 
     def test_autofill_experiment_contracts_makes_gpu_plan_real_benchmark_reviewable(self):
-        enriched = experiment_forge._autofill_experiment_contracts(
-            {
-                "id": 16,
-                "tier": 2,
-                "title": "SSH GPU Smoke Validation Experiment Auto Experiment Run",
-                "resource_class": "gpu_small",
-                "proposed_method": {
-                    "name": "remote_gpu_smoke",
-                    "type": "systems_validation",
-                    "definition": "Run a short CUDA-backed tensor workload and report device/VRAM telemetry.",
-                },
-                "experimental_plan": {
-                    "baselines": [{"name": "remote_cuda_probe"}],
-                    "metrics": [{"name": "gpu_probe_score"}],
-                    "compute_budget": {"gpu_hours": 0.01},
-                },
-            }
-        )
+        llm_gate = {"status": "literature_review_required", "blockers": ["needs domain benchmark review"]}
+        with mock.patch("agents.benchmark_design_agent.call_llm_json", return_value=(llm_gate, 0)):
+            enriched = experiment_forge._autofill_experiment_contracts(
+                {
+                    "id": 16,
+                    "tier": 2,
+                    "title": "SSH GPU Smoke Validation Experiment Auto Experiment Run",
+                    "resource_class": "gpu_small",
+                    "proposed_method": {
+                        "name": "remote_gpu_smoke",
+                        "type": "systems_validation",
+                        "definition": "Run a short CUDA-backed tensor workload and report device/VRAM telemetry.",
+                    },
+                    "experimental_plan": {
+                        "baselines": [{"name": "remote_cuda_probe"}],
+                        "metrics": [{"name": "gpu_probe_score"}],
+                        "compute_budget": {"gpu_hours": 0.01},
+                    },
+                }
+            )
 
         self.assertGreaterEqual(len(enriched["experimental_plan"]["baselines"]), 2)
-        self.assertEqual(enriched["experimental_plan"]["datasets"][0]["name"], "GSM8K")
         self.assertEqual(enriched["experimental_plan"]["metrics"]["primary"], "gpu_probe_score")
         self.assertEqual(enriched["experimental_plan"]["compute_budget"]["total_gpu_hours"], 0.01)
         self.assertTrue(enriched["experimental_plan"]["real_benchmark_required"])
-        self.assertTrue(enriched["experimental_plan"]["model_targets"])
+        self.assertFalse(enriched["experimental_plan"]["generated_runner_supported"])
+        self.assertEqual(enriched["experimental_plan"]["benchmark_design_status"], "literature_review_required")
+        self.assertIn("benchmark_design_blockers", enriched["experimental_plan"])
 
         judgement = review_experiment_candidate(
             enriched,
             codebase={"url": "https://github.com/example/repo", "name": "repo", "main_train_file": "train.py", "main_eval_command": "python train.py"},
             entrypoint_available=True,
         )
-        self.assertEqual(judgement.recommended_route, "formal")
+        self.assertEqual(judgement.recommended_route, "blocked")
+        self.assertTrue(judgement.environment_review["benchmark_harness_required"])
 
     def test_benchmark_plan_blocks_manuscript_until_full_artifacts(self):
         contract = experiment_forge._publication_evidence_contract(
@@ -104,32 +110,81 @@ class GenerateScaffoldTests(unittest.TestCase):
         self.assertFalse(target["generated_runner_supported"])
         self.assertIn("no concrete Hugging Face dataset id", target["generated_runner_blocker"])
 
-    def test_restricted_benchmark_targets_add_executable_probe_and_defer_formal_targets(self):
-        plan = experiment_forge._ensure_real_benchmark_plan(
-            {
-                "title": "FOIA privilege selector",
-                "problem_statement": "Privilege review needs a legal benchmark.",
+    def test_real_benchmark_defaults_require_explicit_targets_or_real_datasets(self):
+        with self.assertRaisesRegex(ValueError, "explicit benchmark_targets or real datasets"):
+            experiment_forge._real_benchmark_defaults({"datasets": [], "benchmark_targets": []})
+
+    def test_generated_runner_refuses_cross_domain_gsm8k_fallback(self):
+        train_py = experiment_forge._real_llm_benchmark_train_py(
+            method_name="DomainMethod",
+            metric_name="accuracy",
+            plan={
+                "benchmark_targets": [
+                    {
+                        "name": "StrategyQA",
+                        "hf_dataset": "tasksource/strategy-qa",
+                        "split": "validation",
+                        "task_type": "boolean_qa",
+                    }
+                ],
+                "model_targets": [{"name": "TinyLlama", "hf_model": "TinyLlama/TinyLlama-1.1B-Chat-v1.0"}],
             },
-            {
-                "name": "PrivilegeSelector",
-                "definition": "Select releasable documents under privilege constraints.",
-            },
-            {
-                "datasets": [{"name": "TREC 2010 Legal Track - Privilege Task"}, {"name": "FOIA-Ex5-Privilege"}],
-                "baselines": [{"name": "Direct"}, {"name": "Always-CoT"}],
-                "metrics": {"primary": "cost_adjusted_accuracy"},
-            },
-            "gpu_large",
         )
 
-        self.assertTrue(plan["generated_runner_supported"])
-        self.assertTrue(plan["benchmark_harness_deferred"])
-        self.assertEqual(plan["benchmark_targets"][0]["benchmark_role"], "executable_probe")
-        self.assertEqual(plan["deferred_benchmark_targets"], ["TREC 2010 Legal Track - Privilege Task", "FOIA-Ex5-Privilege"])
-        self.assertEqual([row["name"] for row in plan["benchmark_recipe_blockers"]], ["TREC 2010 Legal Track - Privilege Task", "FOIA-Ex5-Privilege"])
-        defaults = experiment_forge._real_benchmark_defaults(plan)
-        self.assertEqual(defaults["dataset_id"], plan["benchmark_targets"][0]["hf_dataset"])
-        self.assertEqual(defaults["targets"][0]["benchmark_role"], "executable_probe")
+        self.assertNotIn("materialize GSM8K fallback", train_py)
+        self.assertIn("refusing cross-domain GSM8K fallback", train_py)
+
+    def test_restricted_benchmark_targets_add_executable_probe_and_defer_formal_targets(self):
+        llm_contract = {
+            "status": "resolved",
+            "domain": "legal_nlp",
+            "task_family": "legal_privilege_review",
+            "benchmark_set_rationale": "TREC Legal privilege review and FOIA-Ex5 cover legal privilege and public-records exemption axes.",
+            "candidate_benchmarks": [
+                {
+                    "name": "TREC 2010 Legal Track - Privilege Task",
+                    "task_type": "legal_review",
+                    "requires_harness": True,
+                    "official_url": "https://trec-legal.umiacs.umd.edu/",
+                    "literature_sources": [{"title": "TREC Legal Track", "year": 2010, "url": "https://trec.nist.gov/pubs/trec19/papers/LEGAL.OVERVIEW.pdf"}],
+                },
+                {
+                    "name": "FOIA-Ex5-Privilege",
+                    "task_type": "legal_review",
+                    "requires_harness": True,
+                    "official_url": "https://www.foia.gov/",
+                    "literature_sources": [{"title": "FOIA Exemption 5 privilege review benchmark", "year": 2024, "url": "https://www.foia.gov/"}],
+                },
+            ],
+            "required_baselines": [{"name": "Legal-BERT classifier"}],
+            "primary_metric": {"name": "selective_risk", "direction": "lower"},
+            "blockers": [],
+        }
+        with mock.patch("agents.benchmark_design_agent.call_llm_json", return_value=(llm_contract, 33)):
+            plan = experiment_forge._ensure_real_benchmark_plan(
+                {
+                    "title": "FOIA privilege selector",
+                    "problem_statement": "Privilege review needs a legal benchmark.",
+                },
+                {
+                    "name": "PrivilegeSelector",
+                    "definition": "Select releasable documents under privilege constraints.",
+                },
+                {
+                    "datasets": [{"name": "TREC 2010 Legal Track - Privilege Task"}, {"name": "FOIA-Ex5-Privilege"}],
+                    "baselines": [{"name": "Direct"}, {"name": "Always-CoT"}],
+                    "metrics": {"primary": "cost_adjusted_accuracy"},
+                },
+                "gpu_large",
+            )
+
+        self.assertFalse(plan["generated_runner_supported"])
+        self.assertNotIn("benchmark_design_blockers", plan)
+        self.assertEqual(plan["benchmark_design_status"], "resolved")
+        self.assertEqual(plan["benchmark_targets"][0]["name"], "TREC 2010 Legal Track - Privilege Task")
+        self.assertTrue(plan["benchmark_targets"][0]["requires_harness"])
+        self.assertIn("dedicated domain benchmark harness", plan["benchmark_recipe_blockers"][0]["reason"])
+        self.assertNotIn("benchmark_probe_added", plan)
 
     def test_partial_benchmark_support_runs_supported_subset(self):
         plan = experiment_forge._ensure_real_benchmark_plan(
@@ -142,6 +197,8 @@ class GenerateScaffoldTests(unittest.TestCase):
                 "definition": "Select repairs using verifier feedback.",
             },
             {
+                "benchmark_design_status": "resolved",
+                "benchmark_design_contract": {"status": "resolved", "source": "test_reviewed_contract"},
                 "benchmark_targets": [
                     {
                         "name": "MBPP",
@@ -178,7 +235,7 @@ class GenerateScaffoldTests(unittest.TestCase):
             },
             "experimental_plan": {
                 "baselines": ["baseline-a"],
-                "datasets": ["dataset-a"],
+                "datasets": ["StrategyQA"],
                 "metrics": {"primary": "accuracy"},
                 "expected_results": {"delta": "+2"},
             },
@@ -242,7 +299,7 @@ class GenerateScaffoldTests(unittest.TestCase):
             },
             "experimental_plan": {
                 "baselines": ["baseline-a"],
-                "datasets": ["dataset-a"],
+                "datasets": ["StrategyQA"],
                 "metrics": {"primary": "gpu_score"},
                 "compute_budget": {"total_gpu_hours": 50},
             },
@@ -439,7 +496,19 @@ class GenerateScaffoldTests(unittest.TestCase):
     def test_fallback_scaffold_produces_real_benchmark_train_py(self):
         scaffold = experiment_forge._fallback_scaffold(
             {"name": "CGGR", "definition": "Adaptive reasoning gate."},
-            {"metrics": {"primary": "cost_adjusted_utility"}},
+            {
+                "benchmark_design_status": "resolved",
+                "benchmark_design_contract": {"status": "resolved", "source": "unit_test"},
+                "benchmark_targets": [
+                    {
+                        "name": "StrategyQA",
+                        "hf_dataset": "tasksource/strategy-qa",
+                        "split": "validation",
+                        "task_type": "boolean_qa",
+                    }
+                ],
+                "metrics": {"primary": "cost_adjusted_utility"},
+            },
             {"url": "scratch", "name": "minimal"},
         )
 
@@ -450,7 +519,7 @@ class GenerateScaffoldTests(unittest.TestCase):
         self.assertIn("DEEPGRAPH_BENCHMARK_SEED_OFFSET", scaffold["train_py"])
         self.assertIn("DEEPGRAPH_BENCHMARK_SEED_COUNT", scaffold["train_py"])
         self.assertIn('"sharded_run": sharded_run', scaffold["train_py"])
-        self.assertIn('_difficulty_proxy(question, target.get("task_type") or "qa")', scaffold["train_py"])
+        self.assertIn('_difficulty_proxy(question_for_prompt, target.get("task_type") or "qa")', scaffold["train_py"])
         self.assertIn('score = max(score, 0.46)', scaffold["train_py"])
         self.assertIn('max_new_tokens <= 80', scaffold["train_py"])
         self.assertIn('prompt_kind = "direct" if kind == "direct" or (selective_kind and max_new_tokens <= 80) else kind', scaffold["train_py"])
@@ -461,6 +530,7 @@ class GenerateScaffoldTests(unittest.TestCase):
         self.assertIn("DEEPGRAPH_BENCHMARK_CONTINUE_ON_ERROR", scaffold["train_py"])
         self.assertIn("use at most two concise reasoning sentences", scaffold["train_py"])
         self.assertIn("Do not repeat the final answer", scaffold["train_py"])
+        self.assertNotIn("materialize GSM8K fallback", scaffold["train_py"])
         self.assertNotEqual(scaffold["success_criteria"]["evidence_tier"], "bootstrap_probe")
         self.assertTrue(scaffold["success_criteria"]["blocks_manuscript"])
 
@@ -474,6 +544,46 @@ class GenerateScaffoldTests(unittest.TestCase):
                     code_dir, {"main_train_file": "src/qa/inference.py"}
                 )
             )
+
+    def test_review_blocks_formal_run_when_required_benchmark_is_deferred(self):
+        judgement = review_experiment_candidate(
+            {
+                "id": 91,
+                "tier": 2,
+                "title": "PRM Bellman",
+                "resource_class": "gpu_large",
+                "proposed_method": {"name": "PRM Bellman", "definition": "Use process rewards over reasoning traces."},
+                "experimental_plan": {
+                    "benchmark_design_status": "resolved",
+                    "benchmark_design_contract": {
+                        "status": "resolved",
+                        "minimum_benchmark_count": 2,
+                        "benchmark_set_rationale": "GSM8K covers answer accuracy and PRM800K covers process supervision.",
+                        "candidate_benchmarks": [
+                            {"name": "GSM8K", "hf_dataset": "openai/gsm8k", "literature_sources": [{"title": "GSM8K"}]},
+                            {"name": "PRM800K", "requires_harness": True, "literature_sources": [{"title": "PRM800K"}]},
+                        ],
+                        "benchmark_evidence": [{"name": "GSM8K"}, {"name": "PRM800K"}],
+                    },
+                    "baselines": [{"name": "Direct"}, {"name": "CoT"}],
+                    "datasets": [{"name": "GSM8K"}],
+                    "benchmark_targets": [{"name": "GSM8K", "hf_dataset": "openai/gsm8k"}],
+                    "model_targets": [{"name": "Qwen/Qwen2.5-7B-Instruct"}],
+                    "metrics": {"primary": "exact_match"},
+                    "compute_budget": {"total_gpu_hours": 12},
+                    "generated_runner_supported": True,
+                    "benchmark_harness_deferred": True,
+                    "deferred_benchmark_targets": ["PRM800K"],
+                },
+            },
+            codebase={"url": "scratch", "name": "minimal"},
+            entrypoint_available=False,
+        )
+
+        self.assertEqual(judgement.recommended_route, "blocked")
+        self.assertTrue(judgement.environment_review["benchmark_harness_required"])
+        self.assertIn("PRM800K", " ".join(judgement.blockers))
+
 
     def test_review_routes_generated_real_benchmark_runner_to_formal(self):
         judgement = review_experiment_candidate(

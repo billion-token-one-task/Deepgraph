@@ -34,6 +34,7 @@ DEEP_INSIGHT_JSON_FIELDS = {
     "evidence_plan",
     "adversarial_critique",
     "source_signal_ids",
+    "source_signal_refs",
     "novelty_report",
     "exemplars_used",
     "problem_awareness",
@@ -193,6 +194,7 @@ class DeepInsightSpec(ContractRecord):
     source_paper_ids: list[str] = field(default_factory=list)
     source_node_ids: list[str] = field(default_factory=list)
     source_signal_ids: list[str] = field(default_factory=list)
+    source_signal_refs: dict[str, Any] = field(default_factory=dict)
     signal_mix: list[str] = field(default_factory=list)
     evidence_packet: dict[str, Any] = field(default_factory=dict)
     evidence_plan: dict[str, Any] = field(default_factory=dict)
@@ -244,6 +246,7 @@ class DeepInsightSpec(ContractRecord):
             source_paper_ids=ensure_string_list(raw.get("source_paper_ids")),
             source_node_ids=ensure_string_list(raw.get("source_node_ids")),
             source_signal_ids=ensure_string_list(raw.get("source_signal_ids")),
+            source_signal_refs=ensure_dict(raw.get("source_signal_refs")),
             signal_mix=ensure_string_list(raw.get("signal_mix")),
             evidence_packet=ensure_dict(raw.get("evidence_packet")),
             evidence_plan=ensure_dict(raw.get("evidence_plan")),
@@ -285,6 +288,7 @@ class DeepInsightSpec(ContractRecord):
                 "source_paper_ids": self.source_paper_ids,
                 "source_node_ids": self.source_node_ids,
                 "source_signal_ids": self.source_signal_ids,
+                "source_signal_refs": self.source_signal_refs,
                 "signal_mix": self.signal_mix,
                 "evidence_packet": self.evidence_packet,
                 "evidence_plan": self.evidence_plan,
@@ -676,7 +680,7 @@ class ManuscriptInputState(ContractRecord):
         has_candidate_baseline_matrix = bool(per_method and len(per_method) >= 2)
         if benchmark_required and not (has_artifact_manifest and has_candidate_baseline_matrix):
             raise ContractValidationError(
-                "Benchmark-backed manuscript drafts require a linked artifact manifest and at least two methods/baselines"
+                "Full benchmark-backed manuscript drafts require a linked full benchmark artifact manifest and at least two methods/baselines"
             )
         benchmark_summary = self.result_packet.get("benchmark_summary")
         if verdict == "reproduced":

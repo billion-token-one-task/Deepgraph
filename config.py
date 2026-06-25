@@ -190,6 +190,13 @@ LLM_SECONDARY_RPM = _env_int("DEEPGRAPH_LLM_SECONDARY_RPM", 0, "llm.secondary.rp
 # name, base_url, api_key, model, protocol, rpm, enabled, stream_chat_completions.
 LLM_EXTRA_PROVIDERS_JSON = _env_str("DEEPGRAPH_LLM_EXTRA_PROVIDERS_JSON", "", "llm.extra_providers_json")
 LLM_REASONING_EFFORT = _env_str("DEEPGRAPH_LLM_REASONING_EFFORT", "medium", "llm.reasoning_effort")
+LLM_PROMPT_CACHE_ENABLED = _env_bool("DEEPGRAPH_LLM_PROMPT_CACHE_ENABLED", True, "llm.prompt_cache_enabled")
+LLM_PROMPT_CACHE_KEY = _env_str("DEEPGRAPH_LLM_PROMPT_CACHE_KEY", "deepgraph", "llm.prompt_cache_key").strip()
+LLM_PROMPT_CACHE_RETENTION = _env_str(
+    "DEEPGRAPH_LLM_PROMPT_CACHE_RETENTION",
+    "24h",
+    "llm.prompt_cache_retention",
+).strip()
 LLM_CONNECT_TIMEOUT_SECONDS = _env_int("DEEPGRAPH_LLM_CONNECT_TIMEOUT_SECONDS", 30, "llm.connect_timeout_seconds")
 LLM_REQUEST_TIMEOUT_SECONDS = _env_int("DEEPGRAPH_LLM_REQUEST_TIMEOUT_SECONDS", 300, "llm.request_timeout_seconds")
 LLM_TRANSIENT_RETRIES = _env_int("DEEPGRAPH_LLM_TRANSIENT_RETRIES", 2, "llm.transient_retries")
@@ -244,6 +251,13 @@ DATASET_RESOLVER_ALLOW_NETWORK = _env_bool("DEEPGRAPH_DATASET_RESOLVER_ALLOW_NET
 DATASET_RESOLVER_HF_LIMIT = _env_int("DEEPGRAPH_DATASET_RESOLVER_HF_LIMIT", 8, "dataset_resolver.hf_limit")
 DATASET_RESOLVER_TIMEOUT_SECONDS = _env_int("DEEPGRAPH_DATASET_RESOLVER_TIMEOUT_SECONDS", 12, "dataset_resolver.timeout_seconds")
 DATASET_RESOLVER_MIN_CONFIDENCE = _env_float("DEEPGRAPH_DATASET_RESOLVER_MIN_CONFIDENCE", 0.42, "dataset_resolver.min_confidence")
+DATASET_RESOLVER_METADATA_PROBE_ENABLED = _env_bool("DEEPGRAPH_DATASET_RESOLVER_METADATA_PROBE", False, "dataset_resolver.metadata_probe")
+
+# Benchmark design is a literature task, not a dataset-name lookup. The LLM
+# stage must choose the benchmark family, baselines, metrics, and dataset recipe;
+# the resolver only validates explicit public recipes after that.
+BENCHMARK_DESIGN_LLM_ENABLED = _env_bool("DEEPGRAPH_BENCHMARK_DESIGN_LLM", True, "benchmark_design.llm_enabled")
+BENCHMARK_DESIGN_LLM_REQUIRED = _env_bool("DEEPGRAPH_BENCHMARK_DESIGN_LLM_REQUIRED", True, "benchmark_design.llm_required")
 
 # Discovery (Tier 1 / Tier 2 insight generation)
 DISCOVERY_TIER1_CANDIDATES = _env_int("DEEPGRAPH_TIER1_CANDIDATES", 5, "discovery.tier1_candidates")

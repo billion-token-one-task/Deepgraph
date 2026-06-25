@@ -13,6 +13,7 @@ import json
 from typing import Any, Mapping
 
 from agents.benchmark_protocol import resolve_benchmark_protocol
+from agents.loop_router import compact_loop_note, route_blockers
 from agents.workspace_layout import write_plan_files
 from contracts import DeepInsightSpec
 from db import database as db
@@ -229,6 +230,17 @@ def build_harness_task(
             else [],
             "name",
         )
+    routing_inputs = _named_rows(judgement.get("blockers")) + _named_rows(judgement.get("warnings"))
+    routing_inputs.extend(_named_rows(recipe_blockers))
+    summary = _text(judgement.get("summary"))
+    if summary:
+        routing_inputs.append(summary)
+    if not routing_inputs:
+        routing_inputs.append("Generated runner cannot execute the benchmark contract.")
+    loop_route = route_blockers(
+        routing_inputs,
+        context={"source": source, "stage": HARNESS_REQUIRED_STAGE, "insight_id": spec.insight_id},
+    )
     return {
         "schema_version": "benchmark_harness_task_v1",
         "status": HARNESS_REQUIRED_STATUS,
@@ -244,6 +256,7 @@ def build_harness_task(
         "required_capabilities": capabilities,
         "benchmark_protocol": benchmark_protocol,
         "review_judgement": judgement,
+        "loop_router": loop_route,
         "agent_workflow": _agent_workflow(capabilities),
         "next_actions": [
             "lock the official benchmark protocol or materialize the dataset when no official protocol exists",
@@ -274,6 +287,10 @@ def upsert_harness_job(insight_id: int, task: Mapping[str, Any]) -> dict[str, An
     baseline_refs = json.dumps(task.get("baseline_refs") or [], ensure_ascii=False, default=str)
     capabilities = json.dumps(task.get("required_capabilities") or [], ensure_ascii=False, default=str)
     benchmark_name = _primary_benchmark_name(task)
+    loop_note = compact_loop_note(task.get("loop_router") if isinstance(task.get("loop_router"), Mapping) else None)
+    last_note = "Queued for Benchmark Manager, Dataset/Baseline Fetch, Harness Code, and Harness Review agents."
+    if loop_note:
+        last_note = f"{last_note} {loop_note}"
     existing = db.fetchone(
         "SELECT id FROM benchmark_harness_jobs WHERE deep_insight_id=?",
         (int(insight_id),),
@@ -303,7 +320,7 @@ def upsert_harness_job(insight_id: int, task: Mapping[str, Any]) -> dict[str, An
                 capabilities,
                 payload,
                 "Generated runner cannot execute the benchmark contract.",
-                "Queued for Benchmark Manager, Dataset/Baseline Fetch, Harness Code, and Harness Review agents.",
+                last_note,
                 int(insight_id),
             ),
         )
@@ -327,7 +344,7 @@ def upsert_harness_job(insight_id: int, task: Mapping[str, Any]) -> dict[str, An
                 capabilities,
                 payload,
                 "Generated runner cannot execute the benchmark contract.",
-                "Queued for Benchmark Manager, Dataset/Baseline Fetch, Harness Code, and Harness Review agents.",
+                last_note,
             ),
         )
     db.commit()
@@ -352,6 +369,7 @@ def record_harness_required(
             "benchmark_harness_status.json": {
                 "status": HARNESS_REQUIRED_STATUS,
                 "stage": HARNESS_REQUIRED_STAGE,
+                "loop_router": task.get("loop_router") if isinstance(task.get("loop_router"), Mapping) else {},
                 **job,
             },
         },

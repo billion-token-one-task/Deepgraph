@@ -14,6 +14,7 @@ from pathlib import Path
 from agents.knowledge_loop import process_completed_run
 from agents.manuscript_pipeline import generate_submission_bundle
 from agents.validation_loop import run_full_benchmark_completion, run_validation_loop
+from agents.benchmark_design_agent import infer_benchmark_domain
 from agents.compute_profile import detect_compute_profile
 from compat.filelock import FileLock
 from config import (
@@ -33,7 +34,11 @@ from config import (
 )
 from db import database as db
 from orchestrator import ssh_gpu_backend
-from orchestrator.benchmark_completion import BENCHMARK_COMPLETION_STAGE, schedule_benchmark_completion
+from orchestrator.benchmark_completion import (
+    BENCHMARK_COMPLETION_STAGE,
+    benchmark_completion_bundle_from_run,
+    schedule_benchmark_completion,
+)
 from orchestrator.tracking import log_artifact, log_metrics, tracked_run
 
 _scheduler_thread: threading.Thread | None = None
@@ -53,14 +58,18 @@ def _bundle_failure_retry_fields(bundle: dict | None) -> dict | None:
     if not isinstance(bundle, dict) or "error" not in bundle:
         return None
     status = str(bundle.get("status") or "").strip()
-    if status not in {"manuscript_blocked", "needs_revision"}:
-        return None
     blockers = bundle.get("submission_blockers") if isinstance(bundle.get("submission_blockers"), list) else []
-    blocker_text = "; ".join(str(item) for item in blockers[:8]) or str(bundle.get("error") or "Manuscript quality gate failed")
+    default_error = "Manuscript quality gate failed" if status in {"manuscript_blocked", "needs_revision"} else "Submission bundle generation failed"
+    blocker_text = "; ".join(str(item) for item in blockers[:8]) or str(bundle.get("error") or default_error)
+    note = (
+        "Manuscript quality gate failed; queued targeted manuscript revision instead of closing the loop."
+        if status in {"manuscript_blocked", "needs_revision"}
+        else "Submission bundle failed; queued targeted manuscript revision instead of closing the loop."
+    )
     return {
         "status": "queued",
         "stage": "manuscript_retry_after_quality_gate",
-        "last_note": "Manuscript quality gate failed; queued targeted manuscript revision instead of closing the loop.",
+        "last_note": note,
         "last_error": blocker_text[:4000],
     }
 
@@ -245,9 +254,11 @@ def recover_stale_local_running_jobs(workers: list[dict] | None = None) -> int:
         job_id = job["id"]
         run_id = job["experiment_run_id"]
         insight_id = job["deep_insight_id"]
+        if _job_is_active_in_this_process(int(job_id)):
+            continue
         if _local_run_has_live_process(job):
             continue
-        if _current_run_is_successful(run_id):
+        if _current_run_closed_loop_complete(run_id):
             db.execute(
                 """
                 UPDATE gpu_jobs
@@ -373,7 +384,7 @@ def recover_stale_ssh_running_jobs() -> int:
             "Recovered stale SSH GPU job: no remote process was found for "
             f"run_{run_id}; queued a fresh automatic retry."
         )
-        if _current_run_is_successful(run_id):
+        if _current_run_closed_loop_complete(run_id):
             db.execute(
                 """
                 UPDATE gpu_jobs
@@ -392,6 +403,35 @@ def recover_stale_ssh_running_jobs() -> int:
                 WHERE deep_insight_id=?
                 """,
                 (message, insight_id),
+            )
+        elif _current_run_is_successful(run_id):
+            db.execute(
+                """
+                UPDATE gpu_jobs
+                SET status='queued', assigned_worker=NULL, started_at=NULL,
+                    completed_at=NULL, error_message=?
+                WHERE id=?
+                """,
+                (
+                    "Recovered stale SSH GPU job after the remote process exited, but post-run "
+                    "manuscript/submission-bundle work is not closed; queued automatic resume.",
+                    job_id,
+                ),
+            )
+            db.execute(
+                """
+                UPDATE auto_research_jobs
+                SET status='queued_gpu', stage='gpu_scheduler',
+                    assigned_worker=NULL, experiment_run_id=?,
+                    last_note=?, last_error=NULL,
+                    updated_at=CURRENT_TIMESTAMP, last_checked_at=CURRENT_TIMESTAMP
+                WHERE deep_insight_id=?
+                """,
+                (
+                    run_id,
+                    f"Recovered stale SSH GPU job {job_id}; queued it to finish post-run manuscript work.",
+                    insight_id,
+                ),
             )
         else:
             db.execute(
@@ -784,7 +824,7 @@ def queue_run(
             resource_class,
             gpu_count,
             effective_vram_required_gb,
-            timeout_s or GPU_JOB_TIMEOUT_SECONDS,
+            GPU_JOB_TIMEOUT_SECONDS if timeout_s is None else timeout_s,
             priority,
             scheduling_note,
         ),
@@ -931,7 +971,7 @@ def _next_job() -> dict | None:
                 )
                 db.commit()
                 continue
-        run = db.fetchone("SELECT status, phase, error_message FROM experiment_runs WHERE id=?", (job["experiment_run_id"],))
+        run = db.fetchone("SELECT id, deep_insight_id, status, phase, error_message, workdir FROM experiment_runs WHERE id=?", (job["experiment_run_id"],))
         blocker = _launch_blocker_for_run(run)
         if blocker:
             _fail_blocked_queued_job(job, blocker)
@@ -959,7 +999,99 @@ def _launch_blocker_for_run(run: dict | None) -> str | None:
     )
     if any(token in error.lower() for token in invalid_tokens):
         return "experiment_run error_message marks it invalid or blocked; refusing to launch queued GPU job"
+    legacy_blocker = _legacy_benchmark_manifest_blocker(run)
+    if legacy_blocker:
+        return legacy_blocker
     return None
+
+
+def _canon_benchmark_name(value: object) -> str:
+    return "".join(ch for ch in str(value or "").lower() if ch.isalnum())
+
+
+def _load_json_maybe(value: object) -> dict:
+    if isinstance(value, dict):
+        return value
+    try:
+        parsed = json.loads(str(value or "{}"))
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _load_json_file(path: Path) -> dict:
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+_GENERIC_PROBE_BENCHMARKS = {
+    "gsm8k": "GSM8K",
+    "openaigsm8k": "GSM8K",
+    "mbpp": "MBPP",
+    "googleresearchdatasetsmbpp": "MBPP",
+}
+
+_DOMAIN_ALLOWED_GENERIC_PROBES = {
+    "math_reasoning_prm": {"GSM8K"},
+    "formal_code_reasoning": {"MBPP"},
+}
+
+
+def _manifest_generic_probe_names(manifest: dict) -> list[str]:
+    protocol = manifest.get("benchmark_protocol") if isinstance(manifest.get("benchmark_protocol"), dict) else {}
+    rows = []
+    if isinstance(protocol.get("dataset_protocols"), list):
+        rows.extend(row for row in protocol["dataset_protocols"] if isinstance(row, dict))
+    requirements = protocol.get("full_benchmark_requirements") if isinstance(protocol.get("full_benchmark_requirements"), dict) else {}
+    for name in requirements.get("required_dataset_names") or []:
+        rows.append({"name": name})
+    names: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        values = (row.get("name"), row.get("canonical_name"), row.get("hf_dataset"), row.get("dataset"))
+        for value in values:
+            label = _GENERIC_PROBE_BENCHMARKS.get(_canon_benchmark_name(value))
+            if label and label not in seen:
+                seen.add(label)
+                names.append(label)
+    return names
+
+
+def _manifest_uses_gsm8k(manifest: dict) -> bool:
+    return "GSM8K" in _manifest_generic_probe_names(manifest)
+
+
+def _legacy_benchmark_manifest_blocker(run: dict) -> str | None:
+    workdir = Path(str(run.get("workdir") or "")).expanduser()
+    if not workdir:
+        return None
+    manifest = _load_json_file(workdir / "spec" / "benchmark_manifest.json")
+    generic_probe_names = _manifest_generic_probe_names(manifest) if manifest else []
+    if not manifest or not generic_probe_names:
+        return None
+    insight_id = run.get("deep_insight_id")
+    insight = db.fetchone(
+        "SELECT title, problem_statement, existing_weakness, proposed_method, experimental_plan FROM deep_insights WHERE id=?",
+        (insight_id,),
+    ) if insight_id is not None else None
+    generic_label = "/".join(generic_probe_names)
+    legacy_prefix = "legacy benchmark manifest uses GSM8K" if generic_probe_names == ["GSM8K"] else f"legacy benchmark manifest uses generic benchmark {generic_label}"
+    if not insight:
+        return f"{legacy_prefix} but the insight record is missing; benchmark design review is required before launch"
+    method = _load_json_maybe(insight.get("proposed_method"))
+    plan = _load_json_maybe(insight.get("experimental_plan"))
+    domain = infer_benchmark_domain(dict(insight), method, plan)
+    domain_name = str(domain.get("domain") or "unknown")
+    allowed = set(_DOMAIN_ALLOWED_GENERIC_PROBES.get(domain_name, set()))
+    if set(generic_probe_names).issubset(allowed):
+        return None
+    return (
+        f"{legacy_prefix} for domain "
+        f"{domain_name}; benchmark design review/harness is required before launch"
+    )
 
 
 def _fail_blocked_queued_job(job: dict, reason: str) -> None:
@@ -1009,6 +1141,30 @@ def _current_run_is_successful(run_id: int) -> bool:
     if run.get("status") in {"completed", "bundle_ready"}:
         return True
     return bool(run.get("hypothesis_verdict"))
+
+
+def _current_run_closed_loop_complete(run_id: int) -> bool:
+    run = db.fetchone(
+        "SELECT status, submission_bundle_id FROM experiment_runs WHERE id=?",
+        (run_id,),
+    )
+    if not run:
+        return False
+    if run.get("status") == "bundle_ready" or run.get("submission_bundle_id"):
+        return True
+    rows = db.fetchall(
+        """
+        SELECT mr.status AS manuscript_status, sb.status AS bundle_status
+        FROM manuscript_runs mr
+        LEFT JOIN submission_bundles sb ON sb.manuscript_run_id=mr.id
+        WHERE mr.experiment_run_id=?
+        """,
+        (run_id,),
+    )
+    return any(
+        row.get("manuscript_status") == "bundle_ready" or row.get("bundle_status") == "ready"
+        for row in rows
+    )
 
 
 def _release_worker_if_no_running_jobs(worker_id: str, *, finished_job_id: int | None = None) -> None:
@@ -1101,6 +1257,7 @@ def _run_job(job: dict, worker: dict) -> None:
     try:
         post_run_errors: list[str] = []
         bundle: dict = {}
+        completion_queued = False
         with tracked_run(
             f"deepgraph-gpu-run-{run_id}",
             tags={"insight_id": insight_id, "resource_class": job.get("resource_class", "gpu_small")},
@@ -1124,13 +1281,22 @@ def _run_job(job: dict, worker: dict) -> None:
                 collect_run_artifacts(run_id)
             except Exception as exc:
                 post_run_errors.append(_append_error("artifact_collection_failed", exc))
-            try:
-                bundle = generate_submission_bundle(run_id)
-            except Exception as exc:
-                bundle = {"error": str(exc)}
-                post_run_errors.append(_append_error("submission_bundle_failed", exc))
-            if "error" in bundle:
-                post_run_errors.append(f"submission_bundle_result_error: {bundle['error']}")
+            benchmark_bundle = benchmark_completion_bundle_from_run(run_id, result=result)
+            completion_queued = schedule_benchmark_completion(
+                insight_id,
+                run_id,
+                benchmark_bundle,
+                source="gpu_scheduler_pre_manuscript",
+                resource_class=job.get("resource_class", "gpu_large"),
+            )
+            if not completion_queued:
+                try:
+                    bundle = generate_submission_bundle(run_id)
+                except Exception as exc:
+                    bundle = {"error": str(exc)}
+                    post_run_errors.append(_append_error("submission_bundle_failed", exc))
+                if "error" in bundle:
+                    post_run_errors.append("submission_bundle_result_error: " + str(bundle.get("error")))
             log_metrics(
                 {
                     "effect_pct": db.fetchone("SELECT effect_pct FROM experiment_runs WHERE id=?", (run_id,)).get("effect_pct"),
@@ -1141,13 +1307,14 @@ def _run_job(job: dict, worker: dict) -> None:
                     log_artifact(artifact["path"])
             except Exception as exc:
                 post_run_errors.append(_append_error("artifact_logging_failed", exc))
-        completion_queued = schedule_benchmark_completion(
-            insight_id,
-            run_id,
-            bundle,
-            source="gpu_scheduler",
-            resource_class=job.get("resource_class", "gpu_large"),
-        )
+        if not completion_queued:
+            completion_queued = schedule_benchmark_completion(
+                insight_id,
+                run_id,
+                bundle,
+                source="gpu_scheduler",
+                resource_class=job.get("resource_class", "gpu_large"),
+            )
         gpu_error = "\n".join(post_run_errors) if post_run_errors else None
         db.execute(
             """

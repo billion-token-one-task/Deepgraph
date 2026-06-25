@@ -60,6 +60,17 @@ def harvest_signals() -> dict:
     return stats
 
 
+def refresh_research_problems(limit: int | None = None) -> list[dict]:
+    """Refresh persisted problem-first pool from current harvest tables."""
+    _init_schema_v2()
+    from agents.problem_first import discover_research_problems
+
+    target = int(limit or max(DISCOVERY_TIER2_PROBLEMS, DISCOVERY_BULK_TIER2_PROBLEMS, 8))
+    problems = discover_research_problems(limit=target, persist=True)
+    log_event("discovery", {"step": "problem_pool_refreshed", "count": len(problems)})
+    return problems
+
+
 def run_tier1_discovery(
     max_candidates: int | None = None,
     *,
@@ -153,11 +164,18 @@ def run_tier2_discovery(
         lim_nodes = 15
         mpapers = max_papers if max_papers is not None else DISCOVERY_TIER2_PAPERS
 
+    refreshed = refresh_research_problems(limit=max_problems)
     log_event(
         "discovery",
-        {"step": "tier2_start", "max_problems": max_problems, "bulk": bulk},
+        {
+            "step": "tier2_start",
+            "mode": "problem_first",
+            "max_problems": max_problems,
+            "bulk": bulk,
+            "research_problem_count": len(refreshed),
+        },
     )
-    print("[DISCOVERY] Starting Tier 2 (Paper Ideas) discovery...", flush=True)
+    print("[DISCOVERY] Starting Tier 2 problem-first discovery...", flush=True)
 
     try:
         insights = discover_paper_ideas(
@@ -191,8 +209,16 @@ def run_tier2_discovery(
                 "title": ins["title"],
                 "method_name": method.get("name", ""),
             })
-        log_event("discovery", {"step": "tier2_done", "count": len(stored)})
-        print(f"[DISCOVERY] Tier 2 done: {len(stored)} paper ideas stored", flush=True)
+        log_event(
+            "discovery",
+            {
+                "step": "tier2_done",
+                "mode": "problem_first",
+                "count": len(stored),
+                "research_problem_count": len(refreshed),
+            },
+        )
+        print(f"[DISCOVERY] Tier 2 done: {len(stored)} problem-first paper ideas stored", flush=True)
         return stored
     except Exception as e:
         if _llm_temporarily_unavailable(e):
@@ -221,7 +247,10 @@ def run_full_discovery(
     # Step 2: Tier 1
     results["tier1"] = run_tier1_discovery(max_candidates=tier1_candidates, bulk=bulk)
 
-    # Step 3: Tier 2
+    # Step 3: Refresh problem pool
+    results["research_problems"] = refresh_research_problems(limit=tier2_problems)
+
+    # Step 4: Tier 2
     results["tier2"] = run_tier2_discovery(
         max_problems=tier2_problems,
         max_papers=tier2_papers,
@@ -246,6 +275,25 @@ def _recent_node_insight_count(node_id: str, hours: int = 2) -> int:
 
 
 def _eligible_tier2_backlog() -> int:
+    if db.table_exists("research_problems"):
+        row = db.fetchone(
+            """
+            SELECT COUNT(DISTINCT COALESCE(di.research_problem_id, di.id)) AS c
+            FROM deep_insights di
+            LEFT JOIN auto_research_jobs arj ON arj.deep_insight_id = di.id
+            WHERE di.tier = 2
+              AND COALESCE(di.status, 'candidate') NOT IN ('exists')
+              AND COALESCE(di.outcome, 'pending') NOT IN ('cleaned', 'archived')
+              AND COALESCE(di.novelty_status, '') NOT IN ('cleaned_similar_duplicate', 'exists')
+              AND COALESCE(di.submission_status, 'not_started') NOT IN ('stale')
+              AND (
+                arj.status IS NULL
+                OR arj.status IN ('queued', 'eligible', 'failed', 'queued_cpu', 'queued_gpu')
+                OR (arj.status='blocked' AND arj.cpu_eligible=1)
+              )
+            """
+        )
+        return int(row["c"]) if row else 0
     row = db.fetchone(
         """
         SELECT COUNT(*) AS c
@@ -267,6 +315,43 @@ def _eligible_tier2_backlog() -> int:
 
 
 def _warm_tier2_backlog() -> int:
+    if db.table_exists("research_problems"):
+        row = db.fetchone(
+            """
+            SELECT COUNT(DISTINCT COALESCE(di.research_problem_id, di.id)) AS c
+            FROM deep_insights di
+            LEFT JOIN auto_research_jobs arj ON arj.deep_insight_id = di.id
+            WHERE di.tier = 2
+              AND COALESCE(di.status, 'candidate') NOT IN ('exists')
+              AND COALESCE(di.outcome, 'pending') NOT IN ('cleaned', 'archived')
+              AND COALESCE(di.novelty_status, '') NOT IN ('cleaned_similar_duplicate', 'exists')
+              AND COALESCE(di.submission_status, 'not_started') NOT IN ('stale')
+              AND (
+                arj.status IS NULL
+                OR arj.status IN (
+                    'queued',
+                    'eligible',
+                    'failed',
+                    'queued_cpu',
+                    'queued_gpu',
+                    'verifying',
+                    'researching',
+                    'review_pending',
+                    'running_experiment',
+                    'running_cpu',
+                    'running_gpu'
+                )
+                OR (
+                    arj.status='blocked'
+                    AND (
+                        arj.cpu_eligible=1
+                        OR arj.stage IN ('verification_input_missing', 'research_input_missing')
+                    )
+                )
+              )
+            """
+        )
+        return int(row["c"]) if row else 0
     row = db.fetchone(
         """
         SELECT COUNT(*) AS c
@@ -428,7 +513,20 @@ def maybe_launch_milestone_idea_screening(trigger: str = "manual") -> dict:
 def _run_parallel_tier2_discovery() -> None:
     try:
         target_backlog = max(1, DISCOVERY_MIN_TIER2_BACKLOG)
-        deficit = max(0, target_backlog - _warm_tier2_backlog())
+        if db.table_exists("research_problems"):
+            open_problem_row = db.fetchone(
+                """
+                SELECT COUNT(*) AS c
+                FROM research_problems
+                WHERE status IN ('open', 'exploring')
+                  AND attempts_count < 3
+                """
+            )
+            open_problem_count = int(open_problem_row["c"]) if open_problem_row else 0
+            effective_target = min(target_backlog, max(open_problem_count, 0)) if open_problem_count else target_backlog
+        else:
+            effective_target = target_backlog
+        deficit = max(0, effective_target - _warm_tier2_backlog())
         if deficit <= 0:
             return
         harvest_signals()
@@ -439,6 +537,7 @@ def _run_parallel_tier2_discovery() -> None:
                 "step": "parallel_tier2_done",
                 "count": len(stored),
                 "target_backlog": target_backlog,
+                "effective_target_backlog": effective_target,
                 "requested_problems": deficit,
             },
         )

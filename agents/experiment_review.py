@@ -67,6 +67,26 @@ def _model_names(plan: dict[str, Any]) -> list[str]:
     return names
 
 
+def _deferred_target_names(plan: dict[str, Any]) -> list[str]:
+    rows: list[Any] = []
+    for key in ("deferred_benchmark_targets", "deferred_benchmark_target_details"):
+        value = plan.get(key)
+        if isinstance(value, list):
+            rows.extend(value)
+    names: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        if isinstance(row, dict):
+            name = _non_empty_text(row.get("name") or row.get("hf_dataset") or row.get("dataset"))
+        else:
+            name = _non_empty_text(row)
+        key = name.lower()
+        if name and key not in seen:
+            seen.add(key)
+            names.append(name)
+    return names
+
+
 def _primary_metric(plan: dict[str, Any]) -> str:
     metrics = plan.get("metrics") or {}
     if isinstance(metrics, dict):
@@ -96,6 +116,47 @@ def review_experiment_candidate(
     model_targets = _model_names(plan)
     primary_metric = _primary_metric(plan)
     publication_contract = plan.get("publication_evidence_contract") if isinstance(plan.get("publication_evidence_contract"), dict) else {}
+    benchmark_design = plan.get("benchmark_design_contract") if isinstance(plan.get("benchmark_design_contract"), dict) else {}
+    benchmark_design_status = _non_empty_text(plan.get("benchmark_design_status") or benchmark_design.get("status"))
+    benchmark_evidence = plan.get("benchmark_evidence") if isinstance(plan.get("benchmark_evidence"), list) else benchmark_design.get("benchmark_evidence")
+    benchmark_evidence = benchmark_evidence if isinstance(benchmark_evidence, list) else []
+    deferred_benchmark_targets = _deferred_target_names(plan)
+    deferred_harness_required = bool(
+        EXPERIMENT_REQUIRE_REAL_BENCHMARK
+        and plan.get("benchmark_harness_deferred")
+        and deferred_benchmark_targets
+    )
+    if deferred_harness_required:
+        blockers.append(
+            "Benchmark design gate: formal benchmark target(s) are deferred to harness before execution: "
+            + ", ".join(deferred_benchmark_targets[:6])
+        )
+    if benchmark_design_status and benchmark_design_status != "resolved":
+        design_blockers = plan.get("benchmark_design_blockers") if isinstance(plan.get("benchmark_design_blockers"), list) else []
+        if not design_blockers and isinstance(benchmark_design.get("blockers"), list):
+            design_blockers = benchmark_design.get("blockers")
+        blockers.extend(
+            f"Benchmark design gate: {str(item)}"
+            for item in design_blockers
+            if str(item).strip()
+        )
+        if not design_blockers:
+            blockers.append("Benchmark design gate: domain literature review is required before formal experiment execution.")
+    elif benchmark_design_status == "resolved":
+        try:
+            minimum_benchmark_count = max(1, int(benchmark_design.get("minimum_benchmark_count") or 1))
+        except (TypeError, ValueError):
+            minimum_benchmark_count = 1
+        candidate_benchmarks = benchmark_design.get("candidate_benchmarks") if isinstance(benchmark_design.get("candidate_benchmarks"), list) else []
+        if not benchmark_evidence:
+            blockers.append("Benchmark design gate: missing per-dataset literature/official benchmark evidence sources.")
+        if len(candidate_benchmarks) < minimum_benchmark_count:
+            blockers.append(
+                f"Benchmark design gate: only {len(candidate_benchmarks)} benchmark(s) selected; "
+                f"the design contract requires at least {minimum_benchmark_count}."
+            )
+        if not _non_empty_text(benchmark_design.get("benchmark_set_rationale")):
+            blockers.append("Benchmark design gate: missing rationale for dataset count and benchmark coverage axes.")
     benchmark_protocol = (
         publication_contract.get("benchmark_protocol")
         if isinstance(publication_contract.get("benchmark_protocol"), dict)
@@ -164,6 +225,14 @@ def review_experiment_candidate(
             "global_numeric_thresholds_allowed": protocol_requirements.get("global_numeric_thresholds_allowed"),
             "warnings": benchmark_protocol.get("warnings") or [],
         },
+        "benchmark_design": {
+            "status": benchmark_design_status or "missing",
+            "domain": benchmark_design.get("domain"),
+            "task_family": benchmark_design.get("task_family"),
+            "source": benchmark_design.get("source"),
+            "benchmark_evidence_count": len(benchmark_evidence),
+            "benchmark_set_rationale_present": bool(_non_empty_text(benchmark_design.get("benchmark_set_rationale"))),
+        },
         "aligned": bool(datasets and primary_metric and _non_empty_text(method.get("definition"))),
     }
     if not datasets:
@@ -190,7 +259,8 @@ def review_experiment_candidate(
         blockers.append("Synthetic/proxy fallback is disabled for formal experiments.")
     recipe_blockers = plan.get("benchmark_recipe_blockers")
     benchmark_harness_required = bool(
-        EXPERIMENT_REQUIRE_REAL_BENCHMARK and plan.get("generated_runner_supported") is False
+        EXPERIMENT_REQUIRE_REAL_BENCHMARK
+        and (plan.get("generated_runner_supported") is False or deferred_harness_required)
     )
     unsupported_benchmark_targets: list[str] = []
     if benchmark_harness_required:
@@ -205,6 +275,13 @@ def review_experiment_candidate(
             blockers.append(
                 "Generated real-benchmark runner does not support "
                 f"{detail}; a dedicated benchmark harness/recipe is required before GPU execution."
+            )
+        elif deferred_harness_required:
+            unsupported_benchmark_targets = deferred_benchmark_targets
+            detail = ", ".join(deferred_benchmark_targets[:3])
+            blockers.append(
+                "Generated real-benchmark runner cannot execute deferred formal benchmark target(s) "
+                f"{detail}; the benchmark harness must be completed before GPU execution."
             )
         else:
             blockers.append(
@@ -244,8 +321,11 @@ def review_experiment_candidate(
         "generated_real_benchmark_runner_allowed": generated_real_runner,
         "entrypoint_available": entrypoint_available if entrypoint_available is not None else bool(main_train_file),
         "cpu_compatible": spec.resource_class in {"", "cpu"},
-        "benchmark_harness_required": benchmark_harness_required,
-        "unsupported_benchmark_targets": unsupported_benchmark_targets,
+        "benchmark_harness_required": benchmark_harness_required or bool(benchmark_design_status and benchmark_design_status != "resolved"),
+        "benchmark_design_status": benchmark_design_status or "missing",
+        "benchmark_design_domain": benchmark_design.get("domain"),
+        "benchmark_design_task_family": benchmark_design.get("task_family"),
+        "unsupported_benchmark_targets": unsupported_benchmark_targets or deferred_benchmark_targets,
         "harness_queue": "benchmark_harness_jobs" if benchmark_harness_required else "",
         "required_harness_agents": [
             "Benchmark Manager",

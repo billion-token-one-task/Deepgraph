@@ -35,7 +35,14 @@ MAX_PAPER_GITHUB_QUERIES = 4
 MAX_CANDIDATES = 16
 MAX_AGENT_ROUNDS = 3
 MAX_AUTO_VERIFY_PAPER_CANDIDATES = 5
+SCOUT_HTTP_TIMEOUT_SECONDS = float(os.environ.get("DEEPGRAPH_SCOUT_HTTP_TIMEOUT_SECONDS", "5"))
+SCOUT_GITHUB_FAILURE_LIMIT = int(os.environ.get("DEEPGRAPH_SCOUT_GITHUB_FAILURE_LIMIT", "2"))
+SCOUT_ARXIV_FAILURE_LIMIT = int(os.environ.get("DEEPGRAPH_SCOUT_ARXIV_FAILURE_LIMIT", "2"))
+SCOUT_VERIFY_CLONE_TIMEOUT_SECONDS = int(os.environ.get("DEEPGRAPH_SCOUT_VERIFY_CLONE_TIMEOUT_SECONDS", "20"))
 _GITHUB_API_DISABLED_REASON = ""
+_GITHUB_API_FAILURES = 0
+_ARXIV_API_DISABLED_REASON = ""
+_ARXIV_API_FAILURES = 0
 COMMON_ENTRYPOINTS = (
     "train.py",
     "main.py",
@@ -121,8 +128,16 @@ def _github_headers() -> dict[str, str]:
     return headers
 
 
+def _github_api_disabled() -> bool:
+    return bool(_GITHUB_API_DISABLED_REASON)
+
+
+def _github_network_disabled() -> bool:
+    return "network" in str(_GITHUB_API_DISABLED_REASON).lower()
+
+
 def _github_get(client: httpx.Client, path: str, *, params: dict | None = None) -> dict | list | None:
-    global _GITHUB_API_DISABLED_REASON
+    global _GITHUB_API_DISABLED_REASON, _GITHUB_API_FAILURES
     if _GITHUB_API_DISABLED_REASON:
         return None
     try:
@@ -138,9 +153,18 @@ def _github_get(client: httpx.Client, path: str, *, params: dict | None = None) 
             )
             return None
         response.raise_for_status()
+        _GITHUB_API_FAILURES = 0
         return response.json()
     except Exception as exc:
+        _GITHUB_API_FAILURES += 1
         print(f"[SCOUT] GitHub API {path} failed: {exc}", flush=True)
+        if _GITHUB_API_FAILURES >= max(1, SCOUT_GITHUB_FAILURE_LIMIT):
+            _GITHUB_API_DISABLED_REASON = f"network failures ({_GITHUB_API_FAILURES})"
+            print(
+                f"[SCOUT] GitHub API disabled for this process after {_GITHUB_API_DISABLED_REASON}; "
+                "falling back to paper-linked repos or scratch.",
+                flush=True,
+            )
         return None
 
 
@@ -148,7 +172,7 @@ def search_github_repositories(query: str, *, per_page: int = 8) -> list[dict]:
     query = (query or "").strip()
     if not query:
         return []
-    with httpx.Client(timeout=20.0) as client:
+    with httpx.Client(timeout=SCOUT_HTTP_TIMEOUT_SECONDS) as client:
         payload = _github_get(
             client,
             "/search/repositories",
@@ -183,7 +207,7 @@ def search_github_code(query: str, *, per_page: int = 6) -> list[dict]:
     query = (query or "").strip()
     if not query:
         return []
-    with httpx.Client(timeout=20.0) as client:
+    with httpx.Client(timeout=SCOUT_HTTP_TIMEOUT_SECONDS) as client:
         payload = _github_get(
             client,
             "/search/code",
@@ -248,7 +272,7 @@ def enrich_repository(candidate: dict) -> dict:
         return dict(candidate)
     owner, repo = full_name.split("/", 1)
     enriched = dict(candidate)
-    with httpx.Client(timeout=20.0) as client:
+    with httpx.Client(timeout=SCOUT_HTTP_TIMEOUT_SECONDS) as client:
         meta = _github_get(client, f"/repos/{owner}/{repo}")
         if isinstance(meta, dict):
             enriched["description"] = str(meta.get("description") or enriched.get("description") or "")[:500]
@@ -436,16 +460,26 @@ def _title_keywords(title: str, *, max_words: int = 6) -> str:
 
 
 def _fetch_arxiv_metadata(arxiv_id: str) -> dict | None:
+    global _ARXIV_API_DISABLED_REASON, _ARXIV_API_FAILURES
     base = _arxiv_base_id(arxiv_id)
-    if not _is_arxiv_id(base):
+    if not _is_arxiv_id(base) or _ARXIV_API_DISABLED_REASON:
         return None
     try:
-        with httpx.Client(timeout=20.0) as client:
+        with httpx.Client(timeout=SCOUT_HTTP_TIMEOUT_SECONDS) as client:
             response = client.get(ARXIV_API, params={"id_list": base, "max_results": 1})
             response.raise_for_status()
             text = response.text
+            _ARXIV_API_FAILURES = 0
     except Exception as exc:
+        _ARXIV_API_FAILURES += 1
         print(f"[SCOUT] arXiv metadata fetch failed for {base}: {exc}", flush=True)
+        if _ARXIV_API_FAILURES >= max(1, SCOUT_ARXIV_FAILURE_LIMIT):
+            _ARXIV_API_DISABLED_REASON = f"network failures ({_ARXIV_API_FAILURES})"
+            print(
+                f"[SCOUT] arXiv metadata fetch disabled for this process after {_ARXIV_API_DISABLED_REASON}; "
+                "continuing with local paper records only.",
+                flush=True,
+            )
         return None
 
     import xml.etree.ElementTree as ET
@@ -651,8 +685,84 @@ def search_paper_repositories_complete(parsed: dict, plan: dict) -> list[dict]:
     return _dedupe_candidates(gathered)
 
 
-def _try_auto_pick_verified_paper_repo(candidates: list[dict]) -> dict | None:
-    for row in candidates[:MAX_AUTO_VERIFY_PAPER_CANDIDATES]:
+def _add_relevance_terms(terms: set[str], text: object) -> None:
+    raw = str(text or "").strip()
+    if not raw:
+        return
+    lowered = raw.lower()
+    if len(lowered) >= 4:
+        terms.add(lowered)
+    for word in re.findall(r"[A-Za-z0-9][A-Za-z0-9+_.-]*", raw):
+        word = word.lower().strip("_.-")
+        if len(word) >= 4 and word not in TITLE_STOPWORDS:
+            terms.add(word)
+
+
+def _plan_relevance_terms(parsed: dict, plan: dict) -> set[str]:
+    terms: set[str] = set()
+    method = parsed.get("proposed_method") if isinstance(parsed.get("proposed_method"), dict) else {}
+    for field in ("name", "type", "one_line"):
+        _add_relevance_terms(terms, method.get(field))
+    for row in plan.get("baselines") or []:
+        if isinstance(row, dict):
+            _add_relevance_terms(terms, row.get("name") or row.get("method") or row.get("model"))
+        else:
+            _add_relevance_terms(terms, row)
+    for key in ("datasets", "benchmark_targets", "model_targets"):
+        rows = plan.get(key) if isinstance(plan.get(key), list) else []
+        for row in rows:
+            if isinstance(row, dict):
+                for field in ("name", "hf_dataset", "dataset", "benchmark", "hf_model", "model"):
+                    _add_relevance_terms(terms, row.get(field))
+            else:
+                _add_relevance_terms(terms, row)
+    return terms
+
+
+def _candidate_matches_plan(row: dict, terms: set[str]) -> bool:
+    if not terms:
+        return True
+    blob = " ".join(
+        str(row.get(field) or "")
+        for field in (
+            "full_name",
+            "url",
+            "description",
+            "source_query",
+            "paper_title",
+            "baseline_name",
+            "method_name",
+            "matched_path",
+        )
+    ).lower()
+    return any(term in blob for term in terms)
+
+
+def _filter_plan_relevant_candidates(candidates: list[dict], parsed: dict, plan: dict) -> list[dict]:
+    terms = _plan_relevance_terms(parsed, plan)
+    if not terms:
+        return list(candidates)
+    relevant = [row for row in candidates if _candidate_matches_plan(row, terms)]
+    skipped = len(candidates) - len(relevant)
+    if skipped:
+        print(
+            f"[SCOUT] Skipped {skipped} paper-linked repo candidate(s) that did not match the experiment plan terms.",
+            flush=True,
+        )
+    return relevant
+
+
+def _try_auto_pick_verified_paper_repo(
+    candidates: list[dict],
+    *,
+    parsed: dict | None = None,
+    plan: dict | None = None,
+) -> dict | None:
+    if _github_network_disabled():
+        print("[SCOUT] Skipping repository download verification because GitHub network scout is disabled.", flush=True)
+        return None
+    rows = _filter_plan_relevant_candidates(candidates, parsed or {}, plan or {}) if parsed is not None and plan is not None else list(candidates)
+    for row in rows[:MAX_AUTO_VERIFY_PAPER_CANDIDATES]:
         url = str(row.get("url") or "").strip()
         if not url or url == "scratch":
             continue
@@ -708,6 +818,8 @@ def _dedupe_candidates(candidates: list[dict]) -> list[dict]:
 
 
 def _execute_search_plan(plan: dict) -> list[dict]:
+    if _github_api_disabled():
+        return []
     gathered: list[dict] = []
     for query in (plan.get("search_queries") or [])[:MAX_SEARCH_QUERIES]:
         gathered.extend(search_github_repositories(str(query)))
@@ -845,7 +957,7 @@ def _verify_codebase_download(codebase: dict) -> dict:
 
                 subprocess.run(
                     [git_bin, "clone", "--depth", "1", url, str(code_dir)],
-                    timeout=90,
+                    timeout=SCOUT_VERIFY_CLONE_TIMEOUT_SECONDS,
                     capture_output=True,
                     check=True,
                 )
@@ -906,14 +1018,17 @@ def scout_codebase_agentic(insight: dict) -> dict:
         parsed.get("experimental_plan", {}),
         parsed.get("resource_class") or infer_resource_class(parsed),
     )
-    context = build_scout_context(parsed, plan)
     paper_candidates = search_paper_repositories_complete(parsed, plan)
     if paper_candidates:
         print(f"[SCOUT] Paper-first search found {len(paper_candidates)} repo candidate(s)", flush=True)
-    auto_picked = _try_auto_pick_verified_paper_repo(paper_candidates)
+    relevant_paper_candidates = _filter_plan_relevant_candidates(paper_candidates, parsed, plan)
+    auto_picked = _try_auto_pick_verified_paper_repo(relevant_paper_candidates, parsed=parsed, plan=plan)
     if auto_picked:
         return auto_picked
+    if _github_network_disabled():
+        return _scratch_codebase(reason=f"GitHub/arXiv scout degraded to scratch after {_GITHUB_API_DISABLED_REASON}")
 
+    paper_candidates = relevant_paper_candidates
     candidates: list[dict] = list(paper_candidates)
     last_failure = ""
 

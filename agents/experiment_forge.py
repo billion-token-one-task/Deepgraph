@@ -21,8 +21,14 @@ import zipfile
 from pathlib import Path
 
 from agents.discovery_metadata import infer_resource_class
+from agents.benchmark_design_agent import (
+    DESIGN_STATUS_RESOLVED,
+    apply_benchmark_design_contract,
+    build_benchmark_design_contract,
+)
 from agents.benchmark_protocol import resolve_benchmark_protocol
 from agents.dataset_resolver import resolve_plan_datasets
+from agents.evidence_planner import build_evidence_plan
 from agents.evosci_requirements import evosci_strict_gate_insight
 from agents.experiment_review import review_experiment_candidate
 from agents.idea_route import classify_idea_route
@@ -289,7 +295,29 @@ def _finalize_repaired_experiment_plan(parsed: dict, method: dict, plan: dict) -
         {**parsed, "proposed_method": method, "experimental_plan": plan}
     )
 
-    if EXPERIMENT_REQUIRE_REAL_BENCHMARK:
+    if not isinstance(parsed.get("evidence_plan"), dict) or not parsed.get("evidence_plan"):
+        parsed["evidence_plan"] = build_evidence_plan(
+            {**parsed, "proposed_method": method, "experimental_plan": plan}
+        )
+    benchmark_design = build_benchmark_design_contract(parsed, method, plan)
+    plan = apply_benchmark_design_contract(plan, benchmark_design)
+
+    if EXPERIMENT_REQUIRE_REAL_BENCHMARK and plan.get("benchmark_design_status") != DESIGN_STATUS_RESOLVED:
+        plan["real_benchmark_required"] = True
+        plan["requires_real_model"] = True
+        plan["requires_real_dataset"] = True
+        plan["proxy_allowed"] = bool(EXPERIMENT_ALLOW_SYNTHETIC_FALLBACK)
+        plan["generated_runner_supported"] = False
+        blockers = plan.get("benchmark_design_blockers") if isinstance(plan.get("benchmark_design_blockers"), list) else []
+        plan["benchmark_recipe_blockers"] = [
+            {"name": "benchmark_literature_review", "reason": str(blocker)}
+            for blocker in blockers
+            if str(blocker).strip()
+        ] or [
+            {"name": "benchmark_literature_review", "reason": "Benchmark design requires domain literature review."}
+        ]
+
+    if EXPERIMENT_REQUIRE_REAL_BENCHMARK and plan.get("benchmark_design_status") == DESIGN_STATUS_RESOLVED:
         targets = []
         for row in plan.get("benchmark_targets") if isinstance(plan.get("benchmark_targets"), list) else []:
             if isinstance(row, dict):
@@ -765,6 +793,8 @@ def _generated_runner_support_reason(target: dict) -> tuple[bool, str]:
     name = _non_empty_text(target.get("name") or target.get("hf_dataset") or "benchmark")
     if target.get("derive_from_loaded_benchmarks"):
         return True, ""
+    if target.get("requires_harness"):
+        return False, f"{name} requires a dedicated domain benchmark harness."
 
     task_type = _non_empty_text(target.get("task_type")).lower()
     if task_type == "benchmark":
@@ -798,7 +828,7 @@ def _normalize_benchmark_target(row, *, parsed: dict | None = None) -> dict:
     )
     template = _reasoning_benchmark_target(name) or {}
     target = {**template, **source}
-    target["name"] = _non_empty_text(target.get("name") or name or target.get("hf_dataset")) or "GSM8K"
+    target["name"] = _non_empty_text(target.get("name") or name or target.get("hf_dataset")) or "unresolved_benchmark"
     hf_candidates = []
     for value in (
         [target.get("hf_dataset")]
@@ -901,9 +931,7 @@ def _default_real_benchmark_targets(parsed: dict) -> list[dict]:
                 "max_eval_examples": 0,
             }
         ]
-    return [
-        _normalize_benchmark_target("GSM8K", parsed=parsed)
-    ]
+    return []
 
 
 def _supported_probe_benchmark_targets(parsed: dict, method: dict, deferred_targets: list[dict]) -> list[dict]:
@@ -1029,6 +1057,31 @@ def _ensure_real_benchmark_plan(
     plan = dict(plan or {})
     if not EXPERIMENT_REQUIRE_REAL_BENCHMARK:
         return plan
+    if not plan.get("benchmark_design_status"):
+        benchmark_design = build_benchmark_design_contract(parsed, method, plan)
+        plan = apply_benchmark_design_contract(plan, benchmark_design)
+    if plan.get("benchmark_design_status") and plan.get("benchmark_design_status") != DESIGN_STATUS_RESOLVED:
+        blockers = plan.get("benchmark_design_blockers") if isinstance(plan.get("benchmark_design_blockers"), list) else []
+        plan["real_benchmark_required"] = True
+        plan["requires_real_model"] = True
+        plan["requires_real_dataset"] = True
+        plan["generated_runner_supported"] = False
+        plan["benchmark_recipe_blockers"] = [
+            {"name": "benchmark_literature_review", "reason": str(blocker)}
+            for blocker in blockers
+            if str(blocker).strip()
+        ] or [
+            {
+                "name": "benchmark_literature_review",
+                "reason": "Benchmark design must be resolved against domain literature before formal execution.",
+            }
+        ]
+        plan["benchmark_protocol"] = resolve_benchmark_protocol(
+            plan,
+            method=method,
+            claim=parsed.get("hypothesis") or parsed.get("title") or parsed.get("problem_statement"),
+        )
+        return plan
     if resolve_datasets:
         plan = resolve_plan_datasets(plan)
     existing_targets = plan.get("benchmark_targets") if isinstance(plan.get("benchmark_targets"), list) else []
@@ -1044,6 +1097,21 @@ def _ensure_real_benchmark_plan(
             real_targets.append(_normalize_benchmark_target({"name": name}, parsed=parsed))
     if not real_targets:
         real_targets = _default_real_benchmark_targets({**parsed, "proposed_method": method})
+    if not real_targets:
+        blocker = "No semantically aligned benchmark target is available; run benchmark literature review before formal execution."
+        plan["benchmark_design_status"] = plan.get("benchmark_design_status") or "literature_review_required"
+        plan["benchmark_design_blockers"] = list(plan.get("benchmark_design_blockers") or []) + [blocker]
+        plan["real_benchmark_required"] = True
+        plan["requires_real_model"] = True
+        plan["requires_real_dataset"] = True
+        plan["generated_runner_supported"] = False
+        plan["benchmark_recipe_blockers"] = [{"name": "benchmark_literature_review", "reason": blocker}]
+        plan["benchmark_protocol"] = resolve_benchmark_protocol(
+            plan,
+            method=method,
+            claim=parsed.get("hypothesis") or parsed.get("title") or parsed.get("problem_statement"),
+        )
+        return plan
     real_targets = [
         target
         if isinstance(target, dict) and "generated_runner_supported" in target
@@ -1070,7 +1138,7 @@ def _ensure_real_benchmark_plan(
         target for target in real_targets
         if target.get("generated_runner_supported") is False
     ]
-    if recipe_blockers and not runnable_targets:
+    if recipe_blockers and not runnable_targets and not plan.get("benchmark_design_contract"):
         probe_targets = _supported_probe_benchmark_targets(parsed, method, deferred_targets)
         if probe_targets:
             real_targets = probe_targets + real_targets
@@ -1682,12 +1750,23 @@ def _enrich_experimental_plan(parsed: dict, method: dict) -> dict:
         baseline_names = _unique_non_empty(baseline_names)
     plan["baselines"] = [{"name": name} for name in baseline_names[:4]]
 
-    dataset_names = _unique_non_empty(_named_values(plan.get("datasets"), keys=("name", "dataset")))
-    if not dataset_names or (EXPERIMENT_REQUIRE_REAL_BENCHMARK and all(_looks_like_synthetic_dataset(name) for name in dataset_names)):
+    if not isinstance(parsed.get("evidence_plan"), dict) or not parsed.get("evidence_plan"):
+        parsed["evidence_plan"] = build_evidence_plan(
+            {**parsed, "proposed_method": method, "experimental_plan": plan}
+        )
+
+    benchmark_design = build_benchmark_design_contract(parsed, method, plan)
+    plan = apply_benchmark_design_contract(plan, benchmark_design)
+    design_resolved = plan.get("benchmark_design_status") == DESIGN_STATUS_RESOLVED
+
+    dataset_names = _unique_non_empty(_named_values(plan.get("datasets"), keys=("name", "dataset", "hf_dataset")))
+    if design_resolved and (not dataset_names or (EXPERIMENT_REQUIRE_REAL_BENCHMARK and all(_looks_like_synthetic_dataset(name) for name in dataset_names))):
         real_targets = _default_real_benchmark_targets({**parsed, "proposed_method": method})
         dataset_names = [str(row.get("name") or row.get("hf_dataset")) for row in real_targets if row.get("name") or row.get("hf_dataset")]
-        plan["benchmark_targets"] = real_targets
-    plan["datasets"] = [{"name": name} for name in dataset_names[:4]]
+        if real_targets:
+            plan["benchmark_targets"] = real_targets
+    if dataset_names:
+        plan["datasets"] = [{"name": name} for name in dataset_names[:4]]
 
     metrics = plan.get("metrics")
     if isinstance(metrics, dict):
@@ -1770,12 +1849,13 @@ def _persist_enriched_insight(insight_id: int, parsed: dict) -> None:
     db.execute(
         """
         UPDATE deep_insights
-        SET proposed_method=?, experimental_plan=?, resource_class=?, updated_at=CURRENT_TIMESTAMP
+        SET proposed_method=?, experimental_plan=?, evidence_plan=?, resource_class=?, updated_at=CURRENT_TIMESTAMP
         WHERE id=?
         """,
         (
             json.dumps(parsed.get("proposed_method") or {}, ensure_ascii=False),
             json.dumps(parsed.get("experimental_plan") or {}, ensure_ascii=False),
+            json.dumps(parsed.get("evidence_plan") or {}, ensure_ascii=False),
             parsed.get("resource_class") or "cpu",
             insight_id,
         ),
@@ -2372,7 +2452,14 @@ def _real_benchmark_defaults(plan: dict) -> dict:
         )
     ]
     if not normalized_targets:
-        normalized_targets = [_normalize_benchmark_target("GSM8K")]
+        for name in _named_values(plan.get("datasets"), keys=("name", "dataset", "hf_dataset")):
+            if not _looks_like_synthetic_dataset(name):
+                normalized_targets.append(_normalize_benchmark_target({"name": name}))
+    if not normalized_targets:
+        raise ValueError(
+            "Cannot generate a paper-grade benchmark runner without explicit benchmark_targets or real datasets; "
+            "run benchmark design/harness repair before execution."
+        )
     blockers = [
         target.get("generated_runner_blocker")
         or f"{target.get('name') or target.get('hf_dataset') or 'benchmark'} is not executable by the generated runner."
@@ -3174,35 +3261,11 @@ def _real_llm_benchmark_train_py(*, method_name: str, metric_name: str, plan: di
             except Exception as exc:
                 failures.append({"target": target.get("name"), "error": str(exc)})
                 _append_jsonl("failure_cases.jsonl", {"stage": "load_dataset", "target": target.get("name"), "error": str(exc)})
-        if not suites and not any(str(t.get("name") or "").lower() == "gsm8k" for t in targets):
-            fallback = {
-                "name": "GSM8K",
-                "hf_dataset": "openai/gsm8k",
-                "hf_candidates": ["openai/gsm8k"],
-                "config": "main",
-                "config_candidates": ["main", ""],
-                "split": "test",
-                "split_candidates": ["test", "train"],
-                "task_type": "math_qa",
-                "question_field": "question",
-                "answer_field": "answer",
-            }
-            try:
-                print("BENCHMARK_STAGE: materialize GSM8K fallback", flush=True)
-                rows, meta = _load_hf_rows(fallback)
-                examples = _materialize_examples(rows, fallback, meta, max_examples)
-                if not examples:
-                    raise RuntimeError("loaded fallback dataset but could not infer question/answer fields")
-                print(
-                    "BENCHMARK_STAGE: materialized GSM8K fallback examples="
-                    + str(len(examples)),
-                    flush=True,
-                )
-                suites.append({"target": fallback, "meta": meta, "examples": examples})
-                loaded_pool.extend(examples)
-            except Exception as exc:
-                failures.append({"target": "GSM8K fallback", "error": str(exc)})
-                _append_jsonl("failure_cases.jsonl", {"stage": "load_dataset", "target": "GSM8K fallback", "error": str(exc)})
+        if not suites:
+            failures.append({
+                "target": "all_requested_benchmarks",
+                "error": "no requested benchmark suite loaded; refusing cross-domain GSM8K fallback",
+            })
         for target in targets:
             if not target.get("derive_from_loaded_benchmarks"):
                 continue
@@ -4831,10 +4894,28 @@ def forge_experiment(insight_id: int) -> dict:
         entrypoint_available=entrypoint_available,
     )
     if judgement.recommended_route == "blocked":
-        db.execute("DELETE FROM experiment_runs WHERE id=?", (run_id,))
+        summary = judgement.summary or "Experiment review blocked formalization"
+        blocked_payload = {
+            "formal_experiment": False,
+            "smoke_test_only": True,
+            "review_route": judgement.recommended_route,
+            "experiment_judgement": judgement.to_dict(),
+        }
+        db.execute(
+            """
+            UPDATE experiment_runs
+            SET status='failed',
+                phase='experiment_review_blocked',
+                proxy_config=?,
+                error_message=?,
+                completed_at=CURRENT_TIMESTAMP
+            WHERE id=?
+            """,
+            (json.dumps(blocked_payload, ensure_ascii=False), summary, run_id),
+        )
         db.commit()
         return {
-            "error": judgement.summary or "Experiment review blocked formalization",
+            "error": summary,
             "judgement": judgement.to_dict(),
             "route": judgement.recommended_route,
             "harness_required": bool((judgement.environment_review or {}).get("benchmark_harness_required")),

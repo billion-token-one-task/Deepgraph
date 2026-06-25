@@ -190,6 +190,27 @@ VENUE_LENGTH_POLICIES: dict[str, VenueLengthPolicy] = {
         calibration_sources=BEST_PAPER_CALIBRATION_SOURCES,
         notes="Journal-style targets are not capped by conference page budgets, but still require complete section coverage.",
     ),
+    "technical_report": VenueLengthPolicy(
+        key="technical_report",
+        family="technical_report",
+        label="Evidence-bounded technical report",
+        official_main_page_limit=None,
+        complete_main_page_range=(5, 14),
+        main_word_range=(3000, 9000),
+        min_reference_count=20,
+        min_cited_reference_count=20,
+        section_budgets=_budgets(
+            abstract=(100, 120, 260, 320),
+            introduction=(450, 600, 1300, 1700),
+            related_work=(350, 450, 1200, 1700),
+            method=(650, 800, 1900, 2600),
+            experiments_results=(700, 900, 2400, 3300),
+            discussion_limitations=(250, 320, 1200, 1700),
+        ),
+        official_sources=COMMON_OFFICIAL_SOURCES,
+        calibration_sources=BEST_PAPER_CALIBRATION_SOURCES,
+        notes="Technical reports are allowed for controlled/materialized evidence when claims are scoped honestly; they still require a complete manuscript and traceable references.",
+    ),
 }
 
 

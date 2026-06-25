@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest import mock
 
 from agents.evidence_planner import build_evidence_plan
+from agents.paperorchestra import figure_orchestra
 from agents.paperorchestra.figure_orchestra import run_figure_orchestra
 
 
@@ -104,6 +105,36 @@ class EvidencePlannerTests(unittest.TestCase):
             )
             self.assertEqual(asset["notes"], "paperbanana_ok")
             self.assertTrue(Path(asset["path"]).exists())
+
+    def test_paperbanana_timeout_is_configurable_for_slow_image_generation(self):
+        fig = {
+            "figure_id": "fig_motivation_overview",
+            "plot_type": "diagram",
+            "title": "Motivation overview",
+            "objective": "Motivation and overview for selective reasoning.",
+        }
+
+        def _fake_run(command, **kwargs):
+            output_arg = command.split("--out ", 1)[1].split(" --spec", 1)[0].strip("'")
+            Path(output_arg).write_bytes(b"x")
+            proc = mock.Mock()
+            proc.returncode = 0
+            proc.stdout = ""
+            proc.stderr = ""
+            return proc
+
+        with tempfile.TemporaryDirectory() as tmpdir, mock.patch.object(
+            figure_orchestra, "PAPERBANANA_EXTERNAL_TIMEOUT_SECONDS", 777
+        ), mock.patch.object(figure_orchestra.subprocess, "run", side_effect=_fake_run) as run:
+            asset = figure_orchestra._run_external_diagram(
+                fig,
+                figures_dir=Path(tmpdir),
+                state={"title": "Selective reasoning"},
+                paperbanana_cmd="paperbanana --out {output} --spec {spec}",
+            )
+
+        self.assertEqual(asset["notes"], "paperbanana_ok")
+        self.assertEqual(run.call_args.kwargs["timeout"], 777)
 
     def test_motivation_overview_diagram_cannot_opt_out_to_native(self):
         outline = {

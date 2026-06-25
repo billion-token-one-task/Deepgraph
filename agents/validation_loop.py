@@ -267,6 +267,34 @@ def _benchmark_stage_trace(text: str, *, limit: int = 16) -> list[str]:
     return stages[-limit:]
 
 
+def _process_timeout_seconds(time_budget: int | None, *, full_benchmark: bool) -> int | None:
+    """Return subprocess timeout seconds; 0/None means unlimited for full benchmarks."""
+
+    try:
+        budget = int(time_budget or 0)
+    except (TypeError, ValueError):
+        budget = 0
+    if full_benchmark and budget <= 0:
+        return None
+    if budget <= 0:
+        budget = EXPERIMENT_TIME_BUDGET
+    return max(1, budget) + 60
+
+
+def _full_benchmark_time_budget(proxy: dict) -> int:
+    """Full benchmark completion defaults to unlimited unless explicitly capped."""
+
+    raw = proxy.get("full_benchmark_time_budget_seconds")
+    if raw in (None, ""):
+        raw = proxy.get("full_benchmark_time_budget")
+    if raw in (None, "", "none", "None", "unlimited", "Unlimited"):
+        return 0
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _execution_diagnostics(
     *,
     returncode: int | None,
@@ -1198,7 +1226,7 @@ def _run_experiment_model_matrix(
     results_dir.mkdir(parents=True, exist_ok=True)
     per_model_results: list[dict] = []
     started = time.time()
-    per_model_budget = max(60, time_budget)
+    per_model_budget = time_budget if time_budget and time_budget > 0 else 0
     for model_id in models:
         model_env = dict(benchmark_env)
         model_env.pop("DEEPGRAPH_BENCHMARK_MODELS", None)
@@ -1435,7 +1463,7 @@ def _run_experiment(
                     bufsize=1,
                 )
                 try:
-                    proc.wait(timeout=time_budget + 60)
+                    proc.wait(timeout=_process_timeout_seconds(time_budget, full_benchmark=full_benchmark))
                 except subprocess.TimeoutExpired:
                     proc.kill()
                     try:
@@ -2656,14 +2684,7 @@ def run_full_benchmark_completion(run_id: int, execution_context: dict | None = 
     if forced_real_runner:
         proxy["baseline_command"] = baseline_command
         proxy["main_train_file"] = "train.py"
-    try:
-        time_budget = int(
-            proxy.get("full_benchmark_time_budget_seconds")
-            or proxy.get("full_benchmark_time_budget")
-            or EXPERIMENT_REAL_BENCHMARK_TIME_BUDGET
-        )
-    except (TypeError, ValueError):
-        time_budget = EXPERIMENT_REAL_BENCHMARK_TIME_BUDGET
+    time_budget = _full_benchmark_time_budget(proxy)
 
     db.execute(
         "UPDATE experiment_runs SET status='running_gpu', phase='full_benchmark', started_at=COALESCE(started_at, CURRENT_TIMESTAMP) WHERE id=?",

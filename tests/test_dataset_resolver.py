@@ -24,19 +24,40 @@ class DatasetResolverTests(unittest.TestCase):
 
     def test_huggingface_search_can_resolve_unknown_dataset(self):
         candidate = dataset_resolver.DatasetCandidate(
-            dataset_id="example/spider-text-to-sql",
+            dataset_id="example/custom-qa",
             score=0.72,
             downloads=100,
             likes=5,
             tags=("text2text-generation", "question-answering"),
         )
         with mock.patch.object(dataset_resolver, "search_huggingface_datasets", return_value=[candidate]):
-            recipe = dataset_resolver.resolve_dataset_name("Spider")
+            recipe = dataset_resolver.resolve_dataset_name("CustomQA")
 
         self.assertTrue(recipe["resolved"])
-        self.assertEqual(recipe["hf_dataset"], "example/spider-text-to-sql")
+        self.assertEqual(recipe["hf_dataset"], "example/custom-qa")
         self.assertEqual(recipe["source"], "huggingface_search")
         self.assertTrue(recipe["generated_runner_supported"])
+
+    def test_spider_uses_official_harness_recipe_not_name_search(self):
+        with mock.patch.object(dataset_resolver, "search_huggingface_datasets") as search:
+            recipe = dataset_resolver.resolve_dataset_name("Spider")
+
+        search.assert_not_called()
+        self.assertTrue(recipe["resolved"])
+        self.assertEqual(recipe["name"], "Spider")
+        self.assertTrue(recipe["requires_harness"])
+        self.assertFalse(recipe["generated_runner_supported"])
+        self.assertIn("yale-lily", recipe["official_url"])
+
+    def test_longmemeval_uses_harness_recipe_not_generic_runner(self):
+        recipe = dataset_resolver.resolve_known_dataset_recipe("LongMemEval")
+
+        self.assertIsNotNone(recipe)
+        self.assertEqual(recipe["name"], "LongMemEval")
+        self.assertTrue(recipe["requires_harness"])
+        self.assertFalse(recipe["generated_runner_supported"])
+        self.assertIn("longmemeval", recipe["official_url"].lower())
+
 
     def test_plan_resolution_updates_runner_gate(self):
         candidate = dataset_resolver.DatasetCandidate(
@@ -49,9 +70,9 @@ class DatasetResolverTests(unittest.TestCase):
         with mock.patch.object(dataset_resolver, "search_huggingface_datasets", return_value=[candidate]):
             plan = dataset_resolver.resolve_plan_datasets(
                 {
-                    "datasets": [{"name": "Spider"}],
+                    "datasets": [{"name": "CustomQA"}],
                     "generated_runner_supported": False,
-                    "benchmark_recipe_blockers": [{"name": "Spider", "reason": "missing recipe"}],
+                    "benchmark_recipe_blockers": [{"name": "CustomQA", "reason": "missing recipe"}],
                 }
             )
 
@@ -59,6 +80,29 @@ class DatasetResolverTests(unittest.TestCase):
         self.assertEqual(plan["dataset_resolution"]["status"], "resolved")
         self.assertEqual(plan["benchmark_targets"][0]["hf_dataset"], "example/spider-text-to-sql")
         self.assertNotIn("benchmark_recipe_blockers", plan)
+
+    def test_literature_selected_benchmark_does_not_hf_search_by_name(self):
+        with mock.patch.object(dataset_resolver, "search_huggingface_datasets") as search:
+            plan = dataset_resolver.resolve_plan_datasets(
+                {
+                    "benchmark_targets": [
+                        {
+                            "name": "Robomimic",
+                            "task_type": "robot_manipulation",
+                            "requires_harness": True,
+                            "dataset_selection_source": "llm_literature_design",
+                            "resolver_policy": "validate_only",
+                        }
+                    ],
+                    "datasets": [{"name": "Robomimic"}],
+                    "generated_runner_supported": False,
+                }
+            )
+
+        search.assert_not_called()
+        self.assertFalse(plan["generated_runner_supported"])
+        self.assertEqual(plan["dataset_resolution"]["status"], "unresolved")
+        self.assertIn("resolver search is disabled", plan["benchmark_recipe_blockers"][0]["reason"])
 
     def test_partial_plan_resolution_keeps_deferred_targets(self):
         plan = dataset_resolver.resolve_plan_datasets(
@@ -104,7 +148,9 @@ class DatasetResolverTests(unittest.TestCase):
                     "definition": "Route candidate answers using confidence and schema evidence.",
                 },
                 {
-                    "datasets": [{"name": "Spider"}],
+                    "benchmark_design_status": "resolved",
+                    "benchmark_design_contract": {"status": "resolved", "source": "test_reviewed_contract"},
+                    "datasets": [{"name": "CustomQA"}],
                     "baselines": [{"name": "Direct"}, {"name": "Majority"}],
                     "metrics": {"primary": "accuracy"},
                 },
@@ -117,7 +163,10 @@ class DatasetResolverTests(unittest.TestCase):
     def test_run_script_resolves_before_execution_blocker(self):
         idea = {
             "title": "Executable QA idea",
+            "proposed_method": {"name": "MathQA", "definition": "Answer grade-school math word problems."},
             "experimental_plan": {
+                "benchmark_design_status": "resolved",
+                "benchmark_design_contract": {"status": "resolved", "source": "test_reviewed_contract"},
                 "datasets": [{"name": "GSM8K"}],
                 "generated_runner_supported": False,
                 "benchmark_recipe_blockers": [{"name": "GSM8K", "reason": "missing recipe"}],

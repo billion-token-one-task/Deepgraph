@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -58,6 +59,42 @@ from config import (
 )
 
 CITE_PATTERN = re.compile(r"\\cite[a-zA-Z*]*\{([^}]*)\}")
+
+_POSTWRITING_FAILURE_NOTE_MARKERS = (
+    "paperbanana_failed",
+    "paperbanana_error",
+    "paperbanana_not_configured",
+    "missing_paperbanana",
+    "postwriting_api_figure_stage_exception",
+)
+
+
+def _postwriting_api_manifest_is_reusable(manifest: dict | None, figures_dir: Path) -> bool:
+    if not isinstance(manifest, dict):
+        return False
+    if manifest.get("blockers"):
+        return False
+    assets = manifest.get("assets")
+    if not isinstance(assets, list) or len(assets) < 2:
+        return False
+    for asset in assets:
+        if not isinstance(asset, dict):
+            return False
+        if str(asset.get("kind") or "").strip().lower() == "fallback":
+            return False
+        raw_path = asset.get("path") or asset.get("svg_path") or asset.get("pdf_path")
+        if not raw_path:
+            return False
+        asset_path = Path(str(raw_path))
+        if not asset_path.is_absolute():
+            asset_path = figures_dir / asset_path
+        if not asset_path.is_file():
+            return False
+        notes = str(asset.get("notes") or "").lower()
+        if any(marker in notes for marker in _POSTWRITING_FAILURE_NOTE_MARKERS):
+            return False
+    return True
+
 
 DEEPGRAPH_WRITING_GUARD = """DeepGraph writing constraints:
 - Treat paper_intent.json as the thesis and narrative spine.
@@ -183,7 +220,16 @@ def _checkpoint_root(figures_dir: Path) -> Path:
 
 
 def _latex_escape_text(value: Any) -> str:
-    text = str(value or "")
+    text = (
+        str(value or "")
+        .replace("↔", " versus ")
+        .replace("→", " to ")
+        .replace("←", " from ")
+        .replace("–", "-")
+        .replace("—", "-")
+        .replace("−", "-")
+        .replace("×", "x")
+    )
     replacements = {
         "\\": r"\textbackslash{}",
         "&": r"\&",
@@ -365,7 +411,14 @@ def _default_section_fragments(
             continue
         fid = _latex_escape_text(fig.get("figure_id") or "figure")
         figures.append(f"Fig.~\\ref{{fig:{fid}}}")
-    figure_sentence = " and ".join(figures[:2]) if figures else "the artifact-backed figures"
+    if len(figures) >= 3:
+        figure_sentence = f"{figures[0]}, {figures[1]}, and {figures[2]}"
+    elif len(figures) == 2:
+        figure_sentence = f"{figures[0]} and {figures[1]}"
+    elif figures:
+        figure_sentence = figures[0]
+    else:
+        figure_sentence = "the artifact-backed figures"
 
     def _fmt_number(value: Any, digits: int = 3, missing: str = "--") -> str:
         if value in (None, ""):
@@ -810,6 +863,7 @@ def run_paperorchestra_full(
     plotting_assets = plot_out.get("assets") or []
     captions_cached = read_json_checkpoint(root, "figure_captions.json")
     planned_caption_ids = {str(fig.get("figure_id") or "") for fig in (pplan or []) if isinstance(fig, dict) and fig.get("figure_id")}
+    requires_dataset_breakdown_figure = "fig_dataset_breakdown" in planned_caption_ids
     cached_caption_ids = {str(row.get("figure_id") or "") for row in (captions_cached or []) if isinstance(row, dict)} if isinstance(captions_cached, list) else set()
     if isinstance(captions_cached, list) and planned_caption_ids.issubset(cached_caption_ids):
         captions = [row for row in captions_cached if isinstance(row, dict)]
@@ -1118,12 +1172,16 @@ def run_paperorchestra_full(
                 "num_seeds": exp.get("num_seeds"),
                 "main_results": method_rows,
                 "ablation_table": exp.get("ablation_table") or [],
+                "per_dataset": exp.get("per_dataset") or exp.get("per_dataset_results") or {},
+                "per_seed": exp.get("per_seed") or exp.get("per_seed_results") or exp.get("seed_results") or [],
+                "per_objective": exp.get("per_objective") or {},
                 "latency_tokens_table": exp.get("latency_tokens_table") or [],
                 "statistical_tests": exp.get("statistical_tests") or {},
                 "write_focus": [
                     "Report setup, baselines, metrics, seed count, main table, ablations, latency, and token cost.",
                     "Use evidence-backed numeric values from main_results and ablation_table, rounded for paper presentation rather than raw Python floats.",
                     "State the controlled materialized-trace boundary clearly.",
+                    "Discuss dataset, seed, and objective-family breakdowns when those artifacts are present.",
                 ],
             }
         return {
@@ -1211,6 +1269,9 @@ def run_paperorchestra_full(
     sec_out_method = _sanitize_latex_citations(_strip_latex_fence(sec_out_method or ""), allowed_keys, fallback_cites)
 
     cached_exp = read_text_checkpoint(root, "section_experiments.tex")
+    if cached_exp and requires_dataset_breakdown_figure and "fig_dataset_breakdown" not in cached_exp and not ({"dataset", "seed"}.issubset(set(cached_exp.lower().split()))):
+        trace.log("section_experiments", "cache_invalidated", reason="dataset_breakdown_figure_added")
+        cached_exp = ""
     if cached_exp:
         trace.log("section_experiments", "cached", response_chars=len(cached_exp))
         sec_out_exp = cached_exp
@@ -1303,7 +1364,16 @@ def run_paperorchestra_full(
             cached_postwrite = json.loads(cached_postwrite_manifest.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             cached_postwrite = None
-    if isinstance(cached_postwrite, dict) and cached_postwrite.get("assets"):
+    if os.getenv("PAPERORCHESTRA_SKIP_POSTWRITING_API_FIGURES", "").strip().lower() in {"1", "true", "yes"}:
+        postwrite_figures = {
+            "stage": "postwriting_api_figures",
+            "generated_count": 0,
+            "assets": [],
+            "blockers": [],
+            "notes": "skipped_by_environment; artifact-backed experiment figures remain active",
+        }
+        trace.log("postwriting_api_figures", "skipped", reason="PAPERORCHESTRA_SKIP_POSTWRITING_API_FIGURES")
+    elif _postwriting_api_manifest_is_reusable(cached_postwrite if isinstance(cached_postwrite, dict) else None, figures_dir):
         postwrite_figures = cached_postwrite
         trace.log(
             "postwriting_api_figures",
@@ -1312,6 +1382,13 @@ def run_paperorchestra_full(
             blocker_count=len(postwrite_figures.get("blockers") or []),
         )
     else:
+        if isinstance(cached_postwrite, dict) and cached_postwrite.get("assets"):
+            trace.log(
+                "postwriting_api_figures",
+                "cache_invalidated",
+                generated_count=cached_postwrite.get("generated_count"),
+                blocker_count=len(cached_postwrite.get("blockers") or []),
+            )
         trace.log("postwriting_api_figures", "started")
         try:
             postwrite_figures = run_postwriting_api_figure_stage(
@@ -1468,6 +1545,11 @@ def run_paperorchestra_full(
     # has repeatedly caused manuscript generation to stall after the paper is
     # otherwise written.
     r_frag = read_json_checkpoint(root, "refined_fragments.json")
+    if isinstance(r_frag, dict) and requires_dataset_breakdown_figure:
+        cached_fragment_text = "\n".join(str(v or "") for v in r_frag.values())
+        if "fig_dataset_breakdown" not in cached_fragment_text:
+            trace.log("split_refined_fragments", "cache_invalidated", reason="dataset_breakdown_figure_added")
+            r_frag = {}
     if not isinstance(r_frag, dict) or not r_frag:
         r_frag = {
             "abstract": deterministic_fragments["abstract"],

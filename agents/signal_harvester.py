@@ -6,6 +6,7 @@ Zero LLM cost. Finds structural signals that seed Tier 1 and Tier 2 discovery:
 - Contradiction clustering (groups of related conflicts)
 - Performance plateau detection (diminishing returns in a subfield)
 """
+import hashlib
 import json
 import math
 import re
@@ -125,15 +126,237 @@ NEGATIVE_CLAIM_TERMS = {
     "lacks", "missing", "brittle", "only modest", "insufficient",
 }
 
+HARVEST_SIGNAL_ROLES = {
+    "node_entity_overlap": "solution",
+    "pattern_matches": "solution",
+    "contradiction_clusters": "problem",
+    "performance_plateaus": "problem",
+    "mechanism_mismatches": "derived",
+    "protocol_artifacts": "problem",
+    "negative_space_gaps": "problem",
+    "hidden_variable_bridges": "solution",
+    "claim_method_gaps": "problem",
+}
+
+SIGNAL_HASH_FIELDS = {
+    "node_entity_overlap": ("node_a_id", "node_b_id"),
+    "pattern_matches": ("pattern_a_id", "pattern_b_id"),
+    "contradiction_clusters": ("theme", "shared_entities"),
+    "performance_plateaus": ("node_id", "dataset_name", "metric_name"),
+    "mechanism_mismatches": ("node_id", "theme"),
+    "protocol_artifacts": ("node_id", "artifact_type"),
+    "negative_space_gaps": ("node_id", "gap_type"),
+    "hidden_variable_bridges": ("node_a_id", "node_b_id", "shared_factor"),
+    "claim_method_gaps": ("node_id",),
+}
+
+SIGNAL_PAYLOAD_TABLES = {
+    "entity_overlaps": "node_entity_overlap",
+    "pattern_matches": "pattern_matches",
+    "contradiction_clusters": "contradiction_clusters",
+    "performance_plateaus": "performance_plateaus",
+    "mechanism_mismatches": "mechanism_mismatches",
+    "protocol_artifacts": "protocol_artifacts",
+    "negative_space_gaps": "negative_space_gaps",
+    "hidden_variable_bridges": "hidden_variable_bridges",
+    "claim_method_gaps": "claim_method_gaps",
+}
+
+PROBLEM_SIGNAL_TABLES = {
+    "contradiction_clusters",
+    "performance_plateaus",
+    "mechanism_mismatches",
+    "protocol_artifacts",
+    "negative_space_gaps",
+    "claim_method_gaps",
+}
+
+SOLUTION_SIGNAL_TABLES = {
+    "node_entity_overlap",
+    "pattern_matches",
+    "hidden_variable_bridges",
+}
+
 
 def _json_list(value: str | None) -> list:
     if not value:
         return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
     try:
         parsed = json.loads(value)
     except (json.JSONDecodeError, TypeError):
         return []
     return parsed if isinstance(parsed, list) else []
+
+
+def _json_dumps_stable(value) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _stable_signal_hash(table: str, row: dict) -> str:
+    fields = SIGNAL_HASH_FIELDS.get(table) or tuple(sorted(row))
+    payload = {field: row.get(field) for field in fields}
+    return hashlib.sha256(_json_dumps_stable({"table": table, "key": payload}).encode("utf-8")).hexdigest()
+
+
+def _ensure_column(table: str, column: str, column_type: str) -> None:
+    if not db.table_exists(table):
+        return
+    cols = db.column_names(table)
+    if column not in cols:
+        db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
+        db.commit()
+
+
+def ensure_harvest_signal_schema(table: str | None = None) -> None:
+    tables = [table] if table else list(HARVEST_SIGNAL_ROLES)
+    for name in tables:
+        if not db.table_exists(name):
+            continue
+        role = HARVEST_SIGNAL_ROLES[name]
+        _ensure_column(name, "content_hash", "TEXT")
+        _ensure_column(name, "signal_role", f"TEXT DEFAULT '{role}'")
+        _ensure_column(name, "empirical_posterior", "REAL")
+        _ensure_column(name, "confirm_count", "INTEGER DEFAULT 0")
+        _ensure_column(name, "refute_count", "INTEGER DEFAULT 0")
+        _ensure_column(name, "last_outcome_at", "TIMESTAMP")
+        db.execute(f"UPDATE {name} SET signal_role=? WHERE signal_role IS NULL OR signal_role=''", (role,))
+        rows = db.fetchall(f"SELECT * FROM {name} WHERE content_hash IS NULL OR content_hash=''")
+        for row in rows:
+            content_hash = _stable_signal_hash(name, row)
+            db.execute(f"UPDATE {name} SET content_hash=? WHERE id=?", (content_hash, row["id"]))
+        db.execute(f"CREATE INDEX IF NOT EXISTS idx_{name}_content_hash ON {name}(content_hash)")
+    db.commit()
+
+
+def _posterior_cache(table: str) -> dict[str, dict]:
+    ensure_harvest_signal_schema(table)
+    rows = db.fetchall(
+        f"""
+        SELECT content_hash, empirical_posterior, confirm_count, refute_count, last_outcome_at
+        FROM {table}
+        WHERE content_hash IS NOT NULL AND content_hash != ''
+        """
+    )
+    return {row["content_hash"]: row for row in rows}
+
+
+def _with_signal_metadata(table: str, row: dict, posterior_by_hash: dict[str, dict] | None = None) -> dict:
+    out = dict(row)
+    content_hash = out.get("content_hash") or _stable_signal_hash(table, out)
+    out["content_hash"] = content_hash
+    out["signal_role"] = out.get("signal_role") or HARVEST_SIGNAL_ROLES.get(table, "solution")
+    prior = (posterior_by_hash or {}).get(content_hash) or {}
+    out["empirical_posterior"] = prior.get("empirical_posterior")
+    out["confirm_count"] = int(prior.get("confirm_count") or 0)
+    out["refute_count"] = int(prior.get("refute_count") or 0)
+    out["last_outcome_at"] = prior.get("last_outcome_at")
+    return out
+
+
+def _node_ids_for_signal(table: str, row: dict) -> list[str]:
+    node_ids = []
+    for key in ("node_id", "node_a_id", "node_b_id"):
+        if row.get(key):
+            node_ids.append(str(row[key]))
+    for key in ("node_ids", "source_node_ids", "related_node_ids"):
+        for node in _json_list(row.get(key)):
+            if node:
+                node_ids.append(str(node))
+    seen = set()
+    return [node for node in node_ids if node and not (node in seen or seen.add(node))]
+
+
+def _paper_ids_for_signal(table: str, row: dict) -> list[str]:
+    paper_ids = []
+    for key in ("paper_ids", "source_paper_ids", "supporting_papers"):
+        paper_ids.extend(str(pid) for pid in _json_list(row.get(key)) if pid)
+    if table == "contradiction_clusters":
+        ids = [int(cid) for cid in _json_list(row.get("contradiction_ids")) if str(cid).isdigit()]
+        if ids:
+            placeholders = ",".join("?" for _ in ids)
+            rows = db.fetchall(
+                f"""
+                SELECT ca.paper_id AS paper_a, cb.paper_id AS paper_b
+                FROM contradictions c
+                JOIN claims ca ON c.claim_a_id = ca.id
+                JOIN claims cb ON c.claim_b_id = cb.id
+                WHERE c.id IN ({placeholders})
+                """,
+                tuple(ids),
+            )
+            for r in rows:
+                if r.get("paper_a"):
+                    paper_ids.append(str(r["paper_a"]))
+                if r.get("paper_b"):
+                    paper_ids.append(str(r["paper_b"]))
+    elif table == "performance_plateaus":
+        rows = db.fetchall(
+            """
+            SELECT DISTINCT paper_id
+            FROM results
+            WHERE node_id=? AND dataset_name=? AND metric_name=?
+            ORDER BY paper_id
+            LIMIT 20
+            """,
+            (row.get("node_id"), row.get("dataset_name"), row.get("metric_name")),
+        )
+        paper_ids.extend(str(r["paper_id"]) for r in rows if r.get("paper_id"))
+    seen = set()
+    return [pid for pid in paper_ids if pid and not (pid in seen or seen.add(pid))]
+
+
+def signal_ref_from_row(table: str, row: dict) -> dict:
+    content_hash = row.get("content_hash") or _stable_signal_hash(table, row)
+    return {
+        "table": table,
+        "id": row.get("id"),
+        "content_hash": content_hash,
+        "signal_role": row.get("signal_role") or HARVEST_SIGNAL_ROLES.get(table),
+    }
+
+
+def signal_refs_from_rows(rows_by_payload_key: dict, *, roles: set[str] | None = None) -> dict:
+    refs = []
+    node_ids = []
+    paper_ids = []
+    for payload_key, rows in rows_by_payload_key.items():
+        table = SIGNAL_PAYLOAD_TABLES.get(payload_key, payload_key)
+        if table not in HARVEST_SIGNAL_ROLES:
+            continue
+        for row in rows or []:
+            role = row.get("signal_role") or HARVEST_SIGNAL_ROLES.get(table)
+            if roles and role not in roles:
+                continue
+            refs.append(signal_ref_from_row(table, row))
+            node_ids.extend(_node_ids_for_signal(table, row))
+            paper_ids.extend(_paper_ids_for_signal(table, row))
+    return {
+        "signals": refs,
+        "node_ids": list(dict.fromkeys(node_ids)),
+        "paper_ids": list(dict.fromkeys(paper_ids)),
+    }
+
+
+def structural_score(table: str, row: dict) -> float:
+    for key in (
+        "overlap_score",
+        "similarity_score",
+        "score",
+        "support_count",
+        "cluster_size",
+        "method_count",
+        "paper_count",
+    ):
+        try:
+            if row.get(key) is not None:
+                return max(0.0, float(row.get(key) or 0))
+        except (TypeError, ValueError):
+            continue
+    return 1.0
 
 
 def _norm_text_list(value: str | None) -> list[str]:
@@ -144,13 +367,6 @@ def _norm_text_list(value: str | None) -> list[str]:
             if text:
                 items.append(text)
     return items
-
-
-def _ensure_column(table: str, column: str, column_type: str) -> None:
-    cols = {row["name"] for row in db.fetchall(f"PRAGMA table_info({table})")}
-    if column not in cols:
-        db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
-        db.commit()
 
 
 def _metric_lower_is_better(metric_name: str | None) -> bool:
@@ -261,7 +477,7 @@ def harvest_entity_overlap(min_shared: int = 3, top_k: int = 100):
             "type": r["entity_type"],
         }
 
-    nodes = list(node_entities.keys())
+    nodes = sorted(node_entities.keys())
     overlaps = []
 
     for i in range(len(nodes)):
@@ -297,22 +513,35 @@ def harvest_entity_overlap(min_shared: int = 3, top_k: int = 100):
     overlaps.sort(key=lambda x: x["overlap_score"], reverse=True)
     overlaps = overlaps[:top_k]
 
+    table = "node_entity_overlap"
+    posterior = _posterior_cache(table)
     db.execute("DELETE FROM node_entity_overlap")
     for ov in overlaps:
+        ov = _with_signal_metadata(table, ov, posterior)
         db.execute(
             """INSERT INTO node_entity_overlap
                (node_a_id, node_b_id, shared_entity_count, shared_entity_ids,
-                shared_entity_types, taxonomic_distance, overlap_score)
-               VALUES (?, ?, ?, ?, ?, ?, ?)
+                shared_entity_types, taxonomic_distance, overlap_score,
+                content_hash, signal_role, empirical_posterior, confirm_count,
+                refute_count, last_outcome_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT (node_a_id, node_b_id) DO UPDATE SET
                  shared_entity_count = excluded.shared_entity_count,
                  shared_entity_ids = excluded.shared_entity_ids,
                  shared_entity_types = excluded.shared_entity_types,
                  taxonomic_distance = excluded.taxonomic_distance,
-                 overlap_score = excluded.overlap_score""",
+                 overlap_score = excluded.overlap_score,
+                 content_hash = excluded.content_hash,
+                 signal_role = excluded.signal_role,
+                 empirical_posterior = excluded.empirical_posterior,
+                 confirm_count = excluded.confirm_count,
+                 refute_count = excluded.refute_count,
+                 last_outcome_at = excluded.last_outcome_at""",
             (ov["node_a_id"], ov["node_b_id"], ov["shared_entity_count"],
              ov["shared_entity_ids"], ov["shared_entity_types"],
-             ov["taxonomic_distance"], ov["overlap_score"])
+             ov["taxonomic_distance"], ov["overlap_score"], ov["content_hash"],
+             ov["signal_role"], ov["empirical_posterior"], ov["confirm_count"],
+             ov["refute_count"], ov["last_outcome_at"])
         )
     db.commit()
     print(f"[SIGNAL] Entity overlap: {len(overlaps)} cross-node links stored", flush=True)
@@ -401,19 +630,32 @@ def harvest_pattern_matches(min_similarity: float = 0.45, top_k: int = 80, max_c
     matches.sort(key=lambda x: x["similarity_score"], reverse=True)
     matches = matches[:top_k]
 
+    table = "pattern_matches"
+    posterior = _posterior_cache(table)
     db.execute("DELETE FROM pattern_matches")
     for m in matches:
+        m = _with_signal_metadata(table, m, posterior)
         db.execute(
             """INSERT INTO pattern_matches
-               (pattern_a_id, pattern_b_id, similarity_score, node_a_id, node_b_id, shared_tokens)
-               VALUES (?, ?, ?, ?, ?, ?)
+               (pattern_a_id, pattern_b_id, similarity_score, node_a_id, node_b_id,
+                shared_tokens, content_hash, signal_role, empirical_posterior,
+                confirm_count, refute_count, last_outcome_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT (pattern_a_id, pattern_b_id) DO UPDATE SET
                  similarity_score = excluded.similarity_score,
                  node_a_id = excluded.node_a_id,
                  node_b_id = excluded.node_b_id,
-                 shared_tokens = excluded.shared_tokens""",
+                 shared_tokens = excluded.shared_tokens,
+                 content_hash = excluded.content_hash,
+                 signal_role = excluded.signal_role,
+                 empirical_posterior = excluded.empirical_posterior,
+                 confirm_count = excluded.confirm_count,
+                 refute_count = excluded.refute_count,
+                 last_outcome_at = excluded.last_outcome_at""",
             (m["pattern_a_id"], m["pattern_b_id"], m["similarity_score"],
-             m["node_a_id"], m["node_b_id"], m["shared_tokens"])
+             m["node_a_id"], m["node_b_id"], m["shared_tokens"],
+             m["content_hash"], m["signal_role"], m["empirical_posterior"],
+             m["confirm_count"], m["refute_count"], m["last_outcome_at"])
         )
     db.commit()
     print(f"[SIGNAL] Pattern matches: {len(matches)} convergent pairs stored", flush=True)
@@ -517,14 +759,54 @@ def harvest_contradiction_clusters(min_cluster_size: int = 2):
             "node_ids": json.dumps(sorted(all_nodes)[:10]),
         })
 
+    if db.table_exists("experimental_evidence_edges"):
+        edge_rows = db.fetchall(
+            """
+            SELECT id, run_id, deep_insight_id, target_kind, target_id, relation,
+                   verdict, effect_size, conditions
+            FROM experimental_evidence_edges
+            WHERE verdict='refuted'
+              AND relation IN ('refutes', 'negative_evidence_for')
+            """
+        )
+        edge_groups: dict[tuple[str, str], list[dict]] = defaultdict(list)
+        for edge in edge_rows:
+            key = (edge.get("target_kind") or "unknown", edge.get("target_id") or "unknown")
+            edge_groups[key].append(edge)
+        for (target_kind, target_id), edges in edge_groups.items():
+            node_ids = sorted(
+                {
+                    edge.get("target_id")
+                    for edge in edges
+                    if edge.get("target_kind") == "taxonomy_node" and edge.get("target_id")
+                }
+            )
+            theme = f"empirical refutation / {target_kind}:{target_id}"
+            clusters.append(
+                {
+                    "theme": theme,
+                    "contradiction_ids": json.dumps([f"experimental_edge:{edge['id']}" for edge in edges]),
+                    "shared_entities": json.dumps([target_id] if target_id else []),
+                    "cluster_size": len(edges),
+                    "node_ids": json.dumps(node_ids[:10]),
+                }
+            )
+
+    table = "contradiction_clusters"
+    posterior = _posterior_cache(table)
     db.execute("DELETE FROM contradiction_clusters")
     for cl in clusters:
+        cl = _with_signal_metadata(table, cl, posterior)
         db.execute(
             """INSERT INTO contradiction_clusters
-               (theme, contradiction_ids, shared_entities, cluster_size, node_ids)
-               VALUES (?, ?, ?, ?, ?)""",
+               (theme, contradiction_ids, shared_entities, cluster_size, node_ids,
+                content_hash, signal_role, empirical_posterior, confirm_count,
+                refute_count, last_outcome_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (cl["theme"], cl["contradiction_ids"], cl["shared_entities"],
-             cl["cluster_size"], cl["node_ids"])
+             cl["cluster_size"], cl["node_ids"], cl["content_hash"],
+             cl["signal_role"], cl["empirical_posterior"], cl["confirm_count"],
+             cl["refute_count"], cl["last_outcome_at"])
         )
     db.commit()
     print(f"[SIGNAL] Contradiction clusters: {len(clusters)} clusters stored", flush=True)
@@ -896,14 +1178,19 @@ def harvest_performance_plateaus(max_spread_pct: float = 3.0, min_methods: int =
             "min_value": round(min_value, 6),
         })
 
+    table = "performance_plateaus"
+    posterior = _posterior_cache(table)
     db.execute("DELETE FROM performance_plateaus")
     for p in plateaus:
+        p = _with_signal_metadata(table, p, posterior)
         db.execute(
             """INSERT INTO performance_plateaus
                (node_id, dataset_name, metric_name, top_methods,
                 spread, spread_pct, method_count, paper_count,
-                plateau_kind, plateau_level, max_value, min_value)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                plateau_kind, plateau_level, max_value, min_value,
+                content_hash, signal_role, empirical_posterior, confirm_count,
+                refute_count, last_outcome_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT (node_id, dataset_name, metric_name) DO UPDATE SET
                  top_methods = excluded.top_methods,
                  spread = excluded.spread,
@@ -913,10 +1200,18 @@ def harvest_performance_plateaus(max_spread_pct: float = 3.0, min_methods: int =
                  plateau_kind = excluded.plateau_kind,
                  plateau_level = excluded.plateau_level,
                  max_value = excluded.max_value,
-                 min_value = excluded.min_value""",
+                 min_value = excluded.min_value,
+                 content_hash = excluded.content_hash,
+                 signal_role = excluded.signal_role,
+                 empirical_posterior = excluded.empirical_posterior,
+                 confirm_count = excluded.confirm_count,
+                 refute_count = excluded.refute_count,
+                 last_outcome_at = excluded.last_outcome_at""",
             (p["node_id"], p["dataset_name"], p["metric_name"], p["top_methods"],
              p["spread"], p["spread_pct"], p["method_count"], p["paper_count"],
-             p["plateau_kind"], p["plateau_level"], p["max_value"], p["min_value"])
+             p["plateau_kind"], p["plateau_level"], p["max_value"], p["min_value"],
+             p["content_hash"], p["signal_role"], p["empirical_posterior"],
+             p["confirm_count"], p["refute_count"], p["last_outcome_at"])
         )
     db.commit()
     print(f"[SIGNAL] Performance plateaus: {len(plateaus)} detected", flush=True)
@@ -940,7 +1235,7 @@ def harvest_protocol_artifacts(min_support: int = 2):
             continue
         limitation_texts = _norm_text_list(row.get("limitations"))
         open_question_texts = _norm_text_list(row.get("open_questions"))
-        joined = " ".join(limitation_texts).lower()
+        joined = " ".join(limitation_texts + open_question_texts).lower()
         if not joined:
             continue
         for artifact_type, keywords in PROTOCOL_ARTIFACT_KEYWORDS.items():
@@ -1064,6 +1359,8 @@ def harvest_protocol_artifacts(min_support: int = 2):
             bucket["paper_ids"].add(row["paper_id"])
             bucket["snippets"].append(text[:260])
 
+    table = "protocol_artifacts"
+    posterior = _posterior_cache(table)
     db.execute("DELETE FROM protocol_artifacts")
     count = 0
     for bucket in buckets.values():
@@ -1073,16 +1370,35 @@ def harvest_protocol_artifacts(min_support: int = 2):
         if support_count < min_support and not is_fine_factor:
             continue
         summary = "; ".join(bucket["snippets"][:3])[:500]
+        row = _with_signal_metadata(
+            table,
+            {
+                "node_id": bucket["node_id"],
+                "artifact_type": bucket["artifact_type"],
+                "summary": summary,
+                "paper_ids": json.dumps(sorted(bucket["paper_ids"])),
+                "support_count": support_count,
+            },
+            posterior,
+        )
         db.execute(
             """INSERT INTO protocol_artifacts
-               (node_id, artifact_type, summary, paper_ids, support_count)
-               VALUES (?, ?, ?, ?, ?)""",
+               (node_id, artifact_type, summary, paper_ids, support_count,
+                content_hash, signal_role, empirical_posterior, confirm_count,
+                refute_count, last_outcome_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
-                bucket["node_id"],
-                bucket["artifact_type"],
-                summary,
-                json.dumps(sorted(bucket["paper_ids"])),
-                support_count,
+                row["node_id"],
+                row["artifact_type"],
+                row["summary"],
+                row["paper_ids"],
+                row["support_count"],
+                row["content_hash"],
+                row["signal_role"],
+                row["empirical_posterior"],
+                row["confirm_count"],
+                row["refute_count"],
+                row["last_outcome_at"],
             ),
         )
         count += 1
@@ -1142,6 +1458,8 @@ def harvest_negative_space_gaps(min_support: int = 2):
             " ".join(str(part or "") for part in [row.get("summary"), row.get("source_quote")])[:260]
         )
 
+    table = "negative_space_gaps"
+    posterior = _posterior_cache(table)
     db.execute("DELETE FROM negative_space_gaps")
     count = 0
     for bucket in buckets.values():
@@ -1149,16 +1467,35 @@ def harvest_negative_space_gaps(min_support: int = 2):
         if support_count < min_support:
             continue
         summary = "; ".join(bucket["snippets"][:3])[:500]
+        row = _with_signal_metadata(
+            table,
+            {
+                "node_id": bucket["node_id"],
+                "gap_type": bucket["gap_type"],
+                "summary": summary,
+                "paper_ids": json.dumps(sorted(bucket["paper_ids"])),
+                "support_count": support_count,
+            },
+            posterior,
+        )
         db.execute(
             """INSERT INTO negative_space_gaps
-               (node_id, gap_type, summary, paper_ids, support_count)
-               VALUES (?, ?, ?, ?, ?)""",
+               (node_id, gap_type, summary, paper_ids, support_count,
+                content_hash, signal_role, empirical_posterior, confirm_count,
+                refute_count, last_outcome_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
-                bucket["node_id"],
-                bucket["gap_type"],
-                summary,
-                json.dumps(sorted(bucket["paper_ids"])),
-                support_count,
+                row["node_id"],
+                row["gap_type"],
+                row["summary"],
+                row["paper_ids"],
+                row["support_count"],
+                row["content_hash"],
+                row["signal_role"],
+                row["empirical_posterior"],
+                row["confirm_count"],
+                row["refute_count"],
+                row["last_outcome_at"],
             ),
         )
         count += 1
@@ -1203,17 +1540,42 @@ def harvest_claim_method_gaps(min_support: int = 2):
         bucket["snippets"].extend(texts[:2])
         bucket["support_count"] += 1
 
+    table = "claim_method_gaps"
+    posterior = _posterior_cache(table)
     db.execute("DELETE FROM claim_method_gaps")
     count = 0
     for bucket in buckets.values():
         if bucket["support_count"] < min_support:
             continue
         summary = "; ".join(bucket["snippets"][:3])[:500] or "Strong claims/results but missing mechanism-oriented evidence."
+        row = _with_signal_metadata(
+            table,
+            {
+                "node_id": bucket["node_id"],
+                "summary": summary,
+                "paper_ids": json.dumps(sorted(bucket["paper_ids"])),
+                "support_count": bucket["support_count"],
+            },
+            posterior,
+        )
         db.execute(
             """INSERT INTO claim_method_gaps
-               (node_id, summary, paper_ids, support_count)
-               VALUES (?, ?, ?, ?)""",
-            (bucket["node_id"], summary, json.dumps(sorted(bucket["paper_ids"])), bucket["support_count"]),
+               (node_id, summary, paper_ids, support_count,
+                content_hash, signal_role, empirical_posterior, confirm_count,
+                refute_count, last_outcome_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                row["node_id"],
+                row["summary"],
+                row["paper_ids"],
+                row["support_count"],
+                row["content_hash"],
+                row["signal_role"],
+                row["empirical_posterior"],
+                row["confirm_count"],
+                row["refute_count"],
+                row["last_outcome_at"],
+            ),
         )
         count += 1
     db.commit()
@@ -1223,6 +1585,8 @@ def harvest_claim_method_gaps(min_support: int = 2):
 def harvest_mechanism_mismatches(min_variants: int = 2):
     """Cluster contradictory claims that offer distinct explanations."""
     clusters = db.fetchall("SELECT * FROM contradiction_clusters ORDER BY cluster_size DESC")
+    table = "mechanism_mismatches"
+    posterior = _posterior_cache(table)
     db.execute("DELETE FROM mechanism_mismatches")
     count = 0
     for cluster in clusters:
@@ -1252,16 +1616,35 @@ def harvest_mechanism_mismatches(min_variants: int = 2):
         if len(variants) < min_variants:
             continue
         for node_id in node_ids or [None]:
+            row = _with_signal_metadata(
+                table,
+                {
+                    "node_id": node_id,
+                    "theme": cluster["theme"],
+                    "explanation_variants": json.dumps(sorted(variants)[:6]),
+                    "paper_ids": json.dumps(sorted(paper_ids)),
+                    "support_count": len(variants),
+                },
+                posterior,
+            )
             db.execute(
                 """INSERT INTO mechanism_mismatches
-                   (node_id, theme, explanation_variants, paper_ids, support_count)
-                   VALUES (?, ?, ?, ?, ?)""",
+                   (node_id, theme, explanation_variants, paper_ids, support_count,
+                    content_hash, signal_role, empirical_posterior, confirm_count,
+                    refute_count, last_outcome_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
-                    node_id,
-                    cluster["theme"],
-                    json.dumps(sorted(variants)[:6]),
-                    json.dumps(sorted(paper_ids)),
-                    len(variants),
+                    row["node_id"],
+                    row["theme"],
+                    row["explanation_variants"],
+                    row["paper_ids"],
+                    row["support_count"],
+                    row["content_hash"],
+                    row["signal_role"],
+                    row["empirical_posterior"],
+                    row["confirm_count"],
+                    row["refute_count"],
+                    row["last_outcome_at"],
                 ),
             )
             count += 1
@@ -1358,29 +1741,59 @@ def harvest_hidden_variable_bridges(min_score: float = 0.55, top_k: int = 500):
     candidates.sort(key=lambda c: (c["score"], c["pair_rarity"], c["factor_idf"]), reverse=True)
     candidates = candidates[:top_k]
 
+    table = "hidden_variable_bridges"
+    posterior = _posterior_cache(table)
     db.execute("DELETE FROM hidden_variable_bridges")
     count = 0
     for c in candidates:
+        row = _with_signal_metadata(
+            table,
+            {
+                "node_a_id": c["node_a_id"],
+                "node_b_id": c["node_b_id"],
+                "shared_factor": json.dumps(c["shared_factors"], ensure_ascii=False),
+                "paper_ids": json.dumps(c["paper_ids"][:20], ensure_ascii=False),
+                "score": c["score"],
+                "factor_idf": c["factor_idf"],
+                "pair_rarity": c["pair_rarity"],
+                "shared_factor_count": c["shared_factor_count"],
+            },
+            posterior,
+        )
         db.execute(
             """INSERT INTO hidden_variable_bridges
                (node_a_id, node_b_id, shared_factor, paper_ids, score,
-                factor_idf, pair_rarity, shared_factor_count)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                factor_idf, pair_rarity, shared_factor_count,
+                content_hash, signal_role, empirical_posterior, confirm_count,
+                refute_count, last_outcome_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT (node_a_id, node_b_id, shared_factor) DO UPDATE SET
                  paper_ids = excluded.paper_ids,
                  score = excluded.score,
                  factor_idf = excluded.factor_idf,
                  pair_rarity = excluded.pair_rarity,
-                 shared_factor_count = excluded.shared_factor_count""",
+                 shared_factor_count = excluded.shared_factor_count,
+                 content_hash = excluded.content_hash,
+                 signal_role = excluded.signal_role,
+                 empirical_posterior = excluded.empirical_posterior,
+                 confirm_count = excluded.confirm_count,
+                 refute_count = excluded.refute_count,
+                 last_outcome_at = excluded.last_outcome_at""",
             (
-                c["node_a_id"],
-                c["node_b_id"],
-                json.dumps(c["shared_factors"], ensure_ascii=False),
-                json.dumps(c["paper_ids"][:20], ensure_ascii=False),
-                c["score"],
-                c["factor_idf"],
-                c["pair_rarity"],
-                c["shared_factor_count"],
+                row["node_a_id"],
+                row["node_b_id"],
+                row["shared_factor"],
+                row["paper_ids"],
+                row["score"],
+                row["factor_idf"],
+                row["pair_rarity"],
+                row["shared_factor_count"],
+                row["content_hash"],
+                row["signal_role"],
+                row["empirical_posterior"],
+                row["confirm_count"],
+                row["refute_count"],
+                row["last_outcome_at"],
             ),
         )
         count += 1
@@ -1424,9 +1837,10 @@ def harvest_all() -> dict:
 
 def get_tier1_signals(top_overlaps: int = 20, top_patterns: int = 15) -> DiscoverySignalBundle:
     """Assemble signals for Tier 1 (Paradigm Discovery) agent."""
+    ensure_harvest_signal_schema()
     overlaps = db.fetchall(
         """SELECT * FROM node_entity_overlap
-           ORDER BY overlap_score DESC LIMIT ?""", (top_overlaps,))
+           ORDER BY COALESCE(empirical_posterior, overlap_score) DESC LIMIT ?""", (top_overlaps,))
 
     pattern_ms = db.fetchall("""
         SELECT pm.*, pa.pattern_text as text_a, pa.pattern_type as type_a,
@@ -1434,11 +1848,12 @@ def get_tier1_signals(top_overlaps: int = 20, top_patterns: int = 15) -> Discove
         FROM pattern_matches pm
         JOIN patterns pa ON pm.pattern_a_id = pa.id
         JOIN patterns pb ON pm.pattern_b_id = pb.id
-        ORDER BY pm.similarity_score DESC LIMIT ?
+        ORDER BY COALESCE(pm.empirical_posterior, pm.similarity_score) DESC LIMIT ?
     """, (top_patterns,))
 
     clusters = db.fetchall(
-        "SELECT * FROM contradiction_clusters WHERE cluster_size >= 2 ORDER BY cluster_size DESC")
+        "SELECT * FROM contradiction_clusters WHERE cluster_size >= 2 "
+        "ORDER BY COALESCE(empirical_posterior, cluster_size) DESC")
 
     taxonomy = db.fetchall("""
         SELECT t.id, t.name, t.parent_id, t.depth,
@@ -1453,9 +1868,12 @@ def get_tier1_signals(top_overlaps: int = 20, top_patterns: int = 15) -> Discove
         "entity_overlaps": overlaps,
         "pattern_matches": pattern_ms,
         "contradiction_clusters": clusters,
-        "protocol_artifacts": db.fetchall("SELECT * FROM protocol_artifacts ORDER BY support_count DESC LIMIT 10"),
-        "hidden_variable_bridges": db.fetchall("SELECT * FROM hidden_variable_bridges ORDER BY score DESC LIMIT 10"),
-        "claim_method_gaps": db.fetchall("SELECT * FROM claim_method_gaps ORDER BY support_count DESC LIMIT 10"),
+        "protocol_artifacts": db.fetchall(
+            "SELECT * FROM protocol_artifacts ORDER BY COALESCE(empirical_posterior, support_count) DESC LIMIT 10"),
+        "hidden_variable_bridges": db.fetchall(
+            "SELECT * FROM hidden_variable_bridges ORDER BY COALESCE(empirical_posterior, score) DESC LIMIT 10"),
+        "claim_method_gaps": db.fetchall(
+            "SELECT * FROM claim_method_gaps ORDER BY COALESCE(empirical_posterior, support_count) DESC LIMIT 10"),
         "taxonomy_map": taxonomy,
     }
     return DiscoverySignalBundle.from_payload(
@@ -1476,11 +1894,12 @@ def get_tier2_signals(
     limitation_node_limit: int = 15,
 ) -> DiscoverySignalBundle:
     """Assemble signals for Tier 2 (Paper-Ready Ideas) agent."""
+    ensure_harvest_signal_schema()
     clusters = db.fetchall(
-        "SELECT * FROM contradiction_clusters ORDER BY cluster_size DESC")
+        "SELECT * FROM contradiction_clusters ORDER BY COALESCE(empirical_posterior, cluster_size) DESC")
 
     plateaus = db.fetchall(
-        "SELECT * FROM performance_plateaus ORDER BY method_count DESC LIMIT ?",
+        "SELECT * FROM performance_plateaus ORDER BY COALESCE(empirical_posterior, method_count) DESC LIMIT ?",
         (plateau_limit,),
     )
 
@@ -1606,11 +2025,16 @@ def get_tier2_signals(
         "performance_plateaus": plateaus,
         "limitation_clusters": limitation_clusters,
         "high_potential_insights": high_insights,
-        "mechanism_mismatches": db.fetchall("SELECT * FROM mechanism_mismatches ORDER BY support_count DESC LIMIT 15"),
-        "protocol_artifacts": db.fetchall("SELECT * FROM protocol_artifacts ORDER BY support_count DESC LIMIT 15"),
-        "negative_space_gaps": db.fetchall("SELECT * FROM negative_space_gaps ORDER BY support_count DESC LIMIT 15"),
-        "hidden_variable_bridges": db.fetchall("SELECT * FROM hidden_variable_bridges ORDER BY score DESC LIMIT 15"),
-        "claim_method_gaps": db.fetchall("SELECT * FROM claim_method_gaps ORDER BY support_count DESC LIMIT 15"),
+        "mechanism_mismatches": db.fetchall(
+            "SELECT * FROM mechanism_mismatches ORDER BY COALESCE(empirical_posterior, support_count) DESC LIMIT 15"),
+        "protocol_artifacts": db.fetchall(
+            "SELECT * FROM protocol_artifacts ORDER BY COALESCE(empirical_posterior, support_count) DESC LIMIT 15"),
+        "negative_space_gaps": db.fetchall(
+            "SELECT * FROM negative_space_gaps ORDER BY COALESCE(empirical_posterior, support_count) DESC LIMIT 15"),
+        "hidden_variable_bridges": db.fetchall(
+            "SELECT * FROM hidden_variable_bridges ORDER BY COALESCE(empirical_posterior, score) DESC LIMIT 15"),
+        "claim_method_gaps": db.fetchall(
+            "SELECT * FROM claim_method_gaps ORDER BY COALESCE(empirical_posterior, support_count) DESC LIMIT 15"),
     }
     return DiscoverySignalBundle.from_payload(
         tier=2,
@@ -1624,3 +2048,139 @@ def get_tier2_signals(
             "literature_seed_count": len(literature_seed_insights),
         },
     )
+
+
+def _limit_rows(rows: list[dict], limit: int, context_nodes: set[str] | None = None) -> list[dict]:
+    if not context_nodes:
+        return rows[:limit]
+
+    def score(row: dict) -> tuple[int, float]:
+        nodes = set(_node_ids_for_signal(row.get("_signal_table", ""), row))
+        overlap = len(nodes & context_nodes)
+        table = row.get("_signal_table", "")
+        return overlap, structural_score(table, row)
+
+    return sorted(rows, key=score, reverse=True)[:limit]
+
+
+def get_problem_signals(limit: int = 50) -> list[dict]:
+    """Return problem-role harvest signals for problem-first discovery."""
+    ensure_harvest_signal_schema()
+    per_table_limit = max(5, int(limit))
+    queries = {
+        "contradiction_clusters": (
+            "SELECT * FROM contradiction_clusters "
+            "ORDER BY COALESCE(empirical_posterior, cluster_size) DESC LIMIT ?"
+        ),
+        "performance_plateaus": (
+            "SELECT * FROM performance_plateaus "
+            "ORDER BY COALESCE(empirical_posterior, method_count) DESC LIMIT ?"
+        ),
+        "mechanism_mismatches": (
+            "SELECT * FROM mechanism_mismatches "
+            "ORDER BY COALESCE(empirical_posterior, support_count) DESC LIMIT ?"
+        ),
+        "protocol_artifacts": (
+            "SELECT * FROM protocol_artifacts "
+            "ORDER BY COALESCE(empirical_posterior, support_count) DESC LIMIT ?"
+        ),
+        "negative_space_gaps": (
+            "SELECT * FROM negative_space_gaps "
+            "ORDER BY COALESCE(empirical_posterior, support_count) DESC LIMIT ?"
+        ),
+        "claim_method_gaps": (
+            "SELECT * FROM claim_method_gaps "
+            "ORDER BY COALESCE(empirical_posterior, support_count) DESC LIMIT ?"
+        ),
+    }
+    signals: list[dict] = []
+    for table, sql in queries.items():
+        for row in db.fetchall(sql, (per_table_limit,)):
+            enriched = dict(row)
+            enriched["_signal_table"] = table
+            enriched["_signal_role"] = HARVEST_SIGNAL_ROLES[table]
+            enriched["_source_ref"] = signal_ref_from_row(table, enriched)
+            enriched["_node_ids"] = _node_ids_for_signal(table, enriched)
+            enriched["_paper_ids"] = _paper_ids_for_signal(table, enriched)
+            enriched["_structural_score"] = structural_score(table, enriched)
+            signals.append(enriched)
+    signals.sort(
+        key=lambda row: (
+            row.get("empirical_posterior")
+            if row.get("empirical_posterior") is not None
+            else row.get("_structural_score", 0)
+        ),
+        reverse=True,
+    )
+    return signals[:limit]
+
+
+def get_solution_signals(problem_context: dict | None = None, limit: int = 50) -> list[dict]:
+    """Return solution-role signals, optionally biased toward a problem's nodes."""
+    ensure_harvest_signal_schema()
+    context_nodes = {
+        str(node)
+        for node in _json_list((problem_context or {}).get("node_ids"))
+        if str(node).strip()
+    }
+    rows: list[dict] = []
+    for table, sql in {
+        "node_entity_overlap": (
+            "SELECT * FROM node_entity_overlap "
+            "ORDER BY COALESCE(empirical_posterior, overlap_score) DESC LIMIT ?"
+        ),
+        "pattern_matches": (
+            "SELECT * FROM pattern_matches "
+            "ORDER BY COALESCE(empirical_posterior, similarity_score) DESC LIMIT ?"
+        ),
+        "hidden_variable_bridges": (
+            "SELECT * FROM hidden_variable_bridges "
+            "ORDER BY COALESCE(empirical_posterior, score) DESC LIMIT ?"
+        ),
+    }.items():
+        for row in db.fetchall(sql, (max(limit * 2, limit),)):
+            enriched = dict(row)
+            enriched["_signal_table"] = table
+            enriched["_signal_role"] = "solution"
+            enriched["_source_ref"] = signal_ref_from_row(table, enriched)
+            enriched["_node_ids"] = _node_ids_for_signal(table, enriched)
+            enriched["_paper_ids"] = _paper_ids_for_signal(table, enriched)
+            enriched["_structural_score"] = structural_score(table, enriched)
+            rows.append(enriched)
+
+    if db.table_exists("insights"):
+        for row in db.fetchall(
+            """
+            SELECT id, node_id, insight_type, title, hypothesis, evidence,
+                   experiment, impact, supporting_papers, source_signal_ids,
+                   source_paper_ids, source_node_ids, novelty_score, feasibility_score
+            FROM insights
+            WHERE insight_type='method_transfer'
+            ORDER BY COALESCE(feasibility_score, 0) DESC, COALESCE(novelty_score, 0) DESC
+            LIMIT ?
+            """,
+            (max(limit * 2, limit),),
+        ):
+            enriched = dict(row)
+            enriched["_signal_table"] = "method_transfer"
+            enriched["_signal_role"] = "solution"
+            enriched["_source_ref"] = {
+                "table": "method_transfer",
+                "id": row.get("id"),
+                "content_hash": hashlib.sha256(
+                    _json_dumps_stable(
+                        {"table": "method_transfer", "id": row.get("id"), "title": row.get("title")}
+                    ).encode("utf-8")
+                ).hexdigest(),
+                "signal_role": "solution",
+            }
+            nodes = _json_list(row.get("source_node_ids")) or ([row["node_id"]] if row.get("node_id") else [])
+            enriched["_node_ids"] = [str(node) for node in nodes if str(node).strip()]
+            enriched["_paper_ids"] = (
+                _json_list(row.get("source_paper_ids"))
+                or _json_list(row.get("supporting_papers"))
+            )
+            enriched["_structural_score"] = float(row.get("feasibility_score") or row.get("novelty_score") or 1)
+            rows.append(enriched)
+
+    return _limit_rows(rows, limit, context_nodes=context_nodes)
