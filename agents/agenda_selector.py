@@ -16,7 +16,12 @@ Scoring model (all weights tunable as constants):
                prefer.feasibility_score_min (uses experimentability map)
 - Positive signals: focus keywords in title/problem_statement/formal_structure,
                     prefer.keywords match, prefer.tiers match, prefer.resource_class,
-                    adversarial_score, experimentability
+                    adversarial_score, experimentability, expected information gain
+- Topic gate (闸一, agents/topic_gate.py): an insight that already carries a
+  written prediction is hard-rejected when that prediction fails the three
+  questions. Insights with no prediction yet are scored but not blocked here —
+  eliciting one costs an LLM call, so the hard gate runs once per selected
+  candidate in orchestrator/auto_research.py rather than once per pool member.
 """
 
 from __future__ import annotations
@@ -24,6 +29,7 @@ from __future__ import annotations
 import json
 from typing import Any, Iterable, Mapping
 
+from agents.topic_gate import load_gate_record, screen_topic
 from contracts.agenda import VALID_SELECTION_STATUS, AgendaSelection, ResearchAgenda
 from contracts.base import ContractValidationError, ensure_dict, ensure_list, ensure_string_list
 from db import database as db
@@ -40,6 +46,7 @@ W_PREFER_TIER = 0.15
 W_PREFER_RESOURCE = 0.10
 W_PARADIGM = 0.20  # multiplied by adversarial_score/10
 W_FEASIBILITY = 0.10  # multiplied by feasibility map value
+W_INFORMATION_GAIN = 0.25  # multiplied by expected bits from the topic gate (0..1)
 
 EXPERIMENTABILITY_MAP = {
     "easy": 1.0,
@@ -156,6 +163,15 @@ def score_insight(agenda: ResearchAgenda, insight: Mapping[str, Any]) -> dict[st
     components["paradigm"] = paradigm * W_PARADIGM
     components["feasibility"] = feasibility * W_FEASIBILITY
 
+    # 闸一: a stored prediction that fails the three questions is a hard reject;
+    # expected information gain (bits) is a positive signal for everyone else.
+    stored_prediction = load_gate_record(insight).get("prediction")
+    gate = screen_topic(insight, prediction=stored_prediction)
+    if stored_prediction and not gate["passed"]:
+        for blocker in gate["blockers"]:
+            block_reasons.append(f"topic gate ({blocker['question']}): {blocker['reason']}")
+    components["information_gain"] = gate["expected_bits"] * W_INFORMATION_GAIN
+
     # Score gates (after components computed, but report independently)
     paradigm_min = prefer.get("paradigm_score_min")
     if paradigm_min is not None:
@@ -186,6 +202,12 @@ def score_insight(agenda: ResearchAgenda, insight: Mapping[str, Any]) -> dict[st
         "matched_prefer_keywords": matched_prefer_keywords,
         "paradigm_score": round(paradigm, 4),
         "feasibility_score": round(feasibility, 4),
+        "expected_bits": gate["expected_bits"],
+        "topic_gate": {
+            "passed": gate["passed"],
+            "blockers": gate["blockers"],
+            "prediction_present": bool(stored_prediction),
+        },
     }
 
 
@@ -253,7 +275,7 @@ _POOL_SELECT = """
         SELECT id, tier, status, title, problem_statement, formal_structure,
                existing_weakness, transformation, proposed_method,
                adversarial_score, novelty_status, resource_class, experimentability,
-               submission_status, outcome
+               submission_status, outcome, topic_gate
         FROM deep_insights
 """
 
@@ -318,7 +340,8 @@ def _format_rationale(agenda: ResearchAgenda, selected: dict[str, Any]) -> str:
     if bd["matched_prefer_keywords"]:
         pieces.append(f"Matched prefer keywords: {', '.join(bd['matched_prefer_keywords'])}.")
     pieces.append(
-        f"Paradigm score: {bd['paradigm_score']:.2f}; feasibility: {bd['feasibility_score']:.2f}."
+        f"Paradigm score: {bd['paradigm_score']:.2f}; feasibility: {bd['feasibility_score']:.2f}; "
+        f"expected information gain: {bd.get('expected_bits', 0.0):.2f} bits."
     )
     return " ".join(pieces)
 

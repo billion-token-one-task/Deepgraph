@@ -28,6 +28,7 @@ from agents.novelty_verifier import (
     launch_verification,
 )
 from agents.research_bridge import active_research_session, get_research_status
+from agents import topic_gate
 from orchestrator import experiment_runner
 from orchestrator.compute_routing import resolve_execution_lane
 from compat.filelock import FileLock
@@ -40,6 +41,7 @@ from config import (
     AUTO_RESEARCH_INTERVAL_SECONDS,
     AUTO_RESEARCH_MAX_ACTIVE,
     REQUIRE_EVOSCIENTIST_FOR_EXPERIMENTS,
+    TOPIC_GATE_ENABLED,
 )
 from db import database as db
 from db.insight_outcomes import (
@@ -328,11 +330,118 @@ def _parse_gpu_hours(plan: dict) -> float | None:
         return None
 
 
+def _load_result_packet(workdir: str | None) -> dict:
+    """Read what the run actually produced (same artifact the evidence gate reads)."""
+    if not workdir:
+        return {}
+    try:
+        return json.loads(
+            (Path(workdir) / "experiment_result_packet.json").read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _topic_gate_close_loop(insight_id: int, run: dict) -> str:
+    """闸二 + 闸三 on a finished run: bits earned, next lane, which channel.
+
+    Returns a short note appended to the job's status line; never raises.
+    """
+    if not TOPIC_GATE_ENABLED:
+        return ""
+    insight = db.fetchone("SELECT * FROM deep_insights WHERE id=?", (insight_id,))
+    record = topic_gate.load_gate_record(dict(insight) if insight else {})
+    proxy = _load_json(run.get("proxy_config"), {})
+    contract = proxy.get("publication_evidence_contract") or {}
+    packet = _load_result_packet(run.get("workdir"))
+
+    verdict_text = str(run.get("hypothesis_verdict") or "").lower()
+    observation = {
+        "ran": True,
+        "outcome": verdict_text if verdict_text in {"confirmed", "refuted", "inconclusive"} else "inconclusive",
+        # Nothing in the pipeline runs a null-model control yet, so this stays
+        # "missing" and blocks the public case page by design.
+        "null_model_control": str(packet.get("null_model_control") or "missing"),
+    }
+    pilot = topic_gate.pilot_verdict(record.get("prediction"), observation)
+
+    # Rigor uses the best claim's p-value: at least one claim must have reached
+    # significance for the result to leave the workspace at all.
+    p_rows = db.fetchall(
+        "SELECT p_value FROM experimental_claims WHERE run_id=? AND p_value IS NOT NULL",
+        (run.get("id"),),
+    )
+    p_values = [float(r["p_value"]) for r in p_rows]
+    rigor = {
+        "seeds": contract.get("minimum_seeds"),
+        "null_model_control": observation["null_model_control"],
+        "p_value": min(p_values) if p_values else None,
+        "packet_complete": bool(packet) and packet.get("full_benchmark_completed") is not False,
+    }
+    route = topic_gate.route_outcome(pilot, rigor)
+
+    stage = str(record.get("stage") or "pilot")
+    if pilot["verdict"] == "escalate":
+        stage = topic_gate.next_stage(stage) or stage
+    record.update(
+        {
+            "stage": stage,
+            "surprise_bits": pilot["surprise_bits"],
+            "pilot": pilot,
+            "route": route,
+        }
+    )
+    try:
+        topic_gate.persist_gate_record(insight_id, record)
+    except Exception as exc:  # persistence must not break the scheduler loop
+        log_event(
+            "warning",
+            {"step": "topic_gate_persist_failed", "insight_id": insight_id, "error": str(exc)},
+        )
+    log_event(
+        "auto_research",
+        {
+            "step": "topic_gate_closed",
+            "insight_id": insight_id,
+            "run_id": run.get("id"),
+            "surprise_bits": pilot["surprise_bits"],
+            "pilot_verdict": pilot["verdict"],
+            "channel": route["channel"],
+            "next_stage": stage,
+        },
+    )
+    return (
+        f" Topic gate: {pilot['surprise_bits']:.2f} bits -> {pilot['verdict']}; "
+        f"channel={route['channel']}; next stage={stage}."
+    )
+
+
 def assess_experiment_route(insight: dict) -> tuple[str, str]:
-    """Route insights into cpu / gpu_small / gpu_large lanes."""
-    resource_class = infer_resource_class(insight)
+    """Route insights into cpu / gpu_small / gpu_large lanes.
+
+    ``infer_resource_class`` says what the idea will eventually need; the topic
+    gate says what it has paid for so far. Every topic starts on the pilot lane
+    and only buys the planned lane by producing bits of surprise (闸二).
+    """
+    planned = infer_resource_class(insight)
     experimentability = infer_experimentability(insight)
-    return resource_class, f"Experimentability={experimentability}; routed to {resource_class}."
+    if not TOPIC_GATE_ENABLED:
+        return planned, f"Experimentability={experimentability}; routed to {planned}."
+
+    record = topic_gate.load_gate_record(insight)
+    allocation = topic_gate.allocate_compute(
+        stage=str(record.get("stage") or "pilot"),
+        resource_class=planned,
+        surprise_bits=record.get("surprise_bits"),
+        expected_bits=float((record.get("screen") or {}).get("expected_bits") or 0.0),
+    )
+    reason = (
+        f"Experimentability={experimentability}; planned lane {planned}; "
+        f"stage={allocation['stage']} -> {allocation['resource_class']} at "
+        f"{allocation['budget_fraction']:.0%} of the planned budget "
+        f"({allocation['reason']})."
+    )
+    return allocation["resource_class"], reason
 
 
 def _dispatch_experiment_execution(
@@ -880,6 +989,7 @@ def _refresh_running_jobs() -> None:
                 _upsert_job(insight_id, status="failed", stage="missing_run", last_error="Experiment run missing.")
             elif run["status"] == "completed":
                 note = f"Verdict={run.get('hypothesis_verdict')}, effect_pct={run.get('effect_pct')}"
+                note += _topic_gate_close_loop(insight_id, dict(run))
                 _upsert_job(insight_id, status="completed", stage="closed_loop_complete", last_note=note)
                 v = (run.get("hypothesis_verdict") or "").lower()
                 apply_experiment_finished_deep(
@@ -1034,6 +1144,35 @@ def _process_candidate(insight: dict) -> None:
         resource_class=resource_class,
         scheduler_priority=2 if resource_class == "gpu_large" else 1,
     )
+
+    # 闸一: three questions before any compute. Cheapest possible stop — one
+    # LLM call to write the prediction down, no dataset, no GPU.
+    screen = topic_gate.screen_insight(insight)
+    if screen.get("elicitation_failed"):
+        # Could not even ask the question — that is an LLM outage, not a verdict
+        # on the topic. Let it through on the pilot lane and say so.
+        log_event(
+            "warning",
+            {"step": "topic_gate_prediction_unavailable", "insight_id": insight_id},
+        )
+    elif not screen["passed"]:
+        blockers = "; ".join(f"{b['question']}: {b['reason']}" for b in screen["blockers"])
+        _upsert_job(
+            insight_id,
+            status="blocked",
+            stage="topic_gate_blocked",
+            cpu_eligible=0,
+            last_error=f"Topic gate rejected this topic: {blockers}",
+            last_note=(
+                "Three questions before compute: written prediction + confidence, "
+                "do both outcomes lead to the same action, is it already published."
+            ),
+        )
+        log_event(
+            "auto_research",
+            {"step": "topic_gate_blocked", "insight_id": insight_id, "blockers": screen["blockers"]},
+        )
+        return
 
     if REQUIRE_EVOSCIENTIST_FOR_EXPERIMENTS:
         fresh = db.fetchone("SELECT * FROM deep_insights WHERE id=?", (insight_id,))

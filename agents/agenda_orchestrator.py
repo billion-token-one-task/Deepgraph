@@ -17,6 +17,7 @@ Public API:
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -197,16 +198,26 @@ def _create_manuscript_run_if_allowed(
     insight_id: int,
     experiment_run_id: int,
     workdir: str,
+    claim_stance: str = "positive",
 ) -> dict[str, Any] | None:
-    """Create manuscript_run + submission_bundle rows. Only call when gate=pass."""
+    """Create manuscript_run + submission_bundle rows. Only call when gate=pass.
+
+    ``claim_stance`` (positive | negative | mixed) rides along on the run so a
+    refuted result cannot be written up as if it had been confirmed.
+    """
     manu_id = int(db.insert_returning_id(
         """
         INSERT INTO manuscript_runs
-            (experiment_run_id, deep_insight_id, status, workdir)
-        VALUES (?, ?, 'bundle_ready', ?)
+            (experiment_run_id, deep_insight_id, status, workdir, canonical_state)
+        VALUES (?, ?, 'bundle_ready', ?, ?)
         RETURNING id
         """,
-        (experiment_run_id, insight_id, workdir),
+        (
+            experiment_run_id,
+            insight_id,
+            workdir,
+            json.dumps({"claim_stance": claim_stance}, ensure_ascii=False),
+        ),
     ))
     db.commit()
     bundle_id = int(db.insert_returning_id(
@@ -270,7 +281,11 @@ def run_real_pipeline(
     if gate["status"] == "pass":
         workdir = str(Path(exp_result["packet_path"]).parent)
         manuscript_payload = _create_manuscript_run_if_allowed(
-            selection_id, insight_id, experiment_run_id, workdir,
+            selection_id,
+            insight_id,
+            experiment_run_id,
+            workdir,
+            claim_stance=gate.get("claim_stance") or "positive",
         )
     else:
         update_selection_progress(

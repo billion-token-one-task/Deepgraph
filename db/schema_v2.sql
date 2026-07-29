@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS deep_insights (
     mechanism_type TEXT,                      -- protocol_artifact|mechanism_mismatch|hidden_variable_bridge|...
     evidence_packet TEXT,                     -- JSON with numeric + non-numeric evidence bundle
     evidence_plan TEXT,                       -- JSON adaptive evidence plan (table/ablation/visualization by claim)
+    topic_gate TEXT,                          -- JSON {prediction, screen, pilot, route} from agents/topic_gate.py
     experimentability TEXT,                   -- easy|medium|hard
     resource_class TEXT DEFAULT 'cpu',        -- cpu|gpu_small|gpu_large
     submission_status TEXT DEFAULT 'not_started',

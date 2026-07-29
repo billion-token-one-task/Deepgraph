@@ -163,7 +163,7 @@ class EvidenceGateTests(unittest.TestCase):
         reqs = [b["requirement"] for b in decision["blockers"]]
         self.assertIn("experiment_run", reqs)
 
-    def test_gate_blocks_when_no_confirmed_claim(self):
+    def test_gate_blocks_when_nothing_was_decided(self):
         from agents import evidence_gate
         self._seed_insight(1)
         sel = self._new_selection(1)
@@ -172,7 +172,8 @@ class EvidenceGateTests(unittest.TestCase):
         decision = evidence_gate.run_gate(sel.selection_id)
         self.assertEqual(decision["status"], "block")
         reqs = [b["requirement"] for b in decision["blockers"]]
-        self.assertIn("experimental_claims.confirmed>=1", reqs)
+        self.assertIn("experimental_claims.decided>=1", reqs)
+        self.assertEqual(decision["claim_stance"], "undecided")
 
     def test_gate_blocks_when_packet_missing(self):
         from agents import evidence_gate
@@ -185,16 +186,84 @@ class EvidenceGateTests(unittest.TestCase):
         reqs = [b["requirement"] for b in decision["blockers"]]
         self.assertIn("experiment_result_packet.json", reqs)
 
-    def test_gate_blocks_when_refuted_claim_present(self):
+    def test_refuted_claim_alone_is_a_negative_result_not_a_block(self):
+        """A refuted prediction is the finding; only a broken promise blocks."""
         from agents import evidence_gate
         self._seed_insight(1)
         sel = self._new_selection(1)
+        self._seed_completed_run(
+            1, sel.selection_id, with_confirmed_claim=False, with_refuted_claim=True
+        )
+
+        decision = evidence_gate.run_gate(sel.selection_id)
+        self.assertEqual(decision["status"], "pass", decision)
+        self.assertEqual(decision["claim_stance"], "negative")
+        self.assertEqual(evidence_gate.get_latest_gate(sel.selection_id)["claim_stance"], "negative")
+
+    def test_gate_blocks_when_a_promised_metric_is_refuted(self):
+        from agents import evidence_gate
+        from agents.agenda_loader import parse_agenda, save_agenda
+        from agents.agenda_selector import select_and_persist
+
+        self._seed_insight(1)
+        agenda_dict = dict(SAMPLE_AGENDA_DICT)
+        agenda_dict["required_output"] = {
+            "experiment_result_packet": True,
+            "confirmed_metrics": ["improvement"],
+        }
+        agenda = parse_agenda(agenda_dict)
+        save_agenda(agenda)
+        sel = select_and_persist(agenda)
+        # seeded refuted claim text is "no improvement"
         self._seed_completed_run(1, sel.selection_id, with_refuted_claim=True)
 
         decision = evidence_gate.run_gate(sel.selection_id)
-        self.assertEqual(decision["status"], "block")
+        self.assertEqual(decision["status"], "block", decision)
         reqs = [b["requirement"] for b in decision["blockers"]]
-        self.assertIn("no_refuted_primary_claims", reqs)
+        self.assertIn("no_refuted_promised_metrics", reqs)
+
+    def test_generic_packet_keys_are_accepted(self):
+        """The packet contract is a role contract, not linear-attention's vocabulary."""
+        from agents import evidence_gate
+        self._seed_insight(1)
+        sel = self._new_selection(1)
+        self._seed_completed_run(1, sel.selection_id)
+        (self.workdir / "experiment_result_packet.json").write_text(
+            json.dumps(
+                {
+                    "config": {"seed": 1729},
+                    "baseline": {"accuracy": 0.35},
+                    "candidate": {"accuracy": 0.67},
+                    "delta": {"accuracy_points": 32.0},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        decision = evidence_gate.run_gate(sel.selection_id)
+        self.assertEqual(decision["status"], "pass", decision)
+
+    def test_agenda_can_declare_its_own_packet_keys(self):
+        from agents import evidence_gate
+        from agents.agenda_loader import parse_agenda, save_agenda
+        from agents.agenda_selector import select_and_persist
+
+        self._seed_insight(1)
+        agenda_dict = dict(SAMPLE_AGENDA_DICT)
+        agenda_dict["required_output"] = {
+            "experiment_result_packet": True,
+            "packet_keys": ["config", "truncated_history", "full_history"],
+        }
+        agenda = parse_agenda(agenda_dict)
+        save_agenda(agenda)
+        sel = select_and_persist(agenda)
+        self._seed_completed_run(1, sel.selection_id)
+
+        decision = evidence_gate.run_gate(sel.selection_id)
+        self.assertEqual(decision["status"], "block", decision)
+        missing = [b for b in decision["blockers"] if b["requirement"] == "experiment_result_packet keys"]
+        self.assertTrue(missing)
+        self.assertIn("truncated_history", missing[0]["reason"])
 
     def test_gate_blocks_when_relative_error_exceeds_threshold(self):
         """Audit follow-up: gate must block when delta.relative_error is too large.

@@ -19,14 +19,26 @@ a persisted decision artifact:
       "rule_set": "agenda_v1_default"
     }
 
-Default rule set (``agenda_v1_default``) blocks when ANY of:
+Default rule set (``agenda_v2_default``) blocks when ANY of:
 - no experiment_run is linked to the selection
 - experiment_run is not completed
-- no confirmed experimental_claim exists
-- a refuted claim exists for a metric the agenda's ``required_output`` lists
+- no experimental_claim was decided either way (nothing confirmed, nothing
+  refuted) — an undecided run has nothing to write up
+- a refuted claim covers a metric the agenda's ``required_output`` promised a
+  confirmed result on: the manuscript's claim and the data disagree
 - no experiment_result_packet.json artifact found on disk
-- result packet missing required keys: config, softmax_attention (or
-  baseline), linear_attention (or candidate), delta
+- result packet missing the keys the agenda declares (default: config,
+  baseline, candidate, delta; domain aliases such as softmax_attention /
+  linear_attention still satisfy baseline / candidate)
+
+A refuted claim on its own is a finding, not a failure. The decision carries
+``claim_stance`` (positive | negative | mixed) so the manuscript step writes
+the result the data actually supports instead of the one we hoped for.
+
+``required_output`` keys this gate reads (all optional):
+    packet_keys: [...]          # what the result packet must contain
+    confirmed_metrics: [...]    # metrics whose refutation blocks publication
+    relative_error_max: 0.10    # only applied to approximation-style packets
 
 Public API:
     evaluate_gate(selection_id) -> dict          # in-memory decision
@@ -114,14 +126,72 @@ def _load_packet(workdir: str | None) -> tuple[dict[str, Any] | None, str | None
 # ---------- gate rules ----------
 
 
-REQUIRED_PACKET_KEYS = ("config", "softmax_attention", "linear_attention", "delta")
+DEFAULT_PACKET_KEYS = ("config", "baseline", "candidate", "delta")
 
-# Magnitude threshold: a linear-attention approximation with > 10% relative
-# error against softmax is inconclusive and must not flow into manuscript
-# generation. Audit finding (PR #10 review): without this rule the gate was
-# greenlighting bundles for results the reviewer simultaneously flagged as
-# inconclusive (rel_err=0.767 → status=pass in the acceptance run).
+# A packet may name its two arms in domain terms. The gate asks for roles, not
+# for the vocabulary of the first experiment we ever ran through it.
+PACKET_KEY_ALIASES = {
+    "baseline": ("baseline", "control", "reference", "softmax_attention"),
+    "candidate": ("candidate", "treatment", "proposed", "linear_attention"),
+}
+
+# Magnitude threshold for approximation-style packets: an approximation with
+# > 10% relative error against its reference is inconclusive and must not flow
+# into manuscript generation. Audit finding (PR #10 review): without this rule
+# the gate was greenlighting bundles for results the reviewer simultaneously
+# flagged as inconclusive (rel_err=0.767 → status=pass in the acceptance run).
+# Only applied when the packet reports delta.relative_error at all.
 RELATIVE_ERROR_MAX = 0.10
+
+RULE_SET = "agenda_v2_default"
+
+
+def _required_packet_keys(agenda_required: Mapping[str, Any]) -> tuple[str, ...]:
+    declared = agenda_required.get("packet_keys")
+    if isinstance(declared, (list, tuple)) and declared:
+        return tuple(str(k).strip() for k in declared if str(k).strip())
+    return DEFAULT_PACKET_KEYS
+
+
+def _missing_packet_keys(packet: Mapping[str, Any], keys: tuple[str, ...]) -> list[str]:
+    missing: list[str] = []
+    for key in keys:
+        accepted = PACKET_KEY_ALIASES.get(key, (key,))
+        if not any(alias in packet for alias in accepted):
+            missing.append(key)
+    return missing
+
+
+def _relative_error_max(agenda_required: Mapping[str, Any]) -> float:
+    raw = agenda_required.get("relative_error_max")
+    try:
+        return float(raw) if raw is not None else RELATIVE_ERROR_MAX
+    except (TypeError, ValueError):
+        return RELATIVE_ERROR_MAX
+
+
+def _promised_metrics(agenda_required: Mapping[str, Any]) -> list[str]:
+    raw = agenda_required.get("confirmed_metrics")
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, (list, tuple)):
+        return []
+    return [str(m).strip().lower() for m in raw if str(m).strip()]
+
+
+def _claim_mentions(claim: Mapping[str, Any], metric: str) -> bool:
+    haystack = f"{claim.get('claim_text') or ''} {claim.get('supporting_data') or ''}".lower()
+    return metric in haystack
+
+
+def _claim_stance(confirmed: int, refuted: int) -> str:
+    if confirmed and refuted:
+        return "mixed"
+    if refuted:
+        return "negative"
+    if confirmed:
+        return "positive"
+    return "undecided"
 
 
 def _evaluate_default_rules(
@@ -147,10 +217,11 @@ def _evaluate_default_rules(
     verdicts = [(c.get("verdict") or "").lower() for c in claims]
     confirmed = sum(1 for v in verdicts if v == "confirmed")
     refuted = sum(1 for v in verdicts if v == "refuted")
-    if confirmed == 0:
+    # A refuted claim is a result. A run that decided nothing is not.
+    if confirmed + refuted == 0:
         blockers.append({
-            "requirement": "experimental_claims.confirmed>=1",
-            "reason": f"confirmed={confirmed}",
+            "requirement": "experimental_claims.decided>=1",
+            "reason": f"confirmed={confirmed}, refuted={refuted}",
         })
 
     # agenda_v1_default unconditionally requires the experiment_result_packet
@@ -163,29 +234,43 @@ def _evaluate_default_rules(
             "looked_at": packet_path or "(no workdir)",
         })
     else:
-        missing_keys = [k for k in REQUIRED_PACKET_KEYS if k not in packet]
+        missing_keys = _missing_packet_keys(packet, _required_packet_keys(agenda_required))
         if missing_keys:
             blockers.append({
                 "requirement": "experiment_result_packet keys",
                 "reason": f"missing_keys={missing_keys}",
             })
-        # Magnitude check: even when every required key is present, the
-        # approximation error must be small enough that the result is not
+        # Magnitude check: even when every required key is present, an
+        # approximation's error must be small enough that the result is not
         # self-evidently inconclusive.
         delta = packet.get("delta") or {}
         rel_err = delta.get("relative_error")
-        if isinstance(rel_err, (int, float)) and rel_err > RELATIVE_ERROR_MAX:
+        rel_err_max = _relative_error_max(agenda_required)
+        if isinstance(rel_err, (int, float)) and rel_err > rel_err_max:
             blockers.append({
-                "requirement": f"delta.relative_error<={RELATIVE_ERROR_MAX}",
+                "requirement": f"delta.relative_error<={rel_err_max}",
                 "reason": f"observed={rel_err}",
             })
 
-    # A refuted claim about the primary effect blocks publication.
-    if refuted > 0:
-        blockers.append({
-            "requirement": "no_refuted_primary_claims",
-            "reason": f"refuted_count={refuted}",
-        })
+    # A refuted claim is publishable as a negative result. What is not
+    # publishable is a manuscript promising a confirmed result on a metric the
+    # data refuted — there the claim and the evidence point opposite ways.
+    promised = _promised_metrics(agenda_required)
+    if promised:
+        broken = sorted(
+            {
+                metric
+                for c in claims
+                if (c.get("verdict") or "").lower() == "refuted"
+                for metric in promised
+                if _claim_mentions(c, metric)
+            }
+        )
+        if broken:
+            blockers.append({
+                "requirement": "no_refuted_promised_metrics",
+                "reason": f"refuted_metrics={broken}",
+            })
 
     return _finalize(blockers, experiment, claims, packet, packet_path)
 
@@ -202,8 +287,10 @@ def _finalize(
         v = (c.get("verdict") or "").lower()
         counts[v if v in counts else "other"] += 1
     status = "block" if blockers else "pass"
+    stance = _claim_stance(counts["confirmed"], counts["refuted"])
     metrics_summary: dict[str, Any] = {
         "claim_counts": counts,
+        "claim_stance": stance,
         "experiment_status": (experiment or {}).get("status"),
         "hypothesis_verdict": (experiment or {}).get("hypothesis_verdict"),
         "effect_size": (experiment or {}).get("effect_size"),
@@ -218,7 +305,10 @@ def _finalize(
         "blockers": blockers,
         "metrics_summary": metrics_summary,
         "packet_path": packet_path,
-        "rule_set": "agenda_v1_default",
+        # What the manuscript is allowed to claim, so a negative result is
+        # written up as a negative result rather than as a failed positive one.
+        "claim_stance": stance,
+        "rule_set": RULE_SET,
     }
 
 
@@ -272,13 +362,15 @@ def _row_to_gate(row: Mapping[str, Any]) -> dict[str, Any]:
                 return default
         return v if v is not None else default
 
+    metrics_summary = _decode("metrics_summary_json", {})
     return {
         "id": row.get("id"),
         "selection_id": row.get("selection_id"),
         "experiment_run_id": row.get("experiment_run_id"),
         "status": row.get("status"),
         "blockers": _decode("blockers_json", []),
-        "metrics_summary": _decode("metrics_summary_json", {}),
+        "metrics_summary": metrics_summary,
+        "claim_stance": (metrics_summary or {}).get("claim_stance"),
         "packet_path": row.get("packet_path"),
         "rule_set": row.get("rule_set"),
         "created_at": row.get("created_at"),

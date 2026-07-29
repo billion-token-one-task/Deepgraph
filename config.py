@@ -417,6 +417,15 @@ AUTO_RESEARCH_MAX_ACTIVE = _env_int("DEEPGRAPH_AUTO_RESEARCH_MAX_ACTIVE", 1, "au
 # must be installed before experiment forge / validation loop (see agents/evosci_requirements.py).
 REQUIRE_EVOSCIENTIST_FOR_EXPERIMENTS = _env_bool("DEEPGRAPH_REQUIRE_EVOSCIENTIST_FOR_EXPERIMENTS", False, "experiment.require_evoscientist")
 
+# Topic gate (agents/topic_gate.py): three questions before compute, then let
+# surprise buy the next lane. Max confidence is the "already in a textbook"
+# line; surprise bits is what a pilot must produce to escalate or to reach the
+# public case page.
+TOPIC_GATE_ENABLED = _env_bool("DEEPGRAPH_TOPIC_GATE_ENABLED", True, "topic_gate.enabled")
+TOPIC_GATE_MAX_CONFIDENCE = _env_float("DEEPGRAPH_TOPIC_GATE_MAX_CONFIDENCE", 0.90, "topic_gate.max_confidence")
+TOPIC_GATE_SURPRISE_BITS = _env_float("DEEPGRAPH_TOPIC_GATE_SURPRISE_BITS", 1.0, "topic_gate.surprise_bits")
+TOPIC_GATE_MIN_SEEDS = _env_int("DEEPGRAPH_TOPIC_GATE_MIN_SEEDS", 3, "topic_gate.min_seeds")
+
 # Web
 WEB_HOST = _env_str("DEEPGRAPH_WEB_HOST", "0.0.0.0", "web.host")
 WEB_PORT = _env_int("DEEPGRAPH_WEB_PORT", 8080, "web.port")

@@ -72,6 +72,7 @@ AGENT_BOUNDARIES: tuple[AgentBoundary, ...] = (
             "agents.novelty_verifier",
             "agents.evidence_planner",
             "agents.idea_route",
+            "agents.topic_gate",
             "agents.discovery_metadata",
             "agents.discovery_supervisor",
         ),

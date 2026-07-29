@@ -1,4 +1,7 @@
+import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 from datetime import timedelta
 
@@ -92,6 +95,104 @@ class AutoResearchSchedulingTests(unittest.TestCase):
         self.assertEqual(upserts[1][1]["stage"], "verification_input_missing")
         self.assertEqual(upserts[1][1]["cpu_eligible"], 0)
         self.assertIn("Field A", upserts[1][1]["last_note"])
+
+    def test_process_candidate_blocks_topic_whose_prediction_fails_the_gate(self):
+        candidate = {
+            "id": 14,
+            "tier": 2,
+            "novelty_status": "novel",
+            "topic_gate": json.dumps(
+                {
+                    "prediction": {
+                        "predicted_outcome": "accuracy goes up",
+                        "confidence": 0.6,
+                        "action_if_confirmed": "write it up",
+                        "action_if_refuted": "write it up",
+                        "already_published": "no",
+                    }
+                }
+            ),
+        }
+        upserts = []
+
+        with (
+            mock.patch.object(auto_research, "assess_experiment_route", return_value=("cpu", "ready")),
+            mock.patch.object(auto_research, "evosci_available", return_value=True),
+            mock.patch.object(auto_research, "launch_verification") as launch,
+            mock.patch.object(
+                auto_research,
+                "_upsert_job",
+                side_effect=lambda insight_id, **fields: upserts.append((insight_id, fields)),
+            ),
+            mock.patch.object(auto_research, "log_event"),
+        ):
+            auto_research._process_candidate(candidate)
+
+        launch.assert_not_called()
+        self.assertEqual(len(upserts), 2)
+        self.assertEqual(upserts[1][1]["stage"], "topic_gate_blocked")
+        self.assertEqual(upserts[1][1]["cpu_eligible"], 0)
+        self.assertIn("same next action", upserts[1][1]["last_error"])
+
+    def test_gpu_plan_starts_on_the_pilot_lane_and_bits_buy_the_rest(self):
+        insight = {"id": 15, "title": "big idea"}
+        with (
+            mock.patch.object(auto_research, "infer_resource_class", return_value="gpu_large"),
+            mock.patch.object(auto_research, "infer_experimentability", return_value="hard"),
+        ):
+            lane, reason = auto_research.assess_experiment_route(insight)
+            self.assertEqual(lane, "gpu_small")
+            self.assertIn("stage=pilot", reason)
+
+            escalated = dict(insight, topic_gate=json.dumps({"stage": "full", "surprise_bits": 1.32}))
+            lane, reason = auto_research.assess_experiment_route(escalated)
+            self.assertEqual(lane, "gpu_large")
+            self.assertIn("100% of the planned budget", reason)
+
+    def test_completed_run_earns_bits_and_routes_to_a_channel(self):
+        prediction = {
+            "predicted_outcome": "accuracy goes up",
+            "confidence": 0.6,
+            "action_if_confirmed": "ship it",
+            "action_if_refuted": "drop the branch",
+            "already_published": "no",
+        }
+        with tempfile.TemporaryDirectory() as workdir:
+            (Path(workdir) / "experiment_result_packet.json").write_text(
+                json.dumps({"full_benchmark_completed": True, "null_model_control": "passed"}),
+                encoding="utf-8",
+            )
+            run = {
+                "id": 7,
+                "hypothesis_verdict": "refuted",
+                "workdir": workdir,
+                "proxy_config": json.dumps(
+                    {"publication_evidence_contract": {"minimum_seeds": 3}}
+                ),
+            }
+            saved = {}
+            with (
+                mock.patch.object(
+                    auto_research.db,
+                    "fetchone",
+                    return_value={"id": 16, "topic_gate": json.dumps({"prediction": prediction})},
+                ),
+                mock.patch.object(
+                    auto_research.db, "fetchall", return_value=[{"p_value": 0.01}]
+                ),
+                mock.patch.object(
+                    auto_research.topic_gate,
+                    "persist_gate_record",
+                    side_effect=lambda insight_id, record: saved.update(record),
+                ),
+                mock.patch.object(auto_research, "log_event"),
+            ):
+                note = auto_research._topic_gate_close_loop(16, run)
+
+        self.assertIn("case_page", note)
+        self.assertEqual(saved["stage"], "confirm")
+        self.assertGreater(saved["surprise_bits"], 1.0)
+        self.assertEqual(saved["route"]["channel"], "case_page")
 
     def test_next_candidate_requeues_blocked_input_missing_after_repair(self):
         repaired_candidate = {

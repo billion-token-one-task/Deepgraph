@@ -309,6 +309,7 @@ def _ensure_vnext_migrations() -> None:
             "mechanism_type": "TEXT",
             "evidence_packet": "TEXT",
             "evidence_plan": "TEXT",
+            "topic_gate": "TEXT",
             "experimentability": "TEXT",
             "resource_class": "TEXT DEFAULT 'cpu'",
             "submission_status": "TEXT DEFAULT 'not_started'",
