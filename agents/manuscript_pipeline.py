@@ -691,16 +691,21 @@ def generate_submission_bundle(run_id: int, bundle_formats: list[str] | None = N
     return generate_bundle_paper_orchestra(run_id, bundle_formats=bundle_formats or list(SUBMISSION_BUNDLE_FORMATS))
 
 
-def list_manuscripts(limit: int = 50) -> list[dict]:
+def list_manuscripts(*, agenda_id: int, limit: int = 50) -> list[dict]:
+    if int(agenda_id) <= 0:
+        raise ValueError("positive agenda_id is required")
     db.init_db()
     return db.fetchall(
         """
         SELECT mr.*, di.title AS insight_title, er.hypothesis_verdict
         FROM manuscript_runs mr
-        LEFT JOIN deep_insights di ON di.id = mr.deep_insight_id
-        LEFT JOIN experiment_runs er ON er.id = mr.experiment_run_id
+        LEFT JOIN deep_insights di
+          ON di.id = mr.deep_insight_id AND di.agenda_id = mr.agenda_id
+        LEFT JOIN experiment_runs er
+          ON er.id = mr.experiment_run_id AND er.agenda_id = mr.agenda_id
+        WHERE mr.agenda_id=?
         ORDER BY mr.updated_at DESC
         LIMIT ?
         """,
-        (limit,),
+        (int(agenda_id), limit),
     )
