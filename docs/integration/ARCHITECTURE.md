@@ -73,10 +73,10 @@ phase: legacy local/SSH execution branches and legacy state writes require
 further adapters. Durable compute claims are committed before a backend call;
 an uncertain response is quarantined for manual reconciliation, and backend
 success remains `collecting` until required artifacts and bounded usage are
-persisted. Colab and scoped ingestion now have durable claim workers, while
-their PostgreSQL/provider/backend crash tests remain pending. Until that work
-is complete, operator/API progression must remain fail-closed and the
-candidate is not deployable.
+persisted. Disposable PostgreSQL compute/Colab/ingestion crash and recovery
+checks now pass; real provider/hardware canaries and production-backup replay
+remain pending. Until those gates are complete, operator/API progression must
+remain fail-closed and the candidate is not deployable.
 
 ## Resource reservation hierarchy
 

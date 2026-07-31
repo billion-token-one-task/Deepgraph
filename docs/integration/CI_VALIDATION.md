@@ -2,13 +2,11 @@
 
 Final-session record (2026-07-31): static audits passed; the isolated Python
 3.13 policy lane passed 71 tests; the synthetic fault lane passed 60/60,
-including the validation-loop fairness/manifest subset 22/22; and the prior
-real bubblewrap held-in/held-out/canary plus protected-write, network and
-missing-bwrap fallback negative tests passed. A post-fix real evaluator rerun
-preserved the fixture tree hash but was blocked by the host bwrap
-`NETLINK_ROUTE` permission error. The PostgreSQL lane was blocked because no
-local server or usable Docker daemon was available. Adapted legacy tests were
-39 passed/30 failed and are individually classified in
+including the validation-loop fairness/manifest subset 22/22; the disposable
+PostgreSQL schema/queue/recovery lane passed; and the real bubblewrap
+held-in/held-out/canary plus protected-write, network and missing-bwrap
+fallback negative tests passed with an unchanged candidate tree. Adapted
+legacy tests were 39 passed/30 failed and are individually classified in
 [LEGACY_TEST_CLASSIFICATION.md](LEGACY_TEST_CLASSIFICATION.md). No production
 URL, provider credential, deployment, or database was used.
 

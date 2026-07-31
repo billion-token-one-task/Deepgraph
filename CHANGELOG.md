@@ -13,13 +13,14 @@ Final isolated acceptance record: source candidate frozen at
 `6851a991154906f11d8cfc247d22a5d5caa0a834` with candidate tree
 `b1c1e8ebfbc0607cc39bb617dad9d56fd949d214122a37dd70541bd634d9feab`.
 Post-fix verification commit is
-`d3650fe0a2270eb265ef9dc40041b3ccab537efd` (Git tree
-`7e3183cd039cb7bace420355a6aad6b0a67f1358`, tracked-content SHA-256
-`c9a2efac23e30abda6c9ab87242d76ecfa66d6679272404fbf27402d86db6114`).
-Static audit, the 71-test pure policy lane and real bubblewrap evaluator
-lanes passed. PostgreSQL restore/migration/restart, adapted legacy
-compatibility, hardware/provider canaries and reviewer approval remain open;
-therefore no master replacement is authorized.
+`d33a9f5fbb1bb912f6edff2f87b749d38ec19d25` (Git tree
+`607a1fb701357aad77c7003743093f51ab867ce2`, tracked-content SHA-256
+`18a5a677ee13ed81d550710c5c390ae3e3b3c23c0991036af465237f164abe2f`).
+Static audit, the 71-test pure policy lane, synthetic fault lane, disposable
+PostgreSQL queue/recovery lane and real bubblewrap evaluator lanes passed.
+The adapted legacy lane remains 39 passed/30 classified failures; no approved
+hardware/provider canary or reviewer approval exists, and no master replacement
+is authorized.
 
 Local implementation checkpoint:
 `c25e63c` (`feat: build controlled meta-harness-v1 candidate`). This hash has
@@ -301,12 +302,9 @@ fault lane passed 60 tests (validation-loop subset 22/22); report hashes are
 recorded in `docs/integration/ACCEPTANCE_EVIDENCE.md`. The adapted legacy lane
 remains 39 passed/30 failed; all 30 are individually classified in
 `docs/integration/LEGACY_TEST_CLASSIFICATION.md` and no safety contract was
-relaxed. Application startup, PostgreSQL migration/restore, production backup
-startup, provider/backend calls, CPU/GPU/SSH/Colab work, candidate worktree
-evaluation post-fix rerun was blocked by the host bwrap `NETLINK_ROUTE`
-restriction (candidate fixture tree hash remained unchanged), so the earlier
-real evaluator result is not re-used as fresh evidence. Restart recovery and
-reviewer approval remain unverified. The host
+relaxed. Disposable PostgreSQL migration/queue/recovery and real evaluator
+lanes now pass; production backup startup, provider/backend calls, CPU/GPU/SSH/
+Colab work and reviewer approval remain unverified. The host
 Python 3.9 has no TOML parser, so TOML runtime parsing also remains an
 isolated-CI item.
 
