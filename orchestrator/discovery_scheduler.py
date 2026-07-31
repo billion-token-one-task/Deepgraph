@@ -91,71 +91,22 @@ def run_tier1_discovery(
     agenda_id: int,
     bulk: bool = False,
 ) -> list[dict]:
-    """Run Tier 1 (Paradigm) discovery. Returns stored insight IDs."""
+    """Reject the legacy pre-identity Tier-1 LLM path.
+
+    The old implementation spends several ungranted LLM calls before an idea
+    identity exists. meta-harness-v1 uses the problem-first proposal/portfolio
+    path, which creates ``proposal_pending`` before requesting LLM resources.
+    """
     agenda_id = _require_agenda_id(agenda_id)
-    _init_schema_v2()
-    from agents.paradigm_agent import discover_paradigm_insights, store_deep_insight
-
-    if max_candidates is None:
-        max_candidates = (
-            DISCOVERY_BULK_TIER1_CANDIDATES if bulk else DISCOVERY_TIER1_CANDIDATES
-        )
-    top_ov = DISCOVERY_BULK_TIER1_OVERLAPS if bulk else 20
-    top_pat = DISCOVERY_BULK_TIER1_PATTERNS if bulk else 15
-
     log_event(
-        "discovery",
+        "warning",
         {
-            "step": "tier1_start",
+            "step": "tier1_legacy_blocked",
             "agenda_id": agenda_id,
-            "max_candidates": max_candidates,
-            "bulk": bulk,
-            "signal_overlaps": top_ov,
-            "signal_patterns": top_pat,
+            "reason": "pre_identity_ungranted_llm_path",
         },
     )
-    print("[DISCOVERY] Starting Tier 1 (Paradigm) discovery...", flush=True)
-
-    try:
-        insights = discover_paradigm_insights(
-            max_candidates=max_candidates,
-            tier1_top_overlaps=top_ov,
-            tier1_top_patterns=top_pat,
-        )
-        stored = []
-        for ins in insights:
-            ins["agenda_id"] = agenda_id
-            insight_id = store_deep_insight(ins)
-            if not insight_id:
-                log_event(
-                    "warning",
-                    {
-                        "step": "tier1_skip_incomplete",
-                        "title": ins.get("title"),
-                    },
-                )
-                continue
-            stored.append({"id": insight_id, "title": ins["title"],
-                           "adversarial_score": ins.get("adversarial_score", 0)})
-            log_event("deep_insight", {
-                "tier": 1,
-                "agenda_id": agenda_id,
-                "id": insight_id,
-                "title": ins["title"],
-                "adversarial_score": ins.get("adversarial_score", 0),
-            })
-        log_event("discovery", {"step": "tier1_done", "count": len(stored)})
-        print(f"[DISCOVERY] Tier 1 done: {len(stored)} paradigm insights stored", flush=True)
-        return stored
-    except Exception as e:
-        if _llm_temporarily_unavailable(e):
-            print(f"[DISCOVERY] Tier 1 skipped: LLM unavailable ({e})", flush=True)
-            log_event("warning", {"step": "tier1_discovery", "error": str(e), "suppressed": True})
-            return []
-        print(f"[DISCOVERY] Tier 1 failed: {e}", flush=True)
-        print(traceback.format_exc(), flush=True)
-        log_event("error", {"step": "tier1_discovery", "error": str(e)})
-        return []
+    return []
 
 
 def run_tier2_discovery(
