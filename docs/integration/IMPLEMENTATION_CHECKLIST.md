@@ -440,7 +440,7 @@ artifacts named in its evidence column may promote it to `[x]`.
 - [x] **V-02** 279 Python files passed the broad AST parse and 257 files passed
   the release static audit at the latest checkpoint.
 - [x] **V-03** Side-effect-free SQL AST audit found no definite mismatch:
-  838 literal calls, 835 statically countable, and 114 dynamic calls explicitly
+  839 literal calls, 836 statically countable, and 114 dynamic calls explicitly
   left for review/CI.
 - [x] **V-04** `git diff --check` passed.
 - [x] **V-04A** Agenda mutation scope audit passes: 154 scoped literal
@@ -475,7 +475,10 @@ artifacts named in its evidence column may promote it to `[x]`.
   ordering is `692bb62`, scoped ingestion routing is `a7262a3`, and durable
   unknown-usage schema repair is `bdda49c`. Durable Colab/scoped ingestion
   queues, guarded legacy GPU identity and the isolated evaluator runner are
-  `724a3ed51fe4649a720c08fb0c213014eb9d236a`.
+  `724a3ed51fe4649a720c08fb0c213014eb9d236a`; persisted ingestion completion
+  truth and agenda claim serialization are
+  `b17c7d110532197a7137a217ffa641b50486d295` and
+  `f2f6ea96d27673f077966b4bd2f278717393b0d9`.
 - [ ] **V-14** No push until explicit approval and quiescence check.
 - [ ] **V-15** Final candidate commit hash must replace working-tree/intermediate
   hashes in all acceptance artifacts.

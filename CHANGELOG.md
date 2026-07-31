@@ -37,7 +37,10 @@ accepted as a release.
 Durable queues and evaluator isolation checkpoint:
 `724a3ed51fe4649a720c08fb0c213014eb9d236a`
 (`feat: add durable queues and isolated evaluator`). It is also local,
-unpushed and unaccepted.
+unpushed and unaccepted. Durable ingestion completion truth and agenda claim
+serialization are `b17c7d110532197a7137a217ffa641b50486d295`
+(`fix: require durable ingestion completion truth`); the explicit one-running
+job per agenda guard is `f2f6ea96d27673f077966b4bd2f278717393b0d9`.
 
 ### Lineage and why this candidate exists
 
@@ -254,7 +257,7 @@ Allowed static checks currently report:
 - 279 Python files parsed by the broad AST pass and 257 by the release static
   audit at the latest working-tree checkpoint;
 - no finding from the topic/integrity/migration/secret static audit;
-- SQL AST audit: 838 literal calls, 835 statically countable, no definite
+- SQL AST audit: 839 literal calls, 836 statically countable, no definite
   mismatch, and 114 dynamic calls left for review/CI;
 - additive migration plan: 90 statements, 27,718 bytes, SHA-256
   `6379d919c951a827017eacf72e1168d52980bb2d515c5f14d44e5121f01b1185`,

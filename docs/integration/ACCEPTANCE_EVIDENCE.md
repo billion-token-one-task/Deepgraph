@@ -34,7 +34,7 @@ accepted. Record that evidence using
 - migration dry plan reported 90 statements, 27,718 bytes, SHA-256
   `6379d919c951a827017eacf72e1168d52980bb2d515c5f14d44e5121f01b1185`,
   and no destructive token;
-- SQL AST audit found no definite placeholder mismatch across 835 countable
+- SQL AST audit found no definite placeholder mismatch across 836 countable
   literal calls; 114 dynamic calls remain review/CI scope;
 - agenda mutation audit found 154 explicitly scoped literal mutations and no
   definite unscoped or dynamic mutation;
@@ -52,4 +52,7 @@ with the commit hash; intermediate counts/checksums are not release evidence.
 
 Implementation checkpoint for the new durable queues and isolated evaluator:
 `724a3ed51fe4649a720c08fb0c213014eb9d236a`. It is local, unpushed and not an
-acceptance identifier.
+acceptance identifier. The ingestion completion-truth follow-up is
+`b17c7d110532197a7137a217ffa641b50486d295`, followed by the per-agenda
+serialization guard `f2f6ea96d27673f077966b4bd2f278717393b0d9`; both are
+also local and unpushed.
