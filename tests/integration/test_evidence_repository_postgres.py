@@ -6,6 +6,10 @@ import os
 import re
 import unittest
 import uuid
+import hashlib
+import hmac
+import json
+from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
 from scripts.meta_harness_migration import apply_to_isolated_restore
@@ -52,6 +56,12 @@ class IsolatedEvidenceRepositoryTests(unittest.TestCase):
         cls.Repository = MetaHarnessRepository
         cls.positive_decision_authorized = staticmethod(
             positive_decision_authorized
+        )
+        os.environ["DEEPGRAPH_REVIEWER_APPROVAL_KEYS_JSON"] = json.dumps(
+            {"isolated-reviewer-key": "env:DEEPGRAPH_ISOLATED_REVIEWER_SECRET"}
+        )
+        os.environ["DEEPGRAPH_ISOLATED_REVIEWER_SECRET"] = (
+            "isolated-reviewer-test-secret"
         )
 
     def setUp(self):
@@ -152,6 +162,7 @@ class IsolatedEvidenceRepositoryTests(unittest.TestCase):
 
     def tearDown(self):
         for sql in (
+            "DELETE FROM reviewer_approval_records WHERE agenda_id=?",
             "DELETE FROM scientific_decision_records WHERE agenda_id=?",
             "DELETE FROM evidence_audit_records WHERE agenda_id=?",
             "DELETE FROM evidence_state_transitions WHERE agenda_id=?",
@@ -170,6 +181,34 @@ class IsolatedEvidenceRepositoryTests(unittest.TestCase):
         digest = "a" * 64
         verdict_hash = "b" * 64
         repository = self.Repository()
+        from meta_harness.reviewer_approval import (
+            ReviewerApproval,
+            scientific_manuscript_subject,
+        )
+
+        subject = scientific_manuscript_subject(
+            agenda_id=self.agenda_id,
+            experiment_run_id=self.run_id,
+            verdict_hash=verdict_hash,
+        )
+        unsigned = ReviewerApproval(
+            reviewer_id="isolated-reviewer",
+            key_id="isolated-reviewer-key",
+            purpose="scientific_manuscript",
+            subject=subject,
+            issued_at=datetime.now(timezone.utc).isoformat(),
+            signature="pending",
+        )
+        approval = ReviewerApproval(
+            **{
+                **unsigned.__dict__,
+                "signature": hmac.new(
+                    os.environ["DEEPGRAPH_ISOLATED_REVIEWER_SECRET"].encode(),
+                    unsigned.signing_payload(),
+                    hashlib.sha256,
+                ).hexdigest(),
+            }
+        )
         state = repository.advance_experiment_state(
             agenda_id=self.agenda_id,
             experiment_run_id=self.run_id,
@@ -272,7 +311,7 @@ class IsolatedEvidenceRepositoryTests(unittest.TestCase):
                 execution_succeeded=True,
                 verdict="supported",
                 verdict_hash=verdict_hash,
-                reviewer_approved=True,
+                reviewer_approval=approval.__dict__,
             ),
             actor="isolated-reviewer",
         )

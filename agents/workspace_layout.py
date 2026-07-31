@@ -147,6 +147,9 @@ def get_idea_workspace(insight_id: int, insight: dict | None = None, *, create: 
             (experiments_root / suite / "current").mkdir(parents=True, exist_ok=True)
 
     if sync_db and insight.get("id") is not None:
+        agenda_id = int(insight.get("agenda_id") or 0)
+        if agenda_id <= 0:
+            raise ValueError("workspace persistence requires agenda scope")
         desired = {
             "workspace_root": str(workspace_root),
             "experiment_root": str(experiments_root),
@@ -159,7 +162,7 @@ def get_idea_workspace(insight_id: int, insight: dict | None = None, *, create: 
                 """
                 UPDATE deep_insights
                 SET workspace_root=?, experiment_root=?, plan_root=?, paper_root=?, updated_at=CURRENT_TIMESTAMP
-                WHERE id=?
+                WHERE id=? AND agenda_id=?
                 """,
                 (
                     desired["workspace_root"],
@@ -167,6 +170,7 @@ def get_idea_workspace(insight_id: int, insight: dict | None = None, *, create: 
                     desired["plan_root"],
                     desired["paper_root"],
                     insight_id,
+                    agenda_id,
                 ),
             )
             db.commit()
@@ -252,9 +256,18 @@ def write_latest_status(insight_id: int, payload: dict[str, Any], *, run_id: int
 
 def promote_canonical_run(insight_id: int, run_id: int, insight: dict | None = None) -> dict[str, Any]:
     info = ensure_run_workspace(insight_id, run_id, insight=insight)
+    agenda_id = int((insight or {}).get("agenda_id") or 0)
+    if agenda_id <= 0:
+        row = db.fetchone(
+            "SELECT agenda_id FROM deep_insights WHERE id=?",
+            (int(insight_id),),
+        )
+        agenda_id = int((row or {}).get("agenda_id") or 0)
+    if agenda_id <= 0:
+        raise ValueError("canonical run promotion requires agenda scope")
     db.execute(
-        "UPDATE deep_insights SET canonical_run_id=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-        (int(run_id), int(insight_id)),
+        "UPDATE deep_insights SET canonical_run_id=?, updated_at=CURRENT_TIMESTAMP WHERE id=? AND agenda_id=?",
+        (int(run_id), int(insight_id), agenda_id),
     )
     db.commit()
     _refresh_current_link(Path(info["suite_current_root"]), Path(info["run_root"]))

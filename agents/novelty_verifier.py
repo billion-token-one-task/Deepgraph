@@ -389,8 +389,8 @@ def launch_verification(insight_id: int, timeout_minutes: int = None) -> dict:
     write_session_pid(Path(workdir), proc.pid)
 
     db.execute(
-        "UPDATE deep_insights SET novelty_status='verifying', evoscientist_workdir=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-        (workdir, insight_id))
+        "UPDATE deep_insights SET novelty_status='verifying', evoscientist_workdir=?, updated_at=CURRENT_TIMESTAMP WHERE id=? AND agenda_id=?",
+        (workdir, insight_id, int(insight["agenda_id"])))
     db.commit()
 
     import threading
@@ -451,8 +451,8 @@ def check_verification_result(insight_id: int) -> dict:
             if log_path.exists() and _recent_log_activity(log_path) and not _log_has_terminal_error(log_tail):
                 result["reason"] = "recent_log_activity_after_launcher_exit"
                 db.execute(
-                    "UPDATE deep_insights SET novelty_status='verifying', updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                    (insight_id,),
+                    "UPDATE deep_insights SET novelty_status='verifying', updated_at=CURRENT_TIMESTAMP WHERE id=? AND agenda_id=?",
+                    (insight_id, int(insight["agenda_id"])),
                 )
                 db.commit()
                 return result
@@ -462,14 +462,14 @@ def check_verification_result(insight_id: int) -> dict:
             result["status"] = "failed"
             result["error"] = error
             db.execute(
-                "UPDATE deep_insights SET novelty_status='unchecked', updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                (insight_id,),
+                "UPDATE deep_insights SET novelty_status='unchecked', updated_at=CURRENT_TIMESTAMP WHERE id=? AND agenda_id=?",
+                (insight_id, int(insight["agenda_id"])),
             )
             db.commit()
             return result
         db.execute(
-            "UPDATE deep_insights SET novelty_status='verifying', updated_at=CURRENT_TIMESTAMP WHERE id=?",
-            (insight_id,),
+            "UPDATE deep_insights SET novelty_status='verifying', updated_at=CURRENT_TIMESTAMP WHERE id=? AND agenda_id=?",
+            (insight_id, int(insight["agenda_id"])),
         )
         db.commit()
         return result
@@ -504,8 +504,8 @@ def check_verification_result(insight_id: int) -> dict:
     db.execute(
         """UPDATE deep_insights
            SET novelty_status=?, novelty_report=?, status=?, updated_at=CURRENT_TIMESTAMP
-           WHERE id=?""",
-        (verdict, novelty_report, status, insight_id))
+           WHERE id=? AND agenda_id=?""",
+        (verdict, novelty_report, status, insight_id, int(insight["agenda_id"])))
     db.commit()
 
     apply_novelty_verdict_to_deep_insight(
@@ -615,8 +615,8 @@ Write your findings to final_report.md."""
     write_session_pid(Path(workdir), proc.pid)
 
     db.execute(
-        "UPDATE deep_insights SET evoscientist_workdir=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-        (workdir, insight_id))
+        "UPDATE deep_insights SET evoscientist_workdir=?, updated_at=CURRENT_TIMESTAMP WHERE id=? AND agenda_id=?",
+        (workdir, insight_id, int(insight["agenda_id"])))
     db.commit()
 
     return {

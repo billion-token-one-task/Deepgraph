@@ -17,6 +17,10 @@ from meta_harness.harness_evolution import (
     validate_candidate,
     validate_patch,
 )
+from meta_harness.reviewer_approval import (
+    ReviewerApprovalVerifier,
+    harness_candidate_subject,
+)
 
 
 class HarnessPersistenceError(RuntimeError):
@@ -261,9 +265,11 @@ class HarnessRepository:
         placeholders = ",".join("?" for _ in run_ids)
         rows = db.fetchall(
             f"""
-            SELECT id, agenda_id, candidate_id, suite, status
-            FROM harness_evaluation_runs
-            WHERE id IN ({placeholders})
+            SELECT her.id, her.agenda_id, her.candidate_id, her.patch_id,
+                   her.suite, her.status, hp.patch_hash
+            FROM harness_evaluation_runs AS her
+            JOIN harness_patches AS hp ON hp.id=her.patch_id
+            WHERE her.id IN ({placeholders})
             """,
             tuple(int(value) for value in run_ids),
         )
@@ -280,9 +286,36 @@ class HarnessRepository:
                 "regression report requires three passed scoped evaluations"
             )
         if report.decision == "approved" and (
-            not report.reviewer_approved or not report.reviewer
+            not report.reviewer_approved
+            or not report.reviewer
+            or report.reviewer_approval is None
         ):
-            raise HarnessPersistenceError("approved report requires reviewer")
+            raise HarnessPersistenceError(
+                "approved report requires signed reviewer approval"
+            )
+        patch_hashes = {str(row.get("patch_hash") or "") for row in rows}
+        if len(patch_hashes) != 1 or "" in patch_hashes:
+            raise HarnessPersistenceError(
+                "regression report evaluations must share one patch"
+            )
+        approval = None
+        approval_record = None
+        if report.decision == "approved":
+            patch_hash = next(iter(patch_hashes))
+            approval = ReviewerApprovalVerifier.from_environment().verify(
+                report.reviewer_approval,
+                purpose="harness_upgrade",
+                subject=harness_candidate_subject(
+                    agenda_id=report.agenda_id,
+                    candidate_id=int(candidate_id),
+                    patch_hash=patch_hash,
+                ),
+            )
+            if approval.reviewer_id != report.reviewer:
+                raise HarnessPersistenceError(
+                    "report reviewer does not match signed reviewer"
+                )
+            approval_record = approval.public_record()
         report_id = db.insert_returning_id(
             """
             INSERT INTO harness_regression_reports
@@ -306,10 +339,29 @@ class HarnessRepository:
                     {
                         "blockers": report.blockers,
                         "reviewer_approved": report.reviewer_approved,
+                        "reviewer_approval": approval_record,
                     }
                 ),
             ),
         )
+        if approval_record is not None:
+            db.execute(
+                """
+                INSERT INTO reviewer_approval_records
+                    (agenda_id, purpose, subject, reviewer_id, key_id,
+                     issued_at, signature_hash)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    report.agenda_id,
+                    approval_record["purpose"],
+                    approval_record["subject"],
+                    approval_record["reviewer_id"],
+                    approval_record["key_id"],
+                    approval_record["issued_at"],
+                    approval_record["signature_hash"],
+                ),
+            )
         db.commit()
         return report_id
 

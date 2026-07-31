@@ -207,6 +207,9 @@ CREATE INDEX IF NOT EXISTS idx_research_problems_agenda ON research_problems(age
 CREATE INDEX IF NOT EXISTS idx_experimental_evidence_edges_agenda
     ON experimental_evidence_edges(agenda_id, run_id, id);
 CREATE INDEX IF NOT EXISTS idx_deep_insights_agenda ON deep_insights(agenda_id, status, id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_deep_insights_pending_proposal
+    ON deep_insights(agenda_id, research_problem_id)
+    WHERE research_problem_id IS NOT NULL AND status='proposal_pending';
 CREATE INDEX IF NOT EXISTS idx_auto_research_jobs_agenda ON auto_research_jobs(agenda_id, status, id);
 CREATE INDEX IF NOT EXISTS idx_experiment_runs_agenda ON experiment_runs(agenda_id, status, id);
 CREATE INDEX IF NOT EXISTS idx_experiment_iterations_agenda ON experiment_iterations(agenda_id, run_id, id);
@@ -503,6 +506,21 @@ CREATE TABLE IF NOT EXISTS evidence_state_transitions (
 );
 CREATE INDEX IF NOT EXISTS idx_evidence_state_transition_run
     ON evidence_state_transitions(agenda_id, experiment_run_id, created_at, id);
+
+CREATE TABLE IF NOT EXISTS reviewer_approval_records (
+    id BIGSERIAL PRIMARY KEY,
+    agenda_id BIGINT NOT NULL REFERENCES research_agendas(id),
+    purpose TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    reviewer_id TEXT NOT NULL,
+    key_id TEXT NOT NULL,
+    issued_at TIMESTAMPTZ NOT NULL,
+    signature_hash TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (purpose, subject)
+);
+CREATE INDEX IF NOT EXISTS idx_reviewer_approval_agenda
+    ON reviewer_approval_records(agenda_id, purpose, created_at, id);
 
 CREATE TABLE IF NOT EXISTS evidence_audit_records (
     id BIGSERIAL PRIMARY KEY,

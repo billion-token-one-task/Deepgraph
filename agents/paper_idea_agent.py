@@ -22,7 +22,12 @@ from agents.idea_taste import (
     signal_type_weight,
 )
 from agents.insight_validation import get_evosci_input_issue
-from agents.llm_client import call_llm_json, is_llm_auth_error, is_llm_provider_unavailable_error
+from agents.llm_client import (
+    call_llm_json_for_role,
+    configured_role_prompt_version,
+    is_llm_auth_error,
+    is_llm_provider_unavailable_error,
+)
 from agents.problem_first import (
     discover_research_problems,
     match_problem_to_research_problem,
@@ -844,6 +849,90 @@ def _llm_temporarily_unavailable(exc: Exception) -> bool:
     return is_llm_auth_error(exc) or is_llm_provider_unavailable_error(exc)
 
 
+def _proposal_candidate_and_grant(
+    *,
+    agenda_id: int,
+    problem: dict,
+) -> tuple[int, dict | None]:
+    """Persist honest pre-idea identity and load an authorized proposal grant."""
+    problem_id = int(problem.get("research_problem_id") or problem.get("id") or 0)
+    if problem_id <= 0:
+        raise ValueError("proposal generation requires a persisted research problem")
+    existing = db.fetchone(
+        """
+        SELECT id FROM deep_insights
+        WHERE agenda_id=? AND research_problem_id=?
+          AND status='proposal_pending'
+        ORDER BY id DESC LIMIT 1
+        """,
+        (agenda_id, problem_id),
+    )
+    if existing:
+        candidate_id = int(existing["id"])
+    else:
+        inserted = db.fetchone(
+            """
+            INSERT INTO deep_insights
+                (agenda_id, tier, status, title, problem_statement,
+                 supporting_papers, source_node_ids, source_paper_ids,
+                 source_signal_refs, research_problem_id, prompt_version,
+                 outcome)
+            VALUES (?, 2, 'proposal_pending', ?, ?, ?, ?, ?, ?, ?, ?,
+                    'pending')
+            ON CONFLICT DO NOTHING
+            RETURNING id
+            """,
+            (
+                agenda_id,
+                str(problem.get("title") or f"Proposal for problem {problem_id}"),
+                str(
+                    problem.get("problem_statement")
+                    or problem.get("formal_statement")
+                    or ""
+                ),
+                json.dumps(problem.get("source_paper_ids") or []),
+                json.dumps(
+                    problem.get("related_node_ids")
+                    or problem.get("source_node_ids")
+                    or []
+                ),
+                json.dumps(problem.get("source_paper_ids") or []),
+                json.dumps(_problem_source_refs(problem)),
+                problem_id,
+                configured_role_prompt_version("proposer"),
+            ),
+        )
+        if inserted:
+            candidate_id = int(inserted["id"])
+            db.commit()
+        else:
+            concurrent = db.fetchone(
+                """
+                SELECT id FROM deep_insights
+                WHERE agenda_id=? AND research_problem_id=?
+                  AND status='proposal_pending'
+                ORDER BY id DESC LIMIT 1
+                """,
+                (agenda_id, problem_id),
+            )
+            if not concurrent:
+                db.rollback()
+                raise RuntimeError("proposal candidate identity race")
+            candidate_id = int(concurrent["id"])
+            db.commit()
+    grant = db.fetchone(
+        """
+        SELECT id, token_cap
+        FROM resource_grants
+        WHERE agenda_id=? AND idea_id=? AND stage='proposal'
+          AND status='active' AND expires_at > CURRENT_TIMESTAMP
+        ORDER BY id DESC LIMIT 1
+        """,
+        (agenda_id, candidate_id),
+    )
+    return candidate_id, grant
+
+
 def discover_paper_ideas(
     max_problems: int = 8,
     max_papers: int | None = None,
@@ -900,38 +989,18 @@ def discover_paper_ideas(
             flush=True,
         )
     else:
-        print("[PAPER_IDEA] Call 1/3: Problem Sharpening...", flush=True)
-        problem_prompt = _build_problem_prompt(
-            signals,
-            recent_memory=recent_memory,
-            agenda_id=agenda_id,
-        )
-        try:
-            result1, tokens1 = call_llm_json(PROBLEM_SHARPENING_SYSTEM, problem_prompt)
-            total_tokens += tokens1
-            total_calls += 1
-        except Exception as e:
-            if _llm_temporarily_unavailable(e):
-                print(f"[PAPER_IDEA] Problem sharpening skipped: LLM unavailable ({e})", flush=True)
-                return []
-            print(f"[PAPER_IDEA] Problem sharpening failed: {e}", flush=True)
-            return []
-
-        problems = result1.get("problems", [])
-        if not problems:
-            print("[PAPER_IDEA] No problems extracted", flush=True)
-            return []
-
-        research_problems = discover_research_problems(
-            limit=max(max_problems * 2, len(problems)),
+        problems = discover_research_problems(
+            limit=max(max_problems * 2, max_problems),
             agenda_id=agenda_id,
             persist=True,
         )
-        problems = [
-            _attach_research_problem_context(problem, research_problems, fallback_problem_refs)
-            for problem in problems
-            if isinstance(problem, dict)
-        ]
+        if not problems:
+            print(
+                "[PAPER_IDEA] No persisted research problems; proposal LLM "
+                "generation remains fail-closed.",
+                flush=True,
+            )
+            return []
     problem_budget = min(len(problems), max_problems + max(2, max_papers // 2))
     problems = _diversify_problems(problems, problem_budget, recent_memory)
     print(
@@ -947,6 +1016,22 @@ def discover_paper_ideas(
 
         title = problem.get("title", f"Problem {i+1}")
         print(f"[PAPER_IDEA] Processing problem {i+1}/{len(problems)}: {title[:80]}", flush=True)
+        proposal_candidate_id, proposal_grant = _proposal_candidate_and_grant(
+            agenda_id=agenda_id,
+            problem=problem,
+        )
+        if not proposal_grant:
+            print(
+                "[PAPER_IDEA] Proposal candidate "
+                f"{proposal_candidate_id} awaits Frontier/Portfolio grant.",
+                flush=True,
+            )
+            continue
+        proposal_token_cap = max(
+            1,
+            min(16_000, int(proposal_grant.get("token_cap") or 0) // 2),
+        )
+        prompt_version = configured_role_prompt_version("proposer")
 
         # Stage 2: Method Invention
         print(f"[PAPER_IDEA] Call 2/3: Inventing method for '{title[:50]}'...", flush=True)
@@ -980,8 +1065,23 @@ def discover_paper_ideas(
             ),
         }
         method_prompt = _build_method_prompt(problem, solution_signals=solution_signals)
+        method_route: dict = {}
         try:
-            result2, tokens2 = call_llm_json(METHOD_INVENTION_SYSTEM, method_prompt)
+            result2, tokens2, method_route = call_llm_json_for_role(
+                METHOD_INVENTION_SYSTEM,
+                method_prompt,
+                agenda_id=agenda_id,
+                idea_id=proposal_candidate_id,
+                role="proposer",
+                stage="proposal",
+                resource_grant_id=int(proposal_grant["id"]),
+                operation="proposal_method_invention",
+                idempotency_key=(
+                    f"proposal-method:{agenda_id}:{proposal_candidate_id}"
+                ),
+                prompt_version=prompt_version,
+                max_tokens=proposal_token_cap,
+            )
             total_tokens += tokens2
             total_calls += 1
         except Exception as e:
@@ -1020,8 +1120,23 @@ def discover_paper_ideas(
         # Stage 3: Experimental Design
         print(f"[PAPER_IDEA] Call 3/3: Designing experiments for '{method['name']}'...", flush=True)
         exp_prompt = _build_experiment_prompt(problem, method)
+        experiment_route: dict = {}
         try:
-            result3, tokens3 = call_llm_json(EXPERIMENT_DESIGN_SYSTEM, exp_prompt)
+            result3, tokens3, experiment_route = call_llm_json_for_role(
+                EXPERIMENT_DESIGN_SYSTEM,
+                exp_prompt,
+                agenda_id=agenda_id,
+                idea_id=proposal_candidate_id,
+                role="proposer",
+                stage="proposal",
+                resource_grant_id=int(proposal_grant["id"]),
+                operation="proposal_experiment_design",
+                idempotency_key=(
+                    f"proposal-experiment:{agenda_id}:{proposal_candidate_id}"
+                ),
+                prompt_version=prompt_version,
+                max_tokens=proposal_token_cap,
+            )
             total_tokens += tokens3
             total_calls += 1
         except Exception as e:
@@ -1064,6 +1179,8 @@ def discover_paper_ideas(
         )
 
         deep_insight = {
+            "proposal_candidate_id": proposal_candidate_id,
+            "resource_grant_id": int(proposal_grant["id"]),
             "agenda_id": agenda_id,
             "tier": 2,
             "status": "candidate",
@@ -1141,6 +1258,13 @@ def discover_paper_ideas(
             "novelty_status": "unchecked",
             "generation_tokens": total_tokens,
             "llm_calls": total_calls,
+            "prompt_version": prompt_version,
+            "model_version": str(
+                experiment_route.get("model")
+                or method_route.get("model")
+                or ""
+            ),
+            "proposer_route": experiment_route or method_route,
         }
 
         duplicate = _find_existing_tier2_duplicate(deep_insight)

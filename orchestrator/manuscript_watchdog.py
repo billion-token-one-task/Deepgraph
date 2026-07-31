@@ -260,15 +260,21 @@ def audit_ready_submission_bundles(*, limit: int = 50, mark_stale: bool = True) 
         )[:1000]
         bundle_id = int(row["id"])
         manuscript_run_id = int(row["manuscript_run_id"])
-        db.execute("UPDATE submission_bundles SET status='stale' WHERE id=?", (bundle_id,))
+        agenda_id = int(row.get("agenda_id") or 0)
+        if agenda_id <= 0:
+            raise ValueError("manuscript watchdog requires agenda scope")
+        db.execute(
+            "UPDATE submission_bundles SET status='stale' WHERE id=? AND agenda_id=?",
+            (bundle_id, agenda_id),
+        )
         remaining = db.fetchone(
-            "SELECT COUNT(*) AS c FROM submission_bundles WHERE manuscript_run_id=? AND id<>? AND status='ready'",
-            (manuscript_run_id, bundle_id),
+            "SELECT COUNT(*) AS c FROM submission_bundles WHERE manuscript_run_id=? AND agenda_id=? AND id<>? AND status='ready'",
+            (manuscript_run_id, agenda_id, bundle_id),
         )
         if not remaining or int(remaining.get("c") or 0) == 0:
             db.execute(
-                "UPDATE manuscript_runs SET status='stale', updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                (manuscript_run_id,),
+                "UPDATE manuscript_runs SET status='stale', updated_at=CURRENT_TIMESTAMP WHERE id=? AND agenda_id=?",
+                (manuscript_run_id, agenda_id),
             )
             run_id = row.get("experiment_run_id")
             if run_id is not None:
@@ -280,15 +286,15 @@ def audit_ready_submission_bundles(*, limit: int = 50, mark_stale: bool = True) 
                             WHEN status IN ('bundle_ready', 'completed') THEN ?
                             ELSE error_message
                         END
-                    WHERE id=?
+                    WHERE id=? AND agenda_id=?
                     """,
-                    (reason, int(run_id)),
+                    (reason, int(run_id), agenda_id),
                 )
             insight_id = row.get("deep_insight_id")
             if insight_id is not None:
                 db.execute(
-                    "UPDATE deep_insights SET submission_status='stale', updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                    (int(insight_id),),
+                    "UPDATE deep_insights SET submission_status='stale', updated_at=CURRENT_TIMESTAMP WHERE id=? AND agenda_id=?",
+                    (int(insight_id), agenda_id),
                 )
                 db.execute(
                     """
@@ -299,9 +305,9 @@ def audit_ready_submission_bundles(*, limit: int = 50, mark_stale: bool = True) 
                         last_note='Latest ready manuscript bundle failed watchdog audit.',
                         updated_at=CURRENT_TIMESTAMP,
                         last_checked_at=CURRENT_TIMESTAMP
-                    WHERE deep_insight_id=?
+                    WHERE deep_insight_id=? AND agenda_id=?
                     """,
-                    (reason, int(insight_id)),
+                    (reason, int(insight_id), agenda_id),
                 )
         db.commit()
         stale_marked += 1
@@ -320,10 +326,12 @@ def reconcile_stale_manuscript_jobs(*, limit: int = 50) -> int:
     db.init_db()
     rows = db.fetchall(
         """
-        SELECT arj.deep_insight_id, arj.experiment_run_id, mr.id AS manuscript_run_id
+        SELECT arj.agenda_id, arj.deep_insight_id, arj.experiment_run_id,
+               mr.id AS manuscript_run_id
         FROM auto_research_jobs arj
         JOIN manuscript_runs mr
-          ON mr.deep_insight_id = arj.deep_insight_id
+          ON mr.agenda_id = arj.agenda_id
+         AND mr.deep_insight_id = arj.deep_insight_id
          AND (arj.experiment_run_id IS NULL OR mr.experiment_run_id = arj.experiment_run_id)
         WHERE arj.status='bundle_ready'
           AND mr.status='stale'
@@ -343,9 +351,14 @@ def reconcile_stale_manuscript_jobs(*, limit: int = 50) -> int:
                 last_note=?,
                 updated_at=CURRENT_TIMESTAMP,
                 last_checked_at=CURRENT_TIMESTAMP
-            WHERE deep_insight_id=?
+            WHERE deep_insight_id=? AND agenda_id=?
             """,
-            (note, note, int(row["deep_insight_id"])),
+            (
+                note,
+                note,
+                int(row["deep_insight_id"]),
+                int(row["agenda_id"]),
+            ),
         )
     if rows:
         db.commit()

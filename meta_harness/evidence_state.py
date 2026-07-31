@@ -25,6 +25,7 @@ class EvidenceTransitionContext:
     holdout_passed: bool = False
     verdict: str = "inconclusive"
     reviewer_approved: bool = False
+    reviewer_approval: dict | None = None
     raw_artifacts_hash: str = ""
     claim_ledger_hash: str = ""
     benchmark_contract_hash: str = ""

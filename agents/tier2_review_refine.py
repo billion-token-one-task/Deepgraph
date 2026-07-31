@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import subprocess
 import time
@@ -10,9 +11,8 @@ from typing import Any
 
 from agents.evosci_requirements import evosci_binary_path
 from agents.llm_client import (
-    call_llm_json,
-    call_llm_json_with_provider,
-    get_provider_models,
+    call_llm_json_for_role,
+    configured_role_prompt_version,
 )
 from config import (
     TIER2_DEBATE_ROUNDS,
@@ -425,11 +425,35 @@ def _reviewer_context(review_a: dict, review_b: dict, history: list[dict]) -> di
     }
 
 
-def _call_reviewer(system: str, prompt: str, provider_index: int) -> tuple[dict, int, dict]:
-    payload, tokens, provider = call_llm_json_with_provider(
+def _call_role(
+    system: str,
+    prompt: str,
+    *,
+    insight: dict,
+    role: str,
+    operation: str,
+    proposer_route: dict | None = None,
+) -> tuple[dict, int, dict]:
+    required = ("agenda_id", "proposal_candidate_id", "resource_grant_id")
+    missing = [key for key in required if not insight.get(key)]
+    if missing:
+        raise PermissionError(
+            "Tier-2 review requires scoped proposal identity: " + ",".join(missing)
+        )
+    digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+    payload, tokens, provider = call_llm_json_for_role(
         system,
         prompt,
-        provider_index=provider_index,
+        agenda_id=int(insight["agenda_id"]),
+        idea_id=int(insight["proposal_candidate_id"]),
+        role=role,
+        stage="proposal",
+        resource_grant_id=int(insight["resource_grant_id"]),
+        operation=operation,
+        idempotency_key=f"{operation}:{digest}",
+        prompt_version=configured_role_prompt_version(role),
+        proposer_route=proposer_route,
+        max_tokens=4096,
     )
     return payload if isinstance(payload, dict) else {}, tokens, provider
 
@@ -456,30 +480,33 @@ def debate_and_refine_tier2_idea(
 ) -> tuple[dict, dict]:
     """Run reviewer debate and return (updated_insight, metadata)."""
     rounds = max(0, int(TIER2_DEBATE_ROUNDS if rounds is None else rounds))
-    providers = get_provider_models()
-    if rounds and len(providers) < 2:
-        raise RuntimeError(
-            "Tier-2 evaluator debate requires two independently routed providers; "
-            "manual review required"
-        )
-    if rounds and (
-        providers[0].get("name") == providers[1].get("name")
-        and providers[0].get("model_family") == providers[1].get("model_family")
-    ):
-        raise RuntimeError(
-            "Tier-2 evaluator routes are not independent; manual review required"
-        )
-    reviewer_a_provider = 0
-    reviewer_b_provider = 1
     history: list[dict] = []
+    observed_routes: list[dict] = []
     total_tokens = 0
     updated = dict(insight)
+    proposer_route = (
+        insight.get("proposer_route")
+        if isinstance(insight.get("proposer_route"), dict)
+        else None
+    )
+    if rounds and not proposer_route:
+        raise PermissionError(
+            "Tier-2 review requires the actual proposer route for independence checks"
+        )
 
     for round_idx in range(1, rounds + 1):
         print(f"[TIER2_DEBATE] Round {round_idx}/{rounds}: reviewer A", flush=True)
         prompt_a = _review_prompt(updated, evosci_review, history, round_idx)
-        review_a, tokens_a, provider_a = _call_reviewer(REVIEWER_A_SYSTEM, prompt_a, reviewer_a_provider)
+        review_a, tokens_a, provider_a = _call_role(
+            REVIEWER_A_SYSTEM,
+            prompt_a,
+            insight=updated,
+            role="evaluator",
+            operation=f"tier2_reviewer_a_round_{round_idx}",
+            proposer_route=proposer_route,
+        )
         total_tokens += tokens_a
+        observed_routes.append(provider_a)
 
         print(f"[TIER2_DEBATE] Round {round_idx}/{rounds}: reviewer B", flush=True)
         prompt_b = json.dumps(
@@ -493,8 +520,16 @@ def debate_and_refine_tier2_idea(
             ensure_ascii=False,
             indent=2,
         )
-        review_b, tokens_b, provider_b = _call_reviewer(REVIEWER_B_SYSTEM, prompt_b, reviewer_b_provider)
+        review_b, tokens_b, provider_b = _call_role(
+            REVIEWER_B_SYSTEM,
+            prompt_b,
+            insight=updated,
+            role="reviewer",
+            operation=f"tier2_reviewer_b_round_{round_idx}",
+            proposer_route=proposer_route,
+        )
         total_tokens += tokens_b
+        observed_routes.append(provider_b)
 
         print(f"[TIER2_DEBATE] Round {round_idx}/{rounds}: inventor/refactorer", flush=True)
         inventor_prompt = json.dumps(
@@ -508,8 +543,15 @@ def debate_and_refine_tier2_idea(
             ensure_ascii=False,
             indent=2,
         )
-        inventor, tokens_i, provider_i = _call_reviewer(INVENTOR_SYSTEM, inventor_prompt, reviewer_a_provider)
+        inventor, tokens_i, provider_i = _call_role(
+            INVENTOR_SYSTEM,
+            inventor_prompt,
+            insight=updated,
+            role="proposer",
+            operation=f"tier2_inventor_round_{round_idx}",
+        )
         total_tokens += tokens_i
+        observed_routes.append(provider_i)
 
         print(f"[TIER2_DEBATE] Round {round_idx}/{rounds}: refiner", flush=True)
         refine_prompt = json.dumps(
@@ -524,8 +566,15 @@ def debate_and_refine_tier2_idea(
             ensure_ascii=False,
             indent=2,
         )
-        refined, tokens_r = call_llm_json(REFINER_SYSTEM, refine_prompt)
+        refined, tokens_r, provider_r = _call_role(
+            REFINER_SYSTEM,
+            refine_prompt,
+            insight=updated,
+            role="proposer",
+            operation=f"tier2_refiner_round_{round_idx}",
+        )
         total_tokens += tokens_r
+        observed_routes.append(provider_r)
         refined_payload = refined if isinstance(refined, dict) else {}
         updated = _apply_refinement(updated, refined_payload)
         print(
@@ -545,6 +594,7 @@ def debate_and_refine_tier2_idea(
                     "A": {"name": provider_a.get("name"), "model": provider_a.get("model")},
                     "B": {"name": provider_b.get("name"), "model": provider_b.get("model")},
                     "inventor": {"name": provider_i.get("name"), "model": provider_i.get("model")},
+                    "refiner": {"name": provider_r.get("name"), "model": provider_r.get("model")},
                 },
             }
         )
@@ -553,8 +603,8 @@ def debate_and_refine_tier2_idea(
         "rounds_requested": rounds,
         "rounds_completed": len(history),
         "tokens": total_tokens,
-        "providers": providers,
-        "same_provider_fallback": len(providers) < 2,
+        "routes": observed_routes,
+        "same_provider_fallback": False,
         "history_preview": history[-3:],
     }
     return updated, metadata

@@ -203,6 +203,14 @@ max_changed_lines = 200
 required_suites = ["held_in", "held_out", "canary"]
 require_reviewer_approval = true
 
+[reviewer_approval]
+# Non-sensitive key-id -> secret reference manifest lives in the named
+# environment variable. Example value:
+# {"release-reviewer-1":"env:DEEPGRAPH_RELEASE_REVIEWER_1_SECRET"}
+keys_manifest_ref = "env:DEEPGRAPH_REVIEWER_APPROVAL_KEYS_JSON"
+max_age_seconds = 604800
+signature_algorithm = "hmac-sha256-v1"
+
 [failure_policy]
 provider_unavailable = "fail_closed_or_manual"
 compute_unavailable = "failed"

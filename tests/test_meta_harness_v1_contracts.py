@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import hmac
 import unittest
+from unittest import mock
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -40,6 +42,12 @@ from meta_harness.harness_evolution import (
     validate_patch,
 )
 from meta_harness.portfolio import PortfolioPolicy, decide_portfolio
+from meta_harness.reviewer_approval import (
+    ReviewerApproval,
+    ReviewerApprovalError,
+    ReviewerApprovalVerifier,
+    harness_candidate_subject,
+)
 
 
 def _estimate(value: float, *, lower: float = 0.0, upper: float = 1.0) -> Estimate:
@@ -378,6 +386,75 @@ class HarnessIsolationTests(unittest.TestCase):
         ]
         report = evaluate_candidate(runs)
         self.assertEqual(report.decision, "awaiting_approval")
+
+    def test_harness_approval_is_signed_and_subject_bound(self):
+        runs = [
+            EvaluationRun(
+                agenda_id=11,
+                suite=name,
+                status="passed",
+                evaluator_ref=f"readonly:{name}",
+                evaluator_hash=f"{name}-hash",
+                artifact_manifest={"files": ["result"]},
+            )
+            for name in ("held_in", "held_out", "canary")
+        ]
+        secret = b"isolated-test-secret"
+        subject = harness_candidate_subject(
+            agenda_id=11,
+            candidate_id=41,
+            patch_hash="a" * 64,
+        )
+        unsigned = ReviewerApproval(
+            reviewer_id="reviewer-1",
+            key_id="test-key",
+            purpose="harness_upgrade",
+            subject=subject,
+            issued_at=datetime.now(timezone.utc).isoformat(),
+            signature="pending",
+        )
+        approval = ReviewerApproval(
+            **{
+                **unsigned.__dict__,
+                "signature": hmac.new(
+                    secret,
+                    unsigned.signing_payload(),
+                    hashlib.sha256,
+                ).hexdigest(),
+            }
+        )
+        verifier = ReviewerApprovalVerifier(
+            {"test-key": "env:DEEPGRAPH_TEST_REVIEWER_SECRET"}
+        )
+        with mock.patch.dict(
+            "os.environ",
+            {"DEEPGRAPH_TEST_REVIEWER_SECRET": secret.decode()},
+        ):
+            report = evaluate_candidate(
+                runs,
+                candidate_id=41,
+                patch_hash="a" * 64,
+                reviewer_approval=approval,
+                approval_verifier=verifier,
+            )
+        self.assertEqual(report.decision, "approved")
+        self.assertEqual(report.reviewer, "reviewer-1")
+
+        wrong_subject = ReviewerApproval(
+            **{**approval.__dict__, "subject": subject + ":other"}
+        )
+        with mock.patch.dict(
+            "os.environ",
+            {"DEEPGRAPH_TEST_REVIEWER_SECRET": secret.decode()},
+        ):
+            with self.assertRaises(ReviewerApprovalError):
+                evaluate_candidate(
+                    runs,
+                    candidate_id=41,
+                    patch_hash="a" * 64,
+                    reviewer_approval=wrong_subject,
+                    approval_verifier=verifier,
+                )
 
     def test_cross_agenda_evaluations_are_rejected(self):
         runs = [

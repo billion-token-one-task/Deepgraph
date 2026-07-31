@@ -336,7 +336,7 @@ def _call_with_provider(system: str, user: str, provider_name: str = None) -> tu
                 limiter = _rate_limiters.get(p["name"])
                 if limiter:
                     limiter.wait()
-                text, tokens, _, _ = _call_provider(p, system, user, 16_000)
+                text, tokens, _, _, _ = _call_provider(p, system, user, 16_000)
                 import re
                 text = text.strip()
                 text = re.sub(r'<think>[\s\S]*?</think>', '', text).strip()
@@ -602,6 +602,83 @@ def store_deep_insight(insight: dict) -> int:
     insight.setdefault("prompt_version", insight.get("prompt_version") or PROMPT_VERSION)
     insight.setdefault("model_version", insight.get("model_version") or LLM_MODEL)
     insight.setdefault("outcome", "pending")
+    proposal_candidate_id = int(insight.get("proposal_candidate_id") or 0)
+    if proposal_candidate_id > 0:
+        cursor = db.execute(
+            """
+            UPDATE deep_insights
+            SET tier=?, status=?, title=?, problem_statement=?,
+                existing_weakness=?, proposed_method=?, experimental_plan=?,
+                related_work_positioning=?, supporting_papers=?,
+                source_node_ids=?, evidence_summary=?, signal_mix=?,
+                mechanism_type=?, evidence_packet=?, evidence_plan=?,
+                experimentability=?, resource_class=?, submission_status=?,
+                novelty_status=?, novelty_report=?, generation_tokens=?,
+                llm_calls=?, generation_run_id=?, source_signal_ids=?,
+                source_signal_refs=?, source_paper_ids=?, prompt_version=?,
+                model_version=?, exemplars_used=?, token_cost_usd=?,
+                wall_clock_seconds=?, outcome=?, research_problem_id=?,
+                updated_at=CURRENT_TIMESTAMP
+            WHERE id=? AND agenda_id=? AND status='proposal_pending'
+            """,
+            (
+                insight.get("tier", 2),
+                insight.get("status", "candidate"),
+                insight["title"],
+                insight.get("problem_statement"),
+                insight.get("existing_weakness"),
+                _jsonify(insight.get("proposed_method")),
+                _jsonify(insight.get("experimental_plan")),
+                _jsonify(insight.get("related_work_positioning")),
+                _jsonify(insight.get("supporting_papers", [])),
+                _jsonify(insight.get("source_node_ids", [])),
+                insight.get("evidence_summary"),
+                _jsonify(insight.get("signal_mix")),
+                insight.get("mechanism_type"),
+                _jsonify(insight.get("evidence_packet")),
+                _jsonify(insight.get("evidence_plan")),
+                insight.get("experimentability"),
+                insight.get("resource_class"),
+                insight.get("submission_status"),
+                insight.get("novelty_status", "unchecked"),
+                _jsonify(insight.get("novelty_report")),
+                insight.get("generation_tokens", 0),
+                insight.get("llm_calls", 0),
+                insight.get("generation_run_id"),
+                _jsonify(insight.get("source_signal_ids")),
+                _jsonify(insight.get("source_signal_refs")),
+                _jsonify(insight.get("source_paper_ids")),
+                insight.get("prompt_version"),
+                insight.get("model_version"),
+                _jsonify(insight.get("exemplars_used")),
+                insight.get("token_cost_usd"),
+                insight.get("wall_clock_seconds"),
+                insight.get("outcome", "pending"),
+                insight.get("research_problem_id"),
+                proposal_candidate_id,
+                agenda_id,
+            ),
+        )
+        if int(getattr(cursor, "rowcount", 0) or 0) != 1:
+            db.rollback()
+            raise RuntimeError(
+                "proposal candidate promotion scope/status mismatch"
+            )
+        rid = proposal_candidate_id
+        db.commit()
+        db.emit_pipeline_event(
+            "deep_insight_promoted",
+            {
+                "insight_id": rid,
+                "agenda_id": agenda_id,
+                "research_problem_id": insight.get("research_problem_id"),
+                "resource_grant_id": insight.get("resource_grant_id"),
+            },
+            entity_type="deep_insight",
+            entity_id=str(rid),
+            dedupe_key=f"deep_insight_promoted:{agenda_id}:{rid}",
+        )
+        return rid
     rid = db.insert_returning_id(
         """INSERT INTO deep_insights
            (agenda_id, tier, status, title, formal_structure, field_a, field_b,

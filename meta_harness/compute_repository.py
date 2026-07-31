@@ -45,6 +45,7 @@ _TRANSITIONS = {
     "cancel_requested": {"cancelled", "failed", "timed_out"},
     "collecting": {"succeeded", "failed", "timed_out"},
     "submission_unknown": set(),
+    "usage_unknown": set(),
     "succeeded": set(),
     "failed": set(),
     "cancelled": set(),
@@ -90,6 +91,20 @@ def _manifest_requirement_names(manifest: Mapping[str, Any]) -> set[str]:
 
 
 class ComputeJobRepository:
+    def record_id_for_job(self, job: ComputeJob) -> int:
+        job.validate()
+        _require_postgresql()
+        row = db.fetchone(
+            """
+            SELECT id FROM compute_jobs_v1
+            WHERE backend_kind=? AND backend_job_id=?
+            """,
+            (job.backend_kind, job.backend_job_id),
+        )
+        if not row:
+            raise ComputeBackendError("durable compute job not found")
+        return int(row["id"])
+
     def _claim_from_row(self, row: dict, *, is_new: bool) -> ComputeClaim:
         return ComputeClaim(
             record_id=int(row["id"]),
@@ -275,13 +290,14 @@ class ComputeJobRepository:
                 UPDATE compute_jobs_v1
                 SET backend_job_id=?, status=?, heartbeat_at=?,
                     failure_reason=NULL, updated_at=CURRENT_TIMESTAMP
-                WHERE id=? AND status='submitting'
+                WHERE id=? AND agenda_id=? AND status='submitting'
                 """,
                 (
                     job.backend_job_id,
                     job.status,
                     job.heartbeat_at or _now().isoformat(),
                     record_id,
+                    int(row["agenda_id"]),
                 ),
             )
             _expect_one(cursor, operation="bind_submitted_job")
@@ -295,14 +311,20 @@ class ComputeJobRepository:
             raise ComputeBackendError("submission uncertainty reason is required")
         _require_postgresql()
         try:
+            row = db.fetchone(
+                "SELECT agenda_id FROM compute_jobs_v1 WHERE id=? FOR UPDATE",
+                (int(record_id),),
+            )
+            if not row:
+                raise ComputeBackendError("durable compute job not found")
             cursor = db.execute(
                 """
                 UPDATE compute_jobs_v1
                 SET status='submission_unknown', failure_reason=?,
                     updated_at=CURRENT_TIMESTAMP
-                WHERE id=? AND status='submitting'
+                WHERE id=? AND agenda_id=? AND status='submitting'
                 """,
-                (reason, int(record_id)),
+                (reason, int(record_id), int(row["agenda_id"])),
             )
             _expect_one(cursor, operation="mark_submission_unknown")
             db.commit()
@@ -313,6 +335,10 @@ class ComputeJobRepository:
     def record_backend_state(self, job: ComputeJob) -> str:
         """Persist a truthful backend state; success first enters collecting."""
         job.validate()
+        if job.status in {"failed", "cancelled", "timed_out"}:
+            raise ComputeBackendError(
+                "terminal backend state requires durable usage settlement"
+            )
         _require_postgresql()
         try:
             row = db.fetchone(
@@ -341,19 +367,92 @@ class ComputeJobRepository:
                 UPDATE compute_jobs_v1
                 SET status=?, heartbeat_at=?, failure_reason=?,
                     updated_at=CURRENT_TIMESTAMP
-                WHERE id=? AND status=?
+                WHERE id=? AND agenda_id=? AND status=?
                 """,
                 (
                     target,
                     job.heartbeat_at or _now().isoformat(),
                     failure_reason,
                     int(row["id"]),
+                    int(row["agenda_id"]),
                     current,
                 ),
             )
             _expect_one(cursor, operation="record_backend_state")
             db.commit()
             return target
+        except Exception:
+            db.rollback()
+            raise
+
+    def finalize_terminal(
+        self,
+        job: ComputeJob,
+        *,
+        usage: UsageAccounting,
+    ) -> None:
+        """Persist measured usage and a truthful non-success terminal state."""
+        job.validate()
+        if job.status not in {"failed", "cancelled", "timed_out"}:
+            raise ComputeBackendError(
+                "finalize_terminal requires a non-success terminal job"
+            )
+        usage.validate()
+        _require_postgresql()
+        try:
+            row = db.fetchone(
+                """
+                SELECT j.id, j.agenda_id, j.status, j.requested_gpu_hours,
+                       g.max_gpu_hours
+                FROM compute_jobs_v1 AS j
+                JOIN resource_grants AS g ON g.id=j.resource_grant_id
+                WHERE j.backend_kind=? AND j.backend_job_id=? FOR UPDATE
+                """,
+                (job.backend_kind, job.backend_job_id),
+            )
+            if not row:
+                raise ComputeBackendError("durable compute job not found")
+            current = str(row.get("status") or "")
+            if job.status not in _TRANSITIONS.get(current, set()):
+                raise ComputeBackendError(
+                    f"invalid compute state transition:{current}->{job.status}"
+                )
+            requested_cap = float(row.get("requested_gpu_hours") or 0)
+            grant_cap = float(row.get("max_gpu_hours") or 0)
+            if usage.gpu_hours > requested_cap or usage.gpu_hours > grant_cap:
+                raise ComputeBackendError(
+                    "reported GPU usage exceeds request or ResourceGrant cap"
+                )
+            failure_reason = (
+                job.failure_reason
+                or f"backend_{job.status}"
+            )
+            cursor = db.execute(
+                """
+                UPDATE compute_jobs_v1
+                SET status=?, heartbeat_at=?, failure_reason=?, usage_json=?,
+                    updated_at=CURRENT_TIMESTAMP
+                WHERE id=? AND agenda_id=? AND status=?
+                """,
+                (
+                    job.status,
+                    job.heartbeat_at or _now().isoformat(),
+                    failure_reason,
+                    _dump(
+                        {
+                            "wall_seconds": usage.wall_seconds,
+                            "gpu_hours": usage.gpu_hours,
+                            "cpu_core_hours": usage.cpu_core_hours,
+                            "backend_report": usage.backend_report,
+                        }
+                    ),
+                    int(row["id"]),
+                    int(row["agenda_id"]),
+                    current,
+                ),
+            )
+            _expect_one(cursor, operation="finalize_terminal")
+            db.commit()
         except Exception:
             db.rollback()
             raise
@@ -374,7 +473,8 @@ class ComputeJobRepository:
         try:
             row = db.fetchone(
                 """
-                SELECT j.status, j.requested_gpu_hours, g.max_gpu_hours,
+                SELECT j.agenda_id, j.status, j.requested_gpu_hours,
+                       g.max_gpu_hours,
                        g.artifact_requirements_json
                 FROM compute_jobs_v1 AS j
                 JOIN resource_grants AS g ON g.id=j.resource_grant_id
@@ -404,7 +504,7 @@ class ComputeJobRepository:
                 UPDATE compute_jobs_v1
                 SET status='succeeded', artifact_manifest_json=?, usage_json=?,
                     failure_reason=NULL, updated_at=CURRENT_TIMESTAMP
-                WHERE id=? AND status='collecting'
+                WHERE id=? AND agenda_id=? AND status='collecting'
                 """,
                 (
                     _dump(artifacts.manifest),
@@ -417,6 +517,7 @@ class ComputeJobRepository:
                         }
                     ),
                     record_id,
+                    int(row["agenda_id"]),
                 ),
             )
             _expect_one(cursor, operation="finalize_success")
@@ -425,8 +526,12 @@ class ComputeJobRepository:
             db.rollback()
             raise
 
-    def reconcile_expired(self) -> dict[str, int]:
+    def reconcile_expired(self, *, agenda_id: int) -> dict[str, int]:
         """Fail closed after restart; never resubmit or mark success."""
+        if int(agenda_id or 0) <= 0:
+            raise ComputeBackendError(
+                "compute recovery requires an explicit agenda scope"
+            )
         _require_postgresql()
         try:
             unknown = db.execute(
@@ -435,26 +540,34 @@ class ComputeJobRepository:
                 SET status='submission_unknown',
                     failure_reason='process_restarted_before_submission_bind',
                     updated_at=CURRENT_TIMESTAMP
-                WHERE status='submitting' AND timeout_at <= CURRENT_TIMESTAMP
+                WHERE agenda_id=? AND status='submitting'
+                  AND timeout_at <= CURRENT_TIMESTAMP
                 """
+                ,
+                (int(agenda_id),),
             )
-            timed_out = db.execute(
+            usage_unknown = db.execute(
                 """
                 UPDATE compute_jobs_v1
-                SET status='timed_out',
-                    failure_reason='durable_compute_timeout',
+                SET status='usage_unknown',
+                    failure_reason='durable_compute_timeout_usage_unknown',
                     updated_at=CURRENT_TIMESTAMP
                 WHERE status IN ('submitted', 'running', 'cancel_requested',
                                  'collecting')
+                  AND agenda_id=?
                   AND timeout_at <= CURRENT_TIMESTAMP
                 """
+                ,
+                (int(agenda_id),),
             )
             db.commit()
             return {
                 "submission_unknown": int(
                     getattr(unknown, "rowcount", 0) or 0
                 ),
-                "timed_out": int(getattr(timed_out, "rowcount", 0) or 0),
+                "usage_unknown": int(
+                    getattr(usage_unknown, "rowcount", 0) or 0
+                ),
             }
         except Exception:
             db.rollback()
@@ -475,7 +588,8 @@ class ComputeJobRepository:
                    backend_job_id, idempotency_key, status, heartbeat_at,
                    timeout_at, failure_reason
             FROM compute_jobs_v1
-            WHERE status IN ('submission_unknown', 'collecting'){scope}
+            WHERE status IN ('submission_unknown', 'collecting',
+                             'usage_unknown'){scope}
             ORDER BY updated_at ASC, id ASC
             """,
             params,

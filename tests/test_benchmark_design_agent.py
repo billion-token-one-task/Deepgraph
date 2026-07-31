@@ -10,6 +10,13 @@ from agents.experiment_review import review_experiment_candidate
 
 
 class BenchmarkDesignAgentTests(unittest.TestCase):
+    llm_scope = {
+        "agenda_id": 1,
+        "idea_id": 2,
+        "resource_grant_id": 3,
+        "stage": "experiment_forge",
+    }
+
     def test_legal_claim_blocks_generic_gsm8k_substitution(self):
         parsed = {
             "id": 4,
@@ -46,8 +53,8 @@ class BenchmarkDesignAgentTests(unittest.TestCase):
             "primary_metric": {"name": "macro_f1", "direction": "higher"},
             "blockers": [],
         }
-        with mock.patch("agents.benchmark_design_agent.call_llm_json", return_value=(llm_contract, 32)):
-            contract = build_benchmark_design_contract(parsed, method, plan)
+        with mock.patch("agents.benchmark_design_agent.call_llm_json_for_role", return_value=(llm_contract, 32, {})):
+            contract = build_benchmark_design_contract(parsed, method, plan, llm_scope=self.llm_scope)
 
         self.assertEqual(contract["domain"], "legal_nlp")
         self.assertEqual(contract["status"], DESIGN_STATUS_RESOLVED)
@@ -91,8 +98,8 @@ class BenchmarkDesignAgentTests(unittest.TestCase):
             "primary_metric": {"name": "exact_match", "direction": "higher"},
             "blockers": [],
         }
-        with mock.patch("agents.benchmark_design_agent.call_llm_json", return_value=(llm_contract, 28)):
-            contract = build_benchmark_design_contract(parsed, method, plan)
+        with mock.patch("agents.benchmark_design_agent.call_llm_json_for_role", return_value=(llm_contract, 28, {})):
+            contract = build_benchmark_design_contract(parsed, method, plan, llm_scope=self.llm_scope)
 
         self.assertEqual(contract["domain"], "math_reasoning_prm")
         self.assertEqual(contract["status"], DESIGN_STATUS_RESOLVED)
@@ -130,8 +137,8 @@ class BenchmarkDesignAgentTests(unittest.TestCase):
             "primary_metric": {"name": "exact_match", "direction": "higher"},
             "blockers": [],
         }
-        with mock.patch("agents.benchmark_design_agent.call_llm_json", return_value=(llm_contract, 28)):
-            contract = build_benchmark_design_contract(parsed, method, {"datasets": [{"name": "GSM8K"}]})
+        with mock.patch("agents.benchmark_design_agent.call_llm_json_for_role", return_value=(llm_contract, 28, {})):
+            contract = build_benchmark_design_contract(parsed, method, {"datasets": [{"name": "GSM8K"}]}, llm_scope=self.llm_scope)
 
         self.assertEqual(contract["status"], "literature_review_required")
         self.assertIn("required domain evidence axis", " ".join(contract["blockers"]))
@@ -145,8 +152,8 @@ class BenchmarkDesignAgentTests(unittest.TestCase):
         method = {"name": "PRM Bellman", "definition": "Use process rewards."}
         plan = {"datasets": [{"name": "GSM8K"}]}
 
-        with mock.patch("agents.benchmark_design_agent.call_llm_json", side_effect=RuntimeError("no route")):
-            contract = build_benchmark_design_contract(parsed, method, plan)
+        with mock.patch("agents.benchmark_design_agent.call_llm_json_for_role", side_effect=RuntimeError("no route")):
+            contract = build_benchmark_design_contract(parsed, method, plan, llm_scope=self.llm_scope)
 
         self.assertEqual(contract["status"], "literature_review_required")
         self.assertIn("LLM", " ".join(contract["blockers"]))
@@ -169,8 +176,8 @@ class BenchmarkDesignAgentTests(unittest.TestCase):
             "primary_metric": {"name": "attack_success_rate", "direction": "lower"},
             "blockers": [],
         }
-        with mock.patch("agents.benchmark_design_agent.call_llm_json", return_value=(llm_contract, 12)):
-            contract = build_benchmark_design_contract(parsed, method, {"datasets": [{"name": "AgentDojo"}]})
+        with mock.patch("agents.benchmark_design_agent.call_llm_json_for_role", return_value=(llm_contract, 12, {})):
+            contract = build_benchmark_design_contract(parsed, method, {"datasets": [{"name": "AgentDojo"}]}, llm_scope=self.llm_scope)
 
         self.assertEqual(contract["status"], "literature_review_required")
         joined = " ".join(contract["blockers"])
@@ -205,7 +212,7 @@ class BenchmarkDesignAgentTests(unittest.TestCase):
             "primary_metric": {"name": "success_rate", "direction": "higher"},
             "blockers": [],
         }
-        with mock.patch("agents.benchmark_design_agent.call_llm_json", return_value=(llm_contract, 41)):
+        with mock.patch("agents.benchmark_design_agent.call_llm_json_for_role", return_value=(llm_contract, 41, {})):
             enriched = experiment_forge._autofill_experiment_contracts(
                 {
                     "id": 97,
@@ -220,7 +227,8 @@ class BenchmarkDesignAgentTests(unittest.TestCase):
                         "baselines": [{"name": "Diffusion Policy"}, {"name": "SAC"}],
                         "metrics": {"primary": "success_rate"},
                     },
-                }
+                },
+                llm_scope=self.llm_scope,
             )
 
         plan = enriched["experimental_plan"]

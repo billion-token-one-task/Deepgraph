@@ -52,6 +52,7 @@ from agents.evosci_requirements import (
 from config import (
     AUTO_RESEARCH_INTERVAL_SECONDS,
     AUTO_RESEARCH_MAX_ACTIVE,
+    GPU_JOB_TIMEOUT_SECONDS,
     REQUIRE_EVOSCIENTIST_FOR_EXPERIMENTS,
 )
 from db import database as db
@@ -69,6 +70,7 @@ from orchestrator.benchmark_completion import (
     schedule_benchmark_completion,
 )
 from orchestrator import gpu_scheduler
+from orchestrator import meta_compute_runtime
 from orchestrator import manuscript_watchdog
 from orchestrator.pipeline import log_event
 
@@ -336,9 +338,16 @@ def _annotate_unrecovered_harness_job(row: dict) -> bool:
             last_error=?,
             last_note=?,
             updated_at=CURRENT_TIMESTAMP
-        WHERE id=?
+        WHERE id=? AND agenda_id=?
         """,
-        (payload, dataset_refs_payload, new_error, new_note, int(row["id"])),
+        (
+            payload,
+            dataset_refs_payload,
+            new_error,
+            new_note,
+            int(row["id"]),
+            int(row["agenda_id"]),
+        ),
     )
     db.commit()
     if task:
@@ -547,7 +556,9 @@ def repair_benchmark_harness_design_jobs(limit: int = 5) -> int:
                arj.last_note AS auto_last_note, arj.last_error AS auto_last_error,
                arj.resource_grant_id AS auto_resource_grant_id
         FROM benchmark_harness_jobs bhj
-        LEFT JOIN auto_research_jobs arj ON arj.deep_insight_id=bhj.deep_insight_id
+        LEFT JOIN auto_research_jobs arj
+          ON arj.agenda_id=bhj.agenda_id
+         AND arj.deep_insight_id=bhj.deep_insight_id
         WHERE bhj.status='harness_required'
           AND COALESCE(arj.status, '')='harness_required'
         ORDER BY bhj.updated_at ASC, bhj.id ASC
@@ -580,7 +591,7 @@ def repair_benchmark_harness_design_jobs(limit: int = 5) -> int:
                 last_error=NULL,
                 last_note=?,
                 updated_at=CURRENT_TIMESTAMP
-            WHERE id=? AND status='harness_required'
+            WHERE id=? AND agenda_id=? AND status='harness_required'
             """,
             (
                 BENCHMARK_HARNESS_DESIGN_REPAIR_QUEUED_STATUS,
@@ -589,6 +600,7 @@ def repair_benchmark_harness_design_jobs(limit: int = 5) -> int:
                     f"Owner={loop_state.get('owner') or 'Benchmark Manager'}; status={loop_status}."
                 ),
                 int(row["id"]),
+                int(row["agenda_id"]),
             ),
         )
         db.commit()
@@ -628,9 +640,12 @@ def archive_inactive_benchmark_harness_jobs(limit: int = 50) -> int:
 
     rows = db.fetchall(
         """
-        SELECT bhj.id, bhj.deep_insight_id, arj.status AS auto_status, arj.stage AS auto_stage
+        SELECT bhj.id, bhj.agenda_id, bhj.deep_insight_id,
+               arj.status AS auto_status, arj.stage AS auto_stage
         FROM benchmark_harness_jobs bhj
-        JOIN auto_research_jobs arj ON arj.deep_insight_id=bhj.deep_insight_id
+        JOIN auto_research_jobs arj
+          ON arj.agenda_id=bhj.agenda_id
+         AND arj.deep_insight_id=bhj.deep_insight_id
         WHERE bhj.status='harness_required'
           AND arj.status IN (?, ?, ?)
         ORDER BY bhj.updated_at ASC, bhj.id ASC
@@ -652,9 +667,9 @@ def archive_inactive_benchmark_harness_jobs(limit: int = 50) -> int:
                 last_error=NULL,
                 last_note=?,
                 updated_at=CURRENT_TIMESTAMP
-            WHERE id=? AND status='harness_required'
+            WHERE id=? AND agenda_id=? AND status='harness_required'
             """,
-            (note, int(row["id"])),
+            (note, int(row["id"]), int(row["agenda_id"])),
         )
         log_event(
             "auto_research",
@@ -737,9 +752,9 @@ def _run_benchmark_harness_design_repair_job(insight_id: int) -> bool:
             """
             UPDATE benchmark_harness_jobs
             SET status='harness_required', updated_at=CURRENT_TIMESTAMP
-            WHERE id=?
+            WHERE id=? AND agenda_id=?
             """,
-            (int(row["id"]),),
+            (int(row["id"]), int(row["agenda_id"])),
         )
         db.commit()
         _upsert_job(
@@ -764,9 +779,9 @@ def _run_benchmark_harness_design_repair_job(insight_id: int) -> bool:
             """
             UPDATE benchmark_harness_jobs
             SET status='harness_required', updated_at=CURRENT_TIMESTAMP
-            WHERE id=?
+            WHERE id=? AND agenda_id=?
             """,
-            (int(row["id"]),),
+            (int(row["id"]), int(row["agenda_id"])),
         )
         db.commit()
         _upsert_job(
@@ -804,7 +819,7 @@ def _run_benchmark_harness_design_repair_job(insight_id: int) -> bool:
                 last_error=?,
                 last_note=?,
                 updated_at=CURRENT_TIMESTAMP
-            WHERE id=?
+            WHERE id=? AND agenda_id=?
             """,
             (
                 f"{tag} {repair['error']}",
@@ -813,6 +828,7 @@ def _run_benchmark_harness_design_repair_job(insight_id: int) -> bool:
                     f"Owner={loop_state.get('owner') or 'Benchmark Manager'}; status={loop_status}."
                 ),
                 int(row["id"]),
+                int(row["agenda_id"]),
             ),
         )
         db.commit()
@@ -847,12 +863,13 @@ def _run_benchmark_harness_design_repair_job(insight_id: int) -> bool:
             last_error=NULL,
             last_note=?,
             updated_at=CURRENT_TIMESTAMP
-        WHERE id=?
+        WHERE id=? AND agenda_id=?
         """,
         (
             BENCHMARK_HARNESS_DESIGN_REPAIRED_STATUS,
             f"{tag} {repair.get('repair_summary') or 'Experiment plan repaired from harness blockers.'} Requeued formal review.",
             int(row["id"]),
+            int(row["agenda_id"]),
         ),
     )
     db.commit()
@@ -891,7 +908,9 @@ def process_benchmark_harness_jobs(limit: int = 10) -> int:
         """
         SELECT bhj.*, arj.resource_class, arj.status AS auto_status, arj.stage AS auto_stage
         FROM benchmark_harness_jobs bhj
-        LEFT JOIN auto_research_jobs arj ON arj.deep_insight_id=bhj.deep_insight_id
+        LEFT JOIN auto_research_jobs arj
+          ON arj.agenda_id=bhj.agenda_id
+         AND arj.deep_insight_id=bhj.deep_insight_id
         WHERE bhj.status='harness_required'
           AND COALESCE(arj.status, '')='harness_required'
         ORDER BY bhj.updated_at ASC, bhj.id ASC
@@ -928,8 +947,12 @@ def process_benchmark_harness_jobs(limit: int = 10) -> int:
             continue
         try:
             db.execute(
-                "UPDATE deep_insights SET experimental_plan=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                (json.dumps(repaired, ensure_ascii=False, default=str), insight_id),
+                "UPDATE deep_insights SET experimental_plan=?, updated_at=CURRENT_TIMESTAMP WHERE id=? AND agenda_id=?",
+                (
+                    json.dumps(repaired, ensure_ascii=False, default=str),
+                    insight_id,
+                    int(row["agenda_id"]),
+                ),
             )
             db.execute(
                 """
@@ -938,9 +961,9 @@ def process_benchmark_harness_jobs(limit: int = 10) -> int:
                     last_error=NULL,
                     last_note='Benchmark harness consumer recovered a generated-runner-supported subset; custom formal targets remain deferred.',
                     updated_at=CURRENT_TIMESTAMP
-                WHERE id=?
+                WHERE id=? AND agenda_id=?
                 """,
-                (int(row["id"]),),
+                (int(row["id"]), int(row["agenda_id"])),
             )
             db.commit()
             _upsert_job(
@@ -1020,7 +1043,9 @@ def recover_partially_supported_harness_jobs(limit: int = 25) -> int:
         """
         SELECT di.*, arj.resource_class, arj.experiment_run_id
         FROM auto_research_jobs arj
-        JOIN deep_insights di ON di.id = arj.deep_insight_id
+        JOIN deep_insights di
+          ON di.agenda_id=arj.agenda_id
+         AND di.id = arj.deep_insight_id
         WHERE arj.status=? AND arj.stage=?
         ORDER BY arj.updated_at ASC
         LIMIT ?
@@ -1038,8 +1063,12 @@ def recover_partially_supported_harness_jobs(limit: int = 25) -> int:
         if not repaired:
             continue
         db.execute(
-            "UPDATE deep_insights SET experimental_plan=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-            (json.dumps(repaired, ensure_ascii=False, default=str), insight_id),
+            "UPDATE deep_insights SET experimental_plan=?, updated_at=CURRENT_TIMESTAMP WHERE id=? AND agenda_id=?",
+            (
+                json.dumps(repaired, ensure_ascii=False, default=str),
+                insight_id,
+                int(row["agenda_id"]),
+            ),
         )
         db.execute(
             """
@@ -1048,9 +1077,9 @@ def recover_partially_supported_harness_jobs(limit: int = 25) -> int:
                 last_error=NULL,
                 last_note='Supported benchmark subset recovered for automatic execution; unsupported targets remain deferred for Benchmark Manager.',
                 updated_at=CURRENT_TIMESTAMP
-            WHERE deep_insight_id=?
+            WHERE deep_insight_id=? AND agenda_id=?
             """,
-            (insight_id,),
+            (insight_id, int(row["agenda_id"])),
         )
         db.commit()
         _upsert_job(
@@ -1117,15 +1146,17 @@ def _queue_benchmark_completion_run(insight_id: int, run: dict, resource_class: 
         note = f"Full benchmark completion GPU job {queued_job['id']} already {queued_job['status']}."
     else:
         gpu_scheduler.start()
-        gpu_job_id = gpu_scheduler.queue_run(
-            insight_id=insight_id,
-            run_id=run["id"],
+        compute_job = meta_compute_runtime.submit_experiment_run(
+            agenda_id=int(run.get("agenda_id") or 0),
+            idea_id=insight_id,
+            experiment_run_id=int(run["id"]),
             resource_grant_id=int(run.get("resource_grant_id") or 0),
-            resource_class=resource_class,
-            priority=3,
-            vram_required_gb=40 if resource_class == "gpu_large" else 16,
+            timeout_seconds=GPU_JOB_TIMEOUT_SECONDS,
         )
-        note = f"Queued full benchmark completion on GPU scheduler as job {gpu_job_id}."
+        note = (
+            "Queued full benchmark completion through ComputeScheduler as "
+            f"{compute_job.backend_job_id}."
+        )
     _upsert_job(
         insight_id,
         status="queued_gpu",
@@ -1554,6 +1585,13 @@ def _retry_failed_run_with_repair(insight_id: int, run: dict, resource_class: st
 
 
 def _supersede_stale_scaffold_run(run_id: int, reason: str) -> None:
+    scope = db.fetchone(
+        "SELECT agenda_id FROM experiment_runs WHERE id=?",
+        (int(run_id),),
+    )
+    agenda_id = int((scope or {}).get("agenda_id") or 0)
+    if agenda_id <= 0:
+        raise ValueError("superseding a run requires agenda scope")
     db.execute(
         """
         UPDATE experiment_runs
@@ -1561,9 +1599,9 @@ def _supersede_stale_scaffold_run(run_id: int, reason: str) -> None:
             phase='superseded',
             error_message=?,
             completed_at=CURRENT_TIMESTAMP
-        WHERE id=?
+        WHERE id=? AND agenda_id=?
         """,
-        (reason, run_id),
+        (reason, run_id, agenda_id),
     )
     db.commit()
 
@@ -2151,6 +2189,13 @@ def _submission_grade_run_for_insight(insight_id: int, *, exclude_run_id: int | 
 
 
 def _block_invalid_manuscript_retry_run(insight_id: int, run_id: int | None, reason: str) -> None:
+    scope = db.fetchone(
+        "SELECT agenda_id FROM deep_insights WHERE id=?",
+        (int(insight_id),),
+    )
+    agenda_id = int((scope or {}).get("agenda_id") or 0)
+    if agenda_id <= 0:
+        raise ValueError("blocking manuscript retry requires agenda scope")
     if run_id is not None:
         db.execute(
             """
@@ -2158,9 +2203,10 @@ def _block_invalid_manuscript_retry_run(insight_id: int, run_id: int | None, rea
             SET status='stale',
                 updated_at=CURRENT_TIMESTAMP
             WHERE experiment_run_id=?
+              AND agenda_id=?
               AND status IN ('manuscript_blocked', 'needs_revision', 'failed', 'drafting')
             """,
-            (int(run_id),),
+            (int(run_id), agenda_id),
         )
     replacement = _submission_grade_run_for_insight(insight_id, exclude_run_id=run_id)
     if replacement:
@@ -2450,7 +2496,9 @@ def list_jobs(limit: int = 50) -> list[dict]:
                   er.status AS experiment_status, er.hypothesis_verdict,
                   er.effect_pct
            FROM auto_research_jobs arj
-           JOIN deep_insights di ON di.id = arj.deep_insight_id
+           JOIN deep_insights di
+             ON di.agenda_id=arj.agenda_id
+            AND di.id = arj.deep_insight_id
            LEFT JOIN experiment_runs er ON er.id = arj.experiment_run_id
            ORDER BY arj.updated_at DESC
            LIMIT ?""",
@@ -2975,8 +3023,13 @@ def recover_legacy_cpu_ineligible_jobs(limit: int = 50) -> int:
         db.execute(
             """UPDATE deep_insights
                SET resource_class=?, experimentability=?, updated_at=CURRENT_TIMESTAMP
-               WHERE id=?""",
-            (resource_class, experimentability, insight_id),
+               WHERE id=? AND agenda_id=?""",
+            (
+                resource_class,
+                experimentability,
+                insight_id,
+                int(insight["agenda_id"]),
+            ),
         )
         _upsert_job(
             insight_id,
@@ -3023,7 +3076,9 @@ def _refresh_running_jobs() -> None:
     jobs = db.fetchall(
         """SELECT arj.*, di.novelty_status
            FROM auto_research_jobs arj
-           JOIN deep_insights di ON di.id = arj.deep_insight_id
+           JOIN deep_insights di
+             ON di.agenda_id=arj.agenda_id
+            AND di.id = arj.deep_insight_id
            WHERE arj.status IN ('verifying', 'researching', 'review_pending', 'running_experiment', 'queued_gpu', 'running_gpu', 'running_cpu')"""
     )
     for job in jobs:
@@ -3056,8 +3111,8 @@ def _refresh_running_jobs() -> None:
                 )
             elif _job_age_seconds(job) >= VERIFY_STALE_SECONDS:
                 db.execute(
-                    "UPDATE deep_insights SET novelty_status='unchecked', updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                    (insight_id,),
+                    "UPDATE deep_insights SET novelty_status='unchecked', updated_at=CURRENT_TIMESTAMP WHERE id=? AND agenda_id=?",
+                    (insight_id, int(job["agenda_id"])),
                 )
                 db.commit()
                 _upsert_job(
@@ -3385,7 +3440,9 @@ def recover_soft_benchmark_completion_jobs(limit: int = 50) -> int:
         """
         SELECT arj.*, er.status AS run_status, er.hypothesis_verdict
         FROM auto_research_jobs arj
-        JOIN experiment_runs er ON er.id = arj.experiment_run_id
+        JOIN experiment_runs er
+          ON er.agenda_id=arj.agenda_id
+         AND er.id = arj.experiment_run_id
         WHERE arj.status='queued'
           AND arj.stage=?
           AND er.status='completed'
@@ -3417,11 +3474,12 @@ def recover_soft_benchmark_completion_jobs(limit: int = 50) -> int:
                 last_note=?,
                 last_checked_at=CURRENT_TIMESTAMP,
                 updated_at=CURRENT_TIMESTAMP
-            WHERE id=?
+            WHERE id=? AND agenda_id=?
             """,
             (
                 "Recovered from soft benchmark-completion gate; confirmed run can draft manuscript while extra baselines/seeds/ablations remain follow-up work.",
                 row["id"],
+                int(row["agenda_id"]),
             ),
         )
         log_event(
@@ -3963,8 +4021,12 @@ def _process_candidate(insight: dict) -> None:
                 last_note="Structured review passed and experiment was forged.",
             )
         db.execute(
-            "UPDATE experiment_runs SET resource_class=? WHERE id=?",
-            (resource_class, forged["run_id"]),
+            "UPDATE experiment_runs SET resource_class=? WHERE id=? AND agenda_id=?",
+            (
+                resource_class,
+                forged["run_id"],
+                int(insight["agenda_id"]),
+            ),
         )
         db.commit()
     elif not _run_scaffold_ready(existing_run) and existing_run.get("status") in {"scaffolding"}:
@@ -4005,8 +4067,12 @@ def _process_candidate(insight: dict) -> None:
             last_note="Existing experiment run is marked non-formal; continuing with compute validation (formal manuscript path remains blocked).",
         )
         db.execute(
-            "UPDATE experiment_runs SET resource_class=? WHERE id=?",
-            (resource_class, existing_run["id"]),
+            "UPDATE experiment_runs SET resource_class=? WHERE id=? AND agenda_id=?",
+            (
+                resource_class,
+                existing_run["id"],
+                int(insight["agenda_id"]),
+            ),
         )
         db.commit()
 
@@ -4154,9 +4220,13 @@ def _process_candidate(insight: dict) -> None:
             UPDATE experiment_runs
             SET status='failed', phase='invalid_benchmark_design', error_message=?,
                 completed_at=COALESCE(completed_at, CURRENT_TIMESTAMP)
-            WHERE id=?
+            WHERE id=? AND agenda_id=?
             """,
-            (legacy_blocker, existing_run["id"]),
+            (
+                legacy_blocker,
+                existing_run["id"],
+                int(insight["agenda_id"]),
+            ),
         )
         db.commit()
         _upsert_job(
@@ -4188,15 +4258,19 @@ def _process_candidate(insight: dict) -> None:
             (existing_run["id"],),
         )
         if not queued_job:
-            gpu_job_id = gpu_scheduler.queue_run(
-                insight_id=insight_id,
-                run_id=existing_run["id"],
-                resource_grant_id=int(existing_run.get("resource_grant_id") or 0),
-                resource_class=resource_class,
-                priority=2 if resource_class == "gpu_large" else 1,
-                vram_required_gb=40 if resource_class == "gpu_large" else 16,
+            compute_job = meta_compute_runtime.submit_experiment_run(
+                agenda_id=int(existing_run.get("agenda_id") or 0),
+                idea_id=insight_id,
+                experiment_run_id=int(existing_run["id"]),
+                resource_grant_id=int(
+                    existing_run.get("resource_grant_id") or 0
+                ),
+                timeout_seconds=GPU_JOB_TIMEOUT_SECONDS,
             )
-            note = f"Queued on GPU scheduler as job {gpu_job_id}."
+            note = (
+                "Queued through ComputeScheduler as "
+                f"{compute_job.backend_job_id}."
+            )
         else:
             note = f"GPU job {queued_job['id']} already {queued_job['status']}."
         _upsert_job(

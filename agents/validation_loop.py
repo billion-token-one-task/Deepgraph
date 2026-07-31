@@ -2690,8 +2690,8 @@ def run_full_benchmark_completion(run_id: int, execution_context: dict | None = 
     if not workdir.exists() or not code_dir.exists():
         error = f"Full benchmark blocked: workdir/code missing for run {run_id}."
         db.execute(
-            "UPDATE experiment_runs SET status='failed', error_message=?, completed_at=CURRENT_TIMESTAMP WHERE id=?",
-            (error, run_id),
+            "UPDATE experiment_runs SET status='failed', error_message=?, completed_at=CURRENT_TIMESTAMP WHERE id=? AND agenda_id=?",
+            (error, run_id, int(run["agenda_id"])),
         )
         db.commit()
         return {"run_id": run_id, "verdict": "blocked", "reason": error}
@@ -2708,8 +2708,8 @@ def run_full_benchmark_completion(run_id: int, execution_context: dict | None = 
     time_budget = _full_benchmark_time_budget(proxy)
 
     db.execute(
-        "UPDATE experiment_runs SET status='running_gpu', phase='full_benchmark', started_at=COALESCE(started_at, CURRENT_TIMESTAMP) WHERE id=?",
-        (run_id,),
+        "UPDATE experiment_runs SET status='running_gpu', phase='full_benchmark', started_at=COALESCE(started_at, CURRENT_TIMESTAMP) WHERE id=? AND agenda_id=?",
+        (run_id, int(run["agenda_id"])),
     )
     db.commit()
     result = _run_experiment(
@@ -2781,8 +2781,8 @@ def run_full_benchmark_completion(run_id: int, execution_context: dict | None = 
     if result.get("status") != "ok" or not benchmark_summary:
         error = result.get("error") or result.get("failure_type") or "full benchmark did not produce benchmark_summary"
         db.execute(
-            "UPDATE experiment_runs SET status='failed', phase='full_benchmark', error_message=?, completed_at=CURRENT_TIMESTAMP WHERE id=?",
-            (str(error), run_id),
+            "UPDATE experiment_runs SET status='failed', phase='full_benchmark', error_message=?, completed_at=CURRENT_TIMESTAMP WHERE id=? AND agenda_id=?",
+            (str(error), run_id, int(run["agenda_id"])),
         )
         db.commit()
         return {"run_id": run_id, "verdict": "failed", "reason": str(error), "execution_report": result}
@@ -2835,8 +2835,16 @@ def run_full_benchmark_completion(run_id: int, execution_context: dict | None = 
                baseline_metric_value=?, best_metric_value=?,
                effect_size=?, effect_pct=?, error_message=NULL,
                completed_at=CURRENT_TIMESTAMP
-           WHERE id=?""",
-        (verdict, baseline, best_value, effect, effect_pct, run_id),
+           WHERE id=? AND agenda_id=?""",
+        (
+            verdict,
+            baseline,
+            best_value,
+            effect,
+            effect_pct,
+            run_id,
+            int(run["agenda_id"]),
+        ),
     )
     db.commit()
     return {
@@ -2882,8 +2890,8 @@ def run_validation_loop(run_id: int, execution_context: dict | None = None) -> d
     if gate:
         err = gate.get("error", "EvoScientist strict gate blocked validation loop")
         db.execute(
-            "UPDATE experiment_runs SET status='failed', error_message=?, completed_at=CURRENT_TIMESTAMP WHERE id=?",
-            (err, run_id),
+            "UPDATE experiment_runs SET status='failed', error_message=?, completed_at=CURRENT_TIMESTAMP WHERE id=? AND agenda_id=?",
+            (err, run_id, int(run["agenda_id"])),
         )
         db.commit()
         return {"run_id": run_id, "verdict": "blocked", "reason": err}
@@ -2897,7 +2905,10 @@ def run_validation_loop(run_id: int, execution_context: dict | None = None) -> d
     workdir = Path(run["workdir"]) if run.get("workdir") else Path(run_layout["run_root"])
     if not workdir.exists() and Path(run_layout["run_root"]).exists():
         workdir = Path(run_layout["run_root"])
-        db.execute("UPDATE experiment_runs SET workdir=? WHERE id=?", (str(workdir), run_id))
+        db.execute(
+            "UPDATE experiment_runs SET workdir=? WHERE id=? AND agenda_id=?",
+            (str(workdir), run_id, int(run["agenda_id"])),
+        )
         db.commit()
     code_dir = workdir / "code"
 
@@ -2912,8 +2923,8 @@ def run_validation_loop(run_id: int, execution_context: dict | None = None) -> d
     if (run_proxy.get("formal_experiment") is False or run_proxy.get("smoke_test_only")) and not smoke_validation_allowed:
         error = "Non-formal/smoke-only experiment cannot enter the validation loop."
         db.execute(
-            "UPDATE experiment_runs SET status='failed', error_message=?, completed_at=CURRENT_TIMESTAMP WHERE id=?",
-            (error, run_id),
+            "UPDATE experiment_runs SET status='failed', error_message=?, completed_at=CURRENT_TIMESTAMP WHERE id=? AND agenda_id=?",
+            (error, run_id, int(run["agenda_id"])),
         )
         db.commit()
         return {"run_id": run_id, "verdict": "blocked", "reason": "non_formal_experiment"}
@@ -2946,8 +2957,8 @@ def run_validation_loop(run_id: int, execution_context: dict | None = None) -> d
     if (not spec.formal_experiment or spec.smoke_test_only) and not smoke_validation_allowed:
         error = "Non-formal/smoke-only experiment cannot enter the validation loop."
         db.execute(
-            "UPDATE experiment_runs SET status='failed', error_message=?, completed_at=CURRENT_TIMESTAMP WHERE id=?",
-            (error, run_id),
+            "UPDATE experiment_runs SET status='failed', error_message=?, completed_at=CURRENT_TIMESTAMP WHERE id=? AND agenda_id=?",
+            (error, run_id, int(run["agenda_id"])),
         )
         db.commit()
         write_latest_status(insight_id, {"stage": "validation_blocked", "status": "failed", "error": error}, run_id=run_id, insight=insight)
@@ -2972,8 +2983,8 @@ def run_validation_loop(run_id: int, execution_context: dict | None = None) -> d
     if not environment_report.get("formal_ready"):
         error = "Formal validation blocked: environment scout could not locate a runnable baseline entrypoint."
         db.execute(
-            "UPDATE experiment_runs SET status='failed', error_message=?, completed_at=CURRENT_TIMESTAMP WHERE id=?",
-            (error, run_id),
+            "UPDATE experiment_runs SET status='failed', error_message=?, completed_at=CURRENT_TIMESTAMP WHERE id=? AND agenda_id=?",
+            (error, run_id, int(run["agenda_id"])),
         )
         db.commit()
         write_latest_status(insight_id, {"stage": "environment_failed", "status": "failed", "error": error}, run_id=run_id, insight=insight)
@@ -3018,8 +3029,8 @@ def run_validation_loop(run_id: int, execution_context: dict | None = None) -> d
 
     if resume_validation:
         db.execute(
-            "UPDATE experiment_runs SET status='testing', phase='hypothesis_testing', started_at=COALESCE(started_at, CURRENT_TIMESTAMP) WHERE id=?",
-            (run_id,),
+            "UPDATE experiment_runs SET status='testing', phase='hypothesis_testing', started_at=COALESCE(started_at, CURRENT_TIMESTAMP) WHERE id=? AND agenda_id=?",
+            (run_id, int(run["agenda_id"])),
         )
         db.commit()
         promote_canonical_run(insight_id, run_id, insight=insight)
@@ -3044,7 +3055,10 @@ def run_validation_loop(run_id: int, execution_context: dict | None = None) -> d
             flush=True,
         )
     else:
-        db.execute("UPDATE experiment_runs SET status='reproducing', phase='reproduction', started_at=CURRENT_TIMESTAMP WHERE id=?", (run_id,))
+        db.execute(
+            "UPDATE experiment_runs SET status='reproducing', phase='reproduction', started_at=CURRENT_TIMESTAMP WHERE id=? AND agenda_id=?",
+            (run_id, int(run["agenda_id"])),
+        )
         db.commit()
         promote_canonical_run(insight_id, run_id, insight=insight)
         write_latest_status(
@@ -3180,8 +3194,8 @@ def run_validation_loop(run_id: int, execution_context: dict | None = None) -> d
             f"code_repair_required; last_error={last_error[:500]}"
         )
         db.execute(
-            "UPDATE experiment_runs SET status='failed', error_message=?, completed_at=CURRENT_TIMESTAMP WHERE id=?",
-            (error_message, run_id,))
+            "UPDATE experiment_runs SET status='failed', error_message=?, completed_at=CURRENT_TIMESTAMP WHERE id=? AND agenda_id=?",
+            (error_message, run_id, int(run["agenda_id"])))
         db.commit()
         write_latest_status(
             insight_id,
@@ -3215,8 +3229,8 @@ def run_validation_loop(run_id: int, execution_context: dict | None = None) -> d
         ).stdout.strip()
 
     db.execute(
-        "UPDATE experiment_runs SET baseline_metric_value=?, best_metric_value=?, phase='hypothesis_testing', status='testing' WHERE id=?",
-        (baseline, best_value, run_id))
+        "UPDATE experiment_runs SET baseline_metric_value=?, best_metric_value=?, phase='hypothesis_testing', status='testing' WHERE id=? AND agenda_id=?",
+        (baseline, best_value, run_id, int(run["agenda_id"])))
     db.commit()
     write_latest_status(
         insight_id,
@@ -3534,8 +3548,16 @@ def run_validation_loop(run_id: int, execution_context: dict | None = None) -> d
             """UPDATE experiment_runs
                SET iterations_total=?, iterations_kept=?, best_metric_value=?,
                    effect_size=?, effect_pct=?
-               WHERE id=?""",
-            (iter_num, total_kept, best_value, effect, effect_pct, run_id)
+               WHERE id=? AND agenda_id=?""",
+            (
+                iter_num,
+                total_kept,
+                best_value,
+                effect,
+                effect_pct,
+                run_id,
+                int(run["agenda_id"]),
+            )
         )
         db.commit()
 
@@ -3652,8 +3674,15 @@ def run_validation_loop(run_id: int, execution_context: dict | None = None) -> d
            SET status='completed', hypothesis_verdict=?,
                effect_size=?, effect_pct=?, error_message=?,
                completed_at=CURRENT_TIMESTAMP
-           WHERE id=?""",
-        (verdict, effect, effect_pct, stop_reason or None, run_id)
+           WHERE id=? AND agenda_id=?""",
+        (
+            verdict,
+            effect,
+            effect_pct,
+            stop_reason or None,
+            run_id,
+            int(run["agenda_id"]),
+        )
     )
     db.commit()
     promote_canonical_run(insight_id, run_id, insight=insight)

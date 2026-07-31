@@ -104,7 +104,17 @@ class _Transport:
         )
 
     def status(self, backend_job_id):
-        return ComputeJob(self.kind, backend_job_id, "key", self.submission_status)
+        return ComputeJob(
+            self.kind,
+            backend_job_id,
+            "key",
+            self.submission_status,
+            failure_reason=(
+                "injected"
+                if self.submission_status == "failed"
+                else None
+            ),
+        )
 
     def heartbeat(self, backend_job_id):
         return self.status(backend_job_id)
@@ -125,6 +135,9 @@ class _ComputeStore:
         self.claims = []
         self.bound = []
         self.unknown = []
+        self.states = []
+        self.terminals = []
+        self.successes = []
 
     def claim(self, request, *, backend_kind):
         self.claims.append((request, backend_kind))
@@ -143,6 +156,19 @@ class _ComputeStore:
 
     def mark_submission_unknown(self, record_id, *, reason):
         self.unknown.append((record_id, reason))
+
+    def record_id_for_job(self, _job):
+        return 41
+
+    def record_backend_state(self, job):
+        self.states.append(job)
+        return "collecting" if job.status == "succeeded" else job.status
+
+    def finalize_terminal(self, job, *, usage):
+        self.terminals.append((job, usage))
+
+    def finalize_success(self, record_id, *, artifacts, usage):
+        self.successes.append((record_id, artifacts, usage))
 
 
 class LLMRoutingTests(unittest.TestCase):
@@ -426,6 +452,22 @@ class ComputeRoutingTests(unittest.TestCase):
             "submission_reconciliation_required",
         ):
             claim.existing_job()
+
+    def test_failed_backend_is_metered_before_terminal_persistence(self):
+        transport = _Transport(status="failed")
+        store = _ComputeStore()
+        scheduler = ComputeScheduler(
+            [CPUBackend(transport)],
+            job_store=store,
+        )
+        observed = scheduler.refresh_and_settle(
+            ComputeJob("cpu", "backend-job", "job-key", "running"),
+            requirements=("raw_metrics",),
+        )
+        self.assertEqual(observed.status, "failed")
+        self.assertFalse(store.states)
+        self.assertEqual(len(store.terminals), 1)
+        self.assertEqual(store.terminals[0][1].wall_seconds, 1.0)
 
 
 if __name__ == "__main__":

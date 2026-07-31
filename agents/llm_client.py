@@ -512,9 +512,34 @@ def _should_omit_token_limit(provider: dict) -> bool:
     return model_name == "gpt-5.5" or model_name.startswith("gpt-5.5-")
 
 
+def _usage_cost_usd(usage: dict | None) -> float | None:
+    """Read explicit provider billing data without estimating a price."""
+    if not isinstance(usage, dict):
+        return None
+    candidates = (
+        usage.get("cost_usd"),
+        usage.get("total_cost_usd"),
+        usage.get("total_cost"),
+        usage.get("cost"),
+        (usage.get("billing") or {}).get("cost_usd")
+        if isinstance(usage.get("billing"), dict)
+        else None,
+    )
+    for value in candidates:
+        if value is None or value == "":
+            continue
+        try:
+            parsed = float(value)
+        except (TypeError, ValueError):
+            continue
+        if parsed >= 0:
+            return parsed
+    return None
+
+
 def _call_provider(provider: dict, system_prompt: str, user_prompt: str,
-                   max_tokens: int) -> tuple[str, int, int, int]:
-    """Call a specific provider. Returns (text, total_tokens, cached_tokens, input_tokens)."""
+                   max_tokens: int) -> tuple[str, int, int, int, float | None]:
+    """Return text, total/cached/input tokens, and explicit provider cost."""
     protocol = provider.get("protocol", "responses")
     if protocol == "chat_completions":
         return _call_chat_completions(provider, system_prompt, user_prompt, max_tokens)
@@ -522,7 +547,7 @@ def _call_provider(provider: dict, system_prompt: str, user_prompt: str,
 
 
 def _call_chat_completions(provider: dict, system_prompt: str, user_prompt: str,
-                           max_tokens: int) -> tuple[str, int, int, int]:
+                           max_tokens: int) -> tuple[str, int, int, int, float | None]:
     """Call via OpenAI Chat Completions API (for Kimi etc).
     Returns (text, total_tokens, cached_tokens, input_tokens)."""
     stream_chat = provider.get("stream_chat_completions", True)
@@ -548,21 +573,23 @@ def _call_chat_completions(provider: dict, system_prompt: str, user_prompt: str,
     total_tokens = 0
     cached_tokens = 0
     input_tokens = 0
+    cost_usd = None
     endpoint = provider.get("chat_endpoint", "/chat/completions")
     chunk_count = 0
     all_lines = []
 
     def _reset_response_state() -> None:
-        nonlocal response_text, total_tokens, cached_tokens, input_tokens, chunk_count, all_lines
+        nonlocal response_text, total_tokens, cached_tokens, input_tokens, cost_usd, chunk_count, all_lines
         response_text = ""
         total_tokens = 0
         cached_tokens = 0
         input_tokens = 0
+        cost_usd = None
         chunk_count = 0
         all_lines = []
 
     def _consume_body(body: dict) -> None:
-        nonlocal response_text, total_tokens, cached_tokens, input_tokens
+        nonlocal response_text, total_tokens, cached_tokens, input_tokens, cost_usd
         choices = body.get("choices", [])
         if choices:
             message = choices[0].get("message", {})
@@ -586,9 +613,10 @@ def _call_chat_completions(provider: dict, system_prompt: str, user_prompt: str,
         input_tokens = usage.get("prompt_tokens", 0)
         ptd = usage.get("prompt_tokens_details") or {}
         cached_tokens = ptd.get("cached_tokens", 0)
+        cost_usd = _usage_cost_usd(usage)
 
     def _consume_stream(resp) -> None:
-        nonlocal response_text, total_tokens, cached_tokens, input_tokens, chunk_count, all_lines
+        nonlocal response_text, total_tokens, cached_tokens, input_tokens, cost_usd, chunk_count, all_lines
         for line in resp.iter_lines():
             if line.startswith("data: "):
                 data_str = line[6:]
@@ -637,6 +665,7 @@ def _call_chat_completions(provider: dict, system_prompt: str, user_prompt: str,
                 # MiniMax cache info: usage.prompt_tokens_details.cached_tokens
                 ptd = usage.get("prompt_tokens_details") or {}
                 cached_tokens = ptd.get("cached_tokens", 0)
+                cost_usd = _usage_cost_usd(usage)
 
     def _send_once(request_payload: dict) -> None:
         _reset_response_state()
@@ -669,7 +698,7 @@ def _call_chat_completions(provider: dict, system_prompt: str, user_prompt: str,
         if chunk_count <= 2 and total_tokens > 0:
             print(f"[LLM] {provider['name']}: empty response despite {total_tokens} tokens reported", flush=True)
 
-    return response_text, total_tokens, cached_tokens, input_tokens
+    return response_text, total_tokens, cached_tokens, input_tokens, cost_usd
 
 
 def _extract_responses_output_text(response: dict) -> str:
@@ -700,7 +729,7 @@ def _extract_responses_output_text(response: dict) -> str:
 
 
 def _call_responses_api(provider: dict, system_prompt: str, user_prompt: str,
-                        max_tokens: int) -> tuple[str, int, int, int]:
+                        max_tokens: int) -> tuple[str, int, int, int, float | None]:
     """Call via OpenAI Responses API (for tabcode etc)."""
     input_items = [
         {"role": "user", "content": [{"type": "input_text", "text": user_prompt}]},
@@ -727,16 +756,18 @@ def _call_responses_api(provider: dict, system_prompt: str, user_prompt: str,
     total_tokens = 0
     cached_tokens = 0
     input_tokens = 0
+    cost_usd = None
 
     def _reset_response_state() -> None:
-        nonlocal response_text, total_tokens, cached_tokens, input_tokens
+        nonlocal response_text, total_tokens, cached_tokens, input_tokens, cost_usd
         response_text = ""
         total_tokens = 0
         cached_tokens = 0
         input_tokens = 0
+        cost_usd = None
 
     def _stream_response(request_payload: dict) -> None:
-        nonlocal response_text, total_tokens, cached_tokens, input_tokens
+        nonlocal response_text, total_tokens, cached_tokens, input_tokens, cost_usd
         _reset_response_state()
         with httpx.Client(timeout=_http_timeout()) as client:
             with client.stream("POST", f"{provider['base_url']}/responses",
@@ -766,6 +797,7 @@ def _call_responses_api(provider: dict, system_prompt: str, user_prompt: str,
                         # OpenAI cache: usage.input_tokens_details.cached_tokens
                         itd = usage.get("input_tokens_details") or {}
                         cached_tokens = itd.get("cached_tokens", 0)
+                        cost_usd = _usage_cost_usd(usage)
 
     def _add_fallback(candidates: list[tuple[str, dict]], label: str, candidate: dict | None) -> None:
         if not candidate or candidate == payload:
@@ -800,10 +832,10 @@ def _call_responses_api(provider: dict, system_prompt: str, user_prompt: str,
                 continue
             if "prompt_cache" in label:
                 _mark_prompt_cache_unsupported(provider)
-            return response_text, total_tokens, cached_tokens, input_tokens
+            return response_text, total_tokens, cached_tokens, input_tokens, cost_usd
         raise last_exc
 
-    return response_text, total_tokens, cached_tokens, input_tokens
+    return response_text, total_tokens, cached_tokens, input_tokens, cost_usd
 
 
 def _is_rate_limit_error(exc: Exception) -> bool:
@@ -889,7 +921,7 @@ def call_llm(system_prompt: str, user_prompt: str, temperature: float = 0.0,
 
             start = time.time()
             try:
-                text, tokens, cached_toks, input_toks = _call_provider(
+                text, tokens, cached_toks, input_toks, _cost_usd = _call_provider(
                     provider, system_prompt, user_prompt, max_tokens)
                 latency = time.time() - start
 
@@ -1044,7 +1076,9 @@ def call_llm_with_provider(
         _provider_stats[name]["in_flight"] = _provider_stats[name].get("in_flight", 0) + 1
     start = time.time()
     try:
-        text, tokens, cached_toks, input_toks = _call_provider(provider, system_prompt, user_prompt, max_tokens)
+        text, tokens, cached_toks, input_toks, _cost_usd = _call_provider(
+            provider, system_prompt, user_prompt, max_tokens
+        )
         latency = time.time() - start
         with _provider_lock:
             stats = _provider_stats[name]
@@ -1231,7 +1265,7 @@ def call_llm_for_role(
             limiter.wait()
         start = time.time()
         try:
-            text, tokens, cached_tokens, input_tokens = _call_provider(
+            text, tokens, cached_tokens, input_tokens, cost_usd = _call_provider(
                 provider,
                 system_prompt,
                 user_prompt,
@@ -1247,7 +1281,11 @@ def call_llm_for_role(
                 stats["input_tokens"] += int(input_tokens or 0)
                 stats["cached_tokens"] += int(cached_tokens or 0)
                 stats["total_latency"] += time.time() - start
-            return text, RouteUsage(int(input_tokens or 0), output_tokens, None)
+            return text, RouteUsage(
+                int(input_tokens or 0),
+                output_tokens,
+                cost_usd,
+            )
         except Exception as exc:
             category = (
                 "auth"

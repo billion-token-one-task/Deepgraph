@@ -204,7 +204,7 @@ class LlmClientCooldownTests(unittest.TestCase):
             unittest.mock.patch.object(
                 llm_client,
                 "_call_provider",
-                side_effect=[connect_error, ("valid enough response", 17, 0, 9)],
+                side_effect=[connect_error, ("valid enough response", 17, 0, 9, None)],
             ) as call_provider,
             unittest.mock.patch.object(llm_client.time, "sleep"),
         ):
@@ -271,12 +271,13 @@ class LlmClientCooldownTests(unittest.TestCase):
         }
 
         with unittest.mock.patch.object(llm_client.httpx, "Client", FakeClient):
-            text, tokens, cached, input_tokens = llm_client._call_responses_api(provider, "system", "user", 1234)
+            text, tokens, cached, input_tokens, cost_usd = llm_client._call_responses_api(provider, "system", "user", 1234)
 
         self.assertEqual(text, "valid enough response")
         self.assertEqual(tokens, 7)
         self.assertEqual(cached, 0)
         self.assertEqual(input_tokens, 3)
+        self.assertIsNone(cost_usd)
         self.assertEqual(captured_payloads[0]["model"], "gpt-5.5")
         self.assertNotIn("max_output_tokens", captured_payloads[0])
 
@@ -317,12 +318,13 @@ class LlmClientCooldownTests(unittest.TestCase):
         }
 
         with unittest.mock.patch.object(llm_client.httpx, "Client", FakeClient):
-            text, tokens, cached, input_tokens = llm_client._call_chat_completions(provider, "system", "user", 1234)
+            text, tokens, cached, input_tokens, cost_usd = llm_client._call_chat_completions(provider, "system", "user", 1234)
 
         self.assertEqual(text, "valid enough response")
         self.assertEqual(tokens, 5)
         self.assertEqual(cached, 0)
         self.assertEqual(input_tokens, 2)
+        self.assertIsNone(cost_usd)
         self.assertEqual(captured_payloads[0]["model"], "openai/gpt-5.5")
         self.assertNotIn("max_tokens", captured_payloads[0])
 
@@ -370,12 +372,13 @@ class LlmClientCooldownTests(unittest.TestCase):
         }
 
         with unittest.mock.patch.object(llm_client.httpx, "Client", FakeClient):
-            text, tokens, cached, input_tokens = llm_client._call_responses_api(provider, "stable system", "user", 1234)
+            text, tokens, cached, input_tokens, cost_usd = llm_client._call_responses_api(provider, "stable system", "user", 1234)
 
         self.assertEqual(text, "valid enough response")
         self.assertEqual(tokens, 11)
         self.assertEqual(cached, 3)
         self.assertEqual(input_tokens, 7)
+        self.assertIsNone(cost_usd)
         self.assertIn("prompt_cache_key", captured_payloads[0])
         self.assertLessEqual(len(captured_payloads[0]["prompt_cache_key"]), 64)
         self.assertTrue(captured_payloads[0]["prompt_cache_key"].startswith("deepgraph-cache:"))
@@ -398,6 +401,7 @@ class LlmClientCooldownTests(unittest.TestCase):
                         "total_tokens": 9,
                         "prompt_tokens": 6,
                         "prompt_tokens_details": {"cached_tokens": 2},
+                        "cost_usd": 0.012,
                     },
                 }
 
@@ -425,12 +429,13 @@ class LlmClientCooldownTests(unittest.TestCase):
         }
 
         with unittest.mock.patch.object(llm_client.httpx, "Client", FakeClient):
-            text, tokens, cached, input_tokens = llm_client._call_chat_completions(provider, "stable system", "user", 1234)
+            text, tokens, cached, input_tokens, cost_usd = llm_client._call_chat_completions(provider, "stable system", "user", 1234)
 
         self.assertEqual(text, "valid enough response")
         self.assertEqual(tokens, 9)
         self.assertEqual(cached, 2)
         self.assertEqual(input_tokens, 6)
+        self.assertEqual(cost_usd, 0.012)
         self.assertIn("prompt_cache_key", captured_payloads[0])
         self.assertEqual(captured_payloads[0]["prompt_cache_retention"], "24h")
 
@@ -485,12 +490,13 @@ class LlmClientCooldownTests(unittest.TestCase):
         }
 
         with unittest.mock.patch.object(llm_client.httpx, "Client", FakeClient):
-            text, tokens, cached, input_tokens = llm_client._call_responses_api(provider, "stable system", "user", 1234)
+            text, tokens, cached, input_tokens, cost_usd = llm_client._call_responses_api(provider, "stable system", "user", 1234)
 
         self.assertEqual(text, "valid enough response")
         self.assertEqual(tokens, 5)
         self.assertEqual(cached, 0)
         self.assertEqual(input_tokens, 4)
+        self.assertIsNone(cost_usd)
         self.assertIn("prompt_cache_key", captured_payloads[0])
         self.assertNotIn("prompt_cache_key", captured_payloads[1])
         self.assertNotIn("prompt_cache_retention", captured_payloads[1])

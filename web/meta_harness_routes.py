@@ -22,6 +22,10 @@ from contracts.meta_harness import (
 from db import database as db
 from meta_harness.evidence_state import EvidenceTransitionContext
 from meta_harness.frontier import evaluate_frontier
+from meta_harness.frontier_source import (
+    EvidenceGraphFrontierSource,
+    FrontierAssessment,
+)
 from meta_harness.portfolio import decide_portfolio
 from meta_harness.repository import MetaHarnessRepository
 
@@ -144,6 +148,52 @@ def save_frontier():
                 "frontier_packet_id": packet_id,
                 "allowed": gate.allowed,
                 "reason_codes": gate.reason_codes,
+            }
+        ), (201 if gate.allowed else 409)
+    except Exception as exc:
+        return _error(exc)
+
+
+@blueprint.post("/frontier/from-evidence-graph")
+def save_frontier_from_evidence_graph():
+    """Build evidence arrays from the scoped graph; accept judgments only."""
+    try:
+        _require_operator()
+        payload = _payload()
+        assessment_payload = payload.get("assessment")
+        if not isinstance(assessment_payload, dict):
+            raise ValueError("assessment must be an object")
+        assessment = FrontierAssessment(
+            problem_status=str(assessment_payload.get("problem_status") or ""),
+            contribution_delta=dict(
+                assessment_payload.get("contribution_delta") or {}
+            ),
+            why_not_obsolete=str(
+                assessment_payload.get("why_not_obsolete") or ""
+            ),
+            minimum_falsification_experiment=dict(
+                assessment_payload.get("minimum_falsification_experiment") or {}
+            ),
+            evaluator=str(assessment_payload.get("evaluator") or ""),
+            provider=str(assessment_payload.get("provider") or ""),
+            model=str(assessment_payload.get("model") or ""),
+            prompt_version=str(assessment_payload.get("prompt_version") or ""),
+            coverage_start=str(assessment_payload.get("coverage_start") or ""),
+            coverage_end=str(assessment_payload.get("coverage_end") or ""),
+        )
+        packet = EvidenceGraphFrontierSource().build(
+            agenda_id=int(payload["agenda_id"]),
+            research_problem_id=int(payload["research_problem_id"]),
+            assessment=assessment,
+        )
+        gate = evaluate_frontier(packet)
+        packet_id = MetaHarnessRepository().save_frontier(packet)
+        return jsonify(
+            {
+                "frontier_packet_id": packet_id,
+                "allowed": gate.allowed,
+                "reason_codes": gate.reason_codes,
+                "coverage": packet.coverage,
             }
         ), (201 if gate.allowed else 409)
     except Exception as exc:
