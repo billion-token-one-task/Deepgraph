@@ -78,6 +78,11 @@ GitHub origin/master@6048a95
 
 ### Added
 
+- Tier-1 signal prompt serialization now accepts PostgreSQL datetime values,
+  with a regression test covering the SQLite/PostgreSQL shape difference.
+- The candidate test entry point forcibly clears `DEEPGRAPH_DATABASE_URL` for
+  unit and adapted-legacy tests; disposable PostgreSQL remains explicit.
+
 - Versioned Agenda contract, direction intake, loader, relevance, selector and
   fair multi-agenda queue.
 - Positive token hard caps, GPU-hour caps, concurrency limits, backend
@@ -151,6 +156,9 @@ GitHub origin/master@6048a95
   fixtures, fault tests, runbooks and detailed acceptance checklist.
 
 ### Changed
+
+- Reused the existing CSS type scale for the matching dashboard literals,
+  preserving computed values without importing unrelated frontend changes.
 
 - Auto-research default cycle now queues only explicitly agenda-scoped work for
   portfolio review; legacy global event/backlog consumption is not invoked.

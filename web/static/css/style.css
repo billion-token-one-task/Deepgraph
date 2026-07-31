@@ -35,6 +35,16 @@
     --radius:        8px;
     --radius-sm:     5px;
     --transition:    0.2s cubic-bezier(0.4, 0, 0.2, 1);
+
+    /* ── Type scale (values retained from the existing literal scale) ── */
+    --text-2xs:  0.62rem;
+    --text-xs:   0.68rem;
+    --text-sm:   0.72rem;
+    --text-md:   0.75rem;
+    --text-base: 0.78rem;
+    --text-lg:   0.82rem;
+    --text-xl:   0.92rem;
+    --text-2xl:  1rem;
 }
 
 /* ── Reset ────────────────────────────────────────────────────────── */
@@ -219,7 +229,7 @@ header#topBar {
 }
 .search-result-item:hover { background: var(--bg-elevated); }
 .search-result-item .sr-title { color: var(--text-primary); font-weight: 600; }
-.search-result-item .sr-meta { color: var(--text-dim); font-size: 0.68rem; margin-top: 2px; }
+.search-result-item .sr-meta { color: var(--text-dim); font-size: var(--text-xs); margin-top: 2px; }
 
 /* ── App Shell Layout ─────────────────────────────────────────────── */
 
@@ -922,7 +932,7 @@ header#topBar {
     transition: border-color var(--transition);
 }
 .select-input { padding: 8px 12px; }
-.select-input-sm { padding: 6px 10px; font-size: 0.75rem; }
+.select-input-sm { padding: 6px 10px; font-size: var(--text-md); }
 .select-input:focus, .select-input-sm:focus { border-color: var(--accent); }
 
 .matrix-wrap { overflow: auto; max-height: calc(100vh - 320px); }
@@ -944,7 +954,7 @@ header#topBar {
     font-size: 0.78rem;
     font-family: var(--font);
 }
-.matrix-info { color: var(--text-dim); margin-left: auto; font-size: 0.72rem; font-weight: 500; }
+.matrix-info { color: var(--text-dim); margin-left: auto; font-size: var(--text-sm); font-weight: 500; }
 
 .matrix-scroll { overflow: auto; max-height: 500px; }
 
@@ -985,7 +995,7 @@ header#topBar {
     color: var(--text-secondary);
     min-width: 160px;
 }
-.dataset-header { min-width: 70px; font-size: 0.68rem; }
+.dataset-header { min-width: 70px; font-size: var(--text-xs); }
 .matrix-cell { min-width: 70px; font-variant-numeric: tabular-nums; }
 .cell-filled { background: rgba(196,112,75,0.06); color: var(--accent); }
 .cell-sota { background: var(--green-dim); color: var(--green); font-weight: 700; }
