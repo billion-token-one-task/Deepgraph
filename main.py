@@ -146,10 +146,22 @@ def main():
         if AUTO_RESEARCH_ENABLED:
             from orchestrator.auto_research import start as start_auto_research
             from orchestrator.gpu_scheduler import start as start_gpu_scheduler
+            # Durable compute reconciliation must finish before the research
+            # loop can claim portfolio work or submit another execution.
+            print("Starting compute scheduler and recovery...", flush=True)
+            scheduler_status = start_gpu_scheduler()
+            if scheduler_status.get("status") not in {
+                "started",
+                "already_running",
+                "already_running_elsewhere",
+            }:
+                raise RuntimeError(
+                    "Compute scheduler failed closed during startup: "
+                    f"{scheduler_status.get('status') or 'unknown'}"
+                )
+            print("Compute scheduler and recovery ready.", flush=True)
             print("Starting Auto Research worker...", flush=True)
             start_auto_research()
-            print("Starting GPU scheduler...", flush=True)
-            start_gpu_scheduler()
             print("Auto Research worker ready.", flush=True)
 
         # Start web server
