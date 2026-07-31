@@ -34,6 +34,11 @@ checkpoint: `bdda49cad1567190ae7af50315f9b9e3f22627d6`
 (`fix: allow durable unknown usage quarantine`). None has been pushed or
 accepted as a release.
 
+Durable queues and evaluator isolation checkpoint:
+`724a3ed51fe4649a720c08fb0c213014eb9d236a`
+(`feat: add durable queues and isolated evaluator`). It is also local,
+unpushed and unaccepted.
+
 ### Lineage and why this candidate exists
 
 The candidate follows the controlled B integration:
@@ -113,6 +118,14 @@ GitHub origin/master@6048a95
   ResourceGrant, token cap and stable idempotency before proposer routing.
 - Multi-account Colab lifecycle adapter with isolated HOME/OAuth/session/quota,
   secret references and credential/backup path rejection.
+- PostgreSQL `colab_work_requests_v1` admission, claim-before-session worker,
+  deterministic backend identity, artifact/usage settlement, safe bind-gap
+  recovery and unknown-remote-usage quarantine.
+- PostgreSQL `scoped_ingestion_jobs_v1` plus authenticated enqueue API and a
+  leased checkpoint worker with bounded retry and active LLM grant checks.
+- Hash-pinned bubblewrap evaluator runner with no inherited secrets/network,
+  read-only candidate/evaluator/suite mounts, isolated output and candidate
+  tree immutability checks.
 - Single monotonic scientific evidence state machine from `planned` through
   `manuscript_allowed`.
 - Content-addressed evidence-audit and scientific-decision records that bind
@@ -158,12 +171,16 @@ GitHub origin/master@6048a95
 - Local/SSH GPU admission now enters the backend-neutral scheduler and durable
   job repository; startup recovery is per agenda and attempts to settle
   persisted legacy jobs without resubmission.
+- PostgreSQL direct legacy GPU queue insertion now requires the matching
+  durable compute idempotency identity and persists it on `gpu_jobs`.
+- Only the process holding the scheduler lock may perform startup recovery;
+  configured asynchronous Colab starts behind that recovery boundary.
 - CPU pilot admission now enters the same scheduler/repository. Validation
   exceptions, non-terminal returns and artifact-certification failures
   downgrade the legacy run and cannot produce durable compute success.
 - Runtime compute construction now honors the configured enabled registry and
-  SSH reference/artifact settings. Disabled, unknown and not-yet-wired Colab
-  backends fail closed instead of being silently activated.
+  SSH/Colab reference-only settings. Disabled, unknown or incompletely
+  configured backends fail closed instead of being silently activated.
 - Legacy Web POST/control surfaces (including runtime `.env` edits, direct
   forge/validation, scheduler start/stop and manuscript generation) return
   410; authenticated meta-harness v1 routes are the only mutation API.
@@ -234,17 +251,17 @@ The example plugin is non-production and disabled unless explicitly selected.
 
 Allowed static checks currently report:
 
-- 272 Python files parsed by the broad AST pass and 250 by the release static
+- 279 Python files parsed by the broad AST pass and 257 by the release static
   audit at the latest working-tree checkpoint;
 - no finding from the topic/integrity/migration/secret static audit;
-- SQL AST audit: 799 literal calls, 796 statically countable, no definite
+- SQL AST audit: 838 literal calls, 835 statically countable, no definite
   mismatch, and 114 dynamic calls left for review/CI;
-- additive migration plan: 84 statements, 24,759 bytes, SHA-256
-  `dd64219c5b4189093deb4ace3f87a3a658696a07695d279487f32eba5b7e38de`,
+- additive migration plan: 90 statements, 27,718 bytes, SHA-256
+  `6379d919c951a827017eacf72e1168d52980bb2d515c5f14d44e5121f01b1185`,
   no destructive token and no database access;
 - `git diff --check` passed;
 - agenda example JSON parsed.
-- agenda mutation scope audit passes: 138 scoped literal mutations, zero
+- agenda mutation scope audit passes: 154 scoped literal mutations, zero
   definite unscoped or dynamic mutations.
 - scientific-state authority audit finds two state-bearing SQL literals and
   zero unauthorized UPDATE/INSERT locations.
@@ -260,12 +277,15 @@ remains an isolated CI item.
 
 ### Known incomplete integration
 
-- The granted ingestion route and startup fail-closed boundary are implemented,
-  but their API/worker lifecycle, metering and failure behavior still require
-  isolated PostgreSQL/provider CI.
+- The granted ingestion route, durable API/worker and lease/retry contract are
+  implemented, but their metering and failure behavior still require isolated
+  PostgreSQL/provider CI.
 - The legacy GPU worker scheduler still contains transport-specific internals;
-  CPU/local/SSH admission and durable settlement are bridged, while Colab
-  durable queue/worker wiring remains incomplete.
+  CPU/local/SSH admission and durable settlement are bridged, while their
+  execution internals still require replacement/runtime CI.
+- Colab durable queue/worker wiring and evaluator isolation are implemented,
+  but neither has executed against isolated PostgreSQL, bubblewrap, a
+  synthetic CLI or a canary.
 - Canonical scientific-state SQL mutation authority is statically clean;
   legacy operational/verdict semantics still require isolated end-to-end
   testing.

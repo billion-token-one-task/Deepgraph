@@ -2,6 +2,19 @@
 
 ## Continuation checkpoint
 
+- Durable queues and isolated evaluator implementation are locally committed
+  as `724a3ed51fe4649a720c08fb0c213014eb9d236a`.
+- Colab requests now persist before compute admission, claim before any
+  session, settle named artifacts/measured usage and quarantine lost remote
+  control. Configured Colab starts behind scheduler-lock recovery.
+- PostgreSQL local/SSH legacy GPU insertion now requires the matching durable
+  compute idempotency identity; SQLite remains test compatibility only.
+- Scoped ingestion now has an authenticated enqueue API plus PostgreSQL
+  lease/checkpoint worker with bounded retry and active-grant revalidation.
+- Harness evaluation now requires an explicit production boundary, pinned
+  evaluator/suite hashes and a bubblewrap-compatible isolation binary. It
+  mounts candidate/evaluator/suite read-only, unshares network, clears the
+  environment and verifies the candidate tree before/after.
 - Safety recheck at 08:25 UTC: load `0.12, 0.33, 0.43`; root disk remained
   53% used with about 95 GB free; `/tmp` remained 27% used.
 - Compute-before-auto-research startup ordering is locally committed as
@@ -56,24 +69,25 @@
 - AST/static integrity checks pass and `git diff --check` passes. No pytest,
   app import/start, migration, provider/backend execution or production access
   occurred.
-- The new agenda mutation audit now passes after remediation of forge,
+- The agenda mutation audit now passes after remediation of forge,
   validation, knowledge, novelty, result, workspace, manuscript, watchdog,
-  auto-research, GPU scheduler and legacy Web writes: 139 scoped literal
+  auto-research, GPU scheduler, durable workers and legacy Web writes: 154 scoped literal
   mutations and zero definite unscoped/dynamic mutations.
-- Migration dry plan is now 84 statements, 24,759 bytes, SHA-256
-  `dd64219c5b4189093deb4ace3f87a3a658696a07695d279487f32eba5b7e38de`.
+- Migration dry plan is now 90 statements, 27,718 bytes, SHA-256
+  `6379d919c951a827017eacf72e1168d52980bb2d515c5f14d44e5121f01b1185`.
 
 Current decision remains: not eligible to replace master.
 
 ## Safety
 
-- Final safety-check load average: `0.30, 0.40, 0.36`.
+- Final safety-check at 09:10 UTC: load average `0.29, 0.42, 0.37`.
 - Root disk: 53% used, about 95 GB available.
 - `/tmp`: 27% used, about 2.9 GB available.
 - Restricted process view showed no competing high-load task.
-- Production remained on
-  `local/snapshot-20260621@7d0b42af8e8f061c3c16800c44224c110f3b94a0`
-  with no tracked worktree change.
+- The production worktree is not mounted under `/home/ec2-user` in this
+  session, so no production worktree status claim was made. The immutable
+  archive ref remained
+  `refs/archive/prod-snapshot-20260621@7d0b42af8e8f061c3c16800c44224c110f3b94a0`.
 - No production database connection, service action, deployment, provider,
   experiment, GPU, SSH or Colab action occurred.
 
@@ -90,7 +104,8 @@ Current decision remains: not eligible to replace master.
   `9d24d29c6a7d1017301ffa9c36ff9b4b3dfae88d`
 - Production/master merge-base: none.
 - Local implementation checkpoint:
-  `c25e63c` (`feat: build controlled meta-harness-v1 candidate`).
+  `724a3ed51fe4649a720c08fb0c213014eb9d236a`
+  (`feat: add durable queues and isolated evaluator`).
 - No push or other remote mutation was made.
 
 ## Completed safe slice
@@ -107,6 +122,8 @@ Current decision remains: not eligible to replace master.
 - Durable compute claim/finalization, durable LLM cooldown, granted forge and
   validation repair routes, canonical scientific authority checks,
   agenda-local feedback, and trusted OutcomeRecord assembly.
+- Durable Colab and scoped-ingestion queues/workers, guarded PostgreSQL legacy
+  GPU identity, and a hash-pinned evaluator isolation runner.
 - Isolated test code, static audit, migration/CI/canary/rollback/configuration
   runbooks and acceptance matrix.
 
@@ -114,14 +131,14 @@ Phase 3–8 integration remains incomplete; see [UNVERIFIED.md](UNVERIFIED.md).
 
 ## Static verification
 
-- Broad AST parse: 272 Python files. `scripts/meta_harness_static_audit.py`:
-  passed, 250 Python files parsed,
+- Broad AST parse: 279 Python files. `scripts/meta_harness_static_audit.py`:
+  passed, 257 Python files parsed,
   no application import/database access.
-- Migration dry plan: 84 statements, 24,759 bytes,
+- Migration dry plan: 90 statements, 27,718 bytes,
   SHA-256
-  `dd64219c5b4189093deb4ace3f87a3a658696a07695d279487f32eba5b7e38de`,
+  `6379d919c951a827017eacf72e1168d52980bb2d515c5f14d44e5121f01b1185`,
   no destructive token, no database access.
-- SQL AST audit: 799 literal calls, 796 statically countable, no definite
+- SQL AST audit: 838 literal calls, 835 statically countable, no definite
   placeholder mismatch; 114 dynamic calls remain explicit review/CI scope.
 - `git diff --check`: passed.
 - Agenda example JSON parsed.

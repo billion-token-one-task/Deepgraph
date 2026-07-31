@@ -29,6 +29,13 @@ These dimensions must be stored separately:
 - agenda: `active | paused_budget | paused_manual | closed`
 - harness candidate: `draft | evaluating | rejected | awaiting_approval |
   approved | archived`
+- durable compute: `submitting | submission_unknown | submitted | running |
+  cancel_requested | collecting | succeeded | failed | cancelled | timed_out |
+  usage_unknown`
+- Colab work: `admitting | queued | running | succeeded | failed | timed_out |
+  cancelled | manual_reconciliation`
+- scoped ingestion: `queued | running | retryable | succeeded | failed |
+  cancelled | manual_reconciliation`
 
 `completed` is accepted as a backend state only after artifact collection and
 usage accounting complete. A backend transport error can never map to
