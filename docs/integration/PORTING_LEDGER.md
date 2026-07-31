@@ -1,0 +1,47 @@
+# meta-harness-v1 porting ledger
+
+Status values: `planned`, `in_progress`, `ported`, `adapted`, `rejected`,
+`deferred`, `needs_ci`.
+
+Every row is a semantic-port decision. Source commits are immutable objects
+listed in [BASELINE.md](BASELINE.md); no row authorizes a history merge.
+
+| Phase | Source commit | Source path/symbol | Target | Behavioral contract | Verification | Status / non-port reason |
+|---|---|---|---|---|---|---|
+| 0 | all three | refs, schema and state strings | `docs/integration/*` | reproducible audit basis and cross-line vocabulary | refs, diff-stat, Git/AST/text | adapted |
+| 1 | `6048a95` | `paper_orchestra_pipeline._complete_known_main_results_rows` | removed | layout code cannot invent benchmark numbers | static audit passed; isolated fixture pending | needs_ci |
+| 1 | `6048a95` | `_deemphasize_significance_caveats` and callers | removed | editing cannot weaken uncertainty or claim limitations | static audit passed; isolated fixture pending | needs_ci |
+| 1 | `6048a95` | `paperorchestra.full_pipeline` CRPP fallback | generic fail-closed boundary plus example plugin | generic manuscript path has no CRPP narrative or method aliases | AST/topic scan passed; runtime pending | needs_ci |
+| 1 | `6048a95` | CGGR runners, auditors, shard tools, tests and docs | `plugins/examples/cggr` | domain code is opt-in and absent from default registry | registry/topic scan passed | adapted |
+| 1 | `6048a95` | topic validation defaults and method aliases | explicit example plugin configuration | no topic method is a universal default | TOML/source text check passed | adapted |
+| 1 | `9d24d29` | M1/M4 evidence rules | `contracts/scientific_evidence.py`, integrity fixtures | p=1/missing p/refuted/zero baseline/incomplete benchmark never confirm | tests written, not run here | needs_ci |
+| 2 | `7d0b42a` | `contracts/agenda.py` | hardened same path | mandatory positive token cap; zero GPU means disabled | AST passed; contract CI pending | needs_ci; rejected unlimited behavior |
+| 2 | `7d0b42a` | `agents/direction_intake.py` | hardened same path | deterministic direction mapping and auditable echo | tests written, not run | needs_ci |
+| 2 | `7d0b42a` | loader/selector/orchestrator/relevance | scoped modules plus persistence boundary | no implicit agenda and no untagged backlog fallback | source/SQL scan passed; PostgreSQL pending | needs_ci |
+| 2 | `7d0b42a` | Agenda token ledger/budget | agenda ledger plus grant sub-reservations | reserve-before-call, pause/resume, hard cap, expiry recovery | code review only; concurrency/fault CI pending | needs_ci |
+| 2 | `7d0b42a` | Agenda evidence gate | `agents/evidence_gate.py` plus canonical state machine | Agenda relevance cannot substitute for scientific evidence | tests written, not run | needs_ci |
+| 2 | `7d0b42a` + `6048a95` | Agenda schema and missing problem/benchmark tables | `0001_meta_harness_v1.sql` | add-only, checksum journal, rerunnable, old backlog remains unscoped | dry plan only; PostgreSQL twice pending | needs_ci |
+| 2 | `7d0b42a` | agenda web routes | operator-authenticated minimal API | run/observe mutations only; no merged legacy UI | static review only | needs_ci |
+| 3 | `7d0b42a` | multi-provider LLM routing | `meta_harness/llm_routing.py`, granted role entry point | role separation, route provenance, cooldown/retry, fail closed | fault tests written, not run | needs_ci |
+| 3 | both | legacy high-cost `call_llm` callers | granted forge/validation adapters | forge scout/scaffold/repair and validation iteration/reproduction repair require a scoped ResourceGrant and persist route provenance | pre-idea discovery/manuscript callers remain; tests not run | in_progress |
+| 3 | production behavior | provider cooldown | `llm_provider_cooldowns` plus repository-backed router | auth/transient cooldown survives router/process reconstruction and cannot silently disappear | test written; PostgreSQL restart pending | needs_ci |
+| 4 | `7d0b42a` | Colab lifecycle and account isolation | `meta_harness/compute.py`, `backends/colab_cli.py` | HOME/OAuth/session/quota isolation; secret refs; truthful failure | static only; CLI syntax/canary pending | needs_ci |
+| 4 | production behavior + new contract | compute job lifecycle/idempotency | `meta_harness/compute_repository.py`, `compute_jobs_v1` | claim before transport, no duplicate restart submission, unknown outcome quarantined, artifacts/usage before success | fault/PostgreSQL tests written, not run | needs_ci |
+| 4 | `6048a95` | SSH/GPU schedulers | new backend registry plus guarded legacy queue | ResourceGrant on GPU queues; no failure-to-completed mapping | legacy scheduler still has transport branches | in_progress |
+| 5 | `6048a95` | benchmark design/protocol/manager/audit | retained benchmark modules plus `evidence_state.py` | exact monotonic evidence state machine | state tests written, held-out pending | needs_ci |
+| 5 | both | legacy validator/status paths | canonical transition repository and scientific authority | operational result is `supported`; positive problem/knowledge/manuscript/meta-learning use requires persisted supported decision | selected core paths adapted; exhaustive runtime CI open | in_progress |
+| 6 | `6048a95` | problem-first, novelty, idea taste | Frontier/portfolio feature inputs | features cannot allocate resources | contracts/policy written, not run | needs_ci |
+| 6 | `9d24d29` | topic gate/surprisal | example feature input only | Frontier/portfolio owns allocation | topic-gate authority removal needs isolated regression | needs_ci |
+| 6 | new contract | Frontier/Decision/Grant/Outcome | contracts, trusted persistence assembler, repository, migration | auditable estimates, gate, grant, actual metered outcome/calibration; API cannot supply outcome values | successful-run path static-tested; failed compute usage and PostgreSQL CI pending | needs_ci |
+| 7 | new contract | harness evolution objects | evolution/workspace/repository modules, migration | isolated worktree/DB, protected policies, held-in/out/canary, approval | tests written; no worktree/canary run | needs_ci |
+| 8 | `6048a95` | `deepgraph.toml` loader | additive policy/route/backend sections and minimal API | credentials are references; hard caps and trace roots configured | TOML/AST only; app not started | needs_ci |
+
+## Deliberately not ported in v1
+
+- Both complete web UIs and production dashboard assets.
+- PaperBanana, image assets, pixel office, historical papers/submissions.
+- Venue and manuscript template bulk.
+- Topic-specific output values, method aliases, ablations, runners, and
+  manuscript prose in the generic runtime.
+- Production deployment helpers and any automatic master replacement.
+- A trained resource policy model; v1 uses a transparent logged heuristic.
