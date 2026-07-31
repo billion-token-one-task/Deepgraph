@@ -13,6 +13,12 @@
   admission.
 - The scientific-state authority audit reports two state-bearing SQL literals
   and zero unauthorized mutation locations.
+- Ungranted legacy LLM paths are locally committed as
+  `f66cafead3f6b1046122d2e5df7637a300cca2f3`. Forge no longer falls back to
+  direct calls, and inactive legacy modules were removed from the default
+  registry.
+- The direct-LLM AST inventory reports 24 classified calls, zero unclassified;
+  10 pre-agenda ingestion calls remain an explicit release blocker.
 - Safety recheck at 07:36 UTC: load `0.25, 0.31, 0.29`; root disk 53% used
   with about 95 GB free; `/tmp` 27% used.
 - Archive sources were reverified as custom local refs
@@ -84,8 +90,8 @@ Phase 3–8 integration remains incomplete; see [UNVERIFIED.md](UNVERIFIED.md).
 
 ## Static verification
 
-- Broad AST parse: 257 Python files. `scripts/meta_harness_static_audit.py`:
-  passed, 247 Python files parsed,
+- Broad AST parse: 258 Python files. `scripts/meta_harness_static_audit.py`:
+  passed, 248 Python files parsed,
   no application import/database access.
 - Migration dry plan: 84 statements, 24,742 bytes,
   SHA-256

@@ -17,8 +17,9 @@ deliberately not claimed as working:
   new CPU/local/SSH admission and durable settlement now pass through
   `ComputeScheduler`; runtime restart behavior is unverified;
 - proposal, benchmark, forge, validation, manuscript revision and plain-review
-  core LLM paths are granted/role-routed, but the remaining direct caller
-  inventory is not yet fully classified or removed;
+  core LLM paths are granted/role-routed; the direct caller inventory is
+  complete, but 10 pre-agenda ingestion calls still lack a v1 bounded
+  identity/grant authority;
 - canonical scientific-state SQL writes pass a static authority audit, but
   legacy operational/verdict semantics are not end-to-end verified;
 - durable compute claim/reuse/quarantine code and isolated PostgreSQL tests
