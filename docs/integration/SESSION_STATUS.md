@@ -2,6 +2,19 @@
 
 ## Continuation checkpoint
 
+- Safety recheck at 08:25 UTC: load `0.12, 0.33, 0.43`; root disk remained
+  53% used with about 95 GB free; `/tmp` remained 27% used.
+- Compute-before-auto-research startup ordering is locally committed as
+  `692bb625309ab096f80464f17dcb44891c126aa0`; unexpected scheduler startup
+  status fails closed.
+- Scoped ingestion LLM routing is locally committed as
+  `a7262a3d7bb4e7fa3983f31d5a7082f9f5118e41`. Extraction, contradiction,
+  abstraction, insight, taxonomy and domain-summary work now requires an
+  active agenda/idea/stage ResourceGrant. The old background worker is disabled
+  by default and cannot silently run without that dynamic scope.
+- The direct-LLM AST inventory now reports 14 classified legacy calls, zero
+  ingestion calls and zero unclassified calls. Multi-role extraction fails as
+  a unit instead of silently falling back.
 - Safety recheck at 07:56 UTC: load `0.57, 0.62, 0.48`; root disk remained
   53% used with about 95 GB free; `/tmp` remained 27% used.
 - CPU compute admission is locally committed as
@@ -17,8 +30,6 @@
   `f66cafead3f6b1046122d2e5df7637a300cca2f3`. Forge no longer falls back to
   direct calls, and inactive legacy modules were removed from the default
   registry.
-- The direct-LLM AST inventory reports 24 classified calls, zero unclassified;
-  10 pre-agenda ingestion calls remain an explicit release blocker.
 - Compute registry enforcement is locally committed as `8f59a65`: only
   explicitly enabled CPU/active legacy GPU adapters are registered; unknown,
   disabled and unwired Colab submissions fail closed.
@@ -99,15 +110,15 @@ Phase 3–8 integration remains incomplete; see [UNVERIFIED.md](UNVERIFIED.md).
 
 ## Static verification
 
-- Broad AST parse: 258 Python files. `scripts/meta_harness_static_audit.py`:
-  passed, 248 Python files parsed,
+- Broad AST parse: 272 Python files. `scripts/meta_harness_static_audit.py`:
+  passed, 250 Python files parsed,
   no application import/database access.
 - Migration dry plan: 84 statements, 24,742 bytes,
   SHA-256
   `f0fcc7680ad211774d53d40179c34cf01044537d009407e5d58e6a74c7c862a2`,
   no destructive token, no database access.
-- SQL AST audit: 796 literal calls, 793 statically countable, no definite
-  placeholder mismatch; 112 dynamic calls remain explicit review/CI scope.
+- SQL AST audit: 797 literal calls, 794 statically countable, no definite
+  placeholder mismatch; 114 dynamic calls remain explicit review/CI scope.
 - `git diff --check`: passed.
 - Agenda example JSON parsed.
 - TOML runtime parse was not available under system Python 3.9 and was not

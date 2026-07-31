@@ -185,10 +185,10 @@ artifacts named in its evidence column may promote it to `[x]`.
 - [~] **P3-10** Forge scout/scaffold/repair, validation iteration/
   reproduction-repair, proposal method/experiment design, benchmark design,
   Tier-2 evaluator/reviewer debate, manuscript revision and plain final review
-  use granted role routes and fail closed. A persisted `proposal_pending`
-  identity prevents fake pre-candidate IDs. The direct-caller audit classifies
-  all remaining sites; 10 pre-agenda ingestion calls still need a bounded
-  grant/identity contract. Evidence:
+  plus ingestion/extraction/enrichment use granted role routes and fail closed.
+  A persisted `proposal_pending` identity prevents fake pre-candidate IDs.
+  Ingestion verifies its active persisted agenda/idea/stage grant before
+  pipeline work. Evidence:
   [LLM_CALLER_INVENTORY.md](LLM_CALLER_INVENTORY.md).
 - [~] **P3-11** Provider cooldowns are persisted in
   `llm_provider_cooldowns`, reloaded by reconstructed routers and extended
@@ -201,11 +201,13 @@ artifacts named in its evidence column may promote it to `[x]`.
   portfolio admission are the supported path.
 - [x] **P3-14** Forge code scout/scaffold have no ungranted direct-LLM or
   provider-error-to-deterministic-success fallback.
-- [x] **P3-15** AST caller audit reports 24 classified legacy direct calls and
+- [x] **P3-15** AST caller audit reports 14 classified legacy direct calls and
   zero unclassified sites; any new unclassified site fails the audit.
-- [ ] **P3-16** Ten pre-agenda ingestion direct calls require an explicit
-  bounded identity/budget authority before master acceptance or must be
-  disabled.
+- [~] **P3-16** Ingestion/extraction, contradiction, abstraction, insight,
+  taxonomy and domain-summary calls require a scoped active ResourceGrant.
+  The grantless background worker is disabled by default and fails startup
+  closed if explicitly enabled. Isolated PostgreSQL/provider/worker CI is
+  pending.
 
 ## P4. ComputeBackend
 
@@ -263,6 +265,9 @@ artifacts named in its evidence column may promote it to `[x]`.
 - [x] **P4-28** The only non-definition `run_validation_loop` call sites are
   the CPU auto-research worker and GPU transport worker; problem-first and
   legacy Web execution bypasses are blocked.
+- [~] **P4-29** Application startup completes compute scheduler reconciliation
+  before starting auto-research and fails closed on an unknown scheduler
+  status. Startup/restart tests are written but not run.
 
 ## P5. Scientific evidence state machine
 
@@ -396,6 +401,9 @@ artifacts named in its evidence column may promote it to `[x]`.
   artifacts, manuscripts, bundles and previews.
 - [x] **P8-16** Runtime configuration is read-only and discloses only whether
   an API key is configured, never a prefix/suffix fingerprint.
+- [~] **P8-17** `run_analysis_once.py` requires explicit agenda/idea/grant/stage
+  arguments and revalidates the persisted active grant before processing.
+  A durable operator API/queue for scoped ingestion is still pending.
 
 ## X. Explicitly excluded from first release
 
@@ -411,19 +419,18 @@ artifacts named in its evidence column may promote it to `[x]`.
 ## V. Validation and delivery
 
 - [x] **V-01** Static audit script has no app import/database access.
-- [x] **V-02** 258 Python files passed the broad AST parse and 248 files passed
+- [x] **V-02** 272 Python files passed the broad AST parse and 250 files passed
   the release static audit at the latest checkpoint.
 - [x] **V-03** Side-effect-free SQL AST audit found no definite mismatch:
-  796 literal calls, 793 statically countable, and 112 dynamic calls explicitly
+  797 literal calls, 794 statically countable, and 114 dynamic calls explicitly
   left for review/CI.
 - [x] **V-04** `git diff --check` passed.
 - [x] **V-04A** Agenda mutation scope audit passes: 138 scoped literal
   UPDATE/DELETE statements, zero definite unscoped or dynamic mutations.
 - [x] **V-04B** Scientific-state authority audit passes: two state-bearing SQL
   literals, zero unauthorized mutation locations.
-- [x] **V-04C** Direct-LLM caller audit passes inventory completeness: 24
-  classified sites, zero unclassified. Ten classified ingestion sites remain
-  an explicit release blocker under P3-16.
+- [x] **V-04C** Direct-LLM caller audit passes inventory completeness: 14
+  classified legacy sites, zero ingestion and zero unclassified calls.
 - [x] **V-05** Agenda example JSON parsed.
 - [x] **V-06** Migration dry-plan recorded statement count/checksum/no
   destructive token.
@@ -446,7 +453,8 @@ artifacts named in its evidence column may promote it to `[x]`.
   checkpoint documentation `a148a11`, CPU admission `4d059cd`, and legacy LLM
   blocking `f66cafe`, plus compute registry enforcement `8f59a65`; none was
   pushed. Legacy Web boundary hardening is `954b858`; it also remains local.
-  Residual execution/secret-hint hardening is `d192a8d`.
+  Residual execution/secret-hint hardening is `d192a8d`, startup recovery
+  ordering is `692bb62`, and scoped ingestion routing is `a7262a3`.
 - [ ] **V-14** No push until explicit approval and quiescence check.
 - [ ] **V-15** Final candidate commit hash must replace working-tree/intermediate
   hashes in all acceptance artifacts.
