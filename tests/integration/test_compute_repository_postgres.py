@@ -284,6 +284,42 @@ class IsolatedComputeRepositoryTests(unittest.TestCase):
         self.assertEqual(row["failure_reason"], "injected_failure")
         self.assertTrue(row["usage_json"])
 
+    def test_expired_running_job_enters_usage_unknown(self):
+        request = self._submission("expired-usage")
+        repository = self.ComputeJobRepository()
+        claim = repository.claim(request, backend_kind="cpu")
+        repository.bind_submitted_job(
+            claim.record_id,
+            self.ComputeJob(
+                "cpu",
+                f"backend:{self.namespace}:expired",
+                request.idempotency_key,
+                "running",
+            ),
+        )
+        self.db.execute(
+            """
+            UPDATE compute_jobs_v1
+            SET timeout_at=CURRENT_TIMESTAMP - INTERVAL '1 second'
+            WHERE id=? AND agenda_id=?
+            """,
+            (claim.record_id, self.agenda_id),
+        )
+        self.db.commit()
+
+        result = repository.reconcile_expired(agenda_id=self.agenda_id)
+        row = self.db.fetchone(
+            "SELECT status, failure_reason FROM compute_jobs_v1 WHERE id=?",
+            (claim.record_id,),
+        )
+
+        self.assertEqual(result["usage_unknown"], 1)
+        self.assertEqual(row["status"], "usage_unknown")
+        self.assertEqual(
+            row["failure_reason"],
+            "durable_compute_timeout_usage_unknown",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
