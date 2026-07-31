@@ -23,8 +23,10 @@ acceptance state`). Control-plane hardening checkpoint:
 `8f59a659df04229abf4d759e4d354e3899aac410`
 (`fix: enforce configured compute registry`). Legacy Web boundary checkpoint:
 `954b858418c4258d2b3c521c6fad39259e47bb8a`
-(`fix: close legacy web control bypasses`). None has been pushed or accepted as
-a release.
+(`fix: close legacy web control bypasses`). Residual bypass checkpoint:
+`d192a8dbdce8bed61bbc3d094bf1a17d171239d4`
+(`fix: remove residual execution and secret hint bypasses`). None has been
+pushed or accepted as a release.
 
 ### Lineage and why this candidate exists
 
@@ -155,6 +157,9 @@ GitHub origin/master@6048a95
   410; authenticated meta-harness v1 routes are the only mutation API.
 - Retained legacy insight/experiment/manuscript/bundle/paper-preview reads
   require a positive agenda query and use agenda-matched joins.
+- Problem-first compatibility code can no longer call the validation loop
+  directly, and runtime configuration responses no longer expose partial API
+  key fingerprints.
 - Legacy pre-identity Tier-1 LLM discovery and the global unscoped LLM insight
   rank endpoint are disabled; agenda-scoped problem-first proposal and
   portfolio admission are their supported replacement.

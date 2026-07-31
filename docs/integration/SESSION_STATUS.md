@@ -25,6 +25,9 @@
 - Legacy Web control bypass removal is locally committed as `954b858`.
   Non-meta-harness POSTs now return 410, `.env` editing code was removed, and
   retained agenda-owned reads require explicit scope.
+- Residual direct problem-first validation and partial API-key hint exposure
+  are removed in local commit `d192a8d`; validation-loop execution call sites
+  are now limited to the CPU and GPU managed workers.
 - Safety recheck at 07:36 UTC: load `0.25, 0.31, 0.29`; root disk 53% used
   with about 95 GB free; `/tmp` 27% used.
 - Archive sources were reverified as custom local refs
