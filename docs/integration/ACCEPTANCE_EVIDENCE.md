@@ -28,6 +28,11 @@ accepted. Record that evidence using
 
 ## Static evidence recorded in this session
 
+- Post-fix verification commit: `d3650fe0a2270eb265ef9dc40041b3ccab537efd`;
+  Git tree `7e3183cd039cb7bace420355a6aad6b0a67f1358`, tracked-content tree
+  SHA-256 `c9a2efac23e30abda6c9ab87242d76ecfa66d6679272404fbf27402d86db6114`.
+  The source freeze commit `6851a991154906f11d8cfc247d22a5d5caa0a834` and
+  `integration/meta-harness-v1@77e8ac0` remain unchanged.
 - 260 Python files parsed by the final static AST audit;
 - static topic/integrity/migration/secret audit passed at that checkpoint;
 - migration dry plan reported 90 statements, 27,734 bytes, SHA-256
@@ -41,6 +46,13 @@ accepted. Record that evidence using
   zero unauthorized mutation locations;
 - direct-LLM audit classified all 14 legacy direct calls with zero ingestion
   and zero unclassified calls; those 14 remain isolated legacy surfaces;
+- post-fix static report hashes: static
+  `91c9dcc5af43b4b439191175a4dc6024fdb32e542de6e3a0d98d88416e8d564c`, scope
+  `0f8de09da9f5d057f1c3141eb84a47ff1863a7a908623e9358e6123ed3491e7f`, SQL
+  `99a7c03d4c21f759e7ecd0c563c6c9946f62a939e91633172b31304ac288e5db`, state
+  `ab02a1636e736faa8fba8ec8aa00e3df8d0204857e5b74c4907557839d84acc5`, LLM
+  `7ea25bcbf45728afb0c11edaf092dd32ecb28da53a045c2b6ce0b95ad751e5e4`, and
+  migration `a6bb48b17dc02ac0269097f44d15c69129fe1a414fdbb0000ed663a0a34e7009`.
 - no database or application was accessed by the static checks. A separate
   temp-SQLite startup smoke imported `main` and `web.app` successfully.
 - agenda example JSON parsed successfully; the application startup smoke used

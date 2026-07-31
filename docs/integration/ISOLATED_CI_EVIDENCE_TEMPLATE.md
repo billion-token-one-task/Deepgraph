@@ -5,8 +5,10 @@ Do not commit database URLs, credentials, OAuth material, raw reviewer
 signatures or business-row contents.
 
 ```text
-candidate_commit: 6851a991154906f11d8cfc247d22a5d5caa0a834
-candidate_tree: b1c1e8ebfbc0607cc39bb617dad9d56fd949d214122a37dd70541bd634d9feab
+candidate_commit: d3650fe0a2270eb265ef9dc40041b3ccab537efd
+candidate_tree: c9a2efac23e30abda6c9ab87242d76ecfa66d6679272404fbf27402d86db6114
+source_candidate_commit: 6851a991154906f11d8cfc247d22a5d5caa0a834
+source_candidate_tree_fixture: b1c1e8ebfbc0607cc39bb617dad9d56fd949d214122a37dd70541bd634d9feab
 source_archive_refs:
   production: 7d0b42af8e8f061c3c16800c44224c110f3b94a0
   github_master: 6048a9568c79b011074e0dba2662fd473cfab250
@@ -24,6 +26,7 @@ isolation:
   network_disabled_in_evaluator: true
   candidate_tree_before: b1c1e8ebfbc0607cc39bb617dad9d56fd949d214122a37dd70541bd634d9feab
   candidate_tree_after: b1c1e8ebfbc0607cc39bb617dad9d56fd949d214122a37dd70541bd634d9feab
+  verification_git_tree: 7e3183cd039cb7bace420355a6aad6b0a67f1358
 
 lane_1_static:
   status: passed
@@ -72,6 +75,10 @@ lane_4_evaluator:
   post_fix_real_rerun_status: blocked_host_bwrap_netlink_route
   post_fix_real_rerun_report_sha256: 63230055746e4949ab7337f70f94786b77edc77f87883eb2e56a0a487cf1ae0c
   post_fix_candidate_tree_before_after: b1c1e8ebfbc0607cc39bb617dad9d56fd949d214122a37dd70541bd634d9feab
+  post_fix_mock_contract_status: passed (1 passed)
+  post_fix_mock_contract_report_sha256: 99a24796443a1d07f66a424f8116a06a2079063af758e7d3c87801c191ad2ecd
+  post_fix_missing_bwrap_fallback_status: passed
+  post_fix_missing_bwrap_fallback_report_sha256: 334df8dd61952b1b911e62d74cd7ecd27fd728dabf7980889c19d3fe200aa698
 
 lane_5_fault_canary:
   synthetic_provider_status: passed targeted router/cooldown tests; synthetic aggregate 60/60
