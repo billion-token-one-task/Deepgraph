@@ -195,6 +195,9 @@ artifacts named in its evidence column may promote it to `[x]`.
 - [~] **P3-12** Explicit provider-returned cost fields are captured and
   persisted with route observations; unknown cost remains `NULL` rather than
   estimated. Provider payload variants require isolated fixture verification.
+- [x] **P3-13** Legacy pre-identity Tier-1 discovery and global unscoped
+  LLM-ranking Web entry points are fail-closed; problem-first proposal and
+  portfolio admission are the supported path.
 
 ## P4. ComputeBackend
 
@@ -237,6 +240,15 @@ artifacts named in its evidence column may promote it to `[x]`.
 - [~] **P4-23** Failed/cancelled/timed-out backends must persist measured usage
   before terminal settlement; expired jobs with unknown usage are quarantined
   as `usage_unknown`. Failure/timeout PostgreSQL CI is pending.
+- [~] **P4-24** CPU validation now claims a durable, agenda/idea/grant-scoped
+  compute job before entering the synchronous legacy loop, uses stable
+  idempotency on retry and settles measured iteration usage plus grant-required
+  artifacts. Isolated PostgreSQL execution/restart/fault verification is
+  pending.
+- [x] **P4-25** CPU exceptions, non-completed legacy returns and artifact
+  certification failure cannot be converted into durable compute success.
+- [ ] **P4-26** Colab CLI execution is not yet backed by a durable
+  queue/worker and is not registered in application startup.
 
 ## P5. Scientific evidence state machine
 
@@ -268,6 +280,9 @@ artifacts named in its evidence column may promote it to `[x]`.
 - [x] **P5-15** Operational `supported/completed` cannot by itself solve a
   problem, update positive signal learning, cascade confirmed knowledge,
   start manuscript retry or count as a positive meta-learning label.
+- [x] **P5-16** AST-only state-authority audit finds no
+  `scientific_evidence_state` UPDATE outside `EvidenceRepository` and permits
+  initial state INSERT only in the reviewed run factory.
 
 ## P6. Frontier and Idea Portfolio
 
@@ -374,13 +389,16 @@ artifacts named in its evidence column may promote it to `[x]`.
 ## V. Validation and delivery
 
 - [x] **V-01** Static audit script has no app import/database access.
-- [x] **V-02** 245 Python files passed AST parsing at the latest checkpoint.
+- [x] **V-02** 257 Python files passed the broad AST parse and 247 files passed
+  the release static audit at the latest checkpoint.
 - [x] **V-03** Side-effect-free SQL AST audit found no definite mismatch:
-  785 literal calls, 782 statically countable, and 112 dynamic calls explicitly
+  798 literal calls, 795 statically countable, and 112 dynamic calls explicitly
   left for review/CI.
 - [x] **V-04** `git diff --check` passed.
-- [x] **V-04A** Agenda mutation scope audit passes: 134 scoped literal
+- [x] **V-04A** Agenda mutation scope audit passes: 139 scoped literal
   UPDATE/DELETE statements, zero definite unscoped or dynamic mutations.
+- [x] **V-04B** Scientific-state authority audit passes: two state-bearing SQL
+  literals, zero unauthorized mutation locations.
 - [x] **V-05** Agenda example JSON parsed.
 - [x] **V-06** Migration dry-plan recorded statement count/checksum/no
   destructive token.
@@ -399,8 +417,9 @@ artifacts named in its evidence column may promote it to `[x]`.
 - [x] **V-12** Root changelog distinguishes added, changed, isolated, excluded
   and unverified work.
 - [x] **V-13** Local work is split into base implementation `c25e63c`,
-  integration documentation `ee96fba`, and control-plane hardening `2cccc7a`;
-  none was pushed.
+  integration documentation `ee96fba`, control-plane hardening `2cccc7a`,
+  checkpoint documentation `a148a11`, and CPU admission `4d059cd`; none was
+  pushed.
 - [ ] **V-14** No push until explicit approval and quiescence check.
 - [ ] **V-15** Final candidate commit hash must replace working-tree/intermediate
   hashes in all acceptance artifacts.

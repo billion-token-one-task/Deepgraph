@@ -2,6 +2,17 @@
 
 ## Continuation checkpoint
 
+- Safety recheck at 07:56 UTC: load `0.57, 0.62, 0.48`; root disk remained
+  53% used with about 95 GB free; `/tmp` remained 27% used.
+- CPU compute admission is locally committed as
+  `4d059cd8ab425e7806b095ce2daaa1697d390272`. It adds durable
+  grant/idempotency admission before the legacy validation loop, measured
+  settlement and fail-closed artifact certification.
+- Legacy pre-identity Tier-1 LLM discovery and global unscoped LLM ranking are
+  disabled in the generic runtime in favor of problem-first/portfolio
+  admission.
+- The scientific-state authority audit reports two state-bearing SQL literals
+  and zero unauthorized mutation locations.
 - Safety recheck at 07:36 UTC: load `0.25, 0.31, 0.29`; root disk 53% used
   with about 95 GB free; `/tmp` 27% used.
 - Archive sources were reverified as custom local refs
@@ -17,7 +28,7 @@
   occurred.
 - The new agenda mutation audit now passes after remediation of forge,
   validation, knowledge, novelty, result, workspace, manuscript, watchdog,
-  auto-research, GPU scheduler and legacy Web writes: 134 scoped literal
+  auto-research, GPU scheduler and legacy Web writes: 139 scoped literal
   mutations and zero definite unscoped/dynamic mutations.
 - Migration dry plan is now 84 statements, 24,742 bytes, SHA-256
   `f0fcc7680ad211774d53d40179c34cf01044537d009407e5d58e6a74c7c862a2`.
@@ -73,13 +84,14 @@ Phase 3–8 integration remains incomplete; see [UNVERIFIED.md](UNVERIFIED.md).
 
 ## Static verification
 
-- `scripts/meta_harness_static_audit.py`: passed, 245 Python files parsed,
+- Broad AST parse: 257 Python files. `scripts/meta_harness_static_audit.py`:
+  passed, 247 Python files parsed,
   no application import/database access.
 - Migration dry plan: 84 statements, 24,742 bytes,
   SHA-256
   `f0fcc7680ad211774d53d40179c34cf01044537d009407e5d58e6a74c7c862a2`,
   no destructive token, no database access.
-- SQL AST audit: 785 literal calls, 782 statically countable, no definite
+- SQL AST audit: 798 literal calls, 795 statically countable, no definite
   placeholder mismatch; 112 dynamic calls remain explicit review/CI scope.
 - `git diff --check`: passed.
 - Agenda example JSON parsed.

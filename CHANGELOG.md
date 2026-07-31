@@ -15,8 +15,10 @@ not been pushed and is not an acceptance/deployment identifier. Integration
 documentation checkpoint: `ee96fba` (`docs: record meta-harness-v1 lineage and
 acceptance state`). Control-plane hardening checkpoint:
 `2cccc7a6d293f5063425958fa771f368afdf7077`
-(`feat: harden meta-harness control plane`). None has been pushed or accepted
-as a release.
+(`feat: harden meta-harness control plane`). CPU admission checkpoint:
+`4d059cd8ab425e7806b095ce2daaa1697d390272`
+(`feat: unify CPU compute admission`). None has been pushed or accepted as a
+release.
 
 ### Lineage and why this candidate exists
 
@@ -90,6 +92,9 @@ GitHub origin/master@6048a95
   durable success.
 - Durable measured-usage settlement for failed/cancelled/timed-out jobs;
   expiry without known usage is quarantined as `usage_unknown`.
+- Durable CPU validation transport that claims a grant-scoped compute job
+  before execution, resumes by idempotency key and certifies success only
+  after measured usage and required artifact collection.
 - Multi-account Colab lifecycle adapter with isolated HOME/OAuth/session/quota,
   secret references and credential/backup path rejection.
 - Single monotonic scientific evidence state machine from `planned` through
@@ -131,6 +136,12 @@ GitHub origin/master@6048a95
 - Local/SSH GPU admission now enters the backend-neutral scheduler and durable
   job repository; startup recovery is per agenda and attempts to settle
   persisted legacy jobs without resubmission.
+- CPU pilot admission now enters the same scheduler/repository. Validation
+  exceptions, non-terminal returns and artifact-certification failures
+  downgrade the legacy run and cannot produce durable compute success.
+- Legacy pre-identity Tier-1 LLM discovery and the global unscoped LLM insight
+  rank endpoint are disabled; agenda-scoped problem-first proposal and
+  portfolio admission are their supported replacement.
 - Validation reports operational `supported` instead of directly creating
   `confirmed`; positive problem, knowledge, manuscript and meta-learning paths
   require a persisted supported scientific decision.
@@ -185,17 +196,20 @@ The example plugin is non-production and disabled unless explicitly selected.
 
 Allowed static checks currently report:
 
-- 245 Python files parsed by AST at the latest working-tree checkpoint;
+- 257 Python files parsed by the broad AST pass and 247 by the release static
+  audit at the latest working-tree checkpoint;
 - no finding from the topic/integrity/migration/secret static audit;
-- SQL AST audit: 785 literal calls, 782 statically countable, no definite
+- SQL AST audit: 798 literal calls, 795 statically countable, no definite
   mismatch, and 112 dynamic calls left for review/CI;
 - additive migration plan: 84 statements, 24,742 bytes, SHA-256
   `f0fcc7680ad211774d53d40179c34cf01044537d009407e5d58e6a74c7c862a2`,
   no destructive token and no database access;
 - `git diff --check` passed;
 - agenda example JSON parsed.
-- agenda mutation scope audit passes: 134 scoped literal mutations, zero
+- agenda mutation scope audit passes: 139 scoped literal mutations, zero
   definite unscoped or dynamic mutations.
+- scientific-state authority audit finds two state-bearing SQL literals and
+  zero unauthorized UPDATE/INSERT locations.
 
 Not run: pytest, application imports/startup, PostgreSQL migration, production
 backup startup, provider/backend calls, CPU/GPU/SSH/Colab work, candidate
@@ -208,10 +222,11 @@ remains an isolated CI item.
 - Remaining direct LLM callers must still be exhaustively classified as
   pre-agenda ingestion, example-only, migrated or blocked.
 - The legacy GPU worker scheduler still contains transport-specific internals;
-  local/SSH admission and durable settlement are bridged, while CPU/Colab
-  runtime wiring remains incomplete.
-- Not every legacy direct operational/scientific status write has been routed
-  through the canonical evidence transition repository.
+  CPU/local/SSH admission and durable settlement are bridged, while Colab
+  durable queue/worker wiring remains incomplete.
+- Canonical scientific-state SQL mutation authority is statically clean;
+  legacy operational/verdict semantics still require isolated end-to-end
+  testing.
 - Agenda scope has static evidence only; multi-agenda PostgreSQL concurrency
   and fault isolation still require isolated execution.
 - Frontier, failed compute usage and reviewer signatures have implementation

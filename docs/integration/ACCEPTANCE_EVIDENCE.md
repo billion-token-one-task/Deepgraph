@@ -15,7 +15,7 @@ accepted.
 | 5 | old backlog excluded | migration leaves scope null; explicit import ledger only | implemented, PostgreSQL pending |
 | 6 | core objects carry correct `agenda_id` | migration/contracts/repositories and all literal legacy mutations are explicitly scoped | implemented, PostgreSQL CI pending |
 | 7 | Frontier Gate rejects obsolete/duplicate | gate, persisted decision, API response and bypass prevention implemented | CI pending |
-| 8 | pilot/GPU/full benchmark require grant | proposal identity, LLM role routes and local/SSH durable compute admission are grant-scoped | partial; CPU/Colab runtime and isolated execution remain |
+| 8 | pilot/GPU/full benchmark require grant | proposal identity, LLM role routes and CPU/local/SSH durable compute admission are grant-scoped | partial; Colab durable runtime and all isolated execution remain |
 | 9 | backend/LLM failures never complete/confirm | fail-closed route/backend contracts; GPU validation failure now marks job failed; operational positive verdict is `supported` | fault CI pending |
 | 10 | harness patch passes three suites | policy and RegressionReport require all three plus reviewer | no suite executed |
 | 11 | candidate cannot modify protected inputs/data | path/environment/namespace policy implemented | isolation CI pending |
@@ -27,15 +27,18 @@ accepted.
 
 ## Static evidence recorded in this session
 
-- 245 Python files parsed successfully at the latest checkpoint;
+- 257 Python files parsed by the broad AST pass and 247 by the release static
+  audit at the latest checkpoint;
 - static topic/integrity/migration/secret audit passed at that checkpoint;
 - migration dry plan reported 84 statements, SHA-256
   `f0fcc7680ad211774d53d40179c34cf01044537d009407e5d58e6a74c7c862a2`,
   and no destructive token;
-- SQL AST audit found no definite placeholder mismatch across 782 countable
+- SQL AST audit found no definite placeholder mismatch across 795 countable
   literal calls; 112 dynamic calls remain review/CI scope;
-- agenda mutation audit found 134 explicitly scoped literal mutations and no
+- agenda mutation audit found 139 explicitly scoped literal mutations and no
   definite unscoped or dynamic mutation;
+- scientific-state authority audit found two state-bearing SQL literals and
+  zero unauthorized mutation locations;
 - no database or application was accessed by those checks.
 - agenda example JSON parsed successfully; `deepgraph.toml` was text-reviewed
   but not runtime-parsed because the host Python 3.9 has no TOML parser and
