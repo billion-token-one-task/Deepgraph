@@ -130,3 +130,40 @@ class MainSingleInstanceTests(unittest.TestCase):
                     main.main()
 
         fake_auto_research.start.assert_not_called()
+
+    def test_legacy_background_ingestion_fails_closed(self):
+        fake_paper_worker = types.ModuleType("orchestrator.paper_worker")
+        fake_paper_worker.start = lambda: {
+            "status": "disabled_resource_grant_required"
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir_path = Path(tmpdir)
+            with (
+                mock.patch.dict(
+                    sys.modules,
+                    {"orchestrator.paper_worker": fake_paper_worker},
+                ),
+                mock.patch.object(main, "_try_acquire_process_lock", return_value=True),
+                mock.patch.object(main, "WORKSPACE_DIR", tmpdir_path / "workspace"),
+                mock.patch.object(main, "PDF_CACHE_DIR", tmpdir_path / "pdf_cache"),
+                mock.patch.object(main, "IDEA_WORKSPACE_DIR", tmpdir_path / "ideas"),
+                mock.patch.object(main, "init_db"),
+                mock.patch.object(
+                    main,
+                    "describe_backend",
+                    return_value={"target": "postgresql://test", "backend": "postgresql"},
+                ),
+                mock.patch.object(main, "seed_taxonomy"),
+                mock.patch.object(main, "backfill_result_taxonomy"),
+                mock.patch.object(main, "backfill_entity_resolutions"),
+                mock.patch.object(main, "AUTO_RESEARCH_ENABLED", False),
+                mock.patch.object(main, "AUTO_PIPELINE_ENABLED", True),
+                mock.patch.object(main, "_serve_http"),
+                mock.patch.object(main, "_release_process_lock"),
+            ):
+                with self.assertRaisesRegex(
+                    RuntimeError,
+                    "Paper ingestion worker failed closed",
+                ):
+                    main.main()

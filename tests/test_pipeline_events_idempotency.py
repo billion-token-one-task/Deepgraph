@@ -138,9 +138,21 @@ class IdempotencyAndEventTests(TempDbCase):
             entity_id="ml.test",
             dedupe_key="node_touched:p1:ml.test",
         )
-        stats = discovery_scheduler.consume_pipeline_events_once(limit=10)
+        llm_scope = {
+            "agenda_id": 1,
+            "idea_id": 2,
+            "resource_grant_id": 3,
+            "stage": "ingestion",
+        }
+        stats = discovery_scheduler.consume_pipeline_events_once(
+            limit=10,
+            llm_scope=llm_scope,
+        )
         self.assertEqual(stats["nodes_refreshed"], 1)
-        refresh_node_outputs.assert_called_once_with("ml.test")
+        refresh_node_outputs.assert_called_once_with(
+            "ml.test",
+            llm_scope=llm_scope,
+        )
         self.assertEqual(database.fetch_pipeline_events(discovery_scheduler.DISCOVERY_CONSUMER, limit=10), [])
 
     def test_discovery_event_loop_rolls_back_after_refresh_failure(self):

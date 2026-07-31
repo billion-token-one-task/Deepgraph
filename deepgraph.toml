@@ -314,7 +314,7 @@ paperbanana_cmd = ""
 refinement_iters = 4
 
 [auto_research]
-pipeline_enabled = true
+pipeline_enabled = false
 pipeline_batch_size = 1
 pipeline_interval_seconds = 120
 pipeline_start_delay_seconds = 10

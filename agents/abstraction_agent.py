@@ -6,9 +6,12 @@ Two phases:
 2. BRIDGE: Match patterns across distant nodes → cross-domain insights
 """
 import json
-from agents.llm_client import call_llm_json
+from collections.abc import Mapping
+from typing import Any
+
 from db import database as db
 from db import taxonomy as tax
+from meta_harness.scoped_llm import proposer_json
 
 
 # ── Phase 1: Abstracting claims to patterns ──────────────────────────
@@ -46,7 +49,12 @@ Abstraction rules:
 - Return ONLY valid JSON."""
 
 
-def abstract_node_claims(node_id: str, max_claims: int = 40) -> tuple[list[dict], int]:
+def abstract_node_claims(
+    node_id: str,
+    max_claims: int = 40,
+    *,
+    llm_scope: Mapping[str, Any] | None = None,
+) -> tuple[list[dict], int]:
     """Extract universal patterns from claims in a taxonomy node."""
     node = tax.get_node(node_id)
     if not node:
@@ -84,25 +92,26 @@ Claims:
 
 Find universal patterns that transcend this specific research area. Focus on structural relationships that appear in multiple claims and could apply to completely different fields."""
 
-    try:
-        result, tokens = call_llm_json(ABSTRACT_PROMPT, prompt)
-        patterns = result.get("patterns", [])
+    result, tokens, _route = proposer_json(
+        ABSTRACT_PROMPT,
+        prompt,
+        llm_scope=llm_scope,
+        operation=f"claim_abstraction:{node_id}",
+    )
+    patterns = result.get("patterns", [])
 
-        # Attach metadata
-        for pat in patterns:
-            pat["node_id"] = node_id
-            pat["node_name"] = node["name"]
-            # Map source indices to claim IDs
-            indices = pat.get("source_claim_indices", [])
-            pat["source_claim_ids"] = [
-                claims[i]["id"] for i in indices
-                if isinstance(i, int) and 0 <= i < len(claims)
-            ]
+    # Attach metadata
+    for pat in patterns:
+        pat["node_id"] = node_id
+        pat["node_name"] = node["name"]
+        # Map source indices to claim IDs
+        indices = pat.get("source_claim_indices", [])
+        pat["source_claim_ids"] = [
+            claims[i]["id"] for i in indices
+            if isinstance(i, int) and 0 <= i < len(claims)
+        ]
 
-        return patterns, tokens
-    except Exception as e:
-        print(f"Abstraction error for {node_id}: {e}", flush=True)
-        return [], 0
+    return patterns, tokens
 
 
 # ── Phase 2: Cross-domain pattern bridging ───────────────────────────
@@ -140,7 +149,11 @@ Rules:
 - Return ONLY valid JSON."""
 
 
-def find_cross_domain_bridges(max_patterns: int = 60) -> tuple[list[dict], int]:
+def find_cross_domain_bridges(
+    max_patterns: int = 60,
+    *,
+    llm_scope: Mapping[str, Any] | None = None,
+) -> tuple[list[dict], int]:
     """Find structural bridges between patterns from different research areas."""
 
     # Get diverse patterns from different top-level areas
@@ -182,25 +195,26 @@ Patterns:
 
 Find bridges — cases where a pattern in one area structurally matches a pattern in a distant area, suggesting concrete method transfer opportunities. The bridge should be specific enough to design an experiment around."""
 
-    try:
-        result, tokens = call_llm_json(BRIDGE_PROMPT, prompt)
-        bridges = result.get("bridges", [])
+    result, tokens, _route = proposer_json(
+        BRIDGE_PROMPT,
+        prompt,
+        llm_scope=llm_scope,
+        operation="cross_domain_bridge_discovery",
+    )
+    bridges = result.get("bridges", [])
 
-        # Enrich with pattern details
-        for bridge in bridges:
-            idx_a = bridge.get("pattern_a_id", 0)
-            idx_b = bridge.get("pattern_b_id", 0)
-            if idx_a < len(patterns):
-                bridge["area_a"] = patterns[idx_a]["node_id"]
-                bridge["pattern_a_text"] = patterns[idx_a]["pattern_text"]
-            if idx_b < len(patterns):
-                bridge["area_b"] = patterns[idx_b]["node_id"]
-                bridge["pattern_b_text"] = patterns[idx_b]["pattern_text"]
+    # Enrich with pattern details
+    for bridge in bridges:
+        idx_a = bridge.get("pattern_a_id", 0)
+        idx_b = bridge.get("pattern_b_id", 0)
+        if idx_a < len(patterns):
+            bridge["area_a"] = patterns[idx_a]["node_id"]
+            bridge["pattern_a_text"] = patterns[idx_a]["pattern_text"]
+        if idx_b < len(patterns):
+            bridge["area_b"] = patterns[idx_b]["node_id"]
+            bridge["pattern_b_text"] = patterns[idx_b]["pattern_text"]
 
-        return bridges, tokens
-    except Exception as e:
-        print(f"Bridge discovery error: {e}", flush=True)
-        return [], 0
+    return bridges, tokens
 
 
 # ── Storage ──────────────────────────────────────────────────────────
@@ -251,7 +265,11 @@ def store_bridge(bridge: dict) -> int:
 
 # ── Pipeline entry points ────────────────────────────────────────────
 
-def run_abstraction_for_nodes(min_claims: int = 15) -> tuple[int, int]:
+def run_abstraction_for_nodes(
+    min_claims: int = 15,
+    *,
+    llm_scope: Mapping[str, Any] | None = None,
+) -> tuple[int, int]:
     """Run abstraction on nodes that have enough claims but no patterns yet."""
     nodes = db.fetchall("""
         SELECT t.id, COUNT(DISTINCT c.id) as claim_count
@@ -271,7 +289,10 @@ def run_abstraction_for_nodes(min_claims: int = 15) -> tuple[int, int]:
     consecutive_empty = 0
     for node in nodes:
         print(f"  Abstracting {node['id']} ({node['claim_count']} claims)...", flush=True)
-        patterns, tokens = abstract_node_claims(node["id"])
+        patterns, tokens = abstract_node_claims(
+            node["id"],
+            llm_scope=llm_scope,
+        )
         total_tokens += tokens
         if not patterns and not tokens:
             consecutive_empty += 1
@@ -292,9 +313,12 @@ def run_abstraction_for_nodes(min_claims: int = 15) -> tuple[int, int]:
     return total_patterns, total_tokens
 
 
-def run_bridge_discovery() -> tuple[int, int]:
+def run_bridge_discovery(
+    *,
+    llm_scope: Mapping[str, Any] | None = None,
+) -> tuple[int, int]:
     """Find cross-domain bridges between existing patterns."""
-    bridges, tokens = find_cross_domain_bridges()
+    bridges, tokens = find_cross_domain_bridges(llm_scope=llm_scope)
     for bridge in bridges:
         store_bridge(bridge)
         print(f"  BRIDGE: {bridge.get('bridge_title', '?')[:80]}", flush=True)

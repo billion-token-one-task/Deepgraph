@@ -4,12 +4,15 @@ NOT "method X wasn't tested on dataset Y" — that's trivial.
 Instead: contradictions, ignored limitations, method transfers, paradigm shifts.
 """
 import json
+from collections.abc import Mapping
 from difflib import SequenceMatcher
-from agents.llm_client import call_llm_json, is_llm_auth_error, is_llm_provider_unavailable_error
+from typing import Any
+
 from config import LLM_MODEL, PROMPT_VERSION
 from db import database as db
 from db import taxonomy as tax
 from db.insight_outcomes import new_generation_run_id, record_created
+from meta_harness.scoped_llm import proposer_json
 
 
 SYSTEM_PROMPT = """You are a principal investigator at a top ML lab reviewing a concentrated body of recent papers. Your job: find the SINGLE most publishable research direction hiding in this evidence — the kind of finding that could anchor a top-venue paper (NeurIPS / ICML / ICLR spotlight level).
@@ -350,11 +353,11 @@ def _validate_insight(insight: dict) -> bool:
     return True
 
 
-def _llm_temporarily_unavailable(exc: Exception) -> bool:
-    return is_llm_auth_error(exc) or is_llm_provider_unavailable_error(exc)
-
-
-def discover_insights(node_id: str) -> tuple[list[dict], int]:
+def discover_insights(
+    node_id: str,
+    *,
+    llm_scope: Mapping[str, Any] | None = None,
+) -> tuple[list[dict], int]:
     """Run deep cross-paper reasoning on a taxonomy node."""
     evidence = gather_node_evidence(node_id)
 
@@ -363,35 +366,37 @@ def discover_insights(node_id: str) -> tuple[list[dict], int]:
 
     prompt = build_evidence_prompt(evidence)
 
-    try:
-        result, tokens = call_llm_json(SYSTEM_PROMPT, prompt)
-        raw_insights = result.get("insights", [])
-        if not raw_insights:
-            print(f"[INSIGHT] {node_id}: LLM returned no insights. Keys: {list(result.keys()) if isinstance(result, dict) else type(result).__name__}. Preview: {str(result)[:200]}", flush=True)
+    result, tokens, _route = proposer_json(
+        SYSTEM_PROMPT,
+        prompt,
+        llm_scope=llm_scope,
+        operation=f"insight_discovery:{node_id}",
+    )
+    raw_insights = result.get("insights", [])
+    if not raw_insights:
+        print(f"[INSIGHT] {node_id}: LLM returned no insights. Keys: {list(result.keys()) if isinstance(result, dict) else type(result).__name__}. Preview: {str(result)[:200]}", flush=True)
 
-        # Filter: validate + dedup
-        insights = []
-        for ins in raw_insights:
-            ins["node_id"] = node_id
-            if not _validate_insight(ins):
-                print(f"[INSIGHT] Filtered (validation): {ins.get('title', '?')[:60]}", flush=True)
-                continue
-            if _dedup_insight(ins, node_id):
-                print(f"[INSIGHT] Filtered (dedup): {ins.get('title', '?')[:60]}", flush=True)
-                continue
-            insights.append(ins)
-        print(f"[INSIGHT] {node_id}: {len(raw_insights)} raw -> {len(insights)} passed filters", flush=True)
+    # Filter: validate + dedup
+    insights = []
+    for ins in raw_insights:
+        ins["node_id"] = node_id
+        if not _validate_insight(ins):
+            print(f"[INSIGHT] Filtered (validation): {ins.get('title', '?')[:60]}", flush=True)
+            continue
+        if _dedup_insight(ins, node_id):
+            print(f"[INSIGHT] Filtered (dedup): {ins.get('title', '?')[:60]}", flush=True)
+            continue
+        insights.append(ins)
+    print(f"[INSIGHT] {node_id}: {len(raw_insights)} raw -> {len(insights)} passed filters", flush=True)
 
-        return insights, tokens
-    except Exception as e:
-        if _llm_temporarily_unavailable(e):
-            print(f"[INSIGHT] {node_id}: LLM unavailable, skipping node ({e})", flush=True)
-            return [], 0
-        print(f"Insight discovery error for {node_id}: {e}", flush=True)
-        return [], 0
+    return insights, tokens
 
 
-def discover_all_insights(min_papers: int = 10) -> tuple[list[dict], int]:
+def discover_all_insights(
+    min_papers: int = 10,
+    *,
+    llm_scope: Mapping[str, Any] | None = None,
+) -> tuple[list[dict], int]:
     """Run insight discovery on all nodes with enough data."""
     nodes = db.fetchall("""
         SELECT t.id, t.name, COUNT(DISTINCT pt.paper_id) as paper_count
@@ -407,7 +412,10 @@ def discover_all_insights(min_papers: int = 10) -> tuple[list[dict], int]:
 
     for node in nodes:
         print(f"  Analyzing {node['id']} ({node['paper_count']}p)...", flush=True)
-        insights, tokens = discover_insights(node["id"])
+        insights, tokens = discover_insights(
+            node["id"],
+            llm_scope=llm_scope,
+        )
         total_tokens += tokens
 
         for ins in insights:

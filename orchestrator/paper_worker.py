@@ -20,7 +20,7 @@ from config import (
     AUTO_PIPELINE_START_DELAY_SECONDS,
 )
 from db import database as db
-from orchestrator.pipeline import log_event, run_continuous
+from orchestrator.pipeline import log_event
 
 _worker_thread: threading.Thread | None = None
 _worker_lock = threading.Lock()
@@ -77,16 +77,10 @@ def get_status() -> dict:
 
 
 def run_cycle() -> dict:
-    db.init_db()
-    batch_size = max(1, AUTO_PIPELINE_BATCH_SIZE)
-    started = time.time()
-    processed = run_continuous(batch_size)
-    return {
-        "status": "completed",
-        "processed": processed,
-        "batch_size": batch_size,
-        "elapsed_seconds": round(time.time() - started, 2),
-    }
+    raise PermissionError(
+        "legacy background paper pipeline has no dynamic ResourceGrant scope; "
+        "use an agenda-scoped ingestion job"
+    )
 
 
 def _run_loop() -> None:
@@ -112,18 +106,10 @@ def _run_loop() -> None:
 
 
 def start() -> dict:
-    global _worker_thread
-    db.init_db()
-    with _worker_lock:
-        if _worker_thread and _worker_thread.is_alive():
-            return {"status": "already_running"}
-        if not _try_acquire_process_lock():
-            return {"status": "already_running_elsewhere"}
-        _stop_event.clear()
-        _worker_thread = threading.Thread(target=_run_loop, daemon=True, name="deepgraph-paper-worker")
-        _worker_thread.start()
-    log_event("paper_worker", {"step": "started"})
-    return {"status": "started"}
+    return {
+        "status": "disabled_resource_grant_required",
+        "reason": "agenda_scoped_ingestion_job_required",
+    }
 
 
 def stop() -> dict:

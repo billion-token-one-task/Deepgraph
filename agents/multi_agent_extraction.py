@@ -7,9 +7,10 @@ so downstream storage and graph-writing code do not need to change.
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from typing import Any
 
-from agents.llm_client import call_llm_json
+from meta_harness.scoped_llm import proposer_json
 
 
 TAXONOMY_OVERVIEW_SYSTEM = """You are the Taxonomy and Paper-Overview Reader.
@@ -348,6 +349,8 @@ def extract_paper_multi_agent(
     title: str,
     taxonomy_hint: str,
     compact_text: str,
+    *,
+    llm_scope: Mapping[str, Any] | None = None,
 ) -> tuple[dict, int]:
     """Run role-specialized extraction and merge into legacy schema."""
     user_prompt = _paper_user_prompt(paper_id, title, taxonomy_hint, compact_text)
@@ -363,15 +366,21 @@ def extract_paper_multi_agent(
     errors: dict[str, str] = {}
     for role_name, system_prompt in roles:
         try:
-            payload, tokens = call_llm_json(system_prompt, user_prompt)
+            payload, tokens, _route = proposer_json(
+                system_prompt,
+                user_prompt,
+                llm_scope=llm_scope,
+                operation=f"paper_extraction:{paper_id}:{role_name}",
+            )
             total_tokens += tokens
             outputs[role_name] = payload if isinstance(payload, dict) else {}
         except Exception as exc:
             errors[role_name] = str(exc)
 
-    merged = merge_role_extractions(outputs)
     if errors:
-        merged["multi_agent_extraction"]["errors"] = errors
-    if not outputs:
-        raise RuntimeError(f"All extraction roles failed: {errors}")
+        raise RuntimeError(
+            "multi-agent extraction failed closed: "
+            + "; ".join(f"{name}={error}" for name, error in sorted(errors.items()))
+        )
+    merged = merge_role_extractions(outputs)
     return merged, total_tokens

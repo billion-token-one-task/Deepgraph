@@ -140,7 +140,16 @@ def main():
         if AUTO_PIPELINE_ENABLED:
             from orchestrator.paper_worker import start as start_paper_worker
             print("Starting paper ingestion worker...", flush=True)
-            start_paper_worker()
+            paper_worker_status = start_paper_worker()
+            if paper_worker_status.get("status") not in {
+                "started",
+                "already_running",
+                "already_running_elsewhere",
+            }:
+                raise RuntimeError(
+                    "Paper ingestion worker failed closed during startup: "
+                    f"{paper_worker_status.get('status') or 'unknown'}"
+                )
             print("Paper ingestion worker ready.", flush=True)
 
         if AUTO_RESEARCH_ENABLED:

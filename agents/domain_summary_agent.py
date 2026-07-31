@@ -1,5 +1,10 @@
 """Generate plain-language domain summaries and research opportunities."""
 
+from collections.abc import Mapping
+from typing import Any
+
+from meta_harness.scoped_llm import proposer_json
+
 SYSTEM_PROMPT = """You explain research landscapes to non-specialists.
 
 Goal: help a curious outsider understand:
@@ -40,10 +45,13 @@ Rules:
 - Return ONLY valid JSON."""
 
 
-def generate_domain_summary(node: dict, snapshot: dict) -> tuple[dict, int]:
+def generate_domain_summary(
+    node: dict,
+    snapshot: dict,
+    *,
+    llm_scope: Mapping[str, Any] | None = None,
+) -> tuple[dict, int]:
     """Generate a node summary from structured evidence."""
-    from agents.llm_client import call_llm_json
-
     papers = snapshot.get("papers", [])
     paper_lines = []
     for idx, paper in enumerate(papers[:12], start=1):
@@ -145,7 +153,13 @@ Deterministic opportunity signals:
 
 Write a plain-language landscape summary for this area."""
 
-    return call_llm_json(SYSTEM_PROMPT, user_prompt)
+    result, tokens, _route = proposer_json(
+        SYSTEM_PROMPT,
+        user_prompt,
+        llm_scope=llm_scope,
+        operation=f"domain_summary:{node['id']}",
+    )
+    return result, tokens
 
 
 def fallback_domain_summary(node: dict, snapshot: dict) -> dict:

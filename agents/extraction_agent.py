@@ -1,7 +1,10 @@
 """Extraction Agent: scientific paper -> taxonomy classification, evidence rows, and graph evidence."""
-from agents.llm_client import call_llm_json
+from collections.abc import Mapping
+from typing import Any
+
 from db.taxonomy import get_all_leaf_ids
 from config import MULTI_AGENT_EXTRACTION_ENABLED
+from meta_harness.scoped_llm import proposer_json
 
 SYSTEM_PROMPT = """You are a scientific paper analysis agent. Extract structured, concrete information from research papers.
 
@@ -187,7 +190,13 @@ def _compact_paper_text(text: str, max_chars: int = MAX_PROMPT_CHARS) -> str:
     return "\n\n".join(kept)[:max_chars]
 
 
-def extract_paper(paper_id: str, title: str, text: str) -> tuple[dict, int]:
+def extract_paper(
+    paper_id: str,
+    title: str,
+    text: str,
+    *,
+    llm_scope: Mapping[str, Any] | None = None,
+) -> tuple[dict, int]:
     """Extract structured info from a paper. Returns (extraction_dict, tokens_used)."""
     leaf_ids = get_all_leaf_ids()
     taxonomy_hint = "Available taxonomy leaf nodes:\n" + "\n".join(
@@ -196,22 +205,17 @@ def extract_paper(paper_id: str, title: str, text: str) -> tuple[dict, int]:
     compact_text = _compact_paper_text(text)
 
     if MULTI_AGENT_EXTRACTION_ENABLED:
-        try:
-            from agents.multi_agent_extraction import extract_paper_multi_agent
+        from agents.multi_agent_extraction import extract_paper_multi_agent
 
-            result, tokens = extract_paper_multi_agent(
-                paper_id,
-                title,
-                taxonomy_hint,
-                compact_text,
-            )
-            result.setdefault("extraction_mode", "multi_agent")
-            return result, tokens
-        except Exception as exc:
-            print(
-                f"[EXTRACT] Multi-agent extraction failed for {paper_id}; falling back to monolithic prompt: {exc}",
-                flush=True,
-            )
+        result, tokens = extract_paper_multi_agent(
+            paper_id,
+            title,
+            taxonomy_hint,
+            compact_text,
+            llm_scope=llm_scope,
+        )
+        result.setdefault("extraction_mode", "multi_agent")
+        return result, tokens
 
     user_prompt = f"""Paper ID: {paper_id}
 Title: {title}
@@ -221,7 +225,12 @@ Title: {title}
 Full text:
 {compact_text}"""
 
-    result, tokens = call_llm_json(SYSTEM_PROMPT, user_prompt)
+    result, tokens, _route = proposer_json(
+        SYSTEM_PROMPT,
+        user_prompt,
+        llm_scope=llm_scope,
+        operation=f"paper_extraction:{paper_id}:monolithic",
+    )
     if isinstance(result, dict):
         result.setdefault("extraction_mode", "monolithic")
     return result, tokens

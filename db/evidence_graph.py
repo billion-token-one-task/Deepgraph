@@ -972,7 +972,6 @@ def backfill_graph_from_structured_data(limit: int | None = None, overwrite: boo
     for node_id in sorted(touched_nodes):
         ensure_node_graph_summary(node_id, force=True)
         opp.ensure_node_opportunities(node_id, force=True)
-        tax.ensure_node_summary(node_id, force=True)
 
     return {
         "papers_processed": processed,
