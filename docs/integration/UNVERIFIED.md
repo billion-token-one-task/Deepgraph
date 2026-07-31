@@ -14,13 +14,13 @@ deliberately not claimed as working:
 - no candidate worktree was created and no held-in/out/canary suite ran;
 - Colab CLI upload/exec/download argument compatibility is unverified;
 - legacy scheduler worker internals still contain transport branches, although
-  new local/SSH admission and durable settlement now pass through
+  new CPU/local/SSH admission and durable settlement now pass through
   `ComputeScheduler`; runtime restart behavior is unverified;
 - proposal, benchmark, forge, validation, manuscript revision and plain-review
   core LLM paths are granted/role-routed, but the remaining direct caller
   inventory is not yet fully classified or removed;
-- legacy operational/scientific state writes are not exhaustively routed
-  through the canonical evidence transition repository;
+- canonical scientific-state SQL writes pass a static authority audit, but
+  legacy operational/verdict semantics are not end-to-end verified;
 - durable compute claim/reuse/quarantine code and isolated PostgreSQL tests
   exist, but service startup wiring and exactly-once behavior across real
   process/backend crash windows are not end-to-end verified;

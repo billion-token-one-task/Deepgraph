@@ -21,7 +21,8 @@ import was performed. `legacy` means the caller still invokes `call_llm` or
 | plain manuscript review | reviewer role + manuscript grant | recorded proposer route plus independent reviewer | adapted; CI pending |
 | Tier-2 debate/refinement | evaluator/reviewer/proposer roles + proposal grant | stable proposal candidate | adapted; CI pending |
 | legacy PaperOrchestra refinement-loop helper | legacy, no known generic call site | must be routed or removed before activation | open |
-| paradigm/insight ranking outside the proposal path | legacy | agenda/candidate-scoped route | open |
+| legacy Tier-1 paradigm discovery | generic scheduler blocked | problem-first proposal identity + grant | fail-closed; legacy implementation retained only for reference |
+| global legacy insight rank endpoint | HTTP 410, no background call | portfolio decision packet | fail-closed |
 | extraction/abstraction/reasoning/taxonomy/domain summary | legacy ingestion | bounded ingestion identity and grant contract | open |
 | example CGGR plugin | legacy/non-production | explicit example-only policy | excluded from generic runtime |
 
