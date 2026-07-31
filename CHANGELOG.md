@@ -29,7 +29,9 @@ acceptance state`). Control-plane hardening checkpoint:
 ordering checkpoint: `692bb625309ab096f80464f17dcb44891c126aa0`
 (`fix: reconcile compute before research startup`). Scoped ingestion LLM
 checkpoint: `a7262a3d7bb4e7fa3983f31d5a7082f9f5118e41`
-(`fix: require grants for ingestion LLM work`). None has been pushed or
+(`fix: require grants for ingestion LLM work`). Durable unknown-usage schema
+checkpoint: `bdda49cad1567190ae7af50315f9b9e3f22627d6`
+(`fix: allow durable unknown usage quarantine`). None has been pushed or
 accepted as a release.
 
 ### Lineage and why this candidate exists
@@ -235,10 +237,10 @@ Allowed static checks currently report:
 - 272 Python files parsed by the broad AST pass and 250 by the release static
   audit at the latest working-tree checkpoint;
 - no finding from the topic/integrity/migration/secret static audit;
-- SQL AST audit: 797 literal calls, 794 statically countable, no definite
+- SQL AST audit: 799 literal calls, 796 statically countable, no definite
   mismatch, and 114 dynamic calls left for review/CI;
-- additive migration plan: 84 statements, 24,742 bytes, SHA-256
-  `f0fcc7680ad211774d53d40179c34cf01044537d009407e5d58e6a74c7c862a2`,
+- additive migration plan: 84 statements, 24,759 bytes, SHA-256
+  `dd64219c5b4189093deb4ace3f87a3a658696a07695d279487f32eba5b7e38de`,
   no destructive token and no database access;
 - `git diff --check` passed;
 - agenda example JSON parsed.

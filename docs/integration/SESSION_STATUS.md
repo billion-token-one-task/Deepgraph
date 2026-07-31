@@ -15,6 +15,10 @@
 - The direct-LLM AST inventory now reports 14 classified legacy calls, zero
   ingestion calls and zero unclassified calls. Multi-role extraction fails as
   a unit instead of silently falling back.
+- Migration status quarantine is locally committed as
+  `bdda49cad1567190ae7af50315f9b9e3f22627d6`: the additive PostgreSQL CHECK
+  now permits the already-implemented `usage_unknown` recovery state, with an
+  isolated integration assertion for expired running jobs.
 - Safety recheck at 07:56 UTC: load `0.57, 0.62, 0.48`; root disk remained
   53% used with about 95 GB free; `/tmp` remained 27% used.
 - CPU compute admission is locally committed as
@@ -56,8 +60,8 @@
   validation, knowledge, novelty, result, workspace, manuscript, watchdog,
   auto-research, GPU scheduler and legacy Web writes: 139 scoped literal
   mutations and zero definite unscoped/dynamic mutations.
-- Migration dry plan is now 84 statements, 24,742 bytes, SHA-256
-  `f0fcc7680ad211774d53d40179c34cf01044537d009407e5d58e6a74c7c862a2`.
+- Migration dry plan is now 84 statements, 24,759 bytes, SHA-256
+  `dd64219c5b4189093deb4ace3f87a3a658696a07695d279487f32eba5b7e38de`.
 
 Current decision remains: not eligible to replace master.
 
@@ -113,11 +117,11 @@ Phase 3–8 integration remains incomplete; see [UNVERIFIED.md](UNVERIFIED.md).
 - Broad AST parse: 272 Python files. `scripts/meta_harness_static_audit.py`:
   passed, 250 Python files parsed,
   no application import/database access.
-- Migration dry plan: 84 statements, 24,742 bytes,
+- Migration dry plan: 84 statements, 24,759 bytes,
   SHA-256
-  `f0fcc7680ad211774d53d40179c34cf01044537d009407e5d58e6a74c7c862a2`,
+  `dd64219c5b4189093deb4ace3f87a3a658696a07695d279487f32eba5b7e38de`,
   no destructive token, no database access.
-- SQL AST audit: 797 literal calls, 794 statically countable, no definite
+- SQL AST audit: 799 literal calls, 796 statically countable, no definite
   placeholder mismatch; 114 dynamic calls remain explicit review/CI scope.
 - `git diff --check`: passed.
 - Agenda example JSON parsed.

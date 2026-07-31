@@ -31,9 +31,9 @@ accepted.
   audit at the latest checkpoint;
 - static topic/integrity/migration/secret audit passed at that checkpoint;
 - migration dry plan reported 84 statements, SHA-256
-  `f0fcc7680ad211774d53d40179c34cf01044537d009407e5d58e6a74c7c862a2`,
+  `dd64219c5b4189093deb4ace3f87a3a658696a07695d279487f32eba5b7e38de`,
   and no destructive token;
-- SQL AST audit found no definite placeholder mismatch across 794 countable
+- SQL AST audit found no definite placeholder mismatch across 796 countable
   literal calls; 114 dynamic calls remain review/CI scope;
 - agenda mutation audit found 138 explicitly scoped literal mutations and no
   definite unscoped or dynamic mutation;
