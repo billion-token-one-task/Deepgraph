@@ -388,7 +388,7 @@ CREATE TABLE IF NOT EXISTS compute_jobs_v1 (
         status IN (
             'submitting', 'submission_unknown', 'submitted', 'running',
             'cancel_requested', 'collecting', 'succeeded', 'failed',
-            'cancelled', 'timed_out'
+            'cancelled', 'timed_out', 'usage_unknown'
         )
     ),
     heartbeat_at TIMESTAMPTZ,
