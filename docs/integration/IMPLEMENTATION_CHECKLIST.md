@@ -230,8 +230,10 @@ artifacts named in its evidence column may promote it to `[x]`.
   paths/symlinks are rejected.
 - [~] **P4-15** Colab lifecycle ports new/upload/exec/download/stop; CLI syntax
   and artifact canary pending.
-- [ ] **P4-16** Legacy GPU scheduler transport branches are fully replaced by
-  `ComputeScheduler`.
+- [~] **P4-16** PostgreSQL legacy GPU queue insertion now requires and
+  persists a matching `ComputeScheduler` claim/idempotency identity. Local/SSH
+  execution internals still use the guarded legacy worker transport and need
+  isolated runtime replacement/CI.
 - [~] **P4-17** Durable compute idempotency/recovery uses `compute_jobs_v1`;
   claim-before-submit and restart reuse are implemented, isolated PostgreSQL
   execution pending.
@@ -245,8 +247,9 @@ artifacts named in its evidence column may promote it to `[x]`.
   requires the persisted grant's artifacts and bounded usage.
 - [~] **P4-22** Legacy local/SSH queue submission now enters through a runtime
   `ComputeScheduler` with `ComputeJobRepository`; startup reconciles expiry
-  per agenda and attempts settlement of persisted live legacy jobs. Runtime
-  restart/crash verification remains pending.
+  per agenda and attempts settlement of persisted live legacy jobs. Only the
+  process holding the scheduler lock may run recovery. Runtime restart/crash
+  verification remains pending.
 - [~] **P4-23** Failed/cancelled/timed-out backends must persist measured usage
   before terminal settlement; expired jobs with unknown usage are quarantined
   as `usage_unknown`. The additive schema CHECK permits that state and an
@@ -258,8 +261,11 @@ artifacts named in its evidence column may promote it to `[x]`.
   pending.
 - [x] **P4-25** CPU exceptions, non-completed legacy returns and artifact
   certification failure cannot be converted into durable compute success.
-- [ ] **P4-26** Colab CLI execution is not yet backed by a durable
-  queue/worker and is not registered in application startup.
+- [~] **P4-26** `colab_work_requests_v1` persists immutable scoped payloads
+  before `ComputeScheduler` admission; a claim-before-session worker,
+  deterministic backend identity, artifact/usage settlement and restart
+  quarantine are registered when `colab_gpu` is enabled. PostgreSQL fault
+  execution and CLI/canary compatibility remain pending.
 - [x] **P4-27** Runtime scheduler construction honors
   `compute_backends.enabled`; unknown or disabled backends fail closed and SSH
   uses configured reference-only settings.
@@ -268,7 +274,8 @@ artifacts named in its evidence column may promote it to `[x]`.
   legacy Web execution bypasses are blocked.
 - [~] **P4-29** Application startup completes compute scheduler reconciliation
   before starting auto-research and fails closed on an unknown scheduler
-  status. Startup/restart tests are written but not run.
+  status. Configured asynchronous Colab also starts through this boundary.
+  Startup/restart tests are written but not run.
 
 ## P5. Scientific evidence state machine
 
@@ -370,12 +377,19 @@ artifacts named in its evidence column may promote it to `[x]`.
   alone cannot approve.
 - [x] **P7-13** Harness repository persists agenda-scoped lineage/evaluation
   records.
-- [~] **P7-14** Candidate isolation tests are written but not run.
+- [~] **P7-14** Candidate isolation tests now cover a hash-pinned bubblewrap
+  command with read-only candidate/evaluator/suite mounts, cleared environment,
+  unshared network, isolated output and before/after candidate tree hashes;
+  tests are written but not run.
 - [ ] **P7-15** No actual candidate worktree/evaluator/canary has run.
 - [~] **P7-16** Detached HMAC approval envelopes bind reviewer, key ID,
   purpose, subject and issuance time, with secret material referenced only by
   environment variable. External reviewer identity/key issuance and rotation
   remain unverified operational controls.
+- [x] **P7-17** The evaluator mutation API refuses to run unless production
+  path/database boundaries are explicitly configured and the evaluator and
+  suite tree hashes match operator-pinned values. It never falls back when the
+  isolation binary is unavailable.
 
 ## P8. Minimal API and configuration
 
@@ -404,7 +418,10 @@ artifacts named in its evidence column may promote it to `[x]`.
   an API key is configured, never a prefix/suffix fingerprint.
 - [~] **P8-17** `run_analysis_once.py` requires explicit agenda/idea/grant/stage
   arguments and revalidates the persisted active grant before processing.
-  A durable operator API/queue for scoped ingestion is still pending.
+  The operator API can now enqueue existing paper IDs into
+  `scoped_ingestion_jobs_v1`; a leased worker resumes checkpointed work,
+  bounds retries and revalidates the active LLM grant. PostgreSQL/provider
+  failure execution is pending.
 
 ## X. Explicitly excluded from first release
 
@@ -420,13 +437,13 @@ artifacts named in its evidence column may promote it to `[x]`.
 ## V. Validation and delivery
 
 - [x] **V-01** Static audit script has no app import/database access.
-- [x] **V-02** 272 Python files passed the broad AST parse and 250 files passed
+- [x] **V-02** 279 Python files passed the broad AST parse and 257 files passed
   the release static audit at the latest checkpoint.
 - [x] **V-03** Side-effect-free SQL AST audit found no definite mismatch:
-  799 literal calls, 796 statically countable, and 114 dynamic calls explicitly
+  838 literal calls, 835 statically countable, and 114 dynamic calls explicitly
   left for review/CI.
 - [x] **V-04** `git diff --check` passed.
-- [x] **V-04A** Agenda mutation scope audit passes: 138 scoped literal
+- [x] **V-04A** Agenda mutation scope audit passes: 154 scoped literal
   UPDATE/DELETE statements, zero definite unscoped or dynamic mutations.
 - [x] **V-04B** Scientific-state authority audit passes: two state-bearing SQL
   literals, zero unauthorized mutation locations.
@@ -435,8 +452,8 @@ artifacts named in its evidence column may promote it to `[x]`.
 - [x] **V-05** Agenda example JSON parsed.
 - [x] **V-06** Migration dry-plan recorded statement count/checksum/no
   destructive token.
-- [~] **V-07** Pure policy/integrity/fault/calibration/Colab tests are written,
-  not run.
+- [~] **V-07** Pure policy/integrity/fault/calibration/durable-queue/evaluator
+  isolation tests are written, not run.
 - [~] **V-08** Disposable PostgreSQL twice-run/count-preservation test is
   written, not run.
 - [~] **V-08A** Durable compute restart/unknown-submission/artifact-finalization
@@ -456,7 +473,9 @@ artifacts named in its evidence column may promote it to `[x]`.
   pushed. Legacy Web boundary hardening is `954b858`; it also remains local.
   Residual execution/secret-hint hardening is `d192a8d`, startup recovery
   ordering is `692bb62`, scoped ingestion routing is `a7262a3`, and durable
-  unknown-usage schema repair is `bdda49c`.
+  unknown-usage schema repair is `bdda49c`. Durable Colab/scoped ingestion
+  queues, guarded legacy GPU identity and the isolated evaluator runner are
+  `724a3ed51fe4649a720c08fb0c213014eb9d236a`.
 - [ ] **V-14** No push until explicit approval and quiescence check.
 - [ ] **V-15** Final candidate commit hash must replace working-tree/intermediate
   hashes in all acceptance artifacts.

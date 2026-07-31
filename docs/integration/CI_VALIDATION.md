@@ -4,6 +4,10 @@ No command in this document was run on the current host. In particular,
 `pytest`, application imports/startup, migrations, builds, provider calls,
 SSH, Colab, and GPU work remain unexecuted here.
 
+Record the isolated run in
+[ISOLATED_CI_EVIDENCE_TEMPLATE.md](ISOLATED_CI_EVIDENCE_TEMPLATE.md). Empty or
+false fields remain blockers; do not infer acceptance from test code alone.
+
 ## Lane 1: static source audit
 
 Permitted on a clean source checkout with no application environment:
@@ -33,6 +37,8 @@ env -u DEEPGRAPH_DATABASE_URL -u DATABASE_URL \
     tests/test_meta_harness_v1_routing.py \
     tests/test_meta_harness_v1_calibration.py \
     tests/test_meta_harness_v1_colab_contract.py \
+    tests/test_meta_harness_v1_durable_queues.py \
+    tests/test_harness_evaluator_runner.py \
     tests/test_frontier_source.py \
     tests/test_llm_role_boundaries.py \
     tests/test_benchmark_design_agent.py \
@@ -108,6 +114,10 @@ Add integration cases for:
 - evidence-graph Frontier query-ref reproducibility and operator-evidence
   rejection;
 - proposal-pending identity/grant/promotion idempotency.
+- scoped-ingestion duplicate enqueue, lease expiry, checkpoint resume, retry
+  exhaustion and grant expiry;
+- Colab admission/bind crash windows, single-worker claim, restart
+  `usage_unknown` quarantine and terminal artifact/usage settlement.
 
 SQLite is not an acceptance substitute. Its legacy compatibility tests may
 remain a fast lane, but meta-harness-v1 migration and concurrency authority are
@@ -115,7 +125,8 @@ PostgreSQL-only until explicitly proven otherwise.
 
 ## Lane 4: candidate isolation
 
-Use a throwaway clone and database namespace. Verify:
+Use a throwaway clone and database namespace and follow
+[EVALUATOR_ISOLATION.md](EVALUATOR_ISOLATION.md). Verify:
 
 - worktree is a dedicated child of `candidate_root`;
 - production path and database name are rejected;
@@ -125,6 +136,9 @@ Use a throwaway clone and database namespace. Verify:
 - diff module/line limits come from a reviewed policy;
 - held-in, held-out and canary are hash-pinned and all required;
 - approval cannot be produced by the candidate process.
+- the isolation binary is real (not a mock), network is unavailable, candidate
+  and suite mounts reject writes, only the output mount is writable, and
+  candidate tree hashes are identical before/after.
 
 ## Lane 5: fault injection and canary
 

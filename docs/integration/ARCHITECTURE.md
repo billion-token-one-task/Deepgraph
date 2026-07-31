@@ -60,20 +60,21 @@ or Thompson sampler after sufficient OutcomeRecord data exists.
 | Frontier construction/gate | `meta_harness/frontier_builder.py`, `frontier.py` |
 | Decision and resource allocation | `meta_harness/portfolio.py`, `grants.py`, `repository.py` |
 | Role-separated LLM | `meta_harness/llm_routing.py`, granted entry point in `agents/llm_client.py` |
-| Backend-neutral execution | `meta_harness/compute.py`, `compute_repository.py`, `backends/colab_cli.py` |
+| Backend-neutral execution | `meta_harness/compute.py`, `compute_repository.py`, `backends/colab_cli.py`, `backends/colab_durable.py` |
 | Scientific state | `contracts/scientific_evidence.py`, `meta_harness/evidence_state.py` |
 | Feedback/calibration | trusted OutcomeRecord assembly in `repository.py`, `meta_harness/calibration.py` |
-| Harness evolution | `harness_evolution.py`, `candidate_workspace.py`, `harness_repository.py` |
+| Harness evolution | `harness_evolution.py`, `candidate_workspace.py`, `evaluator_runner.py`, `harness_repository.py` |
+| Scoped ingestion queue | `ingestion_queue.py`, `orchestrator/scoped_ingestion_worker.py` |
 | Operator control/observation | `web/meta_harness_routes.py` |
 
 The v1 APIs and repositories form an explicit control plane. The legacy
 background scheduler is not yet the authoritative implementation of every
-phase: post-agenda LLM callers, legacy backend transport branches and legacy
-state writes require further adapters. Durable compute claims are committed
-before a backend call; an uncertain response is quarantined for manual
-reconciliation, and backend success remains `collecting` until required
-artifacts and bounded usage are persisted. Runtime startup/reconciliation
-wiring and isolated PostgreSQL crash tests are still pending. Until that work
+phase: legacy local/SSH execution branches and legacy state writes require
+further adapters. Durable compute claims are committed before a backend call;
+an uncertain response is quarantined for manual reconciliation, and backend
+success remains `collecting` until required artifacts and bounded usage are
+persisted. Colab and scoped ingestion now have durable claim workers, while
+their PostgreSQL/provider/backend crash tests remain pending. Until that work
 is complete, operator/API progression must remain fail-closed and the
 candidate is not deployable.
 

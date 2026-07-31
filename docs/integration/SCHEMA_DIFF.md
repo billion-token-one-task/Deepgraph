@@ -29,8 +29,9 @@ executed and no production business rows were read.
 
 1. create the three missing GitHub problem/evidence/benchmark tables plus
    Agenda, Frontier, portfolio, grant, outcome, route-observation,
-   provider-cooldown, compute-job, evidence-audit/decision and
-   harness-evolution tables with checks and foreign keys;
+   provider-cooldown, compute-job, durable Colab/scoped-ingestion queue,
+   evidence-audit/decision and harness-evolution tables with checks and foreign
+   keys;
 2. add nullable `agenda_id` to legacy core tables so existing rows survive;
 3. create indexes concurrently only in a separately approved deployment step,
    or use ordinary indexes in an isolated restored database;
@@ -64,13 +65,14 @@ developer compatibility lane only.
 
 After the missing-table correction, the side-effect-free planner reported:
 
-- 84 statements;
-- 24,759 bytes;
+- 90 statements;
+- 27,718 bytes;
 - SHA-256
-  `dd64219c5b4189093deb4ace3f87a3a658696a07695d279487f32eba5b7e38de`;
+  `6379d919c951a827017eacf72e1168d52980bb2d515c5f14d44e5121f01b1185`;
 - no destructive token;
 - `database_accessed=false`.
 
-This is an intermediate working-tree checksum. Regenerate it from the final
-candidate commit; never apply a migration whose checksum differs from the
-reviewed ticket.
+This is the checksum at implementation checkpoint
+`724a3ed51fe4649a720c08fb0c213014eb9d236a`, not release evidence. Regenerate
+it from the final candidate commit; never apply a migration whose checksum
+differs from the reviewed ticket.
