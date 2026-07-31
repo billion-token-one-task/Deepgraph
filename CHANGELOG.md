@@ -11,7 +11,12 @@ Status: **development branch; not accepted for master; not deployed**.
 
 Local implementation checkpoint:
 `c25e63c` (`feat: build controlled meta-harness-v1 candidate`). This hash has
-not been pushed and is not an acceptance/deployment identifier.
+not been pushed and is not an acceptance/deployment identifier. Integration
+documentation checkpoint: `ee96fba` (`docs: record meta-harness-v1 lineage and
+acceptance state`). Control-plane hardening checkpoint:
+`2cccc7a6d293f5063425958fa771f368afdf7077`
+(`feat: harden meta-harness control plane`). None has been pushed or accepted
+as a release.
 
 ### Lineage and why this candidate exists
 
@@ -64,8 +69,17 @@ GitHub origin/master@6048a95
 - Frontier freshness/obsolescence gate and transparent best-of-N portfolio
   policy with diversity, exploration, falsification, surprise and opportunity
   cost.
+- Evidence-graph Frontier assembly from agenda-scoped research problems,
+  explicitly linked papers, results and negative evidence. The operator may
+  submit assessments but cannot substitute caller-authored evidence arrays.
 - Role-separated proposer/evaluator/reviewer LLM routing, explicit fallback,
   cooldown, metering and failure observations.
+- Honest `proposal_pending` idea identities that may receive a proposal-stage
+  grant and are promoted in place; without a grant, proposal LLM calls do not
+  run.
+- Purpose/subject/time-bound detached reviewer approvals whose HMAC key
+  material is referenced by environment variable and whose raw signature is
+  not persisted.
 - Durable provider cooldown state that is reloaded after router/process
   reconstruction instead of existing only in one call object.
 - Backend-neutral CPU/LocalGPU/SSHGPU/ColabGPU contracts with capability,
@@ -74,6 +88,8 @@ GitHub origin/master@6048a95
   submission, quarantine uncertain outcomes, reuse a persisted live job after
   restart, and require bounded usage plus grant-required artifacts before
   durable success.
+- Durable measured-usage settlement for failed/cancelled/timed-out jobs;
+  expiry without known usage is quarantined as `usage_unknown`.
 - Multi-account Colab lifecycle adapter with isolated HOME/OAuth/session/quota,
   secret references and credential/backup path rejection.
 - Single monotonic scientific evidence state machine from `planned` through
@@ -88,6 +104,8 @@ GitHub origin/master@6048a95
   experiment artifacts and canonical scientific decisions; the operator API
   no longer accepts caller-supplied outcome metrics.
 - Minimal operator-authenticated meta-harness API and count-only status view.
+- AST-only agenda mutation scope audit that is a release blocker while any
+  definite unscoped legacy UPDATE/DELETE remains.
 - Non-sensitive `deepgraph.toml` policy for agendas, portfolio, grants, LLM
   roles, compute backends, evidence, harness evolution, failures and traces.
 - Static source audit, isolated PostgreSQL test skeleton, scientific-integrity
@@ -105,6 +123,14 @@ GitHub origin/master@6048a95
   non-expired ResourceGrant.
 - Forge scout/scaffold/repair and validation code/reproduction repair use the
   granted proposer route with stable idempotency keys and route provenance.
+- Proposal method/experiment design, benchmark design, Tier-2 debate,
+  manuscript revision and plain final review use scoped role routes; evaluator
+  and reviewer calls receive the recorded proposer route for independence.
+- Provider-returned explicit cost fields are persisted; absent cost remains
+  unknown and is never estimated.
+- Local/SSH GPU admission now enters the backend-neutral scheduler and durable
+  job repository; startup recovery is per agenda and attempts to settle
+  persisted legacy jobs without resubmission.
 - Validation reports operational `supported` instead of directly creating
   `confirmed`; positive problem, knowledge, manuscript and meta-learning paths
   require a persisted supported scientific decision.
@@ -159,15 +185,17 @@ The example plugin is non-production and disabled unless explicitly selected.
 
 Allowed static checks currently report:
 
-- 239 Python files parsed by AST;
+- 245 Python files parsed by AST at the latest working-tree checkpoint;
 - no finding from the topic/integrity/migration/secret static audit;
-- SQL AST audit: 757 literal calls, 754 statically countable, no definite
-  mismatch, and 109 dynamic calls left for review/CI;
-- additive migration plan: 81 statements, 23,995 bytes, SHA-256
-  `dcdf8fcce3113a36f8c652b5f015135921b8541c68523e6b01cb576e0c8aecb9`,
+- SQL AST audit: 785 literal calls, 782 statically countable, no definite
+  mismatch, and 112 dynamic calls left for review/CI;
+- additive migration plan: 84 statements, 24,742 bytes, SHA-256
+  `f0fcc7680ad211774d53d40179c34cf01044537d009407e5d58e6a74c7c862a2`,
   no destructive token and no database access;
 - `git diff --check` passed;
 - agenda example JSON parsed.
+- agenda mutation scope audit passes: 134 scoped literal mutations, zero
+  definite unscoped or dynamic mutations.
 
 Not run: pytest, application imports/startup, PostgreSQL migration, production
 backup startup, provider/backend calls, CPU/GPU/SSH/Colab work, candidate
@@ -177,18 +205,19 @@ remains an isolated CI item.
 
 ### Known incomplete integration
 
-- Some post-agenda legacy LLM callers still use the legacy client instead of
-  the granted role route, notably pre-idea discovery and parts of manuscript
-  refinement. A pre-candidate grant must not be faked with the wrong idea ID.
-- The legacy GPU scheduler still contains transport-specific branches and is
-  not yet wired to the new durable `ComputeJobRepository` at runtime.
+- Remaining direct LLM callers must still be exhaustively classified as
+  pre-agenda ingestion, example-only, migrated or blocked.
+- The legacy GPU worker scheduler still contains transport-specific internals;
+  local/SSH admission and durable settlement are bridged, while CPU/Colab
+  runtime wiring remains incomplete.
 - Not every legacy direct operational/scientific status write has been routed
   through the canonical evidence transition repository.
-- Live Frontier retrieval and trusted automatic OutcomeRecord assembly are not
-  end-to-end runtime wired; successful outcomes have trusted assembly code,
-  while failed compute jobs still need durable usage capture before they can
-  settle an OutcomeRecord.
-- Reviewer identity/approval needs an externally authenticated mechanism.
+- Agenda scope has static evidence only; multi-agenda PostgreSQL concurrency
+  and fault isolation still require isolated execution.
+- Frontier, failed compute usage and reviewer signatures have implementation
+  material but no isolated PostgreSQL/API/backend execution evidence.
+- Reviewer key issuance, identity authentication and rotation remain external
+  operational controls.
 - No isolated CI/canary evidence exists yet, so this entry must remain
   Unreleased and the branch must not replace master.
 

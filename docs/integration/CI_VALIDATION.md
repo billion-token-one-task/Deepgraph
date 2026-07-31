@@ -10,6 +10,7 @@ Permitted on a clean source checkout with no application environment:
 
 ```bash
 python3 scripts/meta_harness_static_audit.py
+python3 scripts/meta_harness_scope_audit.py
 python3 scripts/meta_harness_sql_audit.py
 python3 scripts/meta_harness_migration.py
 git diff --check
@@ -32,6 +33,9 @@ env -u DEEPGRAPH_DATABASE_URL -u DATABASE_URL \
     tests/test_meta_harness_v1_routing.py \
     tests/test_meta_harness_v1_calibration.py \
     tests/test_meta_harness_v1_colab_contract.py \
+    tests/test_frontier_source.py \
+    tests/test_llm_role_boundaries.py \
+    tests/test_benchmark_design_agent.py \
     tests/test_scientific_authority.py \
     tests/test_meta_learner.py \
     tests/test_outcome_assembly.py
@@ -100,6 +104,10 @@ Add integration cases for:
 - trusted OutcomeRecord assembly and rejection of caller-supplied metrics;
 - failed compute usage capture before OutcomeRecord settlement;
 - compute timeout/heartbeat recovery beyond the durable repository cases.
+- signed reviewer approval purpose/subject/expiry/key-rotation behavior;
+- evidence-graph Frontier query-ref reproducibility and operator-evidence
+  rejection;
+- proposal-pending identity/grant/promotion idempotency.
 
 SQLite is not an acceptance substitute. Its legacy compatibility tests may
 remain a fast lane, but meta-harness-v1 migration and concurrency authority are

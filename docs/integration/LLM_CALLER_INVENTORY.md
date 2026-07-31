@@ -13,29 +13,26 @@ import was performed. `legacy` means the caller still invokes `call_llm` or
 | experiment-plan repair | proposer role + repair/design/pilot grant | idea/stage grant | adapted; CI pending |
 | validation code iteration | proposer role + validation grant | run idea/stage grant | adapted; CI pending |
 | reproduction repair | proposer role + validation grant | run idea/stage grant | adapted; CI pending |
-| problem sharpening/method invention/experiment design | legacy | a persisted pre-candidate identity and bounded proposal grant | open; do not invent a deep-insight ID |
-| benchmark design agent | legacy | idea-scoped proposer/reviewer grant | open |
+| problem sharpening | deterministic persisted problem selection | no LLM authority | adapted; no pre-identity call |
+| method invention/experiment design | proposer role + proposal ResourceGrant | stable `proposal_pending` deep-insight ID | adapted; CI pending |
+| benchmark design agent | proposer role + forge/pilot ResourceGrant | idea/stage grant | adapted; CI pending |
 | codebase scout direct/agentic entry point | legacy when called outside forge | idea-scoped grant | open; production forge bypasses it |
-| PaperOrchestra/refinement/plain manuscript review | legacy | manuscript/reviewer grant after `manuscript_allowed` | open |
-| paradigm/tier-2 refinement/insight ranking | legacy | agenda/candidate-scoped role route | open |
+| PaperOrchestra manuscript revision | proposer role + manuscript grant | manuscript-allowed idea/run | adapted; CI pending |
+| plain manuscript review | reviewer role + manuscript grant | recorded proposer route plus independent reviewer | adapted; CI pending |
+| Tier-2 debate/refinement | evaluator/reviewer/proposer roles + proposal grant | stable proposal candidate | adapted; CI pending |
+| legacy PaperOrchestra refinement-loop helper | legacy, no known generic call site | must be routed or removed before activation | open |
+| paradigm/insight ranking outside the proposal path | legacy | agenda/candidate-scoped route | open |
 | extraction/abstraction/reasoning/taxonomy/domain summary | legacy ingestion | bounded ingestion identity and grant contract | open |
 | example CGGR plugin | legacy/non-production | explicit example-only policy | excluded from generic runtime |
 
-## Unresolved pre-candidate authority
+## Pre-candidate authority decision
 
-`ResourceGrant.idea_id` is mandatory and the existing runtime uses it as the
-persisted `deep_insights.id`. Problem sharpening and method invention occur
-before that row exists. Reusing a research-problem ID or inserting a fake
-deep-insight would create false lineage. The remaining correct choices for
-isolated design review are:
-
-1. persist a first-class proposal candidate, make its ID the stable idea
-   identity through promotion and execution; or
-2. pre-allocate a minimal, honest deep-insight candidate row whose status and
-   provenance explicitly say `proposal_pending`.
-
-Until one schema/contract path is reviewed and migrated, those legacy calls are
-not authorized as meta-harness-v1 high-cost production calls.
+The implementation uses an honest minimal `deep_insights` row with status
+`proposal_pending`, agenda/problem provenance and no fabricated method or
+result. Frontier/portfolio may issue a `stage=proposal` grant to that stable
+ID. Method/experiment generation then consumes the grant, and successful
+storage promotes the same row in place. Without a grant, the row remains
+pending and no LLM call occurs.
 
 ## Review rule
 

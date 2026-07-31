@@ -13,19 +13,23 @@ deliberately not claimed as working:
 - no provider, CPU experiment, GPU, SSH, Colab, build or dependency install ran;
 - no candidate worktree was created and no held-in/out/canary suite ran;
 - Colab CLI upload/exec/download argument compatibility is unverified;
-- legacy scheduler transport branches are not fully replaced by
-  `ComputeScheduler`;
-- forge and validation repair LLM paths are granted/role-routed, but
-  pre-idea discovery and manuscript/refinement callers are not exhaustively
-  moved to `call_llm_for_role`; a pre-candidate grant contract remains open;
+- legacy scheduler worker internals still contain transport branches, although
+  new local/SSH admission and durable settlement now pass through
+  `ComputeScheduler`; runtime restart behavior is unverified;
+- proposal, benchmark, forge, validation, manuscript revision and plain-review
+  core LLM paths are granted/role-routed, but the remaining direct caller
+  inventory is not yet fully classified or removed;
 - legacy operational/scientific state writes are not exhaustively routed
   through the canonical evidence transition repository;
 - durable compute claim/reuse/quarantine code and isolated PostgreSQL tests
   exist, but service startup wiring and exactly-once behavior across real
   process/backend crash windows are not end-to-end verified;
-- the operator API assembles successful-run OutcomeRecord values from durable
-  metering/artifacts/decisions, but failed compute jobs do not yet persist
-  enough usage data for trusted automatic settlement;
+- non-success compute usage settlement is implemented, but no isolated
+  PostgreSQL/backend fault test has verified it;
+- the agenda mutation AST audit is clean, but PostgreSQL concurrency/fault
+  execution has not proved cross-agenda isolation at runtime;
+- signed reviewer approval is implemented, but reviewer identity/key issuance,
+  rotation and external authentication have not been exercised;
 - durable provider cooldown persistence exists but restart behavior has not
   run against isolated PostgreSQL;
 - calibration reports have no real OutcomeRecord sample;

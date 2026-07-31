@@ -64,10 +64,10 @@ developer compatibility lane only.
 
 After the missing-table correction, the side-effect-free planner reported:
 
-- 81 statements;
-- 23,995 bytes;
+- 84 statements;
+- 24,742 bytes;
 - SHA-256
-  `dcdf8fcce3113a36f8c652b5f015135921b8541c68523e6b01cb576e0c8aecb9`;
+  `f0fcc7680ad211774d53d40179c34cf01044537d009407e5d58e6a74c7c862a2`;
 - no destructive token;
 - `database_accessed=false`.
 

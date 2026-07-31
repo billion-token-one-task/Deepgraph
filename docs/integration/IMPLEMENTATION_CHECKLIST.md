@@ -139,8 +139,9 @@ artifacts named in its evidence column may promote it to `[x]`.
   grant scope.
 - [x] **P2-24** Validation, claim, manuscript and bundle core insertions carry
   agenda scope.
-- [~] **P2-25** All legacy mutation surfaces are scoped. Current evidence:
-  core INSERT scan passed; exhaustive UPDATE/DELETE path audit remains open.
+- [~] **P2-25** The AST-only audit finds 134 agenda-owned literal
+  UPDATE/DELETE mutations and zero definite statements without `agenda_id`.
+  Cross-agenda PostgreSQL/fault tests remain required before acceptance.
 - [x] **P2-26** Signal-outcome learning is agenda-local; shared ingestion
   signal counters are not mutated by experiment feedback.
 
@@ -181,16 +182,19 @@ artifacts named in its evidence column may promote it to `[x]`.
 - [x] **P3-07** LLM sub-reservations cannot exceed the parent ResourceGrant.
 - [x] **P3-08** Request grant ID must match the persisted grant.
 - [~] **P3-09** Failure injection tests exist but were not run.
-- [~] **P3-10** Forge scout/scaffold/repair and validation iteration/
-  reproduction-repair use granted proposer routes and fail closed. Pre-idea
-  discovery and manuscript/refinement callers still require a correct
-  pre-candidate grant/role adapter; isolated tests are pending. Evidence:
+- [~] **P3-10** Forge scout/scaffold/repair, validation iteration/
+  reproduction-repair, proposal method/experiment design, benchmark design,
+  Tier-2 evaluator/reviewer debate, manuscript revision and plain final review
+  use granted role routes and fail closed. A persisted `proposal_pending`
+  identity prevents fake pre-candidate IDs. Remaining legacy direct callers
+  must be classified as pre-agenda ingestion, example-only or blocked. Evidence:
   [LLM_CALLER_INVENTORY.md](LLM_CALLER_INVENTORY.md).
 - [~] **P3-11** Provider cooldowns are persisted in
   `llm_provider_cooldowns`, reloaded by reconstructed routers and extended
   monotonically; PostgreSQL restart/fault CI is pending.
-- [ ] **P3-12** Provider cost is captured when the provider returns price data;
-  existing executor currently records token counts but may record unknown cost.
+- [~] **P3-12** Explicit provider-returned cost fields are captured and
+  persisted with route observations; unknown cost remains `NULL` rather than
+  estimated. Provider payload variants require isolated fixture verification.
 
 ## P4. ComputeBackend
 
@@ -226,8 +230,13 @@ artifacts named in its evidence column may promote it to `[x]`.
   `submission_unknown`, stops backend fallback and requires reconciliation.
 - [x] **P4-21** Backend `succeeded` first becomes `collecting`; durable success
   requires the persisted grant's artifacts and bounded usage.
-- [ ] **P4-22** Legacy runtime constructs `ComputeScheduler` with
-  `ComputeJobRepository` and invokes expiry/reconciliation on startup.
+- [~] **P4-22** Legacy local/SSH queue submission now enters through a runtime
+  `ComputeScheduler` with `ComputeJobRepository`; startup reconciles expiry
+  per agenda and attempts settlement of persisted live legacy jobs. Runtime
+  restart/crash verification remains pending.
+- [~] **P4-23** Failed/cancelled/timed-out backends must persist measured usage
+  before terminal settlement; expired jobs with unknown usage are quarantined
+  as `usage_unknown`. Failure/timeout PostgreSQL CI is pending.
 
 ## P5. Scientific evidence state machine
 
@@ -239,7 +248,10 @@ artifacts named in its evidence column may promote it to `[x]`.
 - [x] **P5-05** Full benchmark requires a valid stage-specific grant.
 - [x] **P5-06** Evidence audit requires raw artifacts and claim ledger.
 - [x] **P5-07** Scientific decision requires held-out evaluator verdict.
-- [x] **P5-08** Manuscript permission requires reviewer approval.
+- [~] **P5-08** Manuscript permission requires a purpose/subject/time-bound
+  HMAC reviewer approval whose key is referenced through environment
+  configuration. Signature verification and persistence tests are written;
+  external identity issuance remains an operational CI/control-plane item.
 - [x] **P5-09** State transitions append an audit record with actor/context.
 - [x] **P5-10** Operational completed/succeeded is distinct from scientific
   decision.
@@ -290,12 +302,14 @@ artifacts named in its evidence column may promote it to `[x]`.
   verdict/new information/state/prediction error.
 - [x] **P6-19** Calibration reports Brier, token/GPU MAE and impact RMSE and
   cannot auto-update policy.
-- [ ] **P6-20** Frontier retrieval is wired to the live ingestion/evidence
-  graph rather than operator-supplied packets only.
+- [~] **P6-20** `EvidenceGraphFrontierSource` assembles immutable-query-ref
+  packets from agenda-scoped research problems, explicitly linked papers,
+  results and negative evidence. Operator input supplies assessments, not
+  evidence arrays. PostgreSQL/API runtime verification is pending.
 - [~] **P6-21** Operator outcome API accepts only grant/run IDs and assembles
   tokens, compute usage, effects, verdict, artifacts and prediction errors
-  from persisted sources. Failed compute usage capture and PostgreSQL
-  end-to-end verification remain open.
+  from persisted sources. Non-success terminal usage is now durable; unknown
+  usage is quarantined. PostgreSQL end-to-end verification remains open.
 - [-] **P6-22** Policy training is excluded from v1; real OutcomeRecord samples
   are still required before any later calibrated policy proposal.
 
@@ -316,13 +330,17 @@ artifacts named in its evidence column may promote it to `[x]`.
 - [x] **P7-09** held-in, held-out and canary are all mandatory.
 - [x] **P7-10** Each evaluation requires evaluator ref/hash and artifacts.
 - [x] **P7-11** Cross-agenda evaluations are rejected.
-- [x] **P7-12** Reviewer/human approval is required for approved report.
+- [~] **P7-12** Approved reports require a cryptographically verified,
+  purpose-bound reviewer approval; evaluator output and an operator string
+  alone cannot approve.
 - [x] **P7-13** Harness repository persists agenda-scoped lineage/evaluation
   records.
 - [~] **P7-14** Candidate isolation tests are written but not run.
 - [ ] **P7-15** No actual candidate worktree/evaluator/canary has run.
-- [ ] **P7-16** Reviewer approval signing/identity is externally authenticated,
-  not just an operator-provided string.
+- [~] **P7-16** Detached HMAC approval envelopes bind reviewer, key ID,
+  purpose, subject and issuance time, with secret material referenced only by
+  environment variable. External reviewer identity/key issuance and rotation
+  remain unverified operational controls.
 
 ## P8. Minimal API and configuration
 
@@ -356,11 +374,13 @@ artifacts named in its evidence column may promote it to `[x]`.
 ## V. Validation and delivery
 
 - [x] **V-01** Static audit script has no app import/database access.
-- [x] **V-02** 239 Python files passed AST parsing at the latest checkpoint.
+- [x] **V-02** 245 Python files passed AST parsing at the latest checkpoint.
 - [x] **V-03** Side-effect-free SQL AST audit found no definite mismatch:
-  757 literal calls, 754 statically countable, and 109 dynamic calls explicitly
+  785 literal calls, 782 statically countable, and 112 dynamic calls explicitly
   left for review/CI.
 - [x] **V-04** `git diff --check` passed.
+- [x] **V-04A** Agenda mutation scope audit passes: 134 scoped literal
+  UPDATE/DELETE statements, zero definite unscoped or dynamic mutations.
 - [x] **V-05** Agenda example JSON parsed.
 - [x] **V-06** Migration dry-plan recorded statement count/checksum/no
   destructive token.
@@ -378,8 +398,9 @@ artifacts named in its evidence column may promote it to `[x]`.
 - [x] **V-11** Master acceptance matrix states “not eligible”.
 - [x] **V-12** Root changelog distinguishes added, changed, isolated, excluded
   and unverified work.
-- [x] **V-13** Local work is split into an implementation checkpoint and a
-  separate integration-document/changelog checkpoint; neither was pushed.
+- [x] **V-13** Local work is split into base implementation `c25e63c`,
+  integration documentation `ee96fba`, and control-plane hardening `2cccc7a`;
+  none was pushed.
 - [ ] **V-14** No push until explicit approval and quiescence check.
 - [ ] **V-15** Final candidate commit hash must replace working-tree/intermediate
   hashes in all acceptance artifacts.
