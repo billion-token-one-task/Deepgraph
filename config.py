@@ -260,6 +260,122 @@ BENCHMARK_DESIGN_LLM_ENABLED = _env_bool("DEEPGRAPH_BENCHMARK_DESIGN_LLM", True,
 BENCHMARK_DESIGN_LLM_REQUIRED = _env_bool("DEEPGRAPH_BENCHMARK_DESIGN_LLM_REQUIRED", True, "benchmark_design.llm_required")
 
 # Discovery (Tier 1 / Tier 2 insight generation)
+AGENDA_TOKEN_BUDGET_DEFAULT = _env_int(
+    "DEEPGRAPH_AGENDA_TOKEN_BUDGET_DEFAULT",
+    100_000,
+    "agenda.default_token_budget",
+)
+AGENDA_GPU_HOURS_BUDGET_DEFAULT = _env_float(
+    "DEEPGRAPH_AGENDA_GPU_HOURS_BUDGET_DEFAULT",
+    0.0,
+    "agenda.default_gpu_hours_budget",
+)
+AGENDA_BACKLOG_POLICY = _env_str(
+    "DEEPGRAPH_AGENDA_BACKLOG_POLICY",
+    "explicit_import_only",
+    "agenda.backlog_policy",
+)
+AGENDA_SCOPE_MIN_TERM_HITS = _env_int(
+    "DEEPGRAPH_AGENDA_SCOPE_MIN_TERM_HITS",
+    1,
+    "agenda.scope_min_term_hits",
+)
+AGENDA_ACTIVE_IDS = [
+    int(value)
+    for value in _toml_get("agenda.active_ids", [])
+    if str(value).isdigit() and int(value) > 0
+]
+AGENDA_MAX_CONCURRENCY = _env_int(
+    "DEEPGRAPH_AGENDA_MAX_CONCURRENCY",
+    1,
+    "agenda.max_concurrency_per_agenda",
+)
+AGENDA_DEFAULT_BACKEND_ALLOWLIST = _split_csv(
+    os.getenv("DEEPGRAPH_AGENDA_BACKEND_ALLOWLIST")
+    or _toml_get("agenda.default_backend_allowlist", ["cpu", "llm"])
+)
+
+# meta-harness-v1 policy is non-sensitive configuration. Provider, SSH, and
+# Colab credential material is never read from TOML; route/backend entries hold
+# environment or secret-manager references only.
+PORTFOLIO_POLICY = dict(_toml_get("portfolio", {}) or {})
+RESOURCE_GRANT_POLICY = dict(_toml_get("resource_grants", {}) or {})
+LLM_ROLE_ROUTES = {
+    role: list(_toml_get(f"llm_routes.{role}", []) or [])
+    for role in ("proposer", "evaluator", "reviewer")
+}
+LLM_ROUTE_FAILURE_POLICY = _env_str(
+    "DEEPGRAPH_LLM_ROUTE_FAILURE_POLICY",
+    "fail_closed_or_manual",
+    "llm_routes.failure_policy",
+)
+COMPUTE_BACKENDS_ENABLED = _split_csv(
+    os.getenv("DEEPGRAPH_COMPUTE_BACKENDS")
+    or _toml_get("compute_backends.enabled", ["cpu"])
+)
+COMPUTE_ARTIFACT_ROOT = Path(
+    _env_str(
+        "DEEPGRAPH_COMPUTE_ARTIFACT_ROOT",
+        str(WORKSPACE_DIR / "meta_harness" / "artifacts"),
+        "compute_backends.artifact_root",
+    )
+).expanduser()
+COMPUTE_HEARTBEAT_TIMEOUT_SECONDS = _env_int(
+    "DEEPGRAPH_COMPUTE_HEARTBEAT_TIMEOUT_SECONDS",
+    300,
+    "compute_backends.heartbeat_timeout_seconds",
+)
+COMPUTE_SSH_TARGET_REF = _env_str(
+    "DEEPGRAPH_COMPUTE_SSH_TARGET_REF",
+    "",
+    "compute_backends.ssh_gpu.target_ref",
+)
+COMPUTE_SSH_CREDENTIAL_REF = _env_str(
+    "DEEPGRAPH_COMPUTE_SSH_CREDENTIAL_REF",
+    "",
+    "compute_backends.ssh_gpu.credential_ref",
+)
+COMPUTE_COLAB_ACCOUNTS_MANIFEST_REF = _env_str(
+    "DEEPGRAPH_COLAB_ACCOUNTS_MANIFEST_REF",
+    "",
+    "compute_backends.colab_gpu.accounts_manifest_ref",
+)
+SCIENTIFIC_EVIDENCE_POLICY = dict(_toml_get("scientific_evidence", {}) or {})
+HARNESS_POLICY_VERSION = _env_str(
+    "DEEPGRAPH_HARNESS_POLICY_VERSION",
+    "harness_policy_v1",
+    "harness_evolution.policy_version",
+)
+HARNESS_CANDIDATE_ROOT = Path(
+    _env_str(
+        "DEEPGRAPH_HARNESS_CANDIDATE_ROOT",
+        str(WORKSPACE_DIR / "meta_harness" / "candidates"),
+        "harness_evolution.candidate_root",
+    )
+).expanduser()
+HARNESS_DATABASE_NAMESPACE_PREFIX = _env_str(
+    "DEEPGRAPH_HARNESS_DATABASE_NAMESPACE_PREFIX",
+    "meta_harness_candidate_",
+    "harness_evolution.database_namespace_prefix",
+)
+HARNESS_MAX_MODULES = _env_int(
+    "DEEPGRAPH_HARNESS_MAX_MODULES",
+    2,
+    "harness_evolution.max_modules",
+)
+HARNESS_MAX_CHANGED_LINES = _env_int(
+    "DEEPGRAPH_HARNESS_MAX_CHANGED_LINES",
+    200,
+    "harness_evolution.max_changed_lines",
+)
+FAILURE_POLICY = dict(_toml_get("failure_policy", {}) or {})
+TRACE_DIRECTORY = Path(
+    _env_str(
+        "DEEPGRAPH_TRACE_DIRECTORY",
+        str(WORKSPACE_DIR / "meta_harness" / "traces"),
+        "trace.directory",
+    )
+).expanduser()
 DISCOVERY_TIER1_CANDIDATES = _env_int("DEEPGRAPH_TIER1_CANDIDATES", 5, "discovery.tier1_candidates")
 DISCOVERY_TIER2_PROBLEMS = _env_int("DEEPGRAPH_TIER2_PROBLEMS", 8, "discovery.tier2_problems")
 DISCOVERY_TIER2_PAPERS = _env_int("DEEPGRAPH_TIER2_PAPERS", 5, "discovery.tier2_papers")
@@ -319,7 +435,7 @@ EXPERIMENT_VALIDATION_BENCHMARK_SEEDS = _env_int(
 )
 EXPERIMENT_VALIDATION_BENCHMARK_METHODS = _env_str(
     "DEEPGRAPH_VALIDATION_BENCHMARK_METHODS",
-    "Vanilla Direct Answering,Always-Reason Chain-of-Thought,CGGR,CGGR/no_counterfactual_delta",
+    "Vanilla Direct Answering,Always-Reason Chain-of-Thought,Confidence Gate,Random Budget-Matched Routing",
     "experiment.validation_benchmark_methods",
 )
 # After baseline reproduction fails (crash / no metric), run Codex or LLM repair rounds before giving up.
@@ -355,7 +471,7 @@ GPU_REMOTE_BASE_DIR = _env_str("DEEPGRAPH_GPU_REMOTE_BASE_DIR", "/root/deepgraph
 GPU_REMOTE_PYTHON = _env_str("DEEPGRAPH_GPU_REMOTE_PYTHON", "python", "gpu.remote.python")
 # When using SSH GPU workers, the synced repo often has no preinstalled deps; without this the
 # remote process exits at import time and GPUs stay idle (nvidia-smi shows ~0 MiB).
-GPU_REMOTE_AUTO_PIP_INSTALL = _env_bool("DEEPGRAPH_GPU_REMOTE_AUTO_PIP_INSTALL", True, "gpu.remote.auto_pip_install")
+GPU_REMOTE_AUTO_PIP_INSTALL = _env_bool("DEEPGRAPH_GPU_REMOTE_AUTO_PIP_INSTALL", False, "gpu.remote.auto_pip_install")
 GPU_REMOTE_SETUP_TIMEOUT_SECONDS = _env_int("DEEPGRAPH_GPU_REMOTE_SETUP_TIMEOUT_SECONDS", 3600, "gpu.remote.setup_timeout_seconds")
 
 # Mechanism-first discovery

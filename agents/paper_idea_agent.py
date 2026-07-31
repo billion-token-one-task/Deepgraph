@@ -535,7 +535,12 @@ def _diversify_problems(problems: list[dict], budget: int, recent_memory: list[d
     return [problem for _idx, problem in selected]
 
 
-def _build_problem_prompt(signals: dict, recent_memory: list[dict] | None = None) -> str:
+def _build_problem_prompt(
+    signals: dict,
+    recent_memory: list[dict] | None = None,
+    *,
+    agenda_id: int,
+) -> str:
     """Build evidence prompt for Call 1 (Problem Sharpening)."""
     sections = ["# EVIDENCE FROM 10,000+ ML PAPERS\n"]
     compute = detect_compute_profile()
@@ -559,7 +564,13 @@ def _build_problem_prompt(signals: dict, recent_memory: list[dict] | None = None
     ):
         rows = signals.get(key) or []
         if rows:
-            weighted_signals.append((signal_type_weight(key.rstrip("s")), key, len(rows)))
+            weighted_signals.append(
+                (
+                    signal_type_weight(key.rstrip("s"), agenda_id=agenda_id),
+                    key,
+                    len(rows),
+                )
+            )
     if weighted_signals:
         weighted_signals.sort(reverse=True)
         sections.append("\n## SIGNAL PRIORITY (meta-learned weights)")
@@ -837,6 +848,7 @@ def discover_paper_ideas(
     max_problems: int = 8,
     max_papers: int | None = None,
     *,
+    agenda_id: int,
     tier2_plateau_limit: int = 20,
     tier2_limitation_nodes: int = 15,
 ) -> list[dict]:
@@ -877,7 +889,11 @@ def discover_paper_ideas(
         return []
 
     recent_memory = _recent_tier2_memory()
-    problems = select_problem_first_candidates(limit=max(max_problems * 2, max_problems), refresh=True)
+    problems = select_problem_first_candidates(
+        limit=max(max_problems * 2, max_problems),
+        agenda_id=agenda_id,
+        refresh=True,
+    )
     if problems:
         print(
             f"[PAPER_IDEA] Problem-first pool selected {len(problems)} persisted research problems",
@@ -885,7 +901,11 @@ def discover_paper_ideas(
         )
     else:
         print("[PAPER_IDEA] Call 1/3: Problem Sharpening...", flush=True)
-        problem_prompt = _build_problem_prompt(signals, recent_memory=recent_memory)
+        problem_prompt = _build_problem_prompt(
+            signals,
+            recent_memory=recent_memory,
+            agenda_id=agenda_id,
+        )
         try:
             result1, tokens1 = call_llm_json(PROBLEM_SHARPENING_SYSTEM, problem_prompt)
             total_tokens += tokens1
@@ -902,7 +922,11 @@ def discover_paper_ideas(
             print("[PAPER_IDEA] No problems extracted", flush=True)
             return []
 
-        research_problems = discover_research_problems(limit=max(max_problems * 2, len(problems)), persist=True)
+        research_problems = discover_research_problems(
+            limit=max(max_problems * 2, len(problems)),
+            agenda_id=agenda_id,
+            persist=True,
+        )
         problems = [
             _attach_research_problem_context(problem, research_problems, fallback_problem_refs)
             for problem in problems
@@ -1040,6 +1064,7 @@ def discover_paper_ideas(
         )
 
         deep_insight = {
+            "agenda_id": agenda_id,
             "tier": 2,
             "status": "candidate",
             "title": normalized_paper_title,

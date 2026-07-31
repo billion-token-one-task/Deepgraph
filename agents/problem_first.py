@@ -16,6 +16,7 @@ from agents.signal_harvester import (
 )
 from db import database as db
 from db.evidence_graph import upsert_entity
+from meta_harness.scientific_authority import positive_decision_authorized
 
 MIN_SUPPORT = 2
 MAX_ATTEMPTS = 3
@@ -37,6 +38,16 @@ TABLE_TO_MECHANISM_TYPE = {
     "claim_method_gaps": "claim_method_gap",
     "mechanism_mismatches": "mechanism_mismatch",
 }
+
+
+def _require_agenda_id(value: Any) -> int:
+    try:
+        agenda_id = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("agenda_id is required for problem-first discovery") from exc
+    if agenda_id <= 0:
+        raise ValueError("agenda_id must be a positive integer")
+    return agenda_id
 
 
 def _json_load(value: Any, default: Any):
@@ -331,34 +342,49 @@ def hydrate_problem_candidate(problem: dict) -> dict:
     }
 
 
-def select_problem_first_candidates(limit: int = 8, *, refresh: bool = True) -> list[dict]:
+def select_problem_first_candidates(
+    limit: int = 8,
+    *,
+    agenda_id: int,
+    refresh: bool = True,
+) -> list[dict]:
+    agenda_id = _require_agenda_id(agenda_id)
     candidates = []
     if refresh:
-        candidates = discover_research_problems(limit=max(limit * 2, limit), persist=True)
+        candidates = discover_research_problems(
+            limit=max(limit * 2, limit),
+            agenda_id=agenda_id,
+            persist=True,
+        )
     if not candidates:
         rows = db.fetchall(
             """
             SELECT *
             FROM research_problems
-            WHERE status IN ('open', 'exploring')
+            WHERE agenda_id=?
+              AND status IN ('open', 'exploring')
               AND attempts_count < ?
             ORDER BY problem_quality_score DESC, updated_at ASC
             LIMIT ?
             """,
-            (MAX_ATTEMPTS, max(limit * 2, limit)),
+            (agenda_id, MAX_ATTEMPTS, max(limit * 2, limit)),
         )
         candidates = [_row_to_problem(row) for row in rows]
     return [hydrate_problem_candidate(candidate) for candidate in candidates[:limit]]
 
 
-def upsert_research_problem(problem: dict) -> int:
+def upsert_research_problem(problem: dict, *, agenda_id: int) -> int:
+    agenda_id = _require_agenda_id(agenda_id)
     source_ref = problem.get("source_signal_ref") or {}
     source_ref_json = _json_dump(source_ref)
     node_ids_json = _json_dump(problem.get("node_ids") or [])
     paper_ids_json = _json_dump(problem.get("paper_ids") or [])
     ruled_out_json = _json_dump(problem.get("ruled_out_approaches") or [])
     score = float(problem.get("problem_quality_score") or problem_quality_score(problem))
-    existing = db.fetchone("SELECT id FROM research_problems WHERE source_signal_ref=?", (source_ref_json,))
+    existing = db.fetchone(
+        "SELECT id FROM research_problems WHERE agenda_id=? AND source_signal_ref=?",
+        (agenda_id, source_ref_json),
+    )
     if existing:
         rid = int(existing["id"])
         db.execute(
@@ -366,21 +392,22 @@ def upsert_research_problem(problem: dict) -> int:
             UPDATE research_problems
             SET problem_statement=?, node_ids=?, paper_ids=?, problem_quality_score=?,
                 updated_at=CURRENT_TIMESTAMP
-            WHERE id=?
+            WHERE id=? AND agenda_id=?
             """,
-            (problem.get("problem_statement"), node_ids_json, paper_ids_json, score, rid),
+            (problem.get("problem_statement"), node_ids_json, paper_ids_json, score, rid, agenda_id),
         )
         db.commit()
         return rid
     rid = db.insert_returning_id(
         """
         INSERT INTO research_problems
-          (problem_statement, source_signal_ref, node_ids, paper_ids,
+          (agenda_id, problem_statement, source_signal_ref, node_ids, paper_ids,
            problem_quality_score, status, attempts_count, ruled_out_approaches)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         RETURNING id
         """,
         (
+            agenda_id,
             problem.get("problem_statement"),
             source_ref_json,
             node_ids_json,
@@ -395,13 +422,20 @@ def upsert_research_problem(problem: dict) -> int:
     return rid
 
 
-def discover_research_problems(limit: int = 20, *, persist: bool = True) -> list[dict]:
+def discover_research_problems(
+    limit: int = 20,
+    *,
+    agenda_id: int,
+    persist: bool = True,
+) -> list[dict]:
+    agenda_id = _require_agenda_id(agenda_id)
     candidates = [promote_to_problem(signal) for signal in get_problem_signals(limit=max(limit * 2, limit))]
     candidates.sort(key=lambda item: item.get("problem_quality_score") or 0, reverse=True)
     out = candidates[:limit]
     if persist:
         for problem in out:
-            problem["id"] = upsert_research_problem(problem)
+            problem["agenda_id"] = agenda_id
+            problem["id"] = upsert_research_problem(problem, agenda_id=agenda_id)
     return out
 
 
@@ -414,19 +448,21 @@ def _row_to_problem(row: dict) -> dict:
     return out
 
 
-def select_next_problem() -> dict | None:
+def select_next_problem(*, agenda_id: int) -> dict | None:
+    agenda_id = _require_agenda_id(agenda_id)
     row = db.fetchone(
         """
         SELECT * FROM research_problems
-        WHERE status IN ('open', 'exploring')
+        WHERE agenda_id=?
+          AND status IN ('open', 'exploring')
           AND attempts_count < ?
         ORDER BY problem_quality_score DESC, updated_at ASC
         LIMIT 1
         """,
-        (MAX_ATTEMPTS,),
+        (agenda_id, MAX_ATTEMPTS),
     )
     if not row:
-        discovered = discover_research_problems(limit=5, persist=True)
+        discovered = discover_research_problems(limit=5, agenda_id=agenda_id, persist=True)
         if not discovered:
             return None
         return discovered[0]
@@ -463,23 +499,48 @@ def propose_approach(problem: dict, solution_signals: list[dict] | None = None, 
     return None
 
 
-def record_solution(problem: dict, approach: dict, result: dict) -> None:
+def record_solution(
+    problem: dict,
+    approach: dict,
+    result: dict,
+    *,
+    agenda_id: int,
+) -> bool:
+    agenda_id = _require_agenda_id(agenda_id)
     pid = problem.get("id")
-    if not pid:
-        return
+    if not pid or not positive_decision_authorized(
+        agenda_id=agenda_id,
+        run_id=result.get("run_id"),
+    ):
+        return False
     db.execute(
         """
         UPDATE research_problems
         SET status='solved', updated_at=CURRENT_TIMESTAMP
-        WHERE id=?
+        WHERE id=? AND agenda_id=?
         """,
-        (pid,),
+        (pid, agenda_id),
     )
     db.commit()
+    return True
 
 
-def append_ruled_out_approach(problem_id: int, approach: dict, result: dict) -> None:
-    row = db.fetchone("SELECT ruled_out_approaches FROM research_problems WHERE id=?", (problem_id,))
+def append_ruled_out_approach(
+    problem_id: int,
+    approach: dict,
+    result: dict,
+    *,
+    agenda_id: int,
+) -> None:
+    agenda_id = _require_agenda_id(agenda_id)
+    row = db.fetchone(
+        """
+        SELECT ruled_out_approaches
+        FROM research_problems
+        WHERE id=? AND agenda_id=?
+        """,
+        (problem_id, agenda_id),
+    )
     current = _json_list(row.get("ruled_out_approaches") if row else None)
     item = {
         "approach": approach.get("summary") or approach.get("name") or "",
@@ -496,17 +557,29 @@ def append_ruled_out_approach(problem_id: int, approach: dict, result: dict) -> 
             attempts_count=attempts_count + 1,
             status=CASE WHEN attempts_count + 1 >= ? THEN 'abandoned' ELSE 'exploring' END,
             updated_at=CURRENT_TIMESTAMP
-        WHERE id=?
+        WHERE id=? AND agenda_id=?
         """,
-        (_json_dump(current), MAX_ATTEMPTS, problem_id),
+        (_json_dump(current), MAX_ATTEMPTS, problem_id, agenda_id),
     )
     db.commit()
 
 
-def update_signal_posterior(source_signal_refs: Any, verdict: str) -> list[dict]:
+def update_signal_posterior(
+    source_signal_refs: Any,
+    verdict: str,
+    *,
+    agenda_id: int,
+    run_id: int | None,
+    experimental_claim_id: int | None,
+    effect_size: float | None,
+    p_value: float | None,
+    conditions: dict,
+) -> list[dict]:
+    """Record agenda-local feedback without mutating shared ingestion signals."""
+    agenda_id = _require_agenda_id(agenda_id)
     verdict = str(verdict or "").lower()
     if verdict in {"confirmed", "reproduced"}:
-        outcome = "confirmed"
+        outcome = "supported"
     elif verdict == "refuted":
         outcome = "refuted"
     else:
@@ -525,29 +598,62 @@ def update_signal_posterior(source_signal_refs: Any, verdict: str) -> list[dict]
             content_hash = row.get("content_hash") if row else content_hash
         if not row or not content_hash:
             continue
-        confirm = int(row.get("confirm_count") or 0)
-        refute = int(row.get("refute_count") or 0)
-        if outcome == "confirmed":
-            confirm += 1
-        else:
-            refute += 1
+        idempotency_material = {
+            "agenda_id": agenda_id,
+            "run_id": run_id,
+            "experimental_claim_id": experimental_claim_id,
+            "signal_table": table,
+            "content_hash": content_hash,
+            "verdict": outcome,
+        }
+        idempotency_key = hashlib.sha256(
+            _json_dump(idempotency_material).encode("utf-8")
+        ).hexdigest()
+        db.execute(
+            """
+            INSERT INTO agenda_signal_outcomes
+                (agenda_id, run_id, experimental_claim_id, signal_table,
+                 signal_content_hash, verdict, effect_size, p_value,
+                 conditions_json, idempotency_key)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (agenda_id, idempotency_key) DO NOTHING
+            """,
+            (
+                agenda_id,
+                run_id,
+                experimental_claim_id,
+                table,
+                content_hash,
+                outcome,
+                effect_size,
+                p_value,
+                _json_dump(conditions),
+                idempotency_key,
+            ),
+        )
+        counts = db.fetchone(
+            """
+            SELECT
+                SUM(CASE WHEN verdict='supported' THEN 1 ELSE 0 END)
+                    AS confirm_count,
+                SUM(CASE WHEN verdict='refuted' THEN 1 ELSE 0 END)
+                    AS refute_count
+            FROM agenda_signal_outcomes
+            WHERE agenda_id=? AND signal_table=? AND signal_content_hash=?
+            """,
+            (agenda_id, table, content_hash),
+        )
+        confirm = int((counts or {}).get("confirm_count") or 0)
+        refute = int((counts or {}).get("refute_count") or 0)
         alpha0 = 1.0 + min(10.0, max(0.0, structural_score(table, row)))
         beta0 = 1.0
         posterior = alpha0 + confirm
         posterior = posterior / (posterior + beta0 + refute)
-        db.execute(
-            f"""
-            UPDATE {table}
-            SET confirm_count=?, refute_count=?, empirical_posterior=?,
-                last_outcome_at=CURRENT_TIMESTAMP
-            WHERE content_hash=?
-            """,
-            (confirm, refute, round(posterior, 6), content_hash),
-        )
         updates.append(
             {
                 "table": table,
                 "content_hash": content_hash,
+                "agenda_id": agenda_id,
                 "confirm_count": confirm,
                 "refute_count": refute,
                 "empirical_posterior": round(posterior, 6),
@@ -565,16 +671,19 @@ def _empirical_entity_id(run_id: int | None, claim_id: int | None) -> str:
 
 
 def _insert_evidence_edge(payload: dict) -> None:
+    agenda_id = _require_agenda_id(payload.get("agenda_id"))
     existing = db.fetchone(
         """
         SELECT id FROM experimental_evidence_edges
-        WHERE COALESCE(run_id, -1)=COALESCE(?, -1)
+        WHERE agenda_id=?
+          AND COALESCE(run_id, -1)=COALESCE(?, -1)
           AND COALESCE(deep_insight_id, -1)=COALESCE(?, -1)
           AND COALESCE(target_kind, '')=COALESCE(?, '')
           AND COALESCE(target_id, '')=COALESCE(?, '')
           AND COALESCE(relation, '')=COALESCE(?, '')
         """,
         (
+            agenda_id,
             payload.get("run_id"),
             payload.get("deep_insight_id"),
             payload.get("target_kind"),
@@ -587,12 +696,13 @@ def _insert_evidence_edge(payload: dict) -> None:
     db.execute(
         """
         INSERT INTO experimental_evidence_edges
-          (experimental_claim_id, run_id, deep_insight_id, research_problem_id,
-           empirical_entity_id, target_kind, target_id, relation, verdict,
-           effect_size, conditions)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          (agenda_id, experimental_claim_id, run_id, deep_insight_id,
+           research_problem_id, empirical_entity_id, target_kind, target_id,
+           relation, verdict, effect_size, conditions)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
+            agenda_id,
             payload.get("experimental_claim_id"),
             payload.get("run_id"),
             payload.get("deep_insight_id"),
@@ -610,6 +720,7 @@ def _insert_evidence_edge(payload: dict) -> None:
 
 def writeback_experiment_result(
     *,
+    agenda_id: int,
     run_id: int | None,
     deep_insight_id: int,
     verdict: str,
@@ -619,11 +730,40 @@ def writeback_experiment_result(
     source_signal_refs: Any = None,
     experimental_claim_id: int | None = None,
 ) -> dict:
-    insight = db.fetchone("SELECT * FROM deep_insights WHERE id=?", (deep_insight_id,))
+    agenda_id = _require_agenda_id(agenda_id)
+    insight = db.fetchone(
+        "SELECT * FROM deep_insights WHERE id=? AND agenda_id=?",
+        (deep_insight_id, agenda_id),
+    )
     if not insight:
         return {"updated_signals": [], "evidence_edges": 0, "reason": "missing_deep_insight"}
+    if run_id is not None:
+        run = db.fetchone(
+            "SELECT agenda_id FROM experiment_runs WHERE id=?",
+            (int(run_id),),
+        )
+        if not run or int(run.get("agenda_id") or 0) != agenda_id:
+            raise ValueError("experiment result writeback run scope mismatch")
     refs = source_signal_refs or insight.get("source_signal_refs")
-    signal_updates = update_signal_posterior(refs, verdict)
+    positive_authorized = (
+        str(verdict).lower() in {"confirmed", "supported", "reproduced"}
+        and positive_decision_authorized(agenda_id=agenda_id, run_id=run_id)
+    )
+    feedback_verdict = (
+        "confirmed"
+        if positive_authorized
+        else ("refuted" if str(verdict).lower() == "refuted" else "inconclusive")
+    )
+    signal_updates = update_signal_posterior(
+        refs,
+        feedback_verdict,
+        agenda_id=agenda_id,
+        run_id=run_id,
+        experimental_claim_id=experimental_claim_id,
+        effect_size=effect_size,
+        p_value=p_value,
+        conditions=conditions or {},
+    )
     research_problem_id = insight.get("research_problem_id")
     result = {
         "verdict": verdict,
@@ -636,9 +776,19 @@ def writeback_experiment_result(
             approach = {
                 "summary": (insight.get("proposed_method") or insight.get("title") or "")[:500]
             }
-            append_ruled_out_approach(int(research_problem_id), approach, result)
-        elif str(verdict).lower() in {"confirmed", "reproduced"}:
-            record_solution({"id": int(research_problem_id)}, {}, result)
+            append_ruled_out_approach(
+                int(research_problem_id),
+                approach,
+                result,
+                agenda_id=agenda_id,
+            )
+        elif positive_authorized:
+            record_solution(
+                {"id": int(research_problem_id), "agenda_id": agenda_id},
+                {},
+                {**result, "run_id": run_id},
+                agenda_id=agenda_id,
+            )
 
     edge_count = 0
     if str(verdict).lower() == "refuted":
@@ -665,6 +815,7 @@ def writeback_experiment_result(
             }
         )
         base_payload = {
+            "agenda_id": agenda_id,
             "experimental_claim_id": experimental_claim_id,
             "run_id": run_id,
             "deep_insight_id": deep_insight_id,
@@ -694,7 +845,16 @@ def writeback_experiment_result(
             _insert_evidence_edge({**base_payload, **target})
             edge_count += 1
         db.commit()
-    return {"updated_signals": signal_updates, "evidence_edges": edge_count}
+    return {
+        "updated_signals": signal_updates,
+        "evidence_edges": edge_count,
+        "positive_feedback_authorized": positive_authorized,
+        "feedback_suppressed_reason": (
+            None
+            if positive_authorized or str(verdict).lower() == "refuted"
+            else "scientifically_decided_supported_transition_required"
+        ),
+    }
 
 
 def run_experiment_worker(problem: dict, approach: dict, *, run_id: int | None = None) -> dict:
@@ -728,15 +888,21 @@ def run_experiment_worker(problem: dict, approach: dict, *, run_id: int | None =
 
 def problem_first_cycle(
     *,
+    agenda_id: int,
     max_attempts: int = MAX_ATTEMPTS,
     worker: Callable[[dict, dict], dict] | None = None,
 ) -> dict:
-    problem = select_next_problem()
+    agenda_id = _require_agenda_id(agenda_id)
+    problem = select_next_problem(agenda_id=agenda_id)
     if not problem:
         return {"status": "no_problem"}
     pid = problem.get("id")
     if pid:
-        db.execute("UPDATE research_problems SET status='exploring', updated_at=CURRENT_TIMESTAMP WHERE id=?", (pid,))
+        db.execute(
+            "UPDATE research_problems SET status='exploring', updated_at=CURRENT_TIMESTAMP "
+            "WHERE id=? AND agenda_id=?",
+            (pid, agenda_id),
+        )
         db.commit()
     attempts = int(problem.get("attempts_count") or 0)
     while attempts < max_attempts:
@@ -747,13 +913,35 @@ def problem_first_cycle(
             return {"status": "approach_ready", "problem": problem, "approach": approach}
         result = worker(problem, approach)
         verdict = str(result.get("verdict") or "").lower()
-        if verdict in {"confirmed", "reproduced"}:
-            record_solution(problem, approach, result)
-            return {"status": "solved", "problem": problem, "approach": approach, "result": result}
+        if verdict in {"confirmed", "supported", "reproduced"}:
+            if record_solution(
+                problem,
+                approach,
+                result,
+                agenda_id=agenda_id,
+            ):
+                return {
+                    "status": "solved",
+                    "problem": problem,
+                    "approach": approach,
+                    "result": result,
+                }
+            return {
+                "status": "awaiting_scientific_decision",
+                "problem": problem,
+                "approach": approach,
+                "result": result,
+            }
         if verdict == "refuted":
             if pid:
-                append_ruled_out_approach(int(pid), approach, result)
+                append_ruled_out_approach(
+                    int(pid),
+                    approach,
+                    result,
+                    agenda_id=agenda_id,
+                )
             writeback_experiment_result(
+                agenda_id=agenda_id,
                 run_id=result.get("run_id"),
                 deep_insight_id=int(result.get("deep_insight_id") or 0),
                 verdict=verdict,
@@ -764,6 +952,11 @@ def problem_first_cycle(
         elif pid:
             tracked_result = dict(result)
             tracked_result["verdict"] = verdict or "inconclusive"
-            append_ruled_out_approach(int(pid), approach, tracked_result)
+            append_ruled_out_approach(
+                int(pid),
+                approach,
+                tracked_result,
+                agenda_id=agenda_id,
+            )
         attempts += 1
     return {"status": "attempt_limit", "problem": problem}

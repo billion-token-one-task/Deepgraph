@@ -41,6 +41,16 @@ PARALLEL_TIER2_MIN_INTERVAL_SECONDS = 90
 _last_parallel_tier2_at = 0.0
 
 
+def _require_agenda_id(value) -> int:
+    try:
+        agenda_id = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("agenda_id is required for discovery") from exc
+    if agenda_id <= 0:
+        raise ValueError("agenda_id must be a positive integer")
+    return agenda_id
+
+
 def _llm_temporarily_unavailable(exc: Exception) -> bool:
     return is_llm_auth_error(exc) or is_llm_provider_unavailable_error(exc)
 
@@ -60,23 +70,29 @@ def harvest_signals() -> dict:
     return stats
 
 
-def refresh_research_problems(limit: int | None = None) -> list[dict]:
+def refresh_research_problems(*, agenda_id: int, limit: int | None = None) -> list[dict]:
     """Refresh persisted problem-first pool from current harvest tables."""
+    agenda_id = _require_agenda_id(agenda_id)
     _init_schema_v2()
     from agents.problem_first import discover_research_problems
 
     target = int(limit or max(DISCOVERY_TIER2_PROBLEMS, DISCOVERY_BULK_TIER2_PROBLEMS, 8))
-    problems = discover_research_problems(limit=target, persist=True)
-    log_event("discovery", {"step": "problem_pool_refreshed", "count": len(problems)})
+    problems = discover_research_problems(limit=target, agenda_id=agenda_id, persist=True)
+    log_event(
+        "discovery",
+        {"step": "problem_pool_refreshed", "agenda_id": agenda_id, "count": len(problems)},
+    )
     return problems
 
 
 def run_tier1_discovery(
     max_candidates: int | None = None,
     *,
+    agenda_id: int,
     bulk: bool = False,
 ) -> list[dict]:
     """Run Tier 1 (Paradigm) discovery. Returns stored insight IDs."""
+    agenda_id = _require_agenda_id(agenda_id)
     _init_schema_v2()
     from agents.paradigm_agent import discover_paradigm_insights, store_deep_insight
 
@@ -91,6 +107,7 @@ def run_tier1_discovery(
         "discovery",
         {
             "step": "tier1_start",
+            "agenda_id": agenda_id,
             "max_candidates": max_candidates,
             "bulk": bulk,
             "signal_overlaps": top_ov,
@@ -107,6 +124,7 @@ def run_tier1_discovery(
         )
         stored = []
         for ins in insights:
+            ins["agenda_id"] = agenda_id
             insight_id = store_deep_insight(ins)
             if not insight_id:
                 log_event(
@@ -121,6 +139,7 @@ def run_tier1_discovery(
                            "adversarial_score": ins.get("adversarial_score", 0)})
             log_event("deep_insight", {
                 "tier": 1,
+                "agenda_id": agenda_id,
                 "id": insight_id,
                 "title": ins["title"],
                 "adversarial_score": ins.get("adversarial_score", 0),
@@ -143,12 +162,14 @@ def run_tier2_discovery(
     max_problems: int | None = None,
     max_papers: int | None = None,
     *,
+    agenda_id: int,
     bulk: bool = False,
 ) -> list[dict]:
     """Run Tier 2 (Paper Ideas) discovery. Returns stored insight IDs.
 
     In bulk mode, expands every sharpened problem (max_papers follows max_problems).
     """
+    agenda_id = _require_agenda_id(agenda_id)
     _init_schema_v2()
     from agents.paradigm_agent import store_deep_insight
     from agents.paper_idea_agent import discover_paper_ideas
@@ -164,11 +185,12 @@ def run_tier2_discovery(
         lim_nodes = 15
         mpapers = max_papers if max_papers is not None else DISCOVERY_TIER2_PAPERS
 
-    refreshed = refresh_research_problems(limit=max_problems)
+    refreshed = refresh_research_problems(agenda_id=agenda_id, limit=max_problems)
     log_event(
         "discovery",
         {
             "step": "tier2_start",
+            "agenda_id": agenda_id,
             "mode": "problem_first",
             "max_problems": max_problems,
             "bulk": bulk,
@@ -181,11 +203,13 @@ def run_tier2_discovery(
         insights = discover_paper_ideas(
             max_problems=max_problems,
             max_papers=mpapers,
+            agenda_id=agenda_id,
             tier2_plateau_limit=plateaus,
             tier2_limitation_nodes=lim_nodes,
         )
         stored = []
         for ins in insights:
+            ins["agenda_id"] = agenda_id
             insight_id = store_deep_insight(ins)
             if not insight_id:
                 log_event(
@@ -205,6 +229,7 @@ def run_tier2_discovery(
                            "method_name": method.get("name", "")})
             log_event("deep_insight", {
                 "tier": 2,
+                "agenda_id": agenda_id,
                 "id": insight_id,
                 "title": ins["title"],
                 "method_name": method.get("name", ""),
@@ -236,24 +261,38 @@ def run_full_discovery(
     tier2_problems: int | None = None,
     tier2_papers: int | None = None,
     *,
+    agenda_id: int,
     bulk: bool = False,
 ) -> dict:
     """Run the full discovery pipeline: harvest → Tier 1 → Tier 2."""
-    results = {"started_at": datetime.utcnow().isoformat(), "bulk": bulk}
+    agenda_id = _require_agenda_id(agenda_id)
+    results = {
+        "started_at": datetime.utcnow().isoformat(),
+        "agenda_id": agenda_id,
+        "bulk": bulk,
+    }
 
     # Step 1: Harvest signals
     results["signals"] = harvest_signals()
 
     # Step 2: Tier 1
-    results["tier1"] = run_tier1_discovery(max_candidates=tier1_candidates, bulk=bulk)
+    results["tier1"] = run_tier1_discovery(
+        max_candidates=tier1_candidates,
+        agenda_id=agenda_id,
+        bulk=bulk,
+    )
 
     # Step 3: Refresh problem pool
-    results["research_problems"] = refresh_research_problems(limit=tier2_problems)
+    results["research_problems"] = refresh_research_problems(
+        agenda_id=agenda_id,
+        limit=tier2_problems,
+    )
 
     # Step 4: Tier 2
     results["tier2"] = run_tier2_discovery(
         max_problems=tier2_problems,
         max_papers=tier2_papers,
+        agenda_id=agenda_id,
         bulk=bulk,
     )
 
@@ -261,9 +300,9 @@ def run_full_discovery(
     return results
 
 
-def run_bulk_deep_insights() -> dict:
+def run_bulk_deep_insights(*, agenda_id: int) -> dict:
     """One-shot wide harvest + max Tier1 formalizations + Tier2 for all problems."""
-    return run_full_discovery(bulk=True)
+    return run_full_discovery(agenda_id=agenda_id, bulk=True)
 
 
 def _recent_node_insight_count(node_id: str, hours: int = 2) -> int:
@@ -411,173 +450,36 @@ def _milestone_done(milestone: int) -> bool:
 
 
 def _run_milestone_idea_screening(milestone: int, reasoned_count: int, trigger: str) -> None:
-    try:
-        db.emit_pipeline_event(
-            "idea_screening_started",
-            {
-                "milestone": milestone,
-                "reasoned_count": reasoned_count,
-                "trigger": trigger,
-                "interval": DISCOVERY_AUTO_TRIGGER_PAPERS,
-            },
-            entity_type="discovery_milestone",
-            entity_id=str(milestone),
-            dedupe_key=f"idea_screening_started:{milestone}",
-        )
-        log_event(
-            "discovery",
-            {
-                "step": "idea_screening_start",
-                "milestone": milestone,
-                "reasoned_count": reasoned_count,
-                "trigger": trigger,
-            },
-        )
-        result = run_full_discovery(
-            tier1_candidates=DISCOVERY_TIER1_CANDIDATES,
-            tier2_problems=DISCOVERY_TIER2_PROBLEMS,
-            tier2_papers=DISCOVERY_TIER2_PAPERS,
-            bulk=False,
-        )
-        db.emit_pipeline_event(
-            "idea_screening_done",
-            {
-                "milestone": milestone,
-                "reasoned_count": reasoned_count,
-                "trigger": trigger,
-                "tier1_count": len(result.get("tier1") or []),
-                "tier2_count": len(result.get("tier2") or []),
-                "completed_at": result.get("completed_at"),
-            },
-            entity_type="discovery_milestone",
-            entity_id=str(milestone),
-            dedupe_key=f"idea_screening_done:{milestone}",
-        )
-        log_event(
-            "discovery",
-            {
-                "step": "idea_screening_done",
-                "milestone": milestone,
-                "tier1_count": len(result.get("tier1") or []),
-                "tier2_count": len(result.get("tier2") or []),
-            },
-        )
-    except Exception as exc:
-        try:
-            db.rollback()
-        except Exception:
-            pass
-        print(f"[DISCOVERY] Milestone idea screening failed at {milestone}: {exc}", flush=True)
-        print(traceback.format_exc(), flush=True)
-        db.emit_pipeline_event(
-            "idea_screening_failed",
-            {
-                "milestone": milestone,
-                "reasoned_count": reasoned_count,
-                "trigger": trigger,
-                "error": str(exc),
-            },
-            entity_type="discovery_milestone",
-            entity_id=str(milestone),
-            dedupe_key=f"idea_screening_failed:{milestone}:{int(time.time())}",
-        )
-        log_event("error", {"step": "idea_screening", "milestone": milestone, "error": str(exc)})
-
-
-def maybe_launch_milestone_idea_screening(trigger: str = "manual") -> dict:
-    """Launch harvest + Tier1 + Tier2 once per reasoned-paper milestone."""
-    global _milestone_thread
-    reasoned_count = _reasoned_paper_count()
-    milestone = _milestone_for_count(reasoned_count)
-    if milestone <= 0:
-        return {
-            "status": "below_threshold",
-            "reasoned_count": reasoned_count,
-            "interval": DISCOVERY_AUTO_TRIGGER_PAPERS,
-        }
-    if _milestone_done(milestone):
-        return {"status": "already_done", "milestone": milestone, "reasoned_count": reasoned_count}
-    with _milestone_lock:
-        if _milestone_thread and _milestone_thread.is_alive():
-            return {"status": "already_running", "milestone": milestone, "reasoned_count": reasoned_count}
-        _milestone_thread = threading.Thread(
-            target=_run_milestone_idea_screening,
-            args=(milestone, reasoned_count, trigger),
-            daemon=True,
-            name=f"deepgraph-idea-screening-{milestone}",
-        )
-        _milestone_thread.start()
-    return {"status": "started", "milestone": milestone, "reasoned_count": reasoned_count}
-
-
-def _run_parallel_tier2_discovery() -> None:
-    try:
-        target_backlog = max(1, DISCOVERY_MIN_TIER2_BACKLOG)
-        if db.table_exists("research_problems"):
-            open_problem_row = db.fetchone(
-                """
-                SELECT COUNT(*) AS c
-                FROM research_problems
-                WHERE status IN ('open', 'exploring')
-                  AND attempts_count < 3
-                """
-            )
-            open_problem_count = int(open_problem_row["c"]) if open_problem_row else 0
-            effective_target = min(target_backlog, max(open_problem_count, 0)) if open_problem_count else target_backlog
-        else:
-            effective_target = target_backlog
-        deficit = max(0, effective_target - _warm_tier2_backlog())
-        if deficit <= 0:
-            return
-        harvest_signals()
-        stored = run_tier2_discovery(max_problems=deficit, max_papers=DISCOVERY_TIER2_PAPERS)
-        log_event(
-            "discovery",
-            {
-                "step": "parallel_tier2_done",
-                "count": len(stored),
-                "target_backlog": target_backlog,
-                "effective_target_backlog": effective_target,
-                "requested_problems": deficit,
-            },
-        )
-    except Exception as exc:
-        print(f"[DISCOVERY] Parallel Tier 2 failed: {exc}", flush=True)
-        print(traceback.format_exc(), flush=True)
-        log_event("error", {"step": "parallel_tier2", "error": str(exc)})
-
-
-def _maybe_launch_parallel_tier2_discovery(trigger: str) -> dict:
-    global _tier2_thread, _last_parallel_tier2_at
-    warm_backlog = _warm_tier2_backlog()
-    target_backlog = max(1, DISCOVERY_MIN_TIER2_BACKLOG)
-    if warm_backlog >= target_backlog:
-        return {"status": "backlog_ready", "warm_backlog": warm_backlog, "target_backlog": target_backlog}
-    if _reasoned_paper_count() < max(5, DISCOVERY_TIER2_PAPERS):
-        return {"status": "insufficient_reasoned_papers", "warm_backlog": warm_backlog, "target_backlog": target_backlog}
-    now = time.time()
-    with _tier2_lock:
-        if _tier2_thread and _tier2_thread.is_alive():
-            return {"status": "already_running", "warm_backlog": warm_backlog, "target_backlog": target_backlog}
-        if now - _last_parallel_tier2_at < PARALLEL_TIER2_MIN_INTERVAL_SECONDS:
-            return {"status": "cooldown", "warm_backlog": warm_backlog, "target_backlog": target_backlog}
-        _last_parallel_tier2_at = now
-        _tier2_thread = threading.Thread(
-            target=_run_parallel_tier2_discovery,
-            daemon=True,
-            name="deepgraph-parallel-tier2",
-        )
-        _tier2_thread.start()
     log_event(
         "discovery",
         {
-            "step": "parallel_tier2_started",
+            "step": "idea_screening_blocked",
+            "milestone": milestone,
+            "reasoned_count": reasoned_count,
             "trigger": trigger,
-            "warm_backlog": warm_backlog,
-            "target_backlog": target_backlog,
+            "reason": "agenda_id_required",
         },
     )
-    return {"status": "started", "warm_backlog": warm_backlog, "target_backlog": target_backlog}
+
+
+def maybe_launch_milestone_idea_screening(trigger: str = "manual") -> dict:
+    """Legacy unscoped trigger is disabled; scoped callers use run_full_discovery."""
+    return {
+        "status": "blocked",
+        "reason": "agenda_id_required",
+        "trigger": trigger,
+    }
+
+
+def _run_parallel_tier2_discovery() -> None:
+    log_event(
+        "discovery",
+        {"step": "parallel_tier2_blocked", "reason": "agenda_id_required"},
+    )
+
+
+def _maybe_launch_parallel_tier2_discovery(trigger: str) -> dict:
+    return {"status": "blocked", "reason": "agenda_id_required", "trigger": trigger}
 
 
 def _refresh_node_outputs(node_id: str) -> dict:
@@ -668,11 +570,5 @@ def _event_loop() -> None:
 
 
 def schedule_discovery_if_ready():
-    """Ensure the event-driven discovery consumer is running."""
-    global _discovery_thread
-    with _discovery_lock:
-        if _discovery_thread and _discovery_thread.is_alive():
-            return
-        _stop_event.clear()
-        _discovery_thread = threading.Thread(target=_event_loop, daemon=True, name="deepgraph-discovery-events")
-        _discovery_thread.start()
+    """Do not start the legacy global consumer without an agenda scope."""
+    return {"status": "blocked", "reason": "agenda_id_required"}

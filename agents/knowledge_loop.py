@@ -7,6 +7,7 @@ Three functions:
 """
 import json
 from db import database as db
+from meta_harness.scientific_authority import positive_decision_authorized
 
 
 def cascade_from_claim(claim_id: int):
@@ -40,6 +41,13 @@ def cascade_from_claim(claim_id: int):
     except (json.JSONDecodeError, TypeError):
         pass
 
+    if verdict == "confirmed" and not positive_decision_authorized(
+        agenda_id=int(claim.get("agenda_id") or 0),
+        run_id=run_id,
+    ):
+        # Leave the claim uncascaded so an approved state transition can make
+        # it eligible later. A legacy verdict alone has no positive authority.
+        return
     if verdict == "confirmed":
         _cascade_confirmation(insight, source_nodes, supporting, effect_size)
     elif verdict == "refuted":
@@ -132,6 +140,11 @@ def update_track_record(run_id: int):
 
     verdict = run.get("hypothesis_verdict")
     if not verdict or verdict not in ("confirmed", "refuted", "inconclusive"):
+        return
+    if verdict == "confirmed" and not positive_decision_authorized(
+        agenda_id=int(run.get("agenda_id") or 0),
+        run_id=run_id,
+    ):
         return
 
     insight_id = run["deep_insight_id"]

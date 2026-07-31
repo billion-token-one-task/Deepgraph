@@ -1,0 +1,34 @@
+id = "example.cggr"
+name = "CGGR/CRPP research example"
+kind = "example"
+enabled_by_default = false
+production_eligible = false
+
+[safety]
+resource_authority = false
+may_register_generic_agents = false
+requires_explicit_enable = true
+
+[paths]
+renderer = "plugins.examples.cggr.full_pipeline"
+experiment_runner = "plugins.examples.cggr.experiment_runner"
+figure_orchestra = "plugins.examples.cggr.figure_orchestra"
+scripts = "plugins/examples/cggr/scripts"
+tests = "plugins/examples/cggr/tests"
+docs = "plugins/examples/cggr/docs"
+
+[experiment]
+validation_benchmark_methods = [
+  "Vanilla Direct Answering",
+  "Always-Reason Chain-of-Thought",
+  "CGGR",
+  "CGGR/no_counterfactual_delta",
+]
+ablations = [
+  "no_counterfactual_delta",
+  "no_lcb",
+  "no_self_divergence_penalty",
+  "no_qstruct_term",
+  "oracle_router",
+]
+method_aliases_module = "plugins.examples.cggr.manuscript_profile"

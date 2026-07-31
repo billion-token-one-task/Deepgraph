@@ -55,6 +55,7 @@ from config import (
     REQUIRE_EVOSCIENTIST_FOR_EXPERIMENTS,
 )
 from db import database as db
+from meta_harness.scientific_authority import positive_decision_authorized
 from db.insight_outcomes import (
     OUTCOME_EXPERIMENT_FAILED_RUN,
     OUTCOME_EXPERIMENT_FAILED_SETUP,
@@ -543,7 +544,8 @@ def repair_benchmark_harness_design_jobs(limit: int = 5) -> int:
     rows = db.fetchall(
         """
         SELECT bhj.*, arj.status AS auto_status, arj.stage AS auto_stage,
-               arj.last_note AS auto_last_note, arj.last_error AS auto_last_error
+               arj.last_note AS auto_last_note, arj.last_error AS auto_last_error,
+               arj.resource_grant_id AS auto_resource_grant_id
         FROM benchmark_harness_jobs bhj
         LEFT JOIN auto_research_jobs arj ON arj.deep_insight_id=bhj.deep_insight_id
         WHERE bhj.status='harness_required'
@@ -788,7 +790,12 @@ def _run_benchmark_harness_design_repair_job(insight_id: int) -> bool:
         last_error=None,
         last_note=f"{tag} running asynchronous pre-execution benchmark/data-source design repair.",
     )
-    repair = repair_experiment_plan_from_review(insight_id, judgement=judgement, attempt=attempt)
+    repair = repair_experiment_plan_from_review(
+        insight_id,
+        judgement=judgement,
+        attempt=attempt,
+        resource_grant_id=row.get("auto_resource_grant_id"),
+    )
     if repair.get("error"):
         db.execute(
             """
@@ -1113,10 +1120,10 @@ def _queue_benchmark_completion_run(insight_id: int, run: dict, resource_class: 
         gpu_job_id = gpu_scheduler.queue_run(
             insight_id=insight_id,
             run_id=run["id"],
+            resource_grant_id=int(run.get("resource_grant_id") or 0),
             resource_class=resource_class,
             priority=3,
             vram_required_gb=40 if resource_class == "gpu_large" else 16,
-            timeout_s=0,
         )
         note = f"Queued full benchmark completion on GPU scheduler as job {gpu_job_id}."
     _upsert_job(
@@ -1349,7 +1356,11 @@ def _handle_experiment_review_blocked(insight_id: int, forged: dict | None, *, s
     """
 
     job = db.fetchone(
-        "SELECT last_note, last_error FROM auto_research_jobs WHERE deep_insight_id=?",
+        """
+        SELECT last_note, last_error, resource_grant_id
+        FROM auto_research_jobs
+        WHERE deep_insight_id=?
+        """,
         (insight_id,),
     ) or {}
     previous_attempt = max(
@@ -1404,7 +1415,12 @@ def _handle_experiment_review_blocked(insight_id: int, forged: dict | None, *, s
         return
 
     tag = _repair_tag("experiment_review", next_attempt, max_attempts)
-    repair = repair_experiment_plan_from_review(insight_id, judgement=judgement, attempt=next_attempt)
+    repair = repair_experiment_plan_from_review(
+        insight_id,
+        judgement=judgement,
+        attempt=next_attempt,
+        resource_grant_id=job.get("resource_grant_id"),
+    )
     if repair.get("error"):
         _upsert_job(
             insight_id,
@@ -1498,6 +1514,7 @@ def _retry_failed_run_with_repair(insight_id: int, run: dict, resource_class: st
             "warnings": ["Repair the experiment design or runnable benchmark contract before reforge."],
         },
         attempt=next_attempt,
+        resource_grant_id=run.get("resource_grant_id"),
     )
     if repair.get("error"):
         _upsert_job(
@@ -1982,10 +1999,24 @@ def _execute_cpu_validation_loop(insight_id: int, run_id: int) -> dict:
 
 
 def _upsert_job(insight_id: int, *, touch_updated_at: bool = True, **fields) -> None:
-    existing = db.fetchone(
-        "SELECT id FROM auto_research_jobs WHERE deep_insight_id=?",
+    scope = db.fetchone(
+        "SELECT agenda_id FROM deep_insights WHERE id=?",
         (insight_id,),
     )
+    agenda_id = int((scope or {}).get("agenda_id") or 0)
+    if agenda_id <= 0:
+        raise RuntimeError(
+            "auto-research refuses an unscoped insight; explicit agenda import "
+            "is required"
+        )
+    existing = db.fetchone(
+        "SELECT id, agenda_id FROM auto_research_jobs WHERE deep_insight_id=?",
+        (insight_id,),
+    )
+    if existing and int(existing.get("agenda_id") or 0) != agenda_id:
+        raise RuntimeError(
+            "auto-research job is unscoped or cross-agenda; explicit import is required"
+        )
     if touch_updated_at:
         fields["updated_at"] = "CURRENT_TIMESTAMP"
     fields["last_checked_at"] = "CURRENT_TIMESTAMP"
@@ -1999,15 +2030,16 @@ def _upsert_job(insight_id: int, *, touch_updated_at: bool = True, **fields) -> 
             else:
                 assigns.append(f"{key}=?")
                 params.append(value)
-        params.append(insight_id)
+        params.extend((insight_id, agenda_id))
         db.execute(
-            f"UPDATE auto_research_jobs SET {', '.join(assigns)} WHERE deep_insight_id=?",
+            f"UPDATE auto_research_jobs SET {', '.join(assigns)} "
+            "WHERE deep_insight_id=? AND agenda_id=?",
             tuple(params),
         )
     else:
-        cols = ["deep_insight_id"]
-        placeholders = ["?"]
-        params = [insight_id]
+        cols = ["agenda_id", "deep_insight_id"]
+        placeholders = ["?", "?"]
+        params = [agenda_id, insight_id]
         for key, value in fields.items():
             cols.append(key)
             if value == "CURRENT_TIMESTAMP":
@@ -2075,6 +2107,14 @@ def _manuscript_retry_blocker(run: dict | None) -> str | None:
     verdict = str(run.get("hypothesis_verdict") or "").strip().lower()
     if verdict not in {"confirmed", "supported"}:
         return f"Experiment verdict={verdict or 'missing'} is not submission-grade."
+    if not positive_decision_authorized(
+        agenda_id=int(run.get("agenda_id") or 0),
+        run_id=int(run.get("id") or 0),
+    ):
+        return (
+            "A persisted supported scientific decision is required before "
+            "manuscript retry."
+        )
     legacy_blocker = gpu_scheduler._legacy_benchmark_manifest_blocker(run)
     if legacy_blocker:
         return legacy_blocker
@@ -2602,6 +2642,9 @@ def _claim_review_candidate(candidate: dict, queue: str) -> bool:
     """
 
     insight_id = int(candidate["id"])
+    agenda_id = int(candidate.get("agenda_id") or 0)
+    if agenda_id <= 0:
+        return False
     expected_status = str(candidate.get("auto_status") or "").strip()
     expected_stage = str(candidate.get("auto_stage") or "").strip()
     worker_stage = f"{queue}_worker"
@@ -2613,10 +2656,11 @@ def _claim_review_candidate(candidate: dict, queue: str) -> bool:
             db.execute(
                 """
                 INSERT INTO auto_research_jobs
-                    (deep_insight_id, status, stage, assigned_worker, last_error, last_note, last_checked_at, updated_at)
-                VALUES (?, 'review_pending', ?, ?, NULL, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    (agenda_id, deep_insight_id, status, stage, assigned_worker,
+                     last_error, last_note, last_checked_at, updated_at)
+                VALUES (?, ?, 'review_pending', ?, ?, NULL, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 """,
-                (insight_id, worker_stage, assigned_worker, note),
+                (agenda_id, insight_id, worker_stage, assigned_worker, note),
             )
             db.commit()
             return True
@@ -2640,6 +2684,7 @@ def _claim_review_candidate(candidate: dict, queue: str) -> bool:
             last_checked_at=CURRENT_TIMESTAMP,
             updated_at=CURRENT_TIMESTAMP
         WHERE deep_insight_id=?
+          AND agenda_id=?
           AND status=?
           AND COALESCE(stage, '')=?
           AND status NOT IN (
@@ -2647,7 +2692,15 @@ def _claim_review_candidate(candidate: dict, queue: str) -> bool:
               'running_experiment', 'running_gpu', 'running_cpu', 'queued_gpu'
           )
         """,
-        (worker_stage, assigned_worker, note, insight_id, expected_status, expected_stage),
+        (
+            worker_stage,
+            assigned_worker,
+            note,
+            insight_id,
+            agenda_id,
+            expected_status,
+            expected_stage,
+        ),
     )
     db.commit()
     return int(getattr(cur, "rowcount", 0) or 0) == 1
@@ -2797,11 +2850,22 @@ def _candidate_pool() -> list[dict]:
                   arj.cpu_eligible AS auto_cpu_eligible,
                   arj.resource_class AS auto_resource_class,
                   arj.experiment_run_id AS auto_experiment_run_id,
+                  arj.resource_grant_id AS auto_resource_grant_id,
                   arj.last_note AS auto_last_note,
                   arj.last_error AS auto_last_error
            FROM deep_insights di
-           LEFT JOIN auto_research_jobs arj ON arj.deep_insight_id = di.id
-           WHERE COALESCE(di.status, 'candidate') NOT IN ('exists')
+           LEFT JOIN auto_research_jobs arj
+             ON arj.deep_insight_id = di.id AND arj.agenda_id = di.agenda_id
+           LEFT JOIN resource_grants rg
+             ON rg.id = arj.resource_grant_id
+            AND rg.agenda_id = di.agenda_id
+            AND rg.idea_id = di.id
+            AND rg.status = 'active'
+            AND rg.expires_at > CURRENT_TIMESTAMP
+           WHERE di.agenda_id IS NOT NULL
+             AND arj.resource_grant_id IS NOT NULL
+             AND rg.id IS NOT NULL
+             AND COALESCE(di.status, 'candidate') NOT IN ('exists')
              AND COALESCE(di.outcome, 'pending') NOT IN ('cleaned', 'archived')
              AND COALESCE(di.novelty_status, '') NOT IN ('cleaned_similar_duplicate', 'exists')
              AND COALESCE(di.submission_status, 'not_started') NOT IN ('stale')
@@ -3154,7 +3218,13 @@ def _refresh_running_jobs() -> None:
                     apply_experiment_finished_deep(
                         insight_id,
                         verdict=run.get("hypothesis_verdict"),
-                        success=v == "confirmed",
+                        success=(
+                            v in {"confirmed", "supported"}
+                            and positive_decision_authorized(
+                                agenda_id=int(run.get("agenda_id") or 0),
+                                run_id=int(run.get("id") or 0),
+                            )
+                        ),
                         inconclusive=v == "inconclusive",
                     )
                 else:
@@ -3327,6 +3397,11 @@ def recover_soft_benchmark_completion_jobs(limit: int = 50) -> int:
     )
     recovered = 0
     for row in rows:
+        if not positive_decision_authorized(
+            agenda_id=int(row.get("agenda_id") or 0),
+            run_id=int(row.get("experiment_run_id") or 0),
+        ):
+            continue
         raw_error = str(row.get("last_error") or "").strip()
         blocker_items = [item.strip() for item in raw_error.split(";") if item.strip()]
         bundle = {"error": raw_error, "submission_blockers": blocker_items}
@@ -3847,7 +3922,10 @@ def _process_candidate(insight: dict) -> None:
             stage="experiment_review",
             last_note=background_research_note or "Running structured experiment review before forge.",
         )
-        forged = forge_experiment(insight_id)
+        forged = forge_experiment(
+            insight_id,
+            resource_grant_id=insight.get("auto_resource_grant_id"),
+        )
         if "error" in forged:
             route = forged.get("route")
             if route == "blocked":
@@ -3968,6 +4046,23 @@ def _process_candidate(insight: dict) -> None:
             return
         verdict = str(existing_run.get("hypothesis_verdict") or "").strip().lower()
         if verdict in {"confirmed", "supported"}:
+            if not positive_decision_authorized(
+                agenda_id=int(existing_run.get("agenda_id") or 0),
+                run_id=int(existing_run.get("id") or 0),
+            ):
+                _upsert_job(
+                    insight_id,
+                    status="review_pending",
+                    stage="scientific_decision_required",
+                    experiment_run_id=existing_run["id"],
+                    resource_class=resource_class,
+                    last_note=(
+                        "Execution reported support; waiting for evidence audit "
+                        "and an independent scientific decision."
+                    ),
+                    last_error=None,
+                )
+                return
             benchmark_bundle = benchmark_completion_bundle_from_run(existing_run["id"])
             if schedule_benchmark_completion(
                 insight_id,
@@ -4096,6 +4191,7 @@ def _process_candidate(insight: dict) -> None:
             gpu_job_id = gpu_scheduler.queue_run(
                 insight_id=insight_id,
                 run_id=existing_run["id"],
+                resource_grant_id=int(existing_run.get("resource_grant_id") or 0),
                 resource_class=resource_class,
                 priority=2 if resource_class == "gpu_large" else 1,
                 vram_required_gb=40 if resource_class == "gpu_large" else 16,
@@ -4239,106 +4335,25 @@ def consume_pipeline_events_once(limit: int = 50) -> dict:
 
 
 def run_cycle() -> dict:
-    db.init_db()
-    recovered = recover_legacy_cpu_ineligible_jobs()
-    recovered_invalid_ready = recover_invalid_ready_jobs()
-    recovered_review_fk = recover_foreign_key_review_failures()
-    recovered_invalid_manuscript = recover_invalid_manuscript_retry_jobs()
-    recovered_orphaned_review = recover_orphaned_review_pending_jobs()
-    recovered_review_stale = recover_runaway_review_scaffold_jobs()
-    recovered_manuscript = recover_blocked_manuscript_jobs()
-    recovered_soft_benchmark = recover_soft_benchmark_completion_jobs()
-    try:
-        manuscript_audit = manuscript_watchdog.audit_ready_submission_bundles(limit=50, mark_stale=True)
-    except Exception as exc:  # pragma: no cover - defensive background guard
-        manuscript_audit = {"error": str(exc)}
-        log_event("warning", {"step": "manuscript_watchdog_failed", "error": str(exc)})
-    launch_stats = _launch_candidates_to_capacity()
-    if launch_stats["scheduled"]:
-        return {
-            "status": "processed",
-            "insight_ids": launch_stats["scheduled"],
-            "queues": launch_stats.get("queue_counts", {}),
-            "recovered_legacy": recovered,
-            "recovered_invalid_ready": recovered_invalid_ready,
-            "recovered_invalid_manuscript": recovered_invalid_manuscript,
-            "recovered_review_fk": recovered_review_fk,
-            "recovered_orphaned_review": recovered_orphaned_review,
-            "recovered_review_stale": recovered_review_stale,
-            "recovered_soft_benchmark": recovered_soft_benchmark,
-            "recovered_manuscript": recovered_manuscript,
-            "recovered_harness": launch_stats.get("recovered_harness", 0),
-            "repaired_harness_design": launch_stats.get("repaired_harness_design", 0),
-            "consumed_harness": launch_stats.get("consumed_harness", 0),
-            "manuscript_audit": manuscript_audit,
-        }
-    queue_counts = launch_stats.get("queue_counts", {}) or {}
-    queue_busy = (
-        (queue_counts.get(QUEUE_EXECUTION, 0) and launch_stats["execution_active"] >= max(1, AUTO_RESEARCH_MAX_ACTIVE))
-        or (queue_counts.get(QUEUE_VERIFICATION, 0) and launch_stats["verifying_active"] >= MAX_PARALLEL_VERIFICATIONS)
-        or (queue_counts.get(QUEUE_REVIEW, 0) and launch_stats["review_active"] >= _queue_capacity(QUEUE_REVIEW))
-        or (queue_counts.get(QUEUE_REPAIR, 0) and launch_stats["repair_active"] >= _queue_capacity(QUEUE_REPAIR))
-    )
-    if queue_busy:
-        return {
-            "status": "busy",
-            "queues": queue_counts,
-            "recovered_legacy": recovered,
-            "recovered_invalid_ready": recovered_invalid_ready,
-            "recovered_invalid_manuscript": recovered_invalid_manuscript,
-            "recovered_review_fk": recovered_review_fk,
-            "recovered_orphaned_review": recovered_orphaned_review,
-            "recovered_review_stale": recovered_review_stale,
-            "recovered_soft_benchmark": recovered_soft_benchmark,
-            "recovered_manuscript": recovered_manuscript,
-            "recovered_harness": launch_stats.get("recovered_harness", 0),
-            "repaired_harness_design": launch_stats.get("repaired_harness_design", 0),
-            "consumed_harness": launch_stats.get("consumed_harness", 0),
-            "manuscript_audit": manuscript_audit,
-        }
-    candidate, selection = _select_candidate_from_queues()
-    if not candidate:
-        return {
-            "status": "idle",
-            "queues": selection.get("queue_counts", {}),
-            "recovered_legacy": recovered,
-            "recovered_invalid_ready": recovered_invalid_ready,
-            "recovered_invalid_manuscript": recovered_invalid_manuscript,
-            "recovered_review_fk": recovered_review_fk,
-            "recovered_orphaned_review": recovered_orphaned_review,
-            "recovered_review_stale": recovered_review_stale,
-            "recovered_soft_benchmark": recovered_soft_benchmark,
-            "recovered_manuscript": recovered_manuscript,
-            "recovered_harness": launch_stats.get("recovered_harness", 0),
-            "repaired_harness_design": launch_stats.get("repaired_harness_design", 0),
-            "consumed_harness": launch_stats.get("consumed_harness", 0),
-            "manuscript_audit": manuscript_audit,
-        }
-    return {
-        "status": "pending",
-        "queues": selection.get("queue_counts", {}),
-        "recovered_legacy": recovered,
-        "recovered_invalid_ready": recovered_invalid_ready,
-        "recovered_invalid_manuscript": recovered_invalid_manuscript,
-        "recovered_review_fk": recovered_review_fk,
-        "recovered_orphaned_review": recovered_orphaned_review,
-        "recovered_review_stale": recovered_review_stale,
-        "recovered_soft_benchmark": recovered_soft_benchmark,
-        "recovered_manuscript": recovered_manuscript,
-        "recovered_harness": launch_stats.get("recovered_harness", 0),
-        "repaired_harness_design": launch_stats.get("repaired_harness_design", 0),
-        "consumed_harness": launch_stats.get("consumed_harness", 0),
-        "manuscript_audit": manuscript_audit,
-    }
+    """Queue one explicitly agenda-scoped candidate for portfolio review.
 
+    The legacy global recovery/consumer path is intentionally not invoked:
+    pre-migration backlog has no agenda_id and remains excluded until an
+    audited explicit import.
+    """
+    db.init_db()
+    from agents.agenda_orchestrator import run_scoped_cycle
+
+    return run_scoped_cycle()
 
 def _run_once() -> dict:
     db.init_db()
-    event_stats = consume_pipeline_events_once(limit=50)
     cycle_stats = run_cycle()
     active = _active_job_count()
     return {
-        "events": event_stats.get("events", 0),
+        # Legacy pipeline events are not consumed by meta-harness-v1 because
+        # they do not carry a mandatory agenda_id.
+        "events": 0,
         "cycle_status": cycle_stats.get("status"),
         "manuscript_audit": cycle_stats.get("manuscript_audit"),
         "active_jobs": active,
@@ -4369,12 +4384,6 @@ def _run_loop() -> None:
 def start() -> dict:
     global _worker_thread
     db.init_db()
-    recovered = recover_stale_execution_jobs()
-    if recovered:
-        log_event(
-            "auto_research",
-            {"step": "execution_stale_recovered_on_start", "count": recovered},
-        )
     with _worker_lock:
         if _worker_thread and _worker_thread.is_alive():
             return {"status": "already_running"}

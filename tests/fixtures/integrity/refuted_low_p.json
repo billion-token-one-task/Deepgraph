@@ -1,0 +1,10 @@
+{
+  "verdict": "refuted",
+  "p_value": 0.001,
+  "metric_value": 0.71,
+  "baseline_value": 0.70,
+  "full_benchmark_complete": true,
+  "raw_artifacts_complete": true,
+  "claim_ledger_complete": true,
+  "evaluator_id": "heldout-evaluator"
+}

@@ -141,7 +141,7 @@ def benchmark_fairness_warnings_from_diff(diff_text: str | None) -> list[str]:
     added = "\n".join(line[1:] for line in text.splitlines() if line.startswith("+") and not line.startswith("+++"))
     lower = added.lower()
     warnings: list[str] = []
-    touches_candidate = "cggr" in lower or "candidate" in lower
+    touches_candidate = any(marker in lower for marker in ("candidate", "proposed_method", "method_under_test"))
     touches_scoring_surface = any(
         marker in lower
         for marker in (
@@ -157,7 +157,7 @@ def benchmark_fairness_warnings_from_diff(diff_text: str | None) -> list[str]:
         marker in lower
         for marker in (
             "candidate-only",
-            "_cggr_canonical",
+            "_candidate_canonical",
             "if method_name",
             "method_name ==",
             "method_name.startswith",
@@ -258,7 +258,7 @@ def _candidate_and_strongest(summary: dict[str, Any], metric_name: str | None, d
     per_method = summary.get("per_method") if isinstance(summary.get("per_method"), dict) else {}
     candidate = str(summary.get("candidate_method") or "").strip()
     if not candidate or candidate not in per_method:
-        candidate = next((name for name in per_method if any(t in name.lower() for t in ("ours", "candidate", "proposed", "crpp", "cggr"))), "")
+        candidate = next((name for name in per_method if any(t in name.lower() for t in ("ours", "candidate", "proposed"))), "")
     candidate_row = per_method.get(candidate) if candidate in per_method else {}
     candidate_value = _method_metric(candidate_row if isinstance(candidate_row, dict) else {}, metric_name)
     higher = str(direction or "higher").lower() != "lower"

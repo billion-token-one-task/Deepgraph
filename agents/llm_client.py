@@ -1,6 +1,7 @@
 """Multi-provider LLM client with load balancing and per-provider rate limiting."""
 import hashlib
 import json
+import os
 import threading
 import time
 import httpx
@@ -18,6 +19,7 @@ from config import (
     LLM_REASONING_EFFORT,
     LLM_RPM,
     LLM_REQUEST_TIMEOUT_SECONDS,
+    LLM_ROLE_ROUTES,
     LLM_SECONDARY_API_KEY,
     LLM_SECONDARY_BASE_URL,
     LLM_SECONDARY_ENABLED,
@@ -47,6 +49,62 @@ _provider_cooldown = {}   # name -> resume_timestamp (epoch)
 
 class LLMProviderUnavailableError(RuntimeError):
     """Raised when all configured providers are temporarily unavailable."""
+
+
+def _resolve_route_reference(value: str) -> str:
+    ref = str(value or "").strip()
+    if not ref:
+        return ""
+    if ref.startswith("env:"):
+        return str(os.environ.get(ref[4:], "") or "").strip()
+    # Secret-manager references require an injected resolver. Treating their
+    # labels as provider/model names would be a silent downgrade.
+    if ":" in ref:
+        return ""
+    return ref
+
+
+def configured_role_route_policy(role: str) -> dict[str, dict]:
+    """Resolve non-secret provider/model policy without selecting a fallback."""
+    if role not in {"proposer", "evaluator", "reviewer"}:
+        raise ValueError("invalid LLM role")
+    routes: dict[str, dict] = {}
+    for item in LLM_ROLE_ROUTES.get(role, []):
+        if not isinstance(item, dict):
+            continue
+        provider_name = _resolve_route_reference(item.get("provider_ref", ""))
+        if not provider_name:
+            continue
+        if provider_name in routes:
+            raise LLMProviderUnavailableError(
+                f"duplicate configured {role} provider route:{provider_name}"
+            )
+        routes[provider_name] = {
+            "model": _resolve_route_reference(item.get("model_ref", "")),
+            "model_family": _resolve_route_reference(
+                item.get("model_family_ref", "")
+            )
+            or str(item.get("model_family") or "").strip(),
+            "prompt_version": str(item.get("prompt_version") or "").strip(),
+        }
+    if not routes:
+        raise LLMProviderUnavailableError(
+            f"no resolved {role} provider route; manual review required"
+        )
+    return routes
+
+
+def configured_role_prompt_version(role: str) -> str:
+    versions = {
+        str(policy.get("prompt_version") or "").strip()
+        for policy in configured_role_route_policy(role).values()
+    }
+    versions.discard("")
+    if len(versions) != 1:
+        raise LLMProviderUnavailableError(
+            f"{role} routes require one explicit prompt version"
+        )
+    return versions.pop()
 
 
 class _RateLimiter:
@@ -275,6 +333,12 @@ def _init_providers():
             name = f"{base_name}_{suffix}"
             suffix += 1
         provider["name"] = name
+        provider["model_family"] = (
+            str(provider.get("model_family") or provider.get("model") or "")
+            .lower()
+            .split("/", 1)[-1]
+            .split("-", 1)[0]
+        )
         seen_names.add(name)
 
     # Init stats + rate limiters
@@ -433,6 +497,7 @@ def get_provider_models() -> list[dict]:
             "model": p.get("model"),
             "base_url": str(p.get("base_url") or "")[:80],
             "protocol": p.get("protocol"),
+            "model_family": p.get("model_family"),
         }
         for p in _providers
     ]
@@ -945,9 +1010,9 @@ def call_llm_with_provider(
 ) -> tuple[str, int, dict]:
     """Call one selected provider, used when reviewer roles should be model-routed.
 
-    Falls back to provider index 0 when the requested provider is unavailable.
-    Temperature is accepted for API parity; provider routes currently use their
-    configured deterministic settings.
+    An explicitly requested route fails closed when unavailable. Temperature is
+    accepted for API parity; provider routes currently use deterministic
+    settings.
     """
     del temperature
     max_tokens = max_tokens or LLM_MAX_OUTPUT_TOKENS
@@ -956,6 +1021,7 @@ def call_llm_with_provider(
         raise LLMProviderUnavailableError("No LLM providers configured.")
 
     provider = None
+    explicit_route = provider_name is not None or provider_index is not None
     if provider_name:
         for candidate in _providers:
             if candidate.get("name") == provider_name:
@@ -963,6 +1029,10 @@ def call_llm_with_provider(
                 break
     if provider is None and provider_index is not None and 0 <= provider_index < len(_providers):
         provider = _providers[provider_index]
+    if provider is None and explicit_route:
+        raise LLMProviderUnavailableError(
+            "requested provider route is unavailable; manual review required"
+        )
     if provider is None:
         provider = _providers[0]
 
@@ -985,7 +1055,12 @@ def call_llm_with_provider(
             stats["input_tokens"] += input_toks
         if not text or len(text.strip()) < 10:
             raise RuntimeError(f"{name} returned empty response")
-        return text, tokens, dict(provider)
+        return text, tokens, {
+            "name": provider.get("name"),
+            "model": provider.get("model"),
+            "protocol": provider.get("protocol"),
+            "model_family": provider.get("model_family") or provider.get("model"),
+        }
     except Exception:
         latency = time.time() - start
         with _provider_lock:
@@ -996,6 +1071,215 @@ def call_llm_with_provider(
         raise
     finally:
         _release_provider(name)
+
+
+def call_llm_for_role(
+    system_prompt: str,
+    user_prompt: str,
+    *,
+    agenda_id: int,
+    idea_id: int,
+    role: str,
+    stage: str,
+    resource_grant_id: int,
+    operation: str,
+    idempotency_key: str,
+    prompt_version: str,
+    allowed_provider_names: list[str] | None = None,
+    proposer_route: dict | None = None,
+    max_tokens: int | None = None,
+) -> tuple[str, int, dict]:
+    """Resource-granted role route with provider/model/token observation.
+
+    This is the meta-harness-v1 entry point. Legacy ``call_llm`` remains for
+    pre-agenda ingestion only and must not be used by resource-consuming
+    proposer/evaluator/reviewer jobs.
+    """
+    from contracts.meta_harness import ResourceGrant
+    from meta_harness.grant_usage import GrantUsageLedger
+    from meta_harness.llm_routing import (
+        LLMExecutionFailure,
+        LLMRouter,
+        ProviderRoute,
+        RouteRequest,
+        RouteUsage,
+    )
+    from meta_harness.repository import MetaHarnessRepository
+    from db import database as db
+
+    token_cap = int(max_tokens or LLM_MAX_OUTPUT_TOKENS)
+    if token_cap <= 0:
+        raise ValueError("max_tokens must be a positive hard cap")
+    grant_row = db.fetchone(
+        """
+        SELECT * FROM resource_grants
+        WHERE id=? AND agenda_id=? AND idea_id=?
+          AND status='active' AND expires_at > CURRENT_TIMESTAMP
+        """,
+        (resource_grant_id, agenda_id, idea_id),
+    )
+    if not grant_row:
+        raise PermissionError("active scoped ResourceGrant is required for LLM role")
+    grant = ResourceGrant(
+        agenda_id=int(grant_row["agenda_id"]),
+        idea_id=int(grant_row["idea_id"]),
+        decision_packet_id=int(grant_row["decision_packet_id"]),
+        stage=str(grant_row["stage"]),
+        token_cap=int(grant_row["token_cap"]),
+        gpu_class=str(grant_row.get("gpu_class") or "none"),
+        max_gpu_hours=float(grant_row.get("max_gpu_hours") or 0),
+        backend_allowlist=json.loads(grant_row.get("backend_allowlist_json") or "[]"),
+        artifact_requirements=json.loads(
+            grant_row.get("artifact_requirements_json") or "[]"
+        ),
+        expires_at=str(grant_row["expires_at"]),
+        grant_reason=str(grant_row["grant_reason"]),
+        idempotency_key=str(grant_row["idempotency_key"]),
+        status=str(grant_row["status"]),
+        grant_id=int(grant_row["id"]),
+        reservation_id=int(grant_row["reservation_id"]),
+    )
+    role_policy = configured_role_route_policy(role)
+    configured_names = set(role_policy)
+    allowed = (
+        set(allowed_provider_names)
+        if allowed_provider_names is not None
+        else configured_names
+    )
+    if not allowed or not allowed.issubset(configured_names):
+        raise LLMProviderUnavailableError(
+            "requested provider set is outside configured role policy"
+        )
+    _init_providers()
+    provider_map = {
+        str(provider["name"]): provider
+        for provider in _providers
+        if provider.get("name") in allowed
+    }
+    if not allowed or set(provider_map) != allowed:
+        raise LLMProviderUnavailableError(
+            "one or more explicitly allowed provider routes are unavailable"
+        )
+    for name, provider in provider_map.items():
+        expected_model = str(role_policy[name].get("model") or "")
+        expected_family = str(role_policy[name].get("model_family") or "")
+        expected_prompt = str(role_policy[name].get("prompt_version") or "")
+        actual_family = str(
+            provider.get("model_family") or provider.get("model") or ""
+        )
+        if expected_model and expected_model != str(provider.get("model") or ""):
+            raise LLMProviderUnavailableError(
+                f"configured {role} model does not match provider:{name}"
+            )
+        if expected_family and expected_family != actual_family:
+            raise LLMProviderUnavailableError(
+                f"configured {role} model family does not match provider:{name}"
+            )
+        if expected_prompt and expected_prompt != prompt_version:
+            raise LLMProviderUnavailableError(
+                f"configured {role} prompt version mismatch:{name}"
+            )
+    routes = [
+        ProviderRoute(
+            route_id=name,
+            provider=name,
+            model=str(provider["model"]),
+            model_family=str(provider.get("model_family") or provider["model"]),
+            prompt_version=prompt_version,
+            timeout_seconds=int(LLM_REQUEST_TIMEOUT_SECONDS),
+            transient_retries=int(LLM_TRANSIENT_RETRIES),
+            transient_cooldown_seconds=int(LLM_TRANSIENT_COOLDOWN_SECONDS),
+        )
+        for name, provider in provider_map.items()
+    ]
+    proposer_contract = None
+    if proposer_route:
+        proposer_contract = ProviderRoute(
+            route_id=str(proposer_route.get("route_id") or proposer_route.get("provider")),
+            provider=str(proposer_route.get("provider") or ""),
+            model=str(proposer_route.get("model") or ""),
+            model_family=str(proposer_route.get("model_family") or ""),
+            prompt_version=str(proposer_route.get("prompt_version") or ""),
+            timeout_seconds=int(
+                proposer_route.get("timeout_seconds") or LLM_REQUEST_TIMEOUT_SECONDS
+            ),
+        )
+        proposer_contract.validate()
+    repository = MetaHarnessRepository()
+    router = LLMRouter(
+        {name: list(routes) for name in ("proposer", "evaluator", "reviewer")},
+        ledger=GrantUsageLedger(resource_grant_id),
+        observation_sink=repository.save_route_observation,
+        cooldown_store=repository,
+    )
+    request_contract = RouteRequest(
+        agenda_id=agenda_id,
+        idea_id=idea_id,
+        role=role,
+        stage=stage,
+        resource_grant_id=resource_grant_id,
+        token_cap=token_cap,
+        operation=operation,
+        idempotency_key=idempotency_key,
+        proposer_route=proposer_contract,
+    )
+
+    def _execute(route, _request):
+        provider = provider_map[route.route_id]
+        limiter = _rate_limiters.get(route.route_id)
+        if limiter:
+            limiter.wait()
+        start = time.time()
+        try:
+            text, tokens, cached_tokens, input_tokens = _call_provider(
+                provider,
+                system_prompt,
+                user_prompt,
+                token_cap,
+            )
+            if not text or len(text.strip()) < 10:
+                raise LLMExecutionFailure("provider returned an empty response")
+            output_tokens = max(0, int(tokens or 0) - int(input_tokens or 0))
+            with _provider_lock:
+                stats = _provider_stats[route.route_id]
+                stats["calls"] += 1
+                stats["tokens"] += int(tokens or 0)
+                stats["input_tokens"] += int(input_tokens or 0)
+                stats["cached_tokens"] += int(cached_tokens or 0)
+                stats["total_latency"] += time.time() - start
+            return text, RouteUsage(int(input_tokens or 0), output_tokens, None)
+        except Exception as exc:
+            category = (
+                "auth"
+                if is_llm_auth_error(exc)
+                else "transient"
+                if is_llm_transient_provider_error(exc)
+                else "provider_error"
+            )
+            with _provider_lock:
+                stats = _provider_stats[route.route_id]
+                stats["calls"] += 1
+                stats["errors"] += 1
+                stats["total_latency"] += time.time() - start
+            if isinstance(exc, LLMExecutionFailure):
+                raise
+            raise LLMExecutionFailure(
+                str(exc),
+                category=category,
+            ) from exc
+
+    result = router.invoke(request_contract, grant=grant, executor=_execute)
+    return (
+        str(result.output),
+        result.usage.total_tokens,
+        {
+            "provider": result.route.provider,
+            "model": result.route.model,
+            "model_family": result.route.model_family,
+            "prompt_version": result.route.prompt_version,
+            "attempts": result.attempts,
+        },
+    )
 
 
 def _first_balanced_json_slice(text: str, start: int) -> str | None:
@@ -1156,6 +1440,27 @@ def call_llm_json(system_prompt: str, user_prompt: str, temperature: float = 0.0
         preview = str(text).replace("\n", " ")[:320]
         print(f"[LLM_JSON] Parse failed: {e}; preview: {preview}...", flush=True)
         raise
+
+
+def call_llm_json_for_role(
+    system_prompt: str,
+    user_prompt: str,
+    **route_kwargs,
+) -> tuple[dict | list, int, dict]:
+    """Parse a resource-granted role-routed response as JSON."""
+    text, tokens, route = call_llm_for_role(
+        system_prompt,
+        user_prompt,
+        **route_kwargs,
+    )
+    parsed, how = parse_llm_json_text(text)
+    if how not in ("direct", "empty"):
+        print(
+            f"[LLM_JSON] Role-routed response parsed via {how} "
+            f"({len(text)} chars)",
+            flush=True,
+        )
+    return parsed, tokens, route
 
 
 def call_llm_json_with_provider(

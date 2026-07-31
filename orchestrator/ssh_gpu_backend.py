@@ -186,8 +186,7 @@ def benchmark_env_from_workdir(local_workdir: Path) -> dict[str, str]:
 
 
 def _ssh_password(worker: Mapping[str, Any] | None) -> str:
-    metadata = _load_metadata(worker)
-    return str(metadata.get("ssh_password") or GPU_REMOTE_SSH_PASSWORD or "")
+    return str(GPU_REMOTE_SSH_PASSWORD or "")
 
 
 def _ssh_target(worker: Mapping[str, Any]) -> str:
@@ -201,7 +200,7 @@ def _ssh_target(worker: Mapping[str, Any]) -> str:
 
 def _ssh_base_command(worker: Mapping[str, Any]) -> list[str]:
     metadata = _load_metadata(worker)
-    cmd = ["ssh", "-o", "StrictHostKeyChecking=no"]
+    cmd = ["ssh", "-o", "StrictHostKeyChecking=yes"]
     if _ssh_password(worker):
         cmd.extend(["-o", "PubkeyAuthentication=no"])
     port = int(metadata.get("ssh_port") or 22)
@@ -211,7 +210,7 @@ def _ssh_base_command(worker: Mapping[str, Any]) -> list[str]:
 
 def _rsync_ssh_command(worker: Mapping[str, Any]) -> str:
     metadata = _load_metadata(worker)
-    parts = ["ssh", "-o", "StrictHostKeyChecking=no"]
+    parts = ["ssh", "-o", "StrictHostKeyChecking=yes"]
     if _ssh_password(worker):
         parts.extend(["-o", "PubkeyAuthentication=no"])
     parts.extend(["-p", str(int(metadata.get("ssh_port") or 22))])

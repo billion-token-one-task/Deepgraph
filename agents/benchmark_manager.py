@@ -282,6 +282,28 @@ def _primary_benchmark_name(task: Mapping[str, Any]) -> str:
 
 
 def upsert_harness_job(insight_id: int, task: Mapping[str, Any]) -> dict[str, Any]:
+    scope = db.fetchone(
+        """
+        SELECT di.agenda_id, arj.resource_grant_id
+        FROM deep_insights di
+        JOIN auto_research_jobs arj
+          ON arj.deep_insight_id=di.id AND arj.agenda_id=di.agenda_id
+        JOIN resource_grants rg
+          ON rg.id=arj.resource_grant_id
+         AND rg.agenda_id=di.agenda_id
+         AND rg.idea_id=di.id
+         AND rg.status='active'
+         AND rg.expires_at > CURRENT_TIMESTAMP
+        WHERE di.id=?
+        """,
+        (int(insight_id),),
+    )
+    if not scope or int(scope.get("agenda_id") or 0) <= 0:
+        raise PermissionError(
+            "benchmark harness job requires an agenda-scoped active ResourceGrant"
+        )
+    agenda_id = int(scope["agenda_id"])
+    resource_grant_id = int(scope["resource_grant_id"])
     payload = json.dumps(task, ensure_ascii=False, default=str)
     dataset_refs = json.dumps(task.get("dataset_refs") or [], ensure_ascii=False, default=str)
     baseline_refs = json.dumps(task.get("baseline_refs") or [], ensure_ascii=False, default=str)
@@ -292,8 +314,11 @@ def upsert_harness_job(insight_id: int, task: Mapping[str, Any]) -> dict[str, An
     if loop_note:
         last_note = f"{last_note} {loop_note}"
     existing = db.fetchone(
-        "SELECT id FROM benchmark_harness_jobs WHERE deep_insight_id=?",
-        (int(insight_id),),
+        """
+        SELECT id FROM benchmark_harness_jobs
+        WHERE agenda_id=? AND deep_insight_id=?
+        """,
+        (agenda_id, int(insight_id)),
     )
     if existing:
         db.execute(
@@ -309,7 +334,7 @@ def upsert_harness_job(insight_id: int, task: Mapping[str, Any]) -> dict[str, An
                 last_error=?,
                 last_note=?,
                 updated_at=CURRENT_TIMESTAMP
-            WHERE deep_insight_id=?
+            WHERE agenda_id=? AND deep_insight_id=?
             """,
             (
                 HARNESS_REQUIRED_STATUS,
@@ -321,6 +346,7 @@ def upsert_harness_job(insight_id: int, task: Mapping[str, Any]) -> dict[str, An
                 payload,
                 "Generated runner cannot execute the benchmark contract.",
                 last_note,
+                agenda_id,
                 int(insight_id),
             ),
         )
@@ -329,12 +355,15 @@ def upsert_harness_job(insight_id: int, task: Mapping[str, Any]) -> dict[str, An
         job_id = db.insert_returning_id(
             """
             INSERT INTO benchmark_harness_jobs
-                (deep_insight_id, status, harness_kind, benchmark_name, dataset_refs,
+                (agenda_id, resource_grant_id, deep_insight_id, status,
+                 harness_kind, benchmark_name, dataset_refs,
                  baseline_refs, required_capabilities, task_plan, last_error, last_note)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING id
             """,
             (
+                agenda_id,
+                resource_grant_id,
                 int(insight_id),
                 HARNESS_REQUIRED_STATUS,
                 _text(task.get("harness_kind") or "custom_benchmark_harness"),

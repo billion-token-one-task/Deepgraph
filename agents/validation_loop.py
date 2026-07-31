@@ -9,6 +9,7 @@ Key difference from autoresearch:
   - Knows when to stop: hypothesis SUPPORTED, REFUTED, or TIMEOUT
   - Logs structured iteration data for the Result Interpreter
 """
+import hashlib
 import itertools
 import json
 import os
@@ -220,7 +221,7 @@ def _benchmark_scores(summary: dict) -> tuple[str, str | None, float | None, flo
     """Return (metric_name, candidate_method, candidate_value, best_other_value, num_seeds)."""
     metric_name = str(summary.get("primary_metric") or summary.get("metric_name") or "metric")
     per_method = summary.get("per_method") if isinstance(summary.get("per_method"), dict) else {}
-    candidate_method = str(summary.get("candidate_method") or ("cggr" if "cggr" in per_method else summary.get("best_method") or "")).strip() or None
+    candidate_method = str(summary.get("candidate_method") or "").strip() or None
 
     def _metric_for(method_name: str) -> float | None:
         row = per_method.get(method_name)
@@ -392,8 +393,8 @@ _BASELINE_ALIAS_GROUPS = (
     ("confidencegate", "adaptivegate", "budgetgate"),
     ("disagreementrouting", "disagreementgate", "disagreement", "selfconsistencygate"),
     ("randombudgetmatchedrouting", "randombudgetmatched", "randomrouting", "budgetmatchedrandom"),
-    ("oracleroutingupperbound", "oracle", "oraclerouter", "upperbound", "cggroraclerouter"),
-    ("cggr", "candidate", "proposedmethod"),
+    ("oracleroutingupperbound", "oracle", "oraclerouter", "upperbound"),
+    ("candidate", "proposedmethod", "methodundertest"),
 )
 
 
@@ -480,8 +481,8 @@ def _benchmark_readiness_blockers(summary: dict, criteria: dict, verdict: str) -
         num_seeds = int(summary.get("num_seeds") or len(seed_results) or 0)
     except (TypeError, ValueError):
         num_seeds = 0
-    if verdict != "confirmed":
-        blockers.append(f"verdict is {verdict!r}, not confirmed")
+    if verdict != "supported":
+        blockers.append(f"execution verdict is {verdict!r}, not supported")
     if summary.get("full_benchmark_completed") is False:
         blockers.append("benchmark_summary.full_benchmark_completed is false")
     if summary.get("load_failures"):
@@ -698,15 +699,6 @@ def _bounded_int_text(value: str | None, cap: int) -> str:
     if current <= 0:
         current = cap
     return str(min(current, cap))
-
-
-def _workdir_uses_cggr_runner(workdir: Path) -> bool:
-    train_py = workdir / "code" / "train.py"
-    try:
-        text = train_py.read_text(encoding="utf-8", errors="ignore")[:20000].lower()
-    except OSError:
-        return False
-    return '"cggr_mode": true' in text or "'cggr_mode': true" in text
 
 
 def _contract_context(workdir: Path) -> tuple[dict, dict, dict]:
@@ -953,7 +945,7 @@ def _benchmark_env_for_execution(workdir: Path, *, full_benchmark: bool = False)
     env.setdefault("DEEPGRAPH_BENCHMARK_SEEDS", str(EXPERIMENT_VALIDATION_BENCHMARK_SEEDS))
     env["DEEPGRAPH_BENCHMARK_MAX_EXAMPLES_CAP"] = str(EXPERIMENT_VALIDATION_BENCHMARK_MAX_EXAMPLES)
     env["DEEPGRAPH_BENCHMARK_SEEDS_CAP"] = str(EXPERIMENT_VALIDATION_BENCHMARK_SEEDS)
-    if EXPERIMENT_VALIDATION_BENCHMARK_METHODS and _workdir_uses_cggr_runner(workdir):
+    if EXPERIMENT_VALIDATION_BENCHMARK_METHODS:
         env["DEEPGRAPH_BENCHMARK_METHODS"] = EXPERIMENT_VALIDATION_BENCHMARK_METHODS
     return env
 
@@ -1820,33 +1812,64 @@ def _determine_final_verdict(
 
     if automation_failed:
         return "inconclusive"
-    if total_iters <= 0:
-        summary = benchmark_summary or {}
-        if summary:
-            metric_name, candidate_method, candidate_value, best_other, num_seeds = _benchmark_scores(summary)
-            if candidate_method and candidate_value is not None and best_other is not None and num_seeds >= 3:
-                benchmark_effect = candidate_value - best_other if direction == "higher" else best_other - candidate_value
-                benchmark_effect_pct = (benchmark_effect / abs(best_other) * 100) if best_other else 0
-                best_method = str(summary.get("best_method") or "").strip().lower()
-                if best_method and candidate_method.lower() != best_method:
-                    return "inconclusive"
-                if exciting and benchmark_effect > 0 and _meets_threshold(candidate_value, exciting, direction):
-                    return "confirmed"
-                if solid and benchmark_effect > 0 and _meets_threshold(candidate_value, solid, direction):
-                    return "confirmed"
-                if benchmark_effect_pct > 1.0:
-                    return "confirmed"
-                return "inconclusive"
-        return "reproduced"
-    if exciting and is_improvement and _meets_threshold(best_value, exciting, direction) and total_kept > 0:
-        return "confirmed"
-    if solid and is_improvement and _meets_threshold(best_value, solid, direction) and total_kept > 0:
-        return "confirmed"
-    if is_improvement and effect_pct > 1.0 and total_kept > 0:
-        return "confirmed"
+
+    summary = benchmark_summary or {}
+    metric_name, candidate_method, candidate_value, best_other, num_seeds = (
+        _benchmark_scores(summary) if summary else ("", "", None, None, 0)
+    )
+    if summary and candidate_value is not None and best_other is not None:
+        best_value = float(candidate_value)
+        baseline = float(best_other)
+        effect = best_value - baseline if direction == "higher" else baseline - best_value
+        is_improvement = effect > 0
+
     if total_iters >= refute_min and not is_improvement:
         return "refuted"
-    return "inconclusive"
+    if not is_improvement:
+        return "inconclusive"
+
+    p_value = None
+    for container in (
+        summary,
+        summary.get("bootstrap_ci") if isinstance(summary.get("bootstrap_ci"), dict) else {},
+        summary.get("significance") if isinstance(summary.get("significance"), dict) else {},
+    ):
+        for key in ("p_value", "paired_permutation_p"):
+            try:
+                if container.get(key) is not None:
+                    p_value = float(container[key])
+                    break
+            except (TypeError, ValueError):
+                continue
+        if p_value is not None:
+            break
+
+    from contracts.scientific_evidence import EvidenceDecisionInput, decide_evidence
+
+    evidence = decide_evidence(
+        EvidenceDecisionInput(
+            verdict="supported",
+            p_value=p_value,
+            metric_value=candidate_value if candidate_value is not None else best_value,
+            baseline_value=best_other if best_other is not None else baseline,
+            full_benchmark_complete=bool(
+                summary.get("full_benchmark_completed") is True
+                and candidate_method
+                and num_seeds >= 3
+            ),
+            raw_artifacts_complete=bool(
+                summary.get("raw_artifacts_complete")
+                or summary.get("benchmark_artifact_manifest")
+            ),
+            claim_ledger_complete=bool(summary.get("claim_ledger_complete")),
+            evaluator_id=str(summary.get("evaluator_id") or ""),
+        )
+    )
+    # Execution may report support, but only the canonical evidence repository
+    # can create a scientific decision record. Point estimates, pilot results,
+    # missing p-values, zero baselines, and incomplete artifacts remain
+    # inconclusive even if they clear a hand-written performance threshold.
+    return "supported" if evidence.confirmation_allowed else "inconclusive"
 
 
 def _find_train_file(code_dir: Path, preferred: str | None = None) -> Path | None:
@@ -1886,12 +1909,18 @@ def _record_artifact(
     metric_value: float | None = None,
     metadata: dict | None = None,
 ) -> None:
+    run = db.fetchone("SELECT agenda_id FROM experiment_runs WHERE id=?", (run_id,))
+    agenda_id = int((run or {}).get("agenda_id") or 0)
+    if agenda_id <= 0:
+        raise RuntimeError("artifact write requires an agenda-scoped experiment run")
     db.execute(
         """
-        INSERT INTO experiment_artifacts (run_id, artifact_type, path, metric_key, metric_value, metadata)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO experiment_artifacts
+            (agenda_id, run_id, artifact_type, path, metric_key, metric_value, metadata)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
         (
+            agenda_id,
             run_id,
             artifact_type,
             str(path),
@@ -2123,12 +2152,7 @@ def _added_diff_text(diff: str) -> str:
 
 
 def _blocked_pre_benchmark_diff_warnings(diff: str) -> list[str]:
-    """Detect known-invalid candidate diffs before spending GPU time.
-
-    These checks are intentionally narrow: they target intervention families
-    that the supervisor has already declared off-limits after repeated failed
-    attempts in this benchmark run.
-    """
+    """Reject candidate changes to evaluator, holdout, budget, or safety policy."""
     if not diff:
         return []
 
@@ -2136,87 +2160,24 @@ def _blocked_pre_benchmark_diff_warnings(diff: str) -> list[str]:
     full = str(diff or "").lower()
     warnings: list[str] = []
 
-    def add(message: str) -> None:
-        if message not in warnings:
-            warnings.append(message)
-
-    if "_build_cggr_zero_budget_prompt" in full:
-        add(
-            "Pre-benchmark guard blocked a diff touching `_build_cggr_zero_budget_prompt`; "
-            "recent zero-budget prompt-shortening attempts in this area lost utility."
-        )
-    if "_cggr_zero_budget_max_tokens" in full:
-        add(
-            "Pre-benchmark guard blocked a diff touching `_cggr_zero_budget_max_tokens`; "
-            "recent token-cap microtuning is not admissible evidence."
-        )
-
-    answer_shape_markers = (
-        "answer with only",
-        "shortest exact answer",
-        "shortest final answer",
-        "shortest answer",
-        "answer span",
-        "answer phrase only",
-        "phrase only",
-        "short phrase",
-        "do not explain",
-        "no extra text",
+    protected_markers = (
+        "held_out",
+        "holdout",
+        "evaluator",
+        "resource_grant",
+        "budget_policy",
+        "safety_policy",
+        "production_results",
     )
-    if any(marker in added for marker in answer_shape_markers) and (
-        "zero-budget" in full or "cggr" in full or "_build_cggr_zero_budget_prompt" in full
-    ):
-        add(
-            "Pre-benchmark guard blocked a zero-budget answer-shape prompt change; "
-            "shortest-answer, answer-span, or phrase-only rewrites are disallowed."
+    if any(marker in full for marker in protected_markers):
+        warnings.append(
+            "Pre-benchmark guard blocked a candidate diff touching evaluator, "
+            "holdout, budget, safety, grant, or production-result policy."
         )
-
-    answer_shape_helper = re.search(
-        r"def\s+_is_[a-z0-9_]*(?:goal|purpose|phrase|span|answer_shape)[a-z0-9_]*\s*\(",
-        added,
-    )
-    if answer_shape_helper and ("question" in added or "zero-budget" in full or "cggr" in full):
-        add(
-            "Pre-benchmark guard blocked an answer-shape regex/helper change for zero-budget routing."
-        )
-
-    reasoning_budget_markers = (
-        "zero-budget",
-        "12-token",
-        "token cap",
-        "answer cap",
-        "easy open",
-        "goal/purpose",
-        "phrase-only",
-        "prompt",
-    )
-    if "reasoning_budget" in full and any(marker in added for marker in reasoning_budget_markers):
-        add(
-            "Pre-benchmark guard blocked reasoning-budget metadata/cap microtuning tied to zero-budget behavior."
-        )
-
-    context_helper_markers = (
-        "_extract_context",
-        "_context_to_text",
-        "_question_with_context",
-    )
-    context_prompt_markers = (
-        "benchmark-provided context",
-        "context/passages/facts",
-        "context fields",
-        "context-preserving prompting",
-    )
-    if any(marker in added for marker in context_helper_markers):
-        add(
-            "Pre-benchmark guard blocked broad benchmark-context propagation helpers; "
-            "recent all-method context prompt rewrites lowered utility."
-        )
-    elif any(marker in added for marker in context_prompt_markers) and (
-        "prompt" in added or "question" in added or "all method" in added
-    ):
-        add(
-            "Pre-benchmark guard blocked broad benchmark-context prompt propagation; "
-            "recent all-method context prompt rewrites lowered utility."
+    if "completed" in added and any(marker in added for marker in ("except", "error", "failed", "timeout")):
+        warnings.append(
+            "Pre-benchmark guard blocked a candidate diff that may convert "
+            "failure or timeout paths into completed."
         )
 
     return warnings
@@ -2375,7 +2336,10 @@ def _launch_coding_agent(workdir: Path, code_dir: Path, iteration: int,
     Returns a description of what was tried (the actual code changes
     are written directly to files by the agent).
     """
-    from agents.llm_client import call_llm
+    from agents.llm_client import (
+        call_llm_for_role,
+        configured_role_prompt_version,
+    )
 
     recent_history = history[-10:] if history else []
     history_text = ""
@@ -2385,44 +2349,6 @@ def _launch_coding_agent(workdir: Path, code_dir: Path, iteration: int,
 
     proxy = _read_proxy_config(workdir)
     success_criteria = success_criteria or {}
-    if spec and codex_executor.codex_available():
-        codex_result = codex_executor.run_codex_iteration(
-            workdir=workdir,
-            code_dir=code_dir,
-            iteration=iteration,
-            method_desc=method_desc,
-            best_so_far=best_so_far,
-            baseline=baseline,
-            history=history,
-            proxy=proxy,
-            success_criteria=success_criteria,
-            experimental_plan=spec.experimental_plan,
-            evidence_plan=spec.evidence_plan,
-            supervisor_plan=supervisor_plan,
-        )
-        if codex_result.get("ok"):
-            summary = str(codex_result.get("summary") or f"Codex repo edit (iter {iteration})")
-            return {
-                "description": summary[:500],
-                "artifact_paths": codex_result.get("artifact_paths", {}),
-                "executor": "codex",
-                "validation_status": codex_result.get("validation_status", ""),
-            }
-        codex_failure = str(
-            codex_result.get("error")
-            or codex_result.get("stderr")
-            or codex_result.get("returncode")
-            or "unknown"
-        )
-        print(f"[LOOP] Codex iteration failed at iter {iteration}: {codex_failure[:500]}", flush=True)
-        return {
-            "description": f"Codex code generation failed: {codex_failure[:240]}",
-            "artifact_paths": codex_result.get("artifact_paths", {}),
-            "executor": "codex",
-            "code_generation_failed": True,
-            "validation_status": codex_result.get("validation_status", ""),
-        }
-
     train_file = _find_train_file(code_dir, proxy.get("main_train_file"))
 
     current_code = ""
@@ -2468,7 +2394,55 @@ def _launch_coding_agent(workdir: Path, code_dir: Path, iteration: int,
         Output the COMPLETE modified file. Make one focused change to implement or improve the method.""")
 
     try:
-        new_code, _ = call_llm(system, prompt, max_tokens=16000)
+        run_id = int(spec.run_id or 0) if spec is not None else 0
+        run_scope = db.fetchone(
+            """
+            SELECT er.agenda_id, er.deep_insight_id, er.resource_grant_id,
+                   rg.stage
+            FROM experiment_runs AS er
+            JOIN resource_grants AS rg
+              ON rg.id=er.resource_grant_id
+             AND rg.agenda_id=er.agenda_id
+             AND rg.idea_id=er.deep_insight_id
+             AND rg.status='active'
+             AND rg.expires_at > CURRENT_TIMESTAMP
+            WHERE er.id=?
+            """,
+            (run_id,),
+        )
+        if not run_scope:
+            raise PermissionError(
+                "role-routed coding requires an active scoped ResourceGrant"
+            )
+        idempotency_material = "|".join(
+            (
+                str(run_scope["agenda_id"]),
+                str(run_scope["deep_insight_id"]),
+                str(run_id),
+                str(iteration),
+                method_desc,
+                current_code,
+                history_text,
+            )
+        )
+        new_code, _, route = call_llm_for_role(
+            system,
+            prompt,
+            agenda_id=int(run_scope["agenda_id"]),
+            idea_id=int(run_scope["deep_insight_id"]),
+            role="proposer",
+            stage=str(run_scope["stage"]),
+            resource_grant_id=int(run_scope["resource_grant_id"]),
+            operation="validation_code_iteration",
+            idempotency_key=(
+                "validation-code:"
+                + hashlib.sha256(
+                    idempotency_material.encode("utf-8")
+                ).hexdigest()
+            ),
+            prompt_version=configured_role_prompt_version("proposer"),
+            max_tokens=16000,
+        )
         new_code = new_code.strip()
 
         # Strip <think>...</think> blocks (reasoning models)
@@ -2493,28 +2467,29 @@ def _launch_coding_agent(workdir: Path, code_dir: Path, iteration: int,
         if not has_python:
             return {
                 "description": f"LLM output not valid Python (iter {iteration})",
-                "artifact_paths": {},
-                "executor": "legacy_llm",
+                "artifact_paths": {"llm_route": route},
+                "executor": "role_routed_llm",
             }
 
         if train_file and len(new_code) > 50:
             train_file.write_text(new_code, encoding="utf-8")
             return {
                 "description": f"Modified {train_file.name} (iter {iteration})",
-                "artifact_paths": {},
-                "executor": "legacy_llm",
+                "artifact_paths": {"llm_route": route},
+                "executor": "role_routed_llm",
             }
     except Exception as e:
         return {
             "description": f"LLM code generation failed: {e}",
             "artifact_paths": {},
-            "executor": "legacy_llm",
+            "executor": "role_routed_llm",
+            "code_generation_failed": True,
         }
 
     return {
         "description": f"No modification applied (iter {iteration})",
         "artifact_paths": {},
-        "executor": "legacy_llm",
+        "executor": "role_routed_llm",
     }
 
 
@@ -2548,6 +2523,7 @@ def _safe_write_repo_file(code_dir: Path, rel_posix: str, content: str) -> bool:
 
 def _launch_reproduction_repair(
     *,
+    run_id: int,
     workdir: Path,
     code_dir: Path,
     repair_round: int,
@@ -2556,7 +2532,7 @@ def _launch_reproduction_repair(
     last_result: dict,
     environment_report: dict,
 ) -> dict:
-    """Invoke Codex or LLM to fix baseline crashes / missing metrics before Phase 2."""
+    """Use the resource-granted proposer route to repair reproduction failures."""
     log_path = Path(last_result.get("log_path") or workdir / "run.log")
     log_tail = _read_text_tail(log_path)
     err = str(last_result.get("error") or "") or str(last_result.get("status") or "crash")
@@ -2573,33 +2549,12 @@ def _launch_reproduction_repair(
         "quality_gates": contract.get("quality_gates"),
     }
 
-    if codex_executor.codex_available():
-        print(f"[LOOP] Reproduction repair via Codex (round {repair_round})...", flush=True)
-        out = codex_executor.run_codex_reproduction_repair(
-            workdir=workdir,
-            code_dir=code_dir,
-            repair_round=repair_round,
-            baseline_command=baseline_command,
-            metric_name=metric_name,
-            last_error=err,
-            log_excerpt=log_tail,
-            environment_report=environment_report,
-        )
-        summary = {
-            "round": repair_round,
-            "executor": "codex",
-            "ok": bool(out.get("ok")),
-            "summary": out.get("summary"),
-            "files_changed": out.get("files_changed"),
-            "artifact_paths": out.get("artifact_paths"),
-        }
-        repair_log.parent.mkdir(parents=True, exist_ok=True)
-        repair_log.write_text(json.dumps(summary, indent=2), encoding="utf-8")
-        return summary
+    from agents.llm_client import (
+        call_llm_json_for_role,
+        configured_role_prompt_version,
+    )
 
-    from agents.llm_client import call_llm_json
-
-    print(f"[LOOP] Reproduction repair via LLM JSON patches (round {repair_round})...", flush=True)
+    print(f"[LOOP] Reproduction repair via routed LLM JSON patches (round {repair_round})...", flush=True)
     system = textwrap.dedent("""\
         You repair ML experiment code so a baseline command runs locally and prints a numeric metric.
         Return ONLY valid JSON with this shape:
@@ -2620,9 +2575,60 @@ def _launch_reproduction_repair(
         {log_tail[:10000]}""")
 
     try:
-        payload, _tokens = call_llm_json(system, user, temperature=0.0)
+        run_scope = db.fetchone(
+            """
+            SELECT er.agenda_id, er.deep_insight_id, er.resource_grant_id,
+                   rg.stage
+            FROM experiment_runs AS er
+            JOIN resource_grants AS rg
+              ON rg.id=er.resource_grant_id
+             AND rg.agenda_id=er.agenda_id
+             AND rg.idea_id=er.deep_insight_id
+             AND rg.status='active'
+             AND rg.expires_at > CURRENT_TIMESTAMP
+            WHERE er.id=?
+            """,
+            (run_id,),
+        )
+        if not run_scope:
+            raise PermissionError(
+                "reproduction repair requires an active scoped ResourceGrant"
+            )
+        idempotency_material = "|".join(
+            (
+                str(run_scope["agenda_id"]),
+                str(run_scope["deep_insight_id"]),
+                str(run_id),
+                str(repair_round),
+                err,
+                log_tail,
+            )
+        )
+        payload, _tokens, route = call_llm_json_for_role(
+            system,
+            user,
+            agenda_id=int(run_scope["agenda_id"]),
+            idea_id=int(run_scope["deep_insight_id"]),
+            role="proposer",
+            stage=str(run_scope["stage"]),
+            resource_grant_id=int(run_scope["resource_grant_id"]),
+            operation="validation_reproduction_repair",
+            idempotency_key=(
+                "validation-reproduction-repair:"
+                + hashlib.sha256(
+                    idempotency_material.encode("utf-8")
+                ).hexdigest()
+            ),
+            prompt_version=configured_role_prompt_version("proposer"),
+            max_tokens=12000,
+        )
     except Exception as e:
-        summary = {"round": repair_round, "executor": "llm_json", "ok": False, "error": str(e)}
+        summary = {
+            "round": repair_round,
+            "executor": "role_routed_llm",
+            "ok": False,
+            "error": str(e),
+        }
         repair_log.parent.mkdir(parents=True, exist_ok=True)
         repair_log.write_text(json.dumps(summary, indent=2), encoding="utf-8")
         return summary
@@ -2641,10 +2647,11 @@ def _launch_reproduction_repair(
                 written.append(rel)
     summary = {
         "round": repair_round,
-        "executor": "llm_json",
+        "executor": "role_routed_llm",
         "ok": bool(written),
         "summary": (payload.get("summary") if isinstance(payload, dict) else None) or "llm patch",
         "files_written": written,
+        "llm_route": route,
     }
     repair_log.parent.mkdir(parents=True, exist_ok=True)
     repair_log.write_text(json.dumps(summary, indent=2), encoding="utf-8")
@@ -2656,6 +2663,20 @@ def run_full_benchmark_completion(run_id: int, execution_context: dict | None = 
     run = db.fetchone("SELECT * FROM experiment_runs WHERE id=?", (run_id,))
     if not run:
         return {"run_id": run_id, "verdict": "blocked", "reason": "missing_run"}
+    grant = db.fetchone(
+        """
+        SELECT id FROM resource_grants
+        WHERE id=? AND agenda_id=? AND stage='full_benchmark'
+          AND status='active' AND expires_at > CURRENT_TIMESTAMP
+        """,
+        (run.get("resource_grant_id"), run.get("agenda_id")),
+    )
+    if not grant:
+        return {
+            "run_id": run_id,
+            "verdict": "blocked",
+            "reason": "active full_benchmark ResourceGrant required",
+        }
     insight_id = run["deep_insight_id"]
     insight = db.fetchone("SELECT * FROM deep_insights WHERE id=?", (insight_id,))
     run_layout = ensure_run_workspace(
@@ -2740,10 +2761,11 @@ def run_full_benchmark_completion(run_id: int, execution_context: dict | None = 
     _write_iteration_packet(workdir, packet, run_id)
     db.execute(
         """INSERT INTO experiment_iterations
-           (run_id, iteration_number, phase, metric_value, metric_name,
+           (agenda_id, run_id, iteration_number, phase, metric_value, metric_name,
             peak_memory_mb, duration_seconds, status, description)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
         (
+            int(run["agenda_id"]),
             run_id,
             next_iter,
             "full_benchmark",
@@ -2836,6 +2858,20 @@ def run_validation_loop(run_id: int, execution_context: dict | None = None) -> d
     run = db.fetchone("SELECT * FROM experiment_runs WHERE id=?", (run_id,))
     if not run:
         return {"error": f"Run {run_id} not found"}
+    grant = db.fetchone(
+        """
+        SELECT id FROM resource_grants
+        WHERE id=? AND agenda_id=? AND stage IN ('pilot', 'validation')
+          AND status='active' AND expires_at > CURRENT_TIMESTAMP
+        """,
+        (run.get("resource_grant_id"), run.get("agenda_id")),
+    )
+    if not grant:
+        return {
+            "run_id": run_id,
+            "verdict": "blocked",
+            "reason": "active pilot/validation ResourceGrant required",
+        }
 
     insight_id = run["deep_insight_id"]
     insight = db.fetchone("SELECT * FROM deep_insights WHERE id=?", (insight_id,))
@@ -3091,10 +3127,10 @@ def run_validation_loop(run_id: int, execution_context: dict | None = None) -> d
 
             db.execute(
                 """INSERT INTO experiment_iterations
-                   (run_id, iteration_number, phase, metric_value, metric_name,
+                   (agenda_id, run_id, iteration_number, phase, metric_value, metric_name,
                     peak_memory_mb, duration_seconds, status, description)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (run_id, iter_key, "reproduction", metric, metric_name,
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (int(run["agenda_id"]), run_id, iter_key, "reproduction", metric, metric_name,
                  result.get("peak_memory_mb"), result.get("duration"),
                  result.get("status", "ok"), json.dumps(packet.result_judgement)[:500])
             )
@@ -3115,6 +3151,7 @@ def run_validation_loop(run_id: int, execution_context: dict | None = None) -> d
             break
 
         _launch_reproduction_repair(
+            run_id=run_id,
             workdir=workdir,
             code_dir=code_dir,
             repair_round=repair_round + 1,
@@ -3478,11 +3515,11 @@ def run_validation_loop(run_id: int, execution_context: dict | None = None) -> d
 
         db.execute(
             """INSERT INTO experiment_iterations
-               (run_id, iteration_number, phase, code_diff, commit_hash,
+               (agenda_id, run_id, iteration_number, phase, code_diff, commit_hash,
                 metric_value, metric_name, peak_memory_mb, duration_seconds,
                 status, description)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (run_id, iter_num, "hypothesis_testing", diff, commit_hash,
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (int(run["agenda_id"]), run_id, iter_num, "hypothesis_testing", diff, commit_hash,
              metric, metric_name, result.get("peak_memory_mb"),
              result.get("duration"), status, _iteration_db_description(
                  result_judgement=result_judgement,

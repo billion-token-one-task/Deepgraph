@@ -571,6 +571,13 @@ def _jsonify(v):
 
 def store_deep_insight(insight: dict) -> int:
     """Store a deep insight in the database."""
+    try:
+        agenda_id = int(insight.get("agenda_id"))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("agenda_id is required when storing a deep insight") from exc
+    if agenda_id <= 0:
+        raise ValueError("agenda_id must be a positive integer")
+
     input_issue = get_evosci_input_issue(insight, mode="verification")
     if input_issue:
         missing = ", ".join(input_issue.get("missing_fields") or [])
@@ -597,7 +604,7 @@ def store_deep_insight(insight: dict) -> int:
     insight.setdefault("outcome", "pending")
     rid = db.insert_returning_id(
         """INSERT INTO deep_insights
-           (tier, status, title, formal_structure, field_a, field_b,
+           (agenda_id, tier, status, title, formal_structure, field_a, field_b,
             transformation, predictions, falsification,
             adversarial_score, adversarial_critique,
             problem_statement, existing_weakness, proposed_method,
@@ -610,9 +617,10 @@ def store_deep_insight(insight: dict) -> int:
             generation_run_id, source_signal_ids, source_signal_refs, source_paper_ids,
             prompt_version, model_version, exemplars_used,
             token_cost_usd, wall_clock_seconds, outcome, research_problem_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            RETURNING id""",
         (
+            agenda_id,
             insight.get("tier", 1),
             insight.get("status", "candidate"),
             insight["title"],
@@ -663,6 +671,7 @@ def store_deep_insight(insight: dict) -> int:
             "deep_insight_created",
             {
                 "insight_id": rid,
+                "agenda_id": agenda_id,
                 "tier": insight.get("tier", 1),
                 "title": insight.get("title"),
                 "deep_insight_spec": {**spec.to_dict(), "insight_id": rid},

@@ -8,6 +8,7 @@ from collections.abc import Callable
 from typing import Any
 
 from agents.llm_client import call_llm, call_llm_json
+from contracts.scientific_evidence import audit_presentation_transform
 
 
 REVIEWER_SYSTEM = """You are an area-chair style reviewer (similar in spirit to AgentReview / venue rubrics).
@@ -68,6 +69,19 @@ def iterative_refine_with_agentreview(
         refined_text, _ = call_llm(content_refinement_system_tex, ref_user)
         # Prefer full ```latex ... ``` block if present (official output format)
         latex = _extract_latex_block(refined_text) or refined_text
+        integrity = audit_presentation_transform(current, latex)
+        if not integrity.passed:
+            worklog.append(
+                {
+                    "iter": i + 1,
+                    "status": "rejected_integrity_violation",
+                    "blockers": integrity.blockers,
+                    "introduced_numbers": integrity.introduced_numbers,
+                    "source_claim_strength": integrity.source_claim_strength,
+                    "rendered_claim_strength": integrity.rendered_claim_strength,
+                }
+            )
+            break
         new_scores = score_manuscript_latex(latex)
         new_overall = _overall(new_scores)
         new_sub = _subaxis_sum(new_scores)

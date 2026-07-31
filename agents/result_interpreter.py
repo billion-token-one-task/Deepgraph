@@ -19,6 +19,7 @@ from agents.benchmark_audit import (
 )
 from agents.problem_first import writeback_experiment_result
 from contracts import ExperimentResultPacket
+from contracts.scientific_evidence import EvidenceDecisionInput, decide_evidence
 from db import database as db
 
 REFUTE_MIN = 30
@@ -175,12 +176,18 @@ def _record_result_packet(run_id: int, workdir: str | None, packet: ExperimentRe
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / "experiment_result_packet.json"
     path.write_text(json.dumps(packet.to_dict(), indent=2), encoding="utf-8")
+    run = db.fetchone("SELECT agenda_id FROM experiment_runs WHERE id=?", (run_id,))
+    agenda_id = int((run or {}).get("agenda_id") or 0)
+    if agenda_id <= 0:
+        raise RuntimeError("result packet requires an agenda-scoped run")
     db.execute(
         """
-        INSERT INTO experiment_artifacts (run_id, artifact_type, path, metric_key, metric_value, metadata)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO experiment_artifacts
+            (agenda_id, run_id, artifact_type, path, metric_key, metric_value, metadata)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
         (
+            agenda_id,
             run_id,
             "source_data",
             str(path),
@@ -228,8 +235,19 @@ def interpret_run(run_id: int) -> dict:
     all_test_values = [t["metric_value"] for t in test_iters
                        if t["metric_value"] is not None]
 
-    baseline = run["baseline_metric_value"] or (sum(repro_values) / len(repro_values) if repro_values else 0)
-    best = run["best_metric_value"] or (max(kept_values) if kept_values else baseline)
+    stored_baseline = run.get("baseline_metric_value")
+    baseline_available = stored_baseline is not None or bool(repro_values)
+    baseline = (
+        float(stored_baseline)
+        if stored_baseline is not None
+        else (sum(repro_values) / len(repro_values) if repro_values else 0.0)
+    )
+    stored_best = run.get("best_metric_value")
+    best = (
+        float(stored_best)
+        if stored_best is not None
+        else (max(kept_values) if kept_values else baseline)
+    )
 
     criteria_raw = run.get("success_criteria", "{}")
     try:
@@ -345,27 +363,76 @@ def interpret_run(run_id: int) -> dict:
     effect = best - baseline if direction == "higher" else baseline - best
     effect_pct = (effect / abs(baseline) * 100) if baseline != 0 else 0
 
-    p_value = _compute_p_value(kept_values, repro_values) if kept_values and repro_values else 1.0
-    confidence = 1.0 - p_value
+    p_value = (
+        _compute_p_value(kept_values, repro_values)
+        if kept_values and repro_values
+        else None
+    )
+    confidence = 1.0 - p_value if p_value is not None else None
 
     _, repro_lo, repro_hi = _bootstrap_ci(repro_values) if repro_values else (0, 0, 0)
     _, kept_lo, kept_hi = _bootstrap_ci(kept_values) if kept_values else (0, 0, 0)
 
-    verdict = run.get("hypothesis_verdict", "inconclusive")
-    if verdict not in ("confirmed", "refuted", "inconclusive", "reproduced"):
-        if effect > 0 and p_value < 0.05:
-            verdict = "confirmed"
-        elif effect <= 0 and len(test_iters) >= REFUTE_MIN:
-            verdict = "refuted"
-        else:
-            verdict = "inconclusive"
+    raw_verdict = str(run.get("hypothesis_verdict") or "inconclusive").lower()
+    if raw_verdict == "refuted":
+        observed_verdict = "refuted"
+    elif raw_verdict == "invalid":
+        observed_verdict = "invalid"
+    elif raw_verdict == "reproduced":
+        observed_verdict = "reproduced"
+    elif (
+        raw_verdict in {"confirmed", "supported"}
+        and effect > 0
+    ) or (
+        effect > 0
+        and p_value is not None
+        and p_value < 0.05
+    ):
+        # Legacy "confirmed" is only an execution-layer observation. The
+        # canonical evidence state machine owns scientific confirmation.
+        observed_verdict = "supported"
+    elif effect <= 0 and len(test_iters) >= REFUTE_MIN:
+        observed_verdict = "refuted"
+    else:
+        observed_verdict = "inconclusive"
+    evaluator_id = str(
+        benchmark_summary.get("evaluator_id")
+        or benchmark_artifact_manifest.get("evaluator_id")
+        or ""
+    )
+    evidence_decision = decide_evidence(
+        EvidenceDecisionInput(
+            verdict=(
+                observed_verdict
+                if observed_verdict in {"supported", "refuted", "inconclusive", "invalid"}
+                else "inconclusive"
+            ),
+            p_value=p_value,
+            metric_value=best if all_test_values or stored_best is not None else None,
+            baseline_value=baseline if baseline_available else None,
+            full_benchmark_complete=full_benchmark_completed,
+            raw_artifacts_complete=bool(
+                benchmark_artifact_manifest.get("artifacts")
+            ),
+            claim_ledger_complete=bool(
+                benchmark_summary.get("claim_ledger_complete")
+                or benchmark_artifact_manifest.get("claim_ledger_complete")
+            ),
+            evaluator_id=evaluator_id,
+        )
+    )
+    verdict = observed_verdict
+    if verdict == "supported" and not evidence_decision.significant:
+        verdict = "inconclusive"
     benchmark_required = bool(
         str(evidence_tier or "").strip().lower() == "benchmark_plan"
         or quality_gates.get("requires_full_benchmark_package")
         or publication_contract.get("required_real_benchmarks")
         or quality_gates.get("has_real_benchmark")
     )
-    if benchmark_required and (verdict != "confirmed" or not full_benchmark_completed):
+    if benchmark_required and (
+        verdict != "supported" or not full_benchmark_completed
+    ):
         blocks_manuscript = True
         if "Full benchmark artifact package is required before manuscript generation." not in reviewer_objections:
             reviewer_objections.insert(
@@ -393,12 +460,15 @@ def interpret_run(run_id: int) -> dict:
     )
     insight_title = insight["title"] if insight else f"Insight {insight_id}"
 
-    if verdict == "confirmed":
+    p_text = f"{p_value:.4f}" if p_value is not None else "unavailable"
+    if verdict == "supported":
         claim_text = (
-            f"Experimental validation confirms: {insight_title}. "
+            f"Experimental evaluation observed bounded support for: {insight_title}. "
             f"The proposed method achieved {metric_name}={best:.6f} vs baseline {baseline:.6f} "
-            f"(effect: {effect:+.6f}, {effect_pct:+.2f}%, p={p_value:.4f}) "
-            f"over {total_iters} iterations with {kept_count} improvements kept."
+            f"(effect: {effect:+.6f}, {effect_pct:+.2f}%, p={p_text}) "
+            f"over {total_iters} iterations with {kept_count} improvements kept. "
+            "This execution-layer result is not scientific confirmation; "
+            "independent evidence audit and state approval remain required."
         )
     elif verdict == "reproduced":
         claim_text = (
@@ -418,7 +488,7 @@ def interpret_run(run_id: int) -> dict:
         claim_text = (
             f"Experimental validation inconclusive for: {insight_title}. "
             f"Baseline {metric_name}={baseline:.6f}, best={best:.6f} "
-            f"(effect: {effect:+.6f}, p={p_value:.4f}). "
+            f"(effect: {effect:+.6f}, p={p_text}). "
             f"Insufficient evidence after {total_iters} iterations."
         )
 
@@ -455,6 +525,9 @@ def interpret_run(run_id: int) -> dict:
         "reviewer_objections": reviewer_objections,
         "benchmark_semantic_warnings": semantic_warnings,
         "benchmark_diagnostic_notes": diagnostic_notes,
+        "evidence_decision": evidence_decision.to_dict(),
+        "raw_execution_verdict": raw_verdict,
+        "independent_evaluator_id": evaluator_id,
     }
     result_packet = ExperimentResultPacket(
         run_id=run_id,
@@ -525,8 +598,11 @@ def interpret_run(run_id: int) -> dict:
     source_node_ids = json.dumps(supporting_data.get("source_node_ids") or [])
 
     existing = db.fetchone(
-        "SELECT id FROM experimental_claims WHERE run_id=? AND deep_insight_id=?",
-        (run_id, insight_id))
+        """
+        SELECT id FROM experimental_claims
+        WHERE agenda_id=? AND run_id=? AND deep_insight_id=?
+        """,
+        (int(run["agenda_id"]), run_id, insight_id))
 
     if existing:
         claim_id = int(existing["id"])
@@ -534,17 +610,18 @@ def interpret_run(run_id: int) -> dict:
             """UPDATE experimental_claims
                SET claim_text=?, verdict=?, effect_size=?, confidence=?,
                    p_value=?, supporting_data=?, source_paper_ids=?, source_node_ids=?
-               WHERE id=?""",
+               WHERE id=? AND agenda_id=?""",
             (claim_text, verdict, effect, confidence, p_value,
-             json.dumps(supporting_data), source_paper_ids, source_node_ids, claim_id))
+             json.dumps(supporting_data), source_paper_ids, source_node_ids,
+             claim_id, int(run["agenda_id"])))
     else:
         claim_id = db.insert_returning_id(
             """INSERT INTO experimental_claims
-               (run_id, deep_insight_id, claim_text, claim_type, verdict,
+               (agenda_id, run_id, deep_insight_id, claim_text, claim_type, verdict,
                 effect_size, confidence, p_value, supporting_data, source_paper_ids, source_node_ids)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                RETURNING id""",
-            (run_id, insight_id, claim_text, "experimental", verdict,
+            (int(run["agenda_id"]), run_id, insight_id, claim_text, "experimental", verdict,
              effect, confidence, p_value, json.dumps(supporting_data), source_paper_ids, source_node_ids))
     db.commit()
 
@@ -557,6 +634,7 @@ def interpret_run(run_id: int) -> dict:
         (verdict, effect, effect_pct, run_id))
     db.commit()
     writeback_summary = writeback_experiment_result(
+        agenda_id=int(run["agenda_id"]),
         run_id=run_id,
         deep_insight_id=insight_id,
         verdict=verdict,
@@ -573,8 +651,14 @@ def interpret_run(run_id: int) -> dict:
         experimental_claim_id=claim_id,
     )
 
-    print(f"[INTERPRET] Run {run_id}: {verdict} (effect={effect:+.6f}, p={p_value:.4f}, "
-          f"confidence={confidence:.4f})", flush=True)
+    confidence_text = (
+        f"{confidence:.4f}" if confidence is not None else "unavailable"
+    )
+    print(
+        f"[INTERPRET] Run {run_id}: {verdict} "
+        f"(effect={effect:+.6f}, p={p_text}, confidence={confidence_text})",
+        flush=True,
+    )
 
     return {
         "run_id": run_id,
