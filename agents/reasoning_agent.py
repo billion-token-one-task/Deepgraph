@@ -1,9 +1,12 @@
 """Reasoning Agent: Matrix gap finding + contradiction detection."""
 import json
+from collections.abc import Mapping
+from typing import Any
+
 from db import database as db
 from db import taxonomy as tax
-from agents.llm_client import call_llm_json
 from config import CONTRADICTION_REQUIRES_GROUNDED
+from meta_harness.scoped_llm import proposer_json
 
 CONTRADICTION_SYSTEM = """You are a scientific contradiction detector. Given a NEW claim and a set of EXISTING related claims from other papers, identify any contradictions.
 
@@ -71,7 +74,12 @@ Be VERY selective. Most matrices have 0-2 genuine gaps. Return empty list rather
 Return ONLY valid JSON."""
 
 
-def detect_contradictions(new_claim: dict, new_claim_id: int) -> tuple[list[dict], int]:
+def detect_contradictions(
+    new_claim: dict,
+    new_claim_id: int,
+    *,
+    llm_scope: Mapping[str, Any] | None = None,
+) -> tuple[list[dict], int]:
     """Check a new claim against existing related claims for contradictions."""
     related = []
     if new_claim.get("method_name"):
@@ -113,7 +121,12 @@ def detect_contradictions(new_claim: dict, new_claim_id: int) -> tuple[list[dict
 EXISTING RELATED CLAIMS:
 {existing_text}"""
 
-    result, tokens = call_llm_json(CONTRADICTION_SYSTEM, user_prompt)
+    result, tokens, _route = proposer_json(
+        CONTRADICTION_SYSTEM,
+        user_prompt,
+        llm_scope=llm_scope,
+        operation=f"contradiction_check:claim:{new_claim_id}",
+    )
     return result.get("contradictions", []), tokens
 
 
@@ -141,7 +154,11 @@ If no contradictions, return {"contradictions": []}. Be selective — only flag 
 Return ONLY valid JSON."""
 
 
-def detect_contradictions_batch(claims: list[dict]) -> tuple[list[dict], int]:
+def detect_contradictions_batch(
+    claims: list[dict],
+    *,
+    llm_scope: Mapping[str, Any] | None = None,
+) -> tuple[list[dict], int]:
     """Check all performance claims from a paper in one LLM call."""
     perf_claims = [c for c in claims if c.get("claim_type") == "performance" and c.get("method_name")]
     if CONTRADICTION_REQUIRES_GROUNDED:
@@ -188,7 +205,16 @@ def detect_contradictions_batch(claims: list[dict]) -> tuple[list[dict], int]:
 EXISTING CLAIMS FROM OTHER PAPERS:
 {existing_text}"""
 
-    result, tokens = call_llm_json(BATCH_CONTRADICTION_SYSTEM, user_prompt)
+    claim_scope = ",".join(
+        str(claim.get("_id") or index)
+        for index, claim in enumerate(perf_claims)
+    )
+    result, tokens, _route = proposer_json(
+        BATCH_CONTRADICTION_SYSTEM,
+        user_prompt,
+        llm_scope=llm_scope,
+        operation=f"contradiction_check:batch:{claim_scope}",
+    )
     contras = result.get("contradictions", [])
 
     # Map back to claim IDs
@@ -200,7 +226,11 @@ EXISTING CLAIMS FROM OTHER PAPERS:
     return contras, tokens
 
 
-def discover_matrix_gaps(node_id: str) -> tuple[list[dict], int]:
+def discover_matrix_gaps(
+    node_id: str,
+    *,
+    llm_scope: Mapping[str, Any] | None = None,
+) -> tuple[list[dict], int]:
     """Find valuable empty cells in the method x dataset matrix for a taxonomy node."""
     matrix = tax.get_method_dataset_matrix(node_id)
 
@@ -244,19 +274,23 @@ Datasets in the matrix: {', '.join(matrix['datasets'])}
 
 Find the most valuable empty cells. Why would testing these combinations advance the field?"""
 
-    try:
-        result, tokens = call_llm_json(GAP_SYSTEM, user_prompt)
-        gaps = result.get("gaps", [])
-        # Attach node_id to each gap
-        for g in gaps:
-            g["node_id"] = node_id
-        return gaps, tokens
-    except Exception as e:
-        print(f"Gap discovery error for {node_id}: {e}", flush=True)
-        return [], 0
+    result, tokens, _route = proposer_json(
+        GAP_SYSTEM,
+        user_prompt,
+        llm_scope=llm_scope,
+        operation=f"matrix_gap_discovery:{node_id}",
+    )
+    gaps = result.get("gaps", [])
+    # Attach node_id to each gap
+    for g in gaps:
+        g["node_id"] = node_id
+    return gaps, tokens
 
 
-def discover_all_gaps() -> tuple[list[dict], int]:
+def discover_all_gaps(
+    *,
+    llm_scope: Mapping[str, Any] | None = None,
+) -> tuple[list[dict], int]:
     """Run gap discovery on all taxonomy nodes that have enough data."""
     all_gaps = []
     total_tokens = 0
@@ -273,7 +307,10 @@ def discover_all_gaps() -> tuple[list[dict], int]:
     )
 
     for node in nodes:
-        gaps, tokens = discover_matrix_gaps(node["node_id"])
+        gaps, tokens = discover_matrix_gaps(
+            node["node_id"],
+            llm_scope=llm_scope,
+        )
         all_gaps.extend(gaps)
         total_tokens += tokens
 

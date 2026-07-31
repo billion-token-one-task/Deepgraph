@@ -9,9 +9,11 @@ When a leaf taxonomy node accumulates EXPANSION_THRESHOLD or more papers, this a
 import json
 import logging
 import re
+from collections.abc import Mapping
+from typing import Any
 
-from agents.llm_client import call_llm_json, is_llm_auth_error, is_llm_provider_unavailable_error
 from db import database as db
+from meta_harness.scoped_llm import proposer_json
 
 logger = logging.getLogger(__name__)
 
@@ -21,9 +23,6 @@ EXPANSION_THRESHOLD = 10
 # Maximum depth the taxonomy tree is allowed to grow to
 MAX_TAXONOMY_DEPTH = 8
 
-
-def _llm_temporarily_unavailable(exc: Exception) -> bool:
-    return is_llm_auth_error(exc) or is_llm_provider_unavailable_error(exc)
 
 SYSTEM_PROMPT = """You are a taxonomy design agent for a scientific research knowledge base.
 
@@ -100,7 +99,11 @@ def _sanitize_slug(slug: str) -> str:
     return slug[:40]  # cap length
 
 
-def expand_node(node_id: str) -> dict:
+def expand_node(
+    node_id: str,
+    *,
+    llm_scope: Mapping[str, Any] | None = None,
+) -> dict:
     """Expand a single leaf node by discovering sub-categories via LLM.
 
     Returns a dict with:
@@ -152,14 +155,12 @@ Papers classified under this node:
 
 Based on these papers, propose 3-6 natural sub-categories that would meaningfully divide this research area. Also assign each paper to its best-matching sub-category."""
 
-    try:
-        result, tokens = call_llm_json(SYSTEM_PROMPT, user_prompt)
-    except Exception as e:
-        if _llm_temporarily_unavailable(e):
-            logger.warning("LLM unavailable for taxonomy expansion of %s: %s", node_id, e)
-            return {"node_id": node_id, "error": "llm_unavailable", "new_children": [], "papers_reassigned": 0, "tokens": 0}
-        logger.error("LLM call failed for taxonomy expansion of %s: %s", node_id, e)
-        return {"node_id": node_id, "error": str(e), "new_children": [], "papers_reassigned": 0, "tokens": 0}
+    result, tokens, _route = proposer_json(
+        SYSTEM_PROMPT,
+        user_prompt,
+        llm_scope=llm_scope,
+        operation=f"taxonomy_expansion:{node_id}",
+    )
 
     subcategories = result.get("subcategories", [])
     paper_assignments = result.get("paper_assignments", {})
@@ -271,7 +272,11 @@ Based on these papers, propose 3-6 natural sub-categories that would meaningfull
     }
 
 
-def run_expansion(min_papers: int = EXPANSION_THRESHOLD) -> list[dict]:
+def run_expansion(
+    min_papers: int = EXPANSION_THRESHOLD,
+    *,
+    llm_scope: Mapping[str, Any] | None = None,
+) -> list[dict]:
     """Find all expandable leaves and expand them.
 
     Returns a list of expansion results (one per expanded node).
@@ -285,12 +290,8 @@ def run_expansion(min_papers: int = EXPANSION_THRESHOLD) -> list[dict]:
             "Expanding taxonomy node %s (%s) with %d papers",
             node_id, leaf["name"], leaf["paper_count"],
         )
-        result = expand_node(node_id)
+        result = expand_node(node_id, llm_scope=llm_scope)
         results.append(result)
-
-        if result.get("error") == "llm_unavailable":
-            logger.warning("Stopping taxonomy expansion pass because LLM is unavailable.")
-            break
 
         if result.get("new_children"):
             logger.info(

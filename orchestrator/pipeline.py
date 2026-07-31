@@ -24,6 +24,7 @@ from agents.extraction_agent import extract_paper
 from agents.reasoning_agent import detect_contradictions, detect_contradictions_batch, discover_matrix_gaps
 from agents.taxonomy_expander import run_expansion, EXPANSION_THRESHOLD
 from ingestion.arxiv_ids import arxiv_base_id
+from meta_harness.scoped_llm import require_active_scope
 
 logger = logging.getLogger(__name__)
 
@@ -151,7 +152,7 @@ def recover_retryable_papers(limit: int = 1000) -> int:
     return len(rows)
 
 
-def _run_incremental_insights(papers_so_far: int):
+def _run_incremental_insights(papers_so_far: int, *, llm_scope: dict):
     """Run insight discovery in a background thread so it doesn't block paper processing."""
     global _insight_thread
     with _insight_lock:
@@ -183,7 +184,10 @@ def _run_incremental_insights(papers_so_far: int):
                 print(f"[PIPELINE] Insight discovery: analyzing {node['id']} ({node['pc']}p)...", flush=True)
                 log_event("step", {"step": "incremental_insight", "node_id": node["id"],
                                    "papers_so_far": papers_so_far})
-                insights, tokens = discover_insights(node["id"])
+                insights, tokens = discover_insights(
+                    node["id"],
+                    llm_scope=llm_scope,
+                )
                 for ins in insights[:slots]:
                     insight_id = store_insight(ins)
                     if not insight_id or insight_id <= 0:
@@ -328,8 +332,13 @@ def _prefetch_paper_texts(paper_ids: list[str]) -> list[dict]:
 
 
 
-def process_single_paper(paper_id: str) -> dict:
+def process_single_paper(
+    paper_id: str,
+    *,
+    llm_scope: dict | None = None,
+) -> dict:
     """Run full pipeline on one paper: extract -> classify -> store results -> check contradictions."""
+    llm_scope = require_active_scope(llm_scope)
     paper = db.fetchone("SELECT * FROM papers WHERE id=?", (paper_id,))
     if not paper:
         return {"error": "Paper not found"}
@@ -384,7 +393,12 @@ def process_single_paper(paper_id: str) -> dict:
             active_stage = "extracted"
             db.start_paper_stage(paper_id, active_stage)
             log_event("step", {"paper_id": paper_id, "title": paper["title"], "step": "extracting"})
-            extraction, tokens1 = extract_paper(paper_id, paper["title"], text)
+            extraction, tokens1 = extract_paper(
+                paper_id,
+                paper["title"],
+                text,
+                llm_scope=llm_scope,
+            )
             result["tokens"] += tokens1
 
             grounded_claims: list[dict] = []
@@ -559,7 +573,10 @@ def process_single_paper(paper_id: str) -> dict:
             log_event("step", {"paper_id": paper_id, "title": paper["title"], "step": "reasoning"})
             claims = extraction.get("claims", [])
             total_contradictions = 0
-            contras, tokens2 = detect_contradictions_batch(claims)
+            contras, tokens2 = detect_contradictions_batch(
+                claims,
+                llm_scope=llm_scope,
+            )
             for contra in contras:
                 contradiction_records.append(dict(contra))
                 new_claim = contra.pop("_new_claim", None)
@@ -694,8 +711,13 @@ def process_single_paper(paper_id: str) -> dict:
     return result
 
 
-def run_continuous(max_papers: int = 0):
+def run_continuous(
+    max_papers: int = 0,
+    *,
+    llm_scope: dict | None = None,
+):
     """Run the pipeline continuously."""
+    llm_scope = require_active_scope(llm_scope)
     print(f"[PIPELINE] Starting with max_papers={max_papers}", flush=True)
     log_event("pipeline_start", {"max_papers": max_papers})
 
@@ -771,7 +793,11 @@ def run_continuous(max_papers: int = 0):
             _prefetch_paper_texts([p["id"] for p in papers])
             for p in papers:
                 try:
-                    f = pool.submit(process_single_paper, p["id"])
+                    f = pool.submit(
+                        process_single_paper,
+                        p["id"],
+                        llm_scope=llm_scope,
+                    )
                     futures[f] = p["id"]
                     submitted += 1
                 except Exception as e:
@@ -838,7 +864,10 @@ def run_continuous(max_papers: int = 0):
     try:
         from orchestrator import discovery_scheduler
 
-        stats = discovery_scheduler.consume_pipeline_events_once(limit=200)
+        stats = discovery_scheduler.consume_pipeline_events_once(
+            limit=200,
+            llm_scope=llm_scope,
+        )
         log_event("discovery_event_consume", stats)
     except Exception as e:
         try:
@@ -852,12 +881,17 @@ def run_continuous(max_papers: int = 0):
     from agents.abstraction_agent import run_abstraction_for_nodes, run_bridge_discovery
     log_event("step", {"step": "pattern_abstraction"})
     try:
-        num_patterns, abstraction_tokens = run_abstraction_for_nodes(min_claims=15)
+        num_patterns, abstraction_tokens = run_abstraction_for_nodes(
+            min_claims=15,
+            llm_scope=llm_scope,
+        )
         log_event("abstraction_done", {"patterns": num_patterns, "tokens": abstraction_tokens})
 
         if num_patterns >= 6:
             log_event("step", {"step": "bridge_discovery"})
-            num_bridges, bridge_tokens = run_bridge_discovery()
+            num_bridges, bridge_tokens = run_bridge_discovery(
+                llm_scope=llm_scope,
+            )
             log_event("bridge_done", {"bridges": num_bridges, "tokens": bridge_tokens})
     except Exception as e:
         logger.error("Abstraction/bridge failed: %s", e)
@@ -886,7 +920,10 @@ def run_continuous(max_papers: int = 0):
             continue
 
         log_event("step", {"step": "insight_discovery", "node_id": node["id"]})
-        insights, tokens = discover_insights(node["id"])
+        insights, tokens = discover_insights(
+            node["id"],
+            llm_scope=llm_scope,
+        )
         total_insight_tokens += tokens
         for ins in insights[:slots]:
             insight_id = store_insight(ins)
@@ -903,7 +940,10 @@ def run_continuous(max_papers: int = 0):
     # Step 3b: Auto-expand taxonomy leaf nodes that have accumulated enough papers
     log_event("step", {"step": "taxonomy_expansion", "threshold": EXPANSION_THRESHOLD})
     try:
-        expansion_results = run_expansion(min_papers=EXPANSION_THRESHOLD)
+        expansion_results = run_expansion(
+            min_papers=EXPANSION_THRESHOLD,
+            llm_scope=llm_scope,
+        )
         total_expansion_tokens = 0
         for exp in expansion_results:
             total_expansion_tokens += exp.get("tokens", 0)
@@ -957,7 +997,11 @@ def run_continuous(max_papers: int = 0):
     # Step 6: Generate plain-language node summaries for exploration
     for node_id in sorted(summary_nodes):
         log_event("step", {"step": "node_summary", "node_id": node_id})
-        summary = tax.ensure_node_summary(node_id, force=True)
+        summary = tax.ensure_node_summary(
+            node_id,
+            force=True,
+            llm_scope=llm_scope,
+        )
         if summary:
             log_event("summary", {
                 "node_id": node_id,

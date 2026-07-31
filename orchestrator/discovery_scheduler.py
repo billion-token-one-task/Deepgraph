@@ -433,7 +433,11 @@ def _maybe_launch_parallel_tier2_discovery(trigger: str) -> dict:
     return {"status": "blocked", "reason": "agenda_id_required", "trigger": trigger}
 
 
-def _refresh_node_outputs(node_id: str) -> dict:
+def _refresh_node_outputs(
+    node_id: str,
+    *,
+    llm_scope: dict | None = None,
+) -> dict:
     from agents.insight_agent import discover_insights, store_insight
     from db import evidence_graph as graph
     from db import opportunity_engine as opp
@@ -442,13 +446,20 @@ def _refresh_node_outputs(node_id: str) -> dict:
     log_event("discovery", {"step": "node_refresh", "node_id": node_id})
     graph_summary = graph.ensure_node_graph_summary(node_id, force=True)
     opportunities = opp.ensure_node_opportunities(node_id, force=True)
-    summary = tax.ensure_node_summary(node_id, force=True)
+    summary = tax.ensure_node_summary(
+        node_id,
+        force=True,
+        llm_scope=llm_scope,
+    )
 
     stored_ids: list[int] = []
     recent_count = _recent_node_insight_count(node_id)
     slots = max(0, 2 - recent_count)
     if slots > 0:
-        insights, _tokens = discover_insights(node_id)
+        insights, _tokens = discover_insights(
+            node_id,
+            llm_scope=llm_scope,
+        )
         for ins in insights[:slots]:
             insight_id = store_insight(ins)
             if not insight_id or insight_id <= 0:
@@ -470,7 +481,11 @@ def _refresh_node_outputs(node_id: str) -> dict:
     }
 
 
-def consume_pipeline_events_once(limit: int = 100) -> dict:
+def consume_pipeline_events_once(
+    limit: int = 100,
+    *,
+    llm_scope: dict | None = None,
+) -> dict:
     """Consume node/paper events and refresh only the touched areas."""
     _init_schema_v2()
     events = db.fetch_pipeline_events(
@@ -489,7 +504,10 @@ def consume_pipeline_events_once(limit: int = 100) -> dict:
         if event.get("event_type") == "node_touched":
             node_id = str(payload.get("node_id") or "")
             if node_id and node_id not in refreshed:
-                refreshed[node_id] = _refresh_node_outputs(node_id)
+                refreshed[node_id] = _refresh_node_outputs(
+                    node_id,
+                    llm_scope=llm_scope,
+                )
         elif event.get("event_type") == "paper_reasoned":
             log_event("discovery", {"step": "paper_reasoned_seen", "paper_id": payload.get("paper_id")})
     db.ack_pipeline_events(DISCOVERY_CONSUMER, last_event_id)

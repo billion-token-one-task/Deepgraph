@@ -865,7 +865,12 @@ def get_node_signal_snapshot(node_id: str, paper_limit: int = 15) -> dict:
     }
 
 
-def ensure_node_summary(node_id: str, force: bool = False) -> dict | None:
+def ensure_node_summary(
+    node_id: str,
+    force: bool = False,
+    *,
+    llm_scope: dict | None = None,
+) -> dict | None:
     """Return a cached node summary, generating it when missing or stale."""
     node = get_node(node_id)
     if not node:
@@ -883,13 +888,13 @@ def ensure_node_summary(node_id: str, force: bool = False) -> dict | None:
     if snapshot["paper_count"] == 0 and not snapshot["children"]:
         return None
 
-    from agents.domain_summary_agent import generate_domain_summary, fallback_domain_summary
+    from agents.domain_summary_agent import generate_domain_summary
 
-    try:
-        summary, _tokens = generate_domain_summary(node, snapshot)
-    except Exception as e:
-        print(f"[TAXONOMY] Domain summary generation failed for {node_id}: {e}", flush=True)
-        summary = fallback_domain_summary(node, snapshot)
+    summary, _tokens = generate_domain_summary(
+        node,
+        snapshot,
+        llm_scope=llm_scope,
+    )
 
     summary["node_id"] = node_id
     summary["audience"] = "general"

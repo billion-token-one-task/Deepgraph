@@ -2,10 +2,9 @@
 """Inventory legacy direct LLM calls without importing the application.
 
 The release rule is conservative: any newly introduced direct ``call_llm`` or
-``call_llm_json`` call fails this audit until it is role-routed, explicitly
-classified as pre-agenda ingestion, or made unreachable from the default
-registry/runtime. Classification is not authorization; the open ingestion
-budget boundary remains visible in ``LLM_CALLER_INVENTORY.md``.
+``call_llm_json`` call fails this audit until it is role-routed or made
+unreachable from the default registry/runtime. Classification is not
+authorization.
 """
 
 from __future__ import annotations
@@ -16,13 +15,6 @@ from pathlib import Path
 
 
 CLASSIFICATION = {
-    "agents/abstraction_agent.py": "pre_agenda_ingestion_open",
-    "agents/domain_summary_agent.py": "pre_agenda_ingestion_open",
-    "agents/extraction_agent.py": "pre_agenda_ingestion_open",
-    "agents/insight_agent.py": "pre_agenda_ingestion_open",
-    "agents/multi_agent_extraction.py": "pre_agenda_ingestion_open",
-    "agents/reasoning_agent.py": "pre_agenda_ingestion_open",
-    "agents/taxonomy_expander.py": "pre_agenda_ingestion_open",
     "agents/codebase_scout.py": "legacy_not_default_registered",
     "agents/figure_agent.py": "legacy_no_generic_call_site",
     "agents/insight_ranker.py": "legacy_endpoint_and_registry_blocked",
