@@ -1,5 +1,29 @@
 # Session status — 2026-07-31 UTC
 
+## Continuation checkpoint
+
+- Safety recheck at 07:36 UTC: load `0.25, 0.31, 0.29`; root disk 53% used
+  with about 95 GB free; `/tmp` 27% used.
+- Archive sources were reverified as custom local refs
+  `refs/archive/{prod-snapshot-20260621,koen-master-20260626,topic-gate-20260729}`;
+  they are not branch refs. Object hashes remain unchanged.
+- The hardening slice is locally committed as
+  `2cccc7a6d293f5063425958fa771f368afdf7077`: evidence-graph Frontier source,
+  stable proposal identity, expanded granted role routing, explicit provider
+  cost capture, signed reviewer approval, durable non-success compute usage,
+  per-agenda startup reconciliation and explicit legacy mutation scope.
+- AST/static integrity checks pass and `git diff --check` passes. No pytest,
+  app import/start, migration, provider/backend execution or production access
+  occurred.
+- The new agenda mutation audit now passes after remediation of forge,
+  validation, knowledge, novelty, result, workspace, manuscript, watchdog,
+  auto-research, GPU scheduler and legacy Web writes: 134 scoped literal
+  mutations and zero definite unscoped/dynamic mutations.
+- Migration dry plan is now 84 statements, 24,742 bytes, SHA-256
+  `f0fcc7680ad211774d53d40179c34cf01044537d009407e5d58e6a74c7c862a2`.
+
+Current decision remains: not eligible to replace master.
+
 ## Safety
 
 - Final safety-check load average: `0.30, 0.40, 0.36`.
@@ -49,14 +73,14 @@ Phase 3–8 integration remains incomplete; see [UNVERIFIED.md](UNVERIFIED.md).
 
 ## Static verification
 
-- `scripts/meta_harness_static_audit.py`: passed, 239 Python files parsed,
+- `scripts/meta_harness_static_audit.py`: passed, 245 Python files parsed,
   no application import/database access.
-- Migration dry plan: 81 statements, 23,995 bytes,
+- Migration dry plan: 84 statements, 24,742 bytes,
   SHA-256
-  `dcdf8fcce3113a36f8c652b5f015135921b8541c68523e6b01cb576e0c8aecb9`,
+  `f0fcc7680ad211774d53d40179c34cf01044537d009407e5d58e6a74c7c862a2`,
   no destructive token, no database access.
-- SQL AST audit: 757 literal calls, 754 statically countable, no definite
-  placeholder mismatch; 109 dynamic calls remain explicit review/CI scope.
+- SQL AST audit: 785 literal calls, 782 statically countable, no definite
+  placeholder mismatch; 112 dynamic calls remain explicit review/CI scope.
 - `git diff --check`: passed.
 - Agenda example JSON parsed.
 - TOML runtime parse was not available under system Python 3.9 and was not

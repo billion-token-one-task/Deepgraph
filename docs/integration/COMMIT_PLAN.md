@@ -17,6 +17,17 @@ The integration documents and root changelog are a separate local
 documentation commit. These two commits are review checkpoints, not release
 approval.
 
+The continuation hardening slice was checkpointed as:
+
+```text
+2cccc7a feat: harden meta-harness control plane
+```
+
+It adds evidence-graph Frontier assembly, stable proposal identity, signed
+reviewer approval, durable failure usage/startup recovery, expanded role
+routing, and explicit agenda scoping for legacy mutation paths. It is also a
+local review checkpoint, not a release or deployment approval.
+
 ## Recommended review split before a future PR
 
 If reviewers require smaller commits before publication, recreate them on a
