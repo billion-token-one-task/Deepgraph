@@ -38,6 +38,7 @@ listed in [BASELINE.md](BASELINE.md); no row authorizes a history merge.
 | 4 | `6048a95` | SSH/GPU schedulers | durable scheduler admission plus guarded legacy transport | ResourceGrant on GPU queues; PostgreSQL direct queue insertion requires persisted compute identity; terminal failures require measured usage; recovery runs only under scheduler lock | legacy execution branches and runtime CI remain | in_progress |
 | 5 | `6048a95` | benchmark design/protocol/manager/audit | retained benchmark modules plus `evidence_state.py` | exact monotonic evidence state machine | state tests written, held-out pending | needs_ci |
 | 5 | both | legacy validator/status paths | canonical transition repository and scientific authority | operational result is `supported`; positive problem/knowledge/manuscript/meta-learning use requires persisted supported decision | selected core paths adapted; exhaustive runtime CI open | in_progress |
+| 5a | validation-loop fault review | `agents/benchmark_audit.py`, `agents/validation_loop.py` | fail-closed fairness and pre-benchmark guards | candidate-only scoring, broad-context prompt propagation and zero-budget answer-shape changes are blocked; operational manifest verdict is `supported`, not scientific `confirmed` | validation-loop subset 22/22; synthetic fault lane 60/60; legacy classification recorded | adapted; PostgreSQL/runtime pending |
 | 6 | `6048a95` | problem-first, novelty, idea taste | Frontier/portfolio feature inputs | features cannot allocate resources | contracts/policy written, not run | needs_ci |
 | 6 | `9d24d29` | topic gate/surprisal | example feature input only | Frontier/portfolio owns allocation | topic-gate authority removal statically audited; runtime regression remains open | adapted |
 | 6 | new contract | Frontier/Decision/Grant/Outcome | evidence-graph source, contracts, trusted assembler, repository, migration | evidence arrays come from scoped graph; auditable estimates, grants and actual metered outcomes | static-tested; PostgreSQL/API CI pending | needs_ci |
@@ -45,6 +46,11 @@ listed in [BASELINE.md](BASELINE.md); no row authorizes a history merge.
 | 8 | `6048a95` | `deepgraph.toml` loader | additive policy/route/backend sections and minimal API | credentials are references; hard caps and trace roots configured | TOML/AST only; app not started | needs_ci |
 | 8 | ingestion control gap | scoped ingestion operator API and durable worker | `ingestion_queue.py`, `scoped_ingestion_worker.py`, `scoped_ingestion_jobs_v1` | existing paper IDs only; exact active LLM grant; leased checkpoint resume; bounded retry; agenda-scoped mutation | AST/static tests only; PostgreSQL/provider fault CI pending | adapted_needs_ci |
 | all | GitHub legacy | agenda-owned UPDATE/DELETE paths | `scripts/meta_harness_scope_audit.py` and scoped mutations/joins | every literal mutation carries explicit agenda scope; no cross-agenda legacy write | static audit clean; PostgreSQL fault CI pending | needs_ci |
+
+The 30 adapted-legacy failures are individually classified in
+[LEGACY_TEST_CLASSIFICATION.md](LEGACY_TEST_CLASSIFICATION.md). No old
+grantless, unscoped, password-bearing, topic-default or unlimited behavior is
+restored for compatibility.
 
 ## Deliberately not ported in v1
 

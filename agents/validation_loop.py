@@ -2179,6 +2179,34 @@ def _blocked_pre_benchmark_diff_warnings(diff: str) -> list[str]:
             "Pre-benchmark guard blocked a candidate diff that may convert "
             "failure or timeout paths into completed."
         )
+    if any(
+        marker in added
+        for marker in (
+            "benchmark-provided context",
+            "benchmark provided context",
+            "_context_to_text",
+            ".get(\"context\"",
+            ".get('context'",
+        )
+    ):
+        warnings.append(
+            "Pre-benchmark guard blocked broad-context propagation into the "
+            "candidate prompt or scoring path."
+        )
+    if any(
+        marker in added
+        for marker in (
+            "zero-budget",
+            "zero_budget",
+            "reasoning_budget",
+            "answer with only",
+            "phrase-only",
+        )
+    ):
+        warnings.append(
+            "Pre-benchmark guard blocked a zero-budget answer-shape or "
+            "reasoning-budget change."
+        )
 
     return warnings
 
