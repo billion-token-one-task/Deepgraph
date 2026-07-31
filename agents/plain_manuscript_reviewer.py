@@ -7,12 +7,13 @@ ask after opening the PDF: is this paper actually deliverable, and what is wrong
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 from pathlib import Path
 from typing import Any
 
-from agents.llm_client import call_llm_json
+from agents.llm_client import call_llm_json_for_role, configured_role_prompt_version
 
 
 PLAIN_REVIEW_SCHEMA_VERSION = "plain_manuscript_reviewer_v1"
@@ -101,7 +102,13 @@ def _normalise_review(parsed: Any, tokens: int) -> dict:
     }
 
 
-def review_manuscript_plain(*, bundle_dir: Path, main_tex: str, quality_context: dict | None = None) -> dict:
+def review_manuscript_plain(
+    *,
+    bundle_dir: Path,
+    main_tex: str,
+    quality_context: dict | None = None,
+    manuscript_state: dict | None = None,
+) -> dict:
     """Run a direct LLM reviewer after ``main.tex``/``main.pdf`` exist."""
     bundle_dir = Path(bundle_dir)
     if "unit_tests" in str(bundle_dir) or os.environ.get("DEEPGRAPH_DISABLE_PLAIN_REVIEWER") == "1":
@@ -148,8 +155,48 @@ def review_manuscript_plain(*, bundle_dir: Path, main_tex: str, quality_context:
             "prompt_chars": len(user_prompt or ""),
         }
     try:
-        parsed, tokens = call_llm_json(system_prompt, user_prompt, temperature=0.0)
+        from db import database as db
+
+        state = manuscript_state or {}
+        agenda_id = int(state.get("agenda_id") or 0)
+        idea_id = int(state.get("deep_insight_id") or state.get("idea_id") or 0)
+        grant_id = int(state.get("resource_grant_id") or 0)
+        run_id = int(state.get("run_id") or state.get("experiment_run_id") or 0)
+        if min(agenda_id, idea_id, grant_id, run_id) <= 0:
+            raise PermissionError(
+                "plain manuscript review requires agenda/idea/run/ResourceGrant scope"
+            )
+        proposer = db.fetchone(
+            """
+            SELECT provider, model, model_family
+            FROM llm_route_observations
+            WHERE agenda_id=? AND idea_id=? AND role='proposer'
+              AND status='succeeded'
+            ORDER BY id DESC LIMIT 1
+            """,
+            (agenda_id, idea_id),
+        )
+        if not proposer:
+            raise PermissionError(
+                "plain manuscript review requires a recorded proposer route"
+            )
+        digest = hashlib.sha256(user_prompt.encode("utf-8")).hexdigest()
+        parsed, tokens, route = call_llm_json_for_role(
+            system_prompt,
+            user_prompt,
+            agenda_id=agenda_id,
+            idea_id=idea_id,
+            role="reviewer",
+            stage="manuscript",
+            resource_grant_id=grant_id,
+            operation="plain_manuscript_review",
+            idempotency_key=f"plain-review:{run_id}:{digest}",
+            prompt_version=configured_role_prompt_version("reviewer"),
+            proposer_route=dict(proposer),
+            max_tokens=4096,
+        )
         review = _normalise_review(parsed, tokens)
+        review["route"] = route
     except Exception as exc:
         review = {
             "schema_version": PLAIN_REVIEW_SCHEMA_VERSION,

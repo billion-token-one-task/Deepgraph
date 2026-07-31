@@ -30,7 +30,10 @@ from agents.reference_corpus_audit import audit_against_reference_corpus
 from agents.manuscript_length_auditor import audit_manuscript_length
 from agents.reference_auditor import audit_references
 from agents.visual_layout_auditor import audit_visual_layout
-from agents.llm_client import call_llm
+from agents.llm_client import (
+    call_llm_for_role,
+    configured_role_prompt_version,
+)
 from agents.manuscript_pipeline import (
     _bundle_manifest,
     _ensure_dirs,
@@ -127,9 +130,23 @@ class _ManuscriptLLMTimeout(TimeoutError):
     pass
 
 
-def _call_llm_with_timeout(system_prompt: str, user_prompt: str, *, temperature: float, max_tokens: int | None, timeout_seconds: int) -> tuple[str, int]:
+def _call_llm_with_timeout(
+    system_prompt: str,
+    user_prompt: str,
+    *,
+    temperature: float,
+    max_tokens: int | None,
+    timeout_seconds: int,
+    route_kwargs: dict,
+) -> tuple[str, int, dict]:
+    del temperature
     if threading.current_thread() is not threading.main_thread() or not hasattr(signal, "SIGALRM"):
-        return call_llm(system_prompt, user_prompt, temperature=temperature, max_tokens=max_tokens)
+        return call_llm_for_role(
+            system_prompt,
+            user_prompt,
+            max_tokens=max_tokens,
+            **route_kwargs,
+        )
 
     old_handler = signal.getsignal(signal.SIGALRM)
 
@@ -139,7 +156,12 @@ def _call_llm_with_timeout(system_prompt: str, user_prompt: str, *, temperature:
     signal.signal(signal.SIGALRM, _raise_timeout)
     signal.setitimer(signal.ITIMER_REAL, float(timeout_seconds))
     try:
-        return call_llm(system_prompt, user_prompt, temperature=temperature, max_tokens=max_tokens)
+        return call_llm_for_role(
+            system_prompt,
+            user_prompt,
+            max_tokens=max_tokens,
+            **route_kwargs,
+        )
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0.0)
         signal.signal(signal.SIGALRM, old_handler)
@@ -1935,6 +1957,7 @@ def _paper_quality_report(
     plain_reviewer = review_manuscript_plain(
         bundle_dir=bundle_dir,
         main_tex=main_tex,
+        manuscript_state=manuscript_state or {},
         quality_context={
             "compile_ok": bool(compile_result.get("ok")),
             "page_count": page_count,
@@ -2908,12 +2931,45 @@ def _revise_main_tex_from_quality_feedback(
             "changed": deterministic != (main_tex or ""),
         }
     try:
-        revised_text, tokens = _call_llm_with_timeout(
+        agenda_id = int(manuscript_state.get("agenda_id") or 0)
+        idea_id = int(
+            manuscript_state.get("deep_insight_id")
+            or manuscript_state.get("idea_id")
+            or 0
+        )
+        resource_grant_id = int(
+            manuscript_state.get("resource_grant_id") or 0
+        )
+        run_id = int(
+            manuscript_state.get("run_id")
+            or manuscript_state.get("experiment_run_id")
+            or 0
+        )
+        if min(agenda_id, idea_id, resource_grant_id, run_id) <= 0:
+            raise PermissionError(
+                "manuscript LLM revision requires agenda, idea, run, and "
+                "ResourceGrant scope"
+            )
+        prompt_version = configured_role_prompt_version("proposer")
+        revised_text, tokens, route = _call_llm_with_timeout(
             MANUSCRIPT_REVISION_SYSTEM,
             prompt,
             temperature=0.0,
             max_tokens=MANUSCRIPT_REVISION_MAX_TOKENS,
             timeout_seconds=120,
+            route_kwargs={
+                "agenda_id": agenda_id,
+                "idea_id": idea_id,
+                "role": "proposer",
+                "stage": "manuscript",
+                "resource_grant_id": resource_grant_id,
+                "operation": "manuscript_quality_revision",
+                "idempotency_key": (
+                    f"manuscript-revision:{agenda_id}:{idea_id}:{run_id}:"
+                    f"{int(feedback.get('attempt') or 0)}"
+                ),
+                "prompt_version": prompt_version,
+            },
         )
     except Exception as exc:  # noqa: BLE001
         return deterministic, {
@@ -2952,6 +3008,7 @@ def _revise_main_tex_from_quality_feedback(
     return candidate, {
         "status": "llm_revision_applied",
         "tokens": tokens,
+        "route": route,
         "deterministic_repairs": deterministic_repairs + candidate_repairs,
         "changed": candidate.strip() != (main_tex or "").strip(),
     }
@@ -3728,6 +3785,7 @@ def generate_bundle_paper_orchestra(
         return {"error": f"Run {run_id} not found"}
     if not run.get("agenda_id"):
         return {"error": "manuscript blocked: experiment run has no agenda_id"}
+    agenda_id = int(run["agenda_id"])
     if run.get("scientific_evidence_state") != "manuscript_allowed":
         return {
             "error": "manuscript blocked: scientific_evidence_state is not manuscript_allowed"
@@ -3938,16 +3996,16 @@ def generate_bundle_paper_orchestra(
         }
         _write_blocked_current_marker(layout, block_report)
         db.execute(
-            "UPDATE manuscript_runs SET status='manuscript_blocked', updated_at=CURRENT_TIMESTAMP WHERE id=?",
-            (manuscript_run_id,),
+            "UPDATE manuscript_runs SET status='manuscript_blocked', updated_at=CURRENT_TIMESTAMP WHERE id=? AND agenda_id=?",
+            (manuscript_run_id, agenda_id),
         )
         db.execute(
-            "UPDATE deep_insights SET submission_status='manuscript_blocked', updated_at=CURRENT_TIMESTAMP WHERE id=?",
-            (run["deep_insight_id"],),
+            "UPDATE deep_insights SET submission_status='manuscript_blocked', updated_at=CURRENT_TIMESTAMP WHERE id=? AND agenda_id=?",
+            (run["deep_insight_id"], agenda_id),
         )
         db.execute(
-            "UPDATE experiment_runs SET status='manuscript_blocked', error_message=? WHERE id=?",
-            (error, run_id),
+            "UPDATE experiment_runs SET status='manuscript_blocked', error_message=? WHERE id=? AND agenda_id=?",
+            (error, run_id, agenda_id),
         )
         db.commit()
         write_latest_status(
@@ -4000,16 +4058,16 @@ def generate_bundle_paper_orchestra(
         }
         _write_blocked_current_marker(layout, block_report)
         db.execute(
-            "UPDATE manuscript_runs SET status='manuscript_blocked', updated_at=CURRENT_TIMESTAMP WHERE id=?",
-            (manuscript_run_id,),
+            "UPDATE manuscript_runs SET status='manuscript_blocked', updated_at=CURRENT_TIMESTAMP WHERE id=? AND agenda_id=?",
+            (manuscript_run_id, agenda_id),
         )
         db.execute(
-            "UPDATE deep_insights SET submission_status='manuscript_blocked', updated_at=CURRENT_TIMESTAMP WHERE id=?",
-            (run["deep_insight_id"],),
+            "UPDATE deep_insights SET submission_status='manuscript_blocked', updated_at=CURRENT_TIMESTAMP WHERE id=? AND agenda_id=?",
+            (run["deep_insight_id"], agenda_id),
         )
         db.execute(
-            "UPDATE experiment_runs SET status='manuscript_blocked', error_message=? WHERE id=?",
-            (error, run_id),
+            "UPDATE experiment_runs SET status='manuscript_blocked', error_message=? WHERE id=? AND agenda_id=?",
+            (error, run_id, agenda_id),
         )
         db.commit()
         write_latest_status(
@@ -4045,13 +4103,13 @@ def generate_bundle_paper_orchestra(
             """
             UPDATE manuscript_runs
             SET status='failed', updated_at=CURRENT_TIMESTAMP
-            WHERE id=?
+            WHERE id=? AND agenda_id=?
             """,
-            (manuscript_run_id,),
+            (manuscript_run_id, agenda_id),
         )
         db.execute(
-            "UPDATE deep_insights SET submission_status='failed', updated_at=CURRENT_TIMESTAMP WHERE id=?",
-            (run["deep_insight_id"],),
+            "UPDATE deep_insights SET submission_status='failed', updated_at=CURRENT_TIMESTAMP WHERE id=? AND agenda_id=?",
+            (run["deep_insight_id"], agenda_id),
         )
         db.commit()
         write_latest_status(
@@ -4090,9 +4148,14 @@ def generate_bundle_paper_orchestra(
         """
         UPDATE manuscript_runs
         SET status='drafting', canonical_state=?, workdir=?, updated_at=CURRENT_TIMESTAMP
-        WHERE id=?
+        WHERE id=? AND agenda_id=?
         """,
-        (canonical_state_json, str(manuscript_root), manuscript_run_id),
+        (
+            canonical_state_json,
+            str(manuscript_root),
+            manuscript_run_id,
+            agenda_id,
+        ),
     )
     db.commit()
 
@@ -4101,8 +4164,14 @@ def generate_bundle_paper_orchestra(
     if normalized_bundle_formats == ["conference"] and _state_prefers_technical_report(state):
         bundle_formats = ["technical_report"]
     bundle_ids: list[int] = []
-    db.execute("DELETE FROM manuscript_assets WHERE manuscript_run_id=?", (manuscript_run_id,))
-    db.execute("DELETE FROM submission_bundles WHERE manuscript_run_id=?", (manuscript_run_id,))
+    db.execute(
+        "DELETE FROM manuscript_assets WHERE manuscript_run_id=? AND agenda_id=?",
+        (manuscript_run_id, agenda_id),
+    )
+    db.execute(
+        "DELETE FROM submission_bundles WHERE manuscript_run_id=? AND agenda_id=?",
+        (manuscript_run_id, agenda_id),
+    )
 
     preferred_bundle_dir: Path | None = None
     for bundle_format in bundle_formats:
@@ -4163,9 +4232,9 @@ def generate_bundle_paper_orchestra(
                 """
                 UPDATE manuscript_runs
                 SET status='failed', updated_at=CURRENT_TIMESTAMP
-                WHERE id=?
+                WHERE id=? AND agenda_id=?
                 """,
-                (manuscript_run_id,),
+                (manuscript_run_id, agenda_id),
             )
             db.commit()
             latex_block_report = {
@@ -4220,9 +4289,9 @@ def generate_bundle_paper_orchestra(
                 """
                 UPDATE manuscript_runs
                 SET status='failed', updated_at=CURRENT_TIMESTAMP
-                WHERE id=?
+                WHERE id=? AND agenda_id=?
                 """,
-                (manuscript_run_id,),
+                (manuscript_run_id, agenda_id),
             )
             db.commit()
             figure_block_report = {
@@ -4283,9 +4352,9 @@ def generate_bundle_paper_orchestra(
                 """
                 UPDATE manuscript_runs
                 SET status='failed', updated_at=CURRENT_TIMESTAMP
-                WHERE id=?
+                WHERE id=? AND agenda_id=?
                 """,
-                (manuscript_run_id,),
+                (manuscript_run_id, agenda_id),
             )
             db.commit()
             citation_block_report = {
@@ -4518,16 +4587,21 @@ def generate_bundle_paper_orchestra(
                 shutil.copy2(path, target)
             _write_blocked_current_marker(layout, block_report)
             db.execute(
-                "UPDATE manuscript_runs SET status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                (guide_decision, manuscript_run_id),
+                "UPDATE manuscript_runs SET status=?, updated_at=CURRENT_TIMESTAMP WHERE id=? AND agenda_id=?",
+                (guide_decision, manuscript_run_id, agenda_id),
             )
             db.execute(
-                "UPDATE deep_insights SET submission_status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                (guide_decision, run["deep_insight_id"]),
+                "UPDATE deep_insights SET submission_status=?, updated_at=CURRENT_TIMESTAMP WHERE id=? AND agenda_id=?",
+                (guide_decision, run["deep_insight_id"], agenda_id),
             )
             db.execute(
-                "UPDATE experiment_runs SET status=?, error_message=? WHERE id=?",
-                (guide_decision, "Manuscript quality gate failed", run_id),
+                "UPDATE experiment_runs SET status=?, error_message=? WHERE id=? AND agenda_id=?",
+                (
+                    guide_decision,
+                    "Manuscript quality gate failed",
+                    run_id,
+                    agenda_id,
+                ),
             )
             db.commit()
             write_latest_status(
@@ -4586,19 +4660,19 @@ def generate_bundle_paper_orchestra(
         """
         UPDATE manuscript_runs
         SET status='bundle_ready', updated_at=CURRENT_TIMESTAMP
-        WHERE id=?
+        WHERE id=? AND agenda_id=?
         """,
-        (manuscript_run_id,),
+        (manuscript_run_id, agenda_id),
     )
     latest_bundle_id = bundle_ids[-1] if bundle_ids else None
     if latest_bundle_id is not None:
         db.execute(
-            "UPDATE experiment_runs SET submission_bundle_id=?, status='bundle_ready', error_message=NULL WHERE id=?",
-            (latest_bundle_id, run_id),
+            "UPDATE experiment_runs SET submission_bundle_id=?, status='bundle_ready', error_message=NULL WHERE id=? AND agenda_id=?",
+            (latest_bundle_id, run_id, agenda_id),
         )
         db.execute(
-            "UPDATE deep_insights SET submission_status='bundle_ready', updated_at=CURRENT_TIMESTAMP WHERE id=?",
-            (run["deep_insight_id"],),
+            "UPDATE deep_insights SET submission_status='bundle_ready', updated_at=CURRENT_TIMESTAMP WHERE id=? AND agenda_id=?",
+            (run["deep_insight_id"], agenda_id),
         )
     db.commit()
     write_latest_status(

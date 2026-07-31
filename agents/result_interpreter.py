@@ -627,11 +627,11 @@ def interpret_run(run_id: int) -> dict:
 
     new_status = "experimentally_reproduced" if verdict == "reproduced" else f"experimentally_{verdict}"
     db.execute(
-        "UPDATE deep_insights SET status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-        (new_status, insight_id))
+        "UPDATE deep_insights SET status=?, updated_at=CURRENT_TIMESTAMP WHERE id=? AND agenda_id=?",
+        (new_status, insight_id, int(run["agenda_id"])))
     db.execute(
-        "UPDATE experiment_runs SET hypothesis_verdict=?, effect_size=?, effect_pct=? WHERE id=?",
-        (verdict, effect, effect_pct, run_id))
+        "UPDATE experiment_runs SET hypothesis_verdict=?, effect_size=?, effect_pct=? WHERE id=? AND agenda_id=?",
+        (verdict, effect, effect_pct, run_id, int(run["agenda_id"])))
     db.commit()
     writeback_summary = writeback_experiment_result(
         agenda_id=int(run["agenda_id"]),

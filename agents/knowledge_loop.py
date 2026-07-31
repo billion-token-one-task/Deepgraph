@@ -53,19 +53,26 @@ def cascade_from_claim(claim_id: int):
     elif verdict == "refuted":
         _cascade_refutation(insight, source_nodes, supporting)
 
-    db.execute("UPDATE experimental_claims SET cascaded=1 WHERE id=?", (claim_id,))
+    db.execute(
+        "UPDATE experimental_claims SET cascaded=1 WHERE id=? AND agenda_id=?",
+        (claim_id, int(claim["agenda_id"])),
+    )
     db.commit()
 
 
 def _cascade_confirmation(insight: dict, source_nodes: list, supporting: list, effect_size: float):
     """When a hypothesis is confirmed, strengthen related knowledge."""
     insight_id = insight["id"]
+    agenda_id = int(insight.get("agenda_id") or 0)
+    if agenda_id <= 0:
+        raise ValueError("confirmation cascade requires agenda scope")
 
     related = db.fetchall("""
         SELECT id, title, source_node_ids, status, adversarial_score
         FROM deep_insights
-        WHERE id != ? AND status IN ('candidate', 'verified', 'forged')
-    """, (insight_id,))
+        WHERE agenda_id=? AND id != ?
+          AND status IN ('candidate', 'verified', 'forged')
+    """, (agenda_id, insight_id))
 
     for rel in related:
         try:
@@ -79,8 +86,8 @@ def _cascade_confirmation(insight: dict, source_nodes: list, supporting: list, e
             boost = min(1.0, effect_size * 0.5)
             new_score = min(10.0, current_score + boost)
             db.execute(
-                "UPDATE deep_insights SET adversarial_score=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                (new_score, rel["id"]))
+                "UPDATE deep_insights SET adversarial_score=?, updated_at=CURRENT_TIMESTAMP WHERE id=? AND agenda_id=?",
+                (new_score, rel["id"], agenda_id))
 
     for node_id in source_nodes:
         existing = db.fetchall(
@@ -105,12 +112,16 @@ def _cascade_confirmation(insight: dict, source_nodes: list, supporting: list, e
 def _cascade_refutation(insight: dict, source_nodes: list, supporting: list):
     """When a hypothesis is refuted, weaken related knowledge and seed new questions."""
     insight_id = insight["id"]
+    agenda_id = int(insight.get("agenda_id") or 0)
+    if agenda_id <= 0:
+        raise ValueError("refutation cascade requires agenda scope")
 
     related = db.fetchall("""
         SELECT id, title, source_node_ids, adversarial_score
         FROM deep_insights
-        WHERE id != ? AND status IN ('candidate', 'verified', 'forged')
-    """, (insight_id,))
+        WHERE agenda_id=? AND id != ?
+          AND status IN ('candidate', 'verified', 'forged')
+    """, (agenda_id, insight_id))
 
     for rel in related:
         try:
@@ -124,8 +135,8 @@ def _cascade_refutation(insight: dict, source_nodes: list, supporting: list):
             penalty = min(1.0, 0.3 * len(shared))
             new_score = max(0.0, current_score - penalty)
             db.execute(
-                "UPDATE deep_insights SET adversarial_score=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                (new_score, rel["id"]))
+                "UPDATE deep_insights SET adversarial_score=?, updated_at=CURRENT_TIMESTAMP WHERE id=? AND agenda_id=?",
+                (new_score, rel["id"], agenda_id))
 
     db.commit()
     print(f"[CASCADE] Refutation cascaded for insight {insight_id}: "

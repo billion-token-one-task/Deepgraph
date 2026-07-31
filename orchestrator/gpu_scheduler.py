@@ -243,7 +243,9 @@ def recover_stale_local_running_jobs(workers: list[dict] | None = None) -> int:
         f"""
         SELECT gj.*, er.status AS run_status, er.hypothesis_verdict
         FROM gpu_jobs gj
-        LEFT JOIN experiment_runs er ON er.id = gj.experiment_run_id
+        LEFT JOIN experiment_runs er
+          ON er.agenda_id=gj.agenda_id
+         AND er.id = gj.experiment_run_id
         WHERE gj.status='running'
           AND gj.assigned_worker IN ({placeholders})
         """,
@@ -251,6 +253,9 @@ def recover_stale_local_running_jobs(workers: list[dict] | None = None) -> int:
     )
     recovered = 0
     for job in stale_jobs:
+        agenda_id = int(job.get("agenda_id") or 0)
+        if agenda_id <= 0:
+            raise ValueError("stale local GPU recovery requires agenda scope")
         job_id = job["id"]
         run_id = job["experiment_run_id"]
         insight_id = job["deep_insight_id"]
@@ -264,9 +269,13 @@ def recover_stale_local_running_jobs(workers: list[dict] | None = None) -> int:
                 UPDATE gpu_jobs
                 SET status='completed', completed_at=CURRENT_TIMESTAMP,
                     error_message=COALESCE(error_message, ?)
-                WHERE id=?
+                WHERE id=? AND agenda_id=?
                 """,
-                ("Recovered completed run after scheduler restart.", job_id),
+                (
+                    "Recovered completed run after scheduler restart.",
+                    job_id,
+                    agenda_id,
+                ),
             )
             db.execute(
                 """
@@ -274,9 +283,13 @@ def recover_stale_local_running_jobs(workers: list[dict] | None = None) -> int:
                 SET status='completed', stage='closed_loop_complete',
                     assigned_worker=NULL,
                     last_note=?, updated_at=CURRENT_TIMESTAMP, last_checked_at=CURRENT_TIMESTAMP
-                WHERE deep_insight_id=?
+                WHERE deep_insight_id=? AND agenda_id=?
                 """,
-                (f"Recovered completed GPU run {run_id} after scheduler restart.", insight_id),
+                (
+                    f"Recovered completed GPU run {run_id} after scheduler restart.",
+                    insight_id,
+                    agenda_id,
+                ),
             )
         else:
             db.execute(
@@ -284,12 +297,13 @@ def recover_stale_local_running_jobs(workers: list[dict] | None = None) -> int:
                 UPDATE gpu_jobs
                 SET status='queued', assigned_worker=NULL, started_at=NULL,
                     completed_at=NULL, error_message=?
-                WHERE id=?
+                WHERE id=? AND agenda_id=?
                 """,
                 (
                     "Recovered stale local running job after scheduler restart; "
                     "validation will resume from saved run state.",
                     job_id,
+                    agenda_id,
                 ),
             )
             db.execute(
@@ -299,12 +313,13 @@ def recover_stale_local_running_jobs(workers: list[dict] | None = None) -> int:
                     assigned_worker=NULL, experiment_run_id=?,
                     last_note=?, last_error=NULL,
                     updated_at=CURRENT_TIMESTAMP, last_checked_at=CURRENT_TIMESTAMP
-                WHERE deep_insight_id=?
+                WHERE deep_insight_id=? AND agenda_id=?
                 """,
                 (
                     run_id,
                     f"Recovered stale GPU job {job_id}; queued it for automatic resume.",
                     insight_id,
+                    agenda_id,
                 ),
             )
         if job.get("assigned_worker"):
@@ -365,6 +380,9 @@ def recover_stale_ssh_running_jobs() -> int:
     )
     recovered = 0
     for job in stale_jobs:
+        agenda_id = int(job.get("agenda_id") or 0)
+        if agenda_id <= 0:
+            raise ValueError("stale SSH GPU recovery requires agenda scope")
         if _job_is_active_in_this_process(int(job["id"])):
             continue
         worker = {
@@ -390,9 +408,9 @@ def recover_stale_ssh_running_jobs() -> int:
                 UPDATE gpu_jobs
                 SET status='completed', completed_at=CURRENT_TIMESTAMP,
                     error_message=COALESCE(error_message, ?)
-                WHERE id=?
+                WHERE id=? AND agenda_id=?
                 """,
-                (message, job_id),
+                (message, job_id, agenda_id),
             )
             db.execute(
                 """
@@ -400,9 +418,9 @@ def recover_stale_ssh_running_jobs() -> int:
                 SET status='completed', stage='closed_loop_complete',
                     assigned_worker=NULL,
                     last_note=?, updated_at=CURRENT_TIMESTAMP, last_checked_at=CURRENT_TIMESTAMP
-                WHERE deep_insight_id=?
+                WHERE deep_insight_id=? AND agenda_id=?
                 """,
-                (message, insight_id),
+                (message, insight_id, agenda_id),
             )
         elif _current_run_is_successful(run_id):
             db.execute(
@@ -410,12 +428,13 @@ def recover_stale_ssh_running_jobs() -> int:
                 UPDATE gpu_jobs
                 SET status='queued', assigned_worker=NULL, started_at=NULL,
                     completed_at=NULL, error_message=?
-                WHERE id=?
+                WHERE id=? AND agenda_id=?
                 """,
                 (
                     "Recovered stale SSH GPU job after the remote process exited, but post-run "
                     "manuscript/submission-bundle work is not closed; queued automatic resume.",
                     job_id,
+                    agenda_id,
                 ),
             )
             db.execute(
@@ -425,12 +444,13 @@ def recover_stale_ssh_running_jobs() -> int:
                     assigned_worker=NULL, experiment_run_id=?,
                     last_note=?, last_error=NULL,
                     updated_at=CURRENT_TIMESTAMP, last_checked_at=CURRENT_TIMESTAMP
-                WHERE deep_insight_id=?
+                WHERE deep_insight_id=? AND agenda_id=?
                 """,
                 (
                     run_id,
                     f"Recovered stale SSH GPU job {job_id}; queued it to finish post-run manuscript work.",
                     insight_id,
+                    agenda_id,
                 ),
             )
         else:
@@ -439,17 +459,17 @@ def recover_stale_ssh_running_jobs() -> int:
                 UPDATE gpu_jobs
                 SET status='failed', completed_at=CURRENT_TIMESTAMP,
                     error_message=?
-                WHERE id=?
+                WHERE id=? AND agenda_id=?
                 """,
-                (message, job_id),
+                (message, job_id, agenda_id),
             )
             db.execute(
                 """
                 UPDATE experiment_runs
                 SET status='failed', error_message=?, completed_at=CURRENT_TIMESTAMP
-                WHERE id=?
+                WHERE id=? AND agenda_id=?
                 """,
-                (message, run_id),
+                (message, run_id, agenda_id),
             )
             db.execute(
                 """
@@ -458,9 +478,9 @@ def recover_stale_ssh_running_jobs() -> int:
                     assigned_worker=NULL, experiment_run_id=?,
                     last_note=?, last_error=NULL,
                     updated_at=CURRENT_TIMESTAMP, last_checked_at=CURRENT_TIMESTAMP
-                WHERE deep_insight_id=?
+                WHERE deep_insight_id=? AND agenda_id=?
                 """,
-                (run_id, message, insight_id),
+                (run_id, message, insight_id, agenda_id),
             )
         if job.get("assigned_worker"):
             db.execute(
@@ -990,12 +1010,13 @@ def _next_job() -> dict | None:
                     """
                     UPDATE gpu_jobs
                     SET error_message=?
-                    WHERE id=? AND status='queued'
+                    WHERE id=? AND agenda_id=? AND status='queued'
                     """,
                     (
                         "Deferred because this experiment run is already active in this scheduler process; "
                         "skipping queue head so other GPU jobs can launch.",
                         job["id"],
+                        int(job["agenda_id"]),
                     ),
                 )
                 db.commit()
@@ -1126,24 +1147,27 @@ def _legacy_benchmark_manifest_blocker(run: dict) -> str | None:
 def _fail_blocked_queued_job(job: dict, reason: str) -> None:
     job_id = int(job["id"])
     run_id = int(job["experiment_run_id"])
+    agenda_id = int(job.get("agenda_id") or 0)
+    if agenda_id <= 0:
+        raise ValueError("blocking a GPU job requires agenda scope")
     insight_id = int(job["deep_insight_id"]) if job.get("deep_insight_id") is not None else None
     db.execute(
         """
         UPDATE gpu_jobs
         SET status='failed', assigned_worker=NULL, completed_at=CURRENT_TIMESTAMP,
             error_message=?
-        WHERE id=?
+        WHERE id=? AND agenda_id=?
         """,
-        (reason, job_id),
+        (reason, job_id, agenda_id),
     )
     db.execute(
         """
         UPDATE experiment_runs
         SET status='failed', error_message=COALESCE(error_message, ?),
             completed_at=COALESCE(completed_at, CURRENT_TIMESTAMP)
-        WHERE id=?
+        WHERE id=? AND agenda_id=?
         """,
-        (reason, run_id),
+        (reason, run_id, agenda_id),
     )
     if insight_id is not None:
         db.execute(
@@ -1152,9 +1176,9 @@ def _fail_blocked_queued_job(job: dict, reason: str) -> None:
             SET status='failed', stage='gpu_blocked',
                 assigned_worker=NULL, last_error=?, updated_at=CURRENT_TIMESTAMP,
                 last_checked_at=CURRENT_TIMESTAMP
-            WHERE deep_insight_id=? AND experiment_run_id=?
+            WHERE deep_insight_id=? AND experiment_run_id=? AND agenda_id=?
             """,
-            (reason, insight_id, run_id),
+            (reason, insight_id, run_id, agenda_id),
         )
     db.commit()
 
@@ -1227,6 +1251,9 @@ def _run_job(job: dict, worker: dict) -> None:
     run_id = job["experiment_run_id"]
     insight_id = job["deep_insight_id"]
     worker_id = worker["id"]
+    agenda_id = int(job.get("agenda_id") or 0)
+    if agenda_id <= 0:
+        raise ValueError("GPU execution requires agenda scope")
     _mark_job_active(int(job_id))
     if not _try_mark_run_active(int(run_id)):
         _mark_run_inactive(int(run_id))
@@ -1236,9 +1263,9 @@ def _run_job(job: dict, worker: dict) -> None:
                 UPDATE gpu_jobs
                 SET status='queued', assigned_worker=NULL, started_at=NULL,
                     error_message='Deferred because this experiment run is already active in this scheduler process.'
-                WHERE id=?
+                WHERE id=? AND agenda_id=?
                 """,
-                (job_id,),
+                (job_id, agenda_id),
             )
             db.execute(
                 "UPDATE gpu_workers SET status='idle', heartbeat_at=CURRENT_TIMESTAMP WHERE id=?",
@@ -1248,8 +1275,8 @@ def _run_job(job: dict, worker: dict) -> None:
             _mark_job_inactive(int(job_id))
             return
     auto_job = db.fetchone(
-        "SELECT stage FROM auto_research_jobs WHERE deep_insight_id=?",
-        (insight_id,),
+        "SELECT stage FROM auto_research_jobs WHERE deep_insight_id=? AND agenda_id=?",
+        (insight_id, agenda_id),
     )
     benchmark_completion_mode = bool(auto_job and auto_job.get("stage") == BENCHMARK_COMPLETION_STAGE)
 
@@ -1262,17 +1289,17 @@ def _run_job(job: dict, worker: dict) -> None:
         UPDATE gpu_jobs
         SET status='running', assigned_worker=?, started_at=CURRENT_TIMESTAMP,
             completed_at=NULL, error_message=NULL
-        WHERE id=?
+        WHERE id=? AND agenda_id=?
         """,
-        (worker_id, job_id),
+        (worker_id, job_id, agenda_id),
     )
     db.execute(
         """
         UPDATE experiment_runs
         SET status='running_gpu', resource_class=?
-        WHERE id=?
+        WHERE id=? AND agenda_id=?
         """,
-        (job.get("resource_class", "gpu_small"), run_id),
+        (job.get("resource_class", "gpu_small"), run_id, agenda_id),
     )
     db.execute(
         """
@@ -1280,9 +1307,9 @@ def _run_job(job: dict, worker: dict) -> None:
         SET status='running_gpu',
             stage=CASE WHEN stage=? THEN stage ELSE 'gpu_scheduler' END,
             assigned_worker=?
-        WHERE deep_insight_id=?
+        WHERE deep_insight_id=? AND agenda_id=?
         """,
-        (BENCHMARK_COMPLETION_STAGE, worker_id, insight_id),
+        (BENCHMARK_COMPLETION_STAGE, worker_id, insight_id, agenda_id),
     )
     db.commit()
 
@@ -1378,12 +1405,13 @@ def _run_job(job: dict, worker: dict) -> None:
             """
             UPDATE gpu_jobs
             SET status='completed', completed_at=CURRENT_TIMESTAMP, artifact_uri=?, error_message=?
-            WHERE id=?
+            WHERE id=? AND agenda_id=?
             """,
             (
                 db.fetchone("SELECT workdir FROM experiment_runs WHERE id=?", (run_id,)).get("workdir"),
                 gpu_error,
                 job_id,
+                agenda_id,
             ),
         )
         if not completion_queued:
@@ -1397,12 +1425,13 @@ def _run_job(job: dict, worker: dict) -> None:
                         last_note=?,
                         last_error=NULL,
                         assigned_worker=NULL, updated_at=CURRENT_TIMESTAMP
-                    WHERE deep_insight_id=?
+                    WHERE deep_insight_id=? AND agenda_id=?
                     """,
                     (
                         "Execution completed; waiting for evidence audit and "
                         "an independent supported scientific decision.",
                         insight_id,
+                        agenda_id,
                     ),
                 )
             else:
@@ -1413,7 +1442,7 @@ def _run_job(job: dict, worker: dict) -> None:
                         UPDATE auto_research_jobs
                         SET status=?, stage=?, artifact_bundle_id=?, last_note=?, last_error=?,
                             assigned_worker=NULL, updated_at=CURRENT_TIMESTAMP
-                        WHERE deep_insight_id=?
+                        WHERE deep_insight_id=? AND agenda_id=?
                         """,
                         (
                             retry_fields["status"],
@@ -1422,6 +1451,7 @@ def _run_job(job: dict, worker: dict) -> None:
                             retry_fields["last_note"],
                             retry_fields["last_error"] or gpu_error,
                             insight_id,
+                            agenda_id,
                         ),
                     )
                 else:
@@ -1430,7 +1460,7 @@ def _run_job(job: dict, worker: dict) -> None:
                         """
                         UPDATE auto_research_jobs
                         SET status=?, stage=?, artifact_bundle_id=?, last_note=?, last_error=?
-                        WHERE deep_insight_id=?
+                        WHERE deep_insight_id=? AND agenda_id=?
                         """,
                         (
                             "bundle_ready" if bundle_ok else "completed",
@@ -1439,6 +1469,7 @@ def _run_job(job: dict, worker: dict) -> None:
                             f"GPU run completed with verdict={result.get('verdict', 'unknown')}. Submission bundle status={'ok' if bundle_ok else 'failed'}.",
                             gpu_error,
                             insight_id,
+                            agenda_id,
                         ),
                     )
         db.commit()
@@ -1458,26 +1489,32 @@ def _run_job(job: dict, worker: dict) -> None:
         )
     except Exception as exc:  # pragma: no cover - background guard
         db.execute(
-            "UPDATE gpu_jobs SET status='failed', error_message=?, completed_at=CURRENT_TIMESTAMP WHERE id=?",
-            (str(exc), job_id),
+            "UPDATE gpu_jobs SET status='failed', error_message=?, completed_at=CURRENT_TIMESTAMP WHERE id=? AND agenda_id=?",
+            (str(exc), job_id, agenda_id),
         )
         if _current_run_is_successful(run_id):
             db.execute(
-                "UPDATE experiment_runs SET error_message=? WHERE id=?",
-                (str(exc), run_id),
+                "UPDATE experiment_runs SET error_message=? WHERE id=? AND agenda_id=?",
+                (str(exc), run_id, agenda_id),
             )
             auto_research_status = "completed"
             auto_research_stage = "post_run_failed"
         else:
             db.execute(
-                "UPDATE experiment_runs SET status='failed', error_message=? WHERE id=?",
-                (str(exc), run_id),
+                "UPDATE experiment_runs SET status='failed', error_message=? WHERE id=? AND agenda_id=?",
+                (str(exc), run_id, agenda_id),
             )
             auto_research_status = "failed"
             auto_research_stage = "gpu_failed"
         db.execute(
-            "UPDATE auto_research_jobs SET status=?, stage=?, last_error=? WHERE deep_insight_id=?",
-            (auto_research_status, auto_research_stage, str(exc), insight_id),
+            "UPDATE auto_research_jobs SET status=?, stage=?, last_error=? WHERE deep_insight_id=? AND agenda_id=?",
+            (
+                auto_research_status,
+                auto_research_stage,
+                str(exc),
+                insight_id,
+                agenda_id,
+            ),
         )
         db.commit()
         db.emit_pipeline_event(
@@ -1488,6 +1525,24 @@ def _run_job(job: dict, worker: dict) -> None:
             dedupe_key=f"gpu_job_failed:{job_id}",
         )
     finally:
+        try:
+            from orchestrator.meta_compute_runtime import settle_legacy_job
+
+            settle_legacy_job(int(job_id))
+        except Exception as exc:  # durable v1 remains fail-closed/reconcilable
+            try:
+                from orchestrator.pipeline import log_event
+
+                log_event(
+                    "error",
+                    {
+                        "step": "meta_compute_settlement",
+                        "gpu_job_id": int(job_id),
+                        "error": str(exc),
+                    },
+                )
+            except Exception:
+                pass
         _mark_job_inactive(int(job_id))
         _mark_run_inactive(int(run_id))
         _release_worker_if_no_running_jobs(worker_id, finished_job_id=job_id)
@@ -1548,6 +1603,11 @@ def _loop() -> None:
 def start() -> dict:
     global _scheduler_thread
     db.init_db()
+    durable_recovery: dict[str, int] = {}
+    if db._use_pg():  # noqa: SLF001
+        from orchestrator.meta_compute_runtime import reconcile_on_startup
+
+        durable_recovery = reconcile_on_startup()
     try:
         workers = register_default_workers()
     except Exception as exc:  # pragma: no cover - startup SQLite contention guard
@@ -1564,7 +1624,10 @@ def start() -> dict:
             workers = []
     with _scheduler_lock:
         if _scheduler_thread and _scheduler_thread.is_alive():
-            return {"status": "already_running"}
+            return {
+                "status": "already_running",
+                "durable_recovery": durable_recovery,
+            }
         if not _try_acquire_process_lock():
             return {"status": "already_running_elsewhere", "workers": list_workers()}
         recovered = (
@@ -1575,7 +1638,12 @@ def start() -> dict:
         _stop_event.clear()
         _scheduler_thread = threading.Thread(target=_loop, daemon=True, name="deepgraph-gpu-scheduler")
         _scheduler_thread.start()
-    return {"status": "started", "workers": list_workers(), "recovered_stale_jobs": recovered}
+    return {
+        "status": "started",
+        "workers": list_workers(),
+        "recovered_stale_jobs": recovered,
+        "durable_recovery": durable_recovery,
+    }
 
 
 def stop() -> dict:

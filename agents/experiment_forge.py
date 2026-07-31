@@ -1102,12 +1102,18 @@ def _ensure_real_benchmark_plan(
     resource_class: str | None = None,
     *,
     resolve_datasets: bool = True,
+    llm_scope: dict | None = None,
 ) -> dict:
     plan = dict(plan or {})
     if not EXPERIMENT_REQUIRE_REAL_BENCHMARK:
         return plan
     if not plan.get("benchmark_design_status"):
-        benchmark_design = build_benchmark_design_contract(parsed, method, plan)
+        benchmark_design = build_benchmark_design_contract(
+            parsed,
+            method,
+            plan,
+            llm_scope=llm_scope,
+        )
         plan = apply_benchmark_design_contract(plan, benchmark_design)
     if plan.get("benchmark_design_status") and plan.get("benchmark_design_status") != DESIGN_STATUS_RESOLVED:
         blockers = plan.get("benchmark_design_blockers") if isinstance(plan.get("benchmark_design_blockers"), list) else []
@@ -1780,7 +1786,12 @@ def _enrich_proposed_method(parsed: dict, plan: dict) -> dict:
     return method
 
 
-def _enrich_experimental_plan(parsed: dict, method: dict) -> dict:
+def _enrich_experimental_plan(
+    parsed: dict,
+    method: dict,
+    *,
+    llm_scope: dict | None = None,
+) -> dict:
     plan = dict(parsed.get("experimental_plan") or {})
 
     baseline_names = _unique_non_empty(
@@ -1804,7 +1815,12 @@ def _enrich_experimental_plan(parsed: dict, method: dict) -> dict:
             {**parsed, "proposed_method": method, "experimental_plan": plan}
         )
 
-    benchmark_design = build_benchmark_design_contract(parsed, method, plan)
+    benchmark_design = build_benchmark_design_contract(
+        parsed,
+        method,
+        plan,
+        llm_scope=llm_scope,
+    )
     plan = apply_benchmark_design_contract(plan, benchmark_design)
     design_resolved = plan.get("benchmark_design_status") == DESIGN_STATUS_RESOLVED
 
@@ -1869,10 +1885,14 @@ def _enrich_experimental_plan(parsed: dict, method: dict) -> dict:
     return plan
 
 
-def _autofill_experiment_contracts(insight: dict) -> dict:
+def _autofill_experiment_contracts(
+    insight: dict,
+    *,
+    llm_scope: dict | None = None,
+) -> dict:
     parsed = _parse_insight_fields(insight)
     method = _enrich_proposed_method(parsed, dict(parsed.get("experimental_plan") or {}))
-    plan = _enrich_experimental_plan(parsed, method)
+    plan = _enrich_experimental_plan(parsed, method, llm_scope=llm_scope)
     parsed["proposed_method"] = method
     parsed["experimental_plan"] = plan
     explicit_resource = _non_empty_text(parsed.get("resource_class"))
@@ -1895,11 +1915,14 @@ def _autofill_experiment_contracts(insight: dict) -> dict:
 
 
 def _persist_enriched_insight(insight_id: int, parsed: dict) -> None:
+    agenda_id = int(parsed.get("agenda_id") or 0)
+    if agenda_id <= 0:
+        raise ValueError("enriched insight persistence requires agenda scope")
     db.execute(
         """
         UPDATE deep_insights
         SET proposed_method=?, experimental_plan=?, evidence_plan=?, resource_class=?, updated_at=CURRENT_TIMESTAMP
-        WHERE id=?
+        WHERE id=? AND agenda_id=?
         """,
         (
             json.dumps(parsed.get("proposed_method") or {}, ensure_ascii=False),
@@ -1907,6 +1930,7 @@ def _persist_enriched_insight(insight_id: int, parsed: dict) -> None:
             json.dumps(parsed.get("evidence_plan") or {}, ensure_ascii=False),
             parsed.get("resource_class") or "cpu",
             insight_id,
+            agenda_id,
         ),
     )
     db.commit()
@@ -1930,6 +1954,7 @@ def _safe_rmtree(path: Path | str) -> None:
 def _checkpoint_run_state(
     run_id: int,
     *,
+    agenda_id: int,
     phase: str,
     workdir: Path | str | None = None,
     codebase: dict | None = None,
@@ -1957,8 +1982,11 @@ def _checkpoint_run_state(
         fields["baseline_metric_name"] = baseline_metric_name
 
     assignments = ", ".join(f"{key}=?" for key in fields)
-    params = list(fields.values()) + [run_id]
-    db.execute(f"UPDATE experiment_runs SET {assignments} WHERE id=?", tuple(params))
+    params = list(fields.values()) + [run_id, agenda_id]
+    db.execute(
+        f"UPDATE experiment_runs SET {assignments} WHERE id=? AND agenda_id=?",
+        tuple(params),
+    )
     db.commit()
 
 
@@ -3114,7 +3142,10 @@ def forge_experiment(insight_id: int, *, resource_grant_id: int | None = None) -
         print(f"[FORGE] Blocked by EvoScientist strict gate: {gate.get('error')}", flush=True)
         return gate
 
-    parsed = _autofill_experiment_contracts(dict(insight))
+    parsed = _autofill_experiment_contracts(
+        dict(insight),
+        llm_scope=llm_scope,
+    )
     _persist_enriched_insight(insight_id, parsed)
     spec = DeepInsightSpec.from_raw(parsed)
     plan = spec.experimental_plan
@@ -3162,6 +3193,7 @@ def forge_experiment(insight_id: int, *, resource_grant_id: int | None = None) -
     workdir = setup_workspace(insight_id, run_id, codebase, insight=parsed)
     _checkpoint_run_state(
         run_id,
+        agenda_id=agenda_id,
         phase="workspace_ready",
         workdir=workdir,
         codebase=codebase,
@@ -3213,9 +3245,14 @@ def forge_experiment(insight_id: int, *, resource_grant_id: int | None = None) -
                 proxy_config=?,
                 error_message=?,
                 completed_at=CURRENT_TIMESTAMP
-            WHERE id=?
+            WHERE id=? AND agenda_id=?
             """,
-            (json.dumps(blocked_payload, ensure_ascii=False), summary, run_id),
+            (
+                json.dumps(blocked_payload, ensure_ascii=False),
+                summary,
+                run_id,
+                agenda_id,
+            ),
         )
         db.commit()
         return {
@@ -3247,6 +3284,7 @@ def forge_experiment(insight_id: int, *, resource_grant_id: int | None = None) -
     proxy["claim_strength"] = proxy["publication_evidence_contract"].get("claim_strength")
     _checkpoint_run_state(
         run_id,
+        agenda_id=agenda_id,
         phase="review_decision_ready",
         workdir=workdir,
         codebase=codebase,
@@ -3271,9 +3309,13 @@ def forge_experiment(insight_id: int, *, resource_grant_id: int | None = None) -
                 phase='scaffold_route_unavailable',
                 error_message=?,
                 completed_at=CURRENT_TIMESTAMP
-            WHERE id=?
+            WHERE id=? AND agenda_id=?
             """,
-            (f"resource-granted scaffold route unavailable: {exc}", run_id),
+            (
+                f"resource-granted scaffold route unavailable: {exc}",
+                run_id,
+                agenda_id,
+            ),
         )
         db.commit()
         return {
@@ -3345,6 +3387,7 @@ def forge_experiment(insight_id: int, *, resource_grant_id: int | None = None) -
     )
     _checkpoint_run_state(
         run_id,
+        agenda_id=agenda_id,
         phase="scaffold_ready",
         workdir=workdir,
         codebase=codebase,
@@ -3386,8 +3429,13 @@ def forge_experiment(insight_id: int, *, resource_grant_id: int | None = None) -
     # Update deep_insight status
     new_insight_status = "forged" if judgement.formal_experiment else "smoke_only"
     db.execute(
-        "UPDATE deep_insights SET status=?, evoscientist_workdir=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-        (new_insight_status, str(layout["workspace_root"]), insight_id),
+        "UPDATE deep_insights SET status=?, evoscientist_workdir=?, updated_at=CURRENT_TIMESTAMP WHERE id=? AND agenda_id=?",
+        (
+            new_insight_status,
+            str(layout["workspace_root"]),
+            insight_id,
+            agenda_id,
+        ),
     )
     db.commit()
     promote_canonical_run(insight_id, run_id, insight=parsed)

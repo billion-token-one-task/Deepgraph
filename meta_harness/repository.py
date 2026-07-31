@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
 
@@ -18,6 +19,11 @@ from db import database as db
 from meta_harness.llm_routing import ProviderRoute, RouteObservation
 from meta_harness.evidence_state import EvidenceTransitionContext, advance
 from meta_harness.frontier import evaluate_frontier
+from meta_harness.reviewer_approval import (
+    ReviewerApproval,
+    ReviewerApprovalVerifier,
+    scientific_manuscript_subject,
+)
 
 
 class MetaHarnessPersistenceError(RuntimeError):
@@ -283,6 +289,23 @@ class MetaHarnessRepository:
                     "persisted ResourceGrant does not authorize state transition"
                 )
             current = str(row.get("scientific_evidence_state") or "planned")
+            reviewer_approval: ReviewerApproval | None = None
+            if target == "manuscript_allowed":
+                subject = scientific_manuscript_subject(
+                    agenda_id=int(agenda_id),
+                    experiment_run_id=int(experiment_run_id),
+                    verdict_hash=context.verdict_hash,
+                )
+                reviewer_approval = ReviewerApprovalVerifier.from_environment().verify(
+                    context.reviewer_approval,
+                    purpose="scientific_manuscript",
+                    subject=subject,
+                )
+                if reviewer_approval.reviewer_id != actor:
+                    raise MetaHarnessPersistenceError(
+                        "transition actor does not match signed reviewer"
+                    )
+                context = replace(context, reviewer_approved=True)
             next_state = advance(current, target, context)
             audit_record_id: int | None = None
             evidence_decision_payload: dict[str, Any] | None = None
@@ -390,7 +413,11 @@ class MetaHarnessRepository:
                     raise MetaHarnessPersistenceError(
                         "manuscript approval does not match a supported decision"
                     )
-            reviewer = actor if next_state == "manuscript_allowed" else None
+            reviewer = (
+                reviewer_approval.reviewer_id
+                if reviewer_approval is not None
+                else None
+            )
             cursor = db.execute(
                 """
                 UPDATE experiment_runs
@@ -412,6 +439,30 @@ class MetaHarnessRepository:
                 ),
             )
             _expect_one(cursor, operation="advance_experiment_state")
+            if reviewer_approval is not None:
+                approval_record = reviewer_approval.public_record()
+                db.execute(
+                    """
+                    INSERT INTO reviewer_approval_records
+                        (agenda_id, purpose, subject, reviewer_id, key_id,
+                         issued_at, signature_hash)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        agenda_id,
+                        approval_record["purpose"],
+                        approval_record["subject"],
+                        approval_record["reviewer_id"],
+                        approval_record["key_id"],
+                        approval_record["issued_at"],
+                        approval_record["signature_hash"],
+                    ),
+                )
+            transition_context = dict(context.__dict__)
+            if reviewer_approval is not None:
+                transition_context["reviewer_approval"] = (
+                    reviewer_approval.public_record()
+                )
             db.execute(
                 """
                 INSERT INTO evidence_state_transitions
@@ -425,7 +476,7 @@ class MetaHarnessRepository:
                     current,
                     next_state,
                     actor,
-                    _dump(context.__dict__),
+                    _dump(transition_context),
                 ),
             )
             if next_state == "scientifically_decided":
@@ -754,9 +805,9 @@ class MetaHarnessRepository:
                     """
                     UPDATE resource_grants
                     SET status='expired'
-                    WHERE id=? AND status='active'
+                    WHERE id=? AND agenda_id=? AND status='active'
                     """,
-                    (grant_id,),
+                    (grant_id, int(row["agenda_id"])),
                 )
                 db.execute(
                     """
@@ -764,10 +815,10 @@ class MetaHarnessRepository:
                     SET status='blocked', stage='resource_grant_expired',
                         last_error='ResourceGrant expired before OutcomeRecord',
                         updated_at=CURRENT_TIMESTAMP
-                    WHERE resource_grant_id=?
+                    WHERE resource_grant_id=? AND agenda_id=?
                       AND status NOT IN ('completed', 'failed', 'blocked')
                     """,
-                    (grant_id,),
+                    (grant_id, int(row["agenda_id"])),
                 )
                 reconciled += 1
             db.commit()
@@ -1125,8 +1176,8 @@ class MetaHarnessRepository:
                 (outcome.actual_tokens, outcome.actual_gpu_hours, reservation_id),
             )
             db.execute(
-                "UPDATE resource_grants SET status='consumed' WHERE id=?",
-                (outcome.resource_grant_id,),
+                "UPDATE resource_grants SET status='consumed' WHERE id=? AND agenda_id=?",
+                (outcome.resource_grant_id, outcome.agenda_id),
             )
             db.commit()
             outcome.outcome_record_id = outcome_id

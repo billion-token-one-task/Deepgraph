@@ -22,6 +22,7 @@ PERSISTENCE_ONLY_JOB_STATES = {
     "submitting",
     "submission_unknown",
     "collecting",
+    "usage_unknown",
 }
 
 
@@ -161,6 +162,22 @@ class ComputeJobStore(Protocol):
     def bind_submitted_job(self, record_id: int, job: ComputeJob) -> None: ...
 
     def mark_submission_unknown(self, record_id: int, *, reason: str) -> None: ...
+
+    def record_id_for_job(self, job: ComputeJob) -> int: ...
+
+    def record_backend_state(self, job: ComputeJob) -> str: ...
+
+    def finalize_terminal(
+        self, job: ComputeJob, *, usage: UsageAccounting
+    ) -> None: ...
+
+    def finalize_success(
+        self,
+        record_id: int,
+        *,
+        artifacts: ArtifactCollection,
+        usage: UsageAccounting,
+    ) -> None: ...
 
 
 class ComputeBackend(ABC):
@@ -429,6 +446,69 @@ class ComputeScheduler:
         if not artifacts.complete or artifacts.missing_requirements:
             raise ComputeBackendError("required artifacts are incomplete")
         return artifacts
+
+    def refresh_and_settle(
+        self,
+        job: ComputeJob,
+        *,
+        requirements: tuple[str, ...],
+    ) -> ComputeJob:
+        """Poll once and persist metered terminal truth.
+
+        This method never maps a failed backend to success.  A backend usage
+        failure leaves the durable job non-terminal for reconciliation.
+        """
+        if self._job_store is None:
+            raise ComputeBackendError("durable_compute_job_store_required")
+        backend = self._backends.get(job.backend_kind)
+        if backend is None:
+            raise ComputeBackendError("backend no longer configured")
+        observed = backend.status(job.backend_job_id)
+        observed.validate()
+        if observed.status == "succeeded":
+            state = self._job_store.record_backend_state(observed)
+            if state != "collecting":
+                raise ComputeBackendError(
+                    f"successful backend did not enter artifact collection:{state}"
+                )
+            artifacts = backend.collect_artifacts(
+                observed.backend_job_id, requirements
+            )
+            usage = backend.usage(observed.backend_job_id)
+            usage.validate()
+            record_id = self._job_store.record_id_for_job(observed)
+            if not artifacts.complete or artifacts.missing_requirements:
+                missing = ",".join(artifacts.missing_requirements)
+                self._job_store.finalize_terminal(
+                    ComputeJob(
+                        backend_kind=observed.backend_kind,
+                        backend_job_id=observed.backend_job_id,
+                        idempotency_key=observed.idempotency_key,
+                        status="failed",
+                        heartbeat_at=observed.heartbeat_at,
+                        failure_reason=(
+                            "required_artifacts_incomplete:"
+                            + (missing or "unknown")
+                        ),
+                    ),
+                    usage=usage,
+                )
+                raise ComputeBackendError("required artifacts are incomplete")
+            if int(record_id or 0) <= 0:
+                raise ComputeBackendError("durable compute record was not found")
+            self._job_store.finalize_success(
+                int(record_id),
+                artifacts=artifacts,
+                usage=usage,
+            )
+            return observed
+        if observed.status in {"failed", "cancelled", "timed_out"}:
+            usage = backend.usage(observed.backend_job_id)
+            usage.validate()
+            self._job_store.finalize_terminal(observed, usage=usage)
+            return observed
+        self._job_store.record_backend_state(observed)
+        return observed
 
 
 def heartbeat_is_stale(value: str | None, *, timeout_seconds: int) -> bool:

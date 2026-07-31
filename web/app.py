@@ -2277,8 +2277,8 @@ def api_run_experiment(run_id):
             log_event("sciforge", {"step": "knowledge_loop_done", "run_id": run_id})
         except Exception as e:
             db.execute(
-                "UPDATE experiment_runs SET status='failed', error_message=? WHERE id=?",
-                (str(e), run_id))
+                "UPDATE experiment_runs SET status='failed', error_message=? WHERE id=? AND agenda_id=?",
+                (str(e), run_id, int(run["agenda_id"])))
             db.commit()
             log_event("error", {"step": "validation_loop", "run_id": run_id, "error": str(e)})
             print(f"[SCIFORGE] Validation loop failed: {e}\n{traceback.format_exc()}", flush=True)

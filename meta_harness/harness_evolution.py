@@ -5,7 +5,13 @@ from __future__ import annotations
 import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Mapping
+
+from meta_harness.reviewer_approval import (
+    ReviewerApproval,
+    ReviewerApprovalVerifier,
+    harness_candidate_subject,
+)
 
 
 class HarnessPolicyError(RuntimeError):
@@ -105,6 +111,7 @@ class RegressionReport:
     blockers: tuple[str, ...] = field(default_factory=tuple)
     reviewer: str | None = None
     reviewer_approved: bool = False
+    reviewer_approval: ReviewerApproval | None = None
 
 
 @dataclass(frozen=True)
@@ -177,8 +184,10 @@ def validate_patch(patch: HarnessPatch, *, policy: HarnessPolicy) -> None:
 def evaluate_candidate(
     runs: Iterable[EvaluationRun],
     *,
-    reviewer: str | None = None,
-    reviewer_approved: bool = False,
+    candidate_id: int | None = None,
+    patch_hash: str = "",
+    reviewer_approval: ReviewerApproval | Mapping | None = None,
+    approval_verifier: ReviewerApprovalVerifier | None = None,
 ) -> RegressionReport:
     runs = list(runs)
     agenda_ids = {run.agenda_id for run in runs}
@@ -208,17 +217,31 @@ def evaluate_candidate(
             decision="reject",
             blockers=tuple(blockers),
         )
-    if not reviewer_approved or not reviewer:
+    if reviewer_approval is None:
         return RegressionReport(
             agenda_id=agenda_id,
             decision="awaiting_approval",
             blockers=("reviewer_approval_required",),
-            reviewer=reviewer,
             reviewer_approved=False,
         )
+    if int(candidate_id or 0) <= 0 or not patch_hash.strip():
+        raise HarnessPolicyError(
+            "signed approval requires candidate_id and patch_hash"
+        )
+    verifier = approval_verifier or ReviewerApprovalVerifier.from_environment()
+    approval = verifier.verify(
+        reviewer_approval,
+        purpose="harness_upgrade",
+        subject=harness_candidate_subject(
+            agenda_id=agenda_id,
+            candidate_id=int(candidate_id),
+            patch_hash=patch_hash,
+        ),
+    )
     return RegressionReport(
         agenda_id=agenda_id,
         decision="approved",
-        reviewer=reviewer,
+        reviewer=approval.reviewer_id,
         reviewer_approved=True,
+        reviewer_approval=approval,
     )

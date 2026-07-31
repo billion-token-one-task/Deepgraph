@@ -238,6 +238,52 @@ class IsolatedComputeRepositoryTests(unittest.TestCase):
         ):
             duplicate.existing_job()
 
+    def test_failed_job_requires_and_persists_usage(self):
+        request = self._submission("failed-metered")
+        repository = self.ComputeJobRepository()
+        claim = repository.claim(request, backend_kind="cpu")
+        backend_job = f"backend:{self.namespace}:failed"
+        repository.bind_submitted_job(
+            claim.record_id,
+            self.ComputeJob(
+                "cpu",
+                backend_job,
+                request.idempotency_key,
+                "running",
+            ),
+        )
+        failed = self.ComputeJob(
+            "cpu",
+            backend_job,
+            request.idempotency_key,
+            "failed",
+            failure_reason="injected_failure",
+        )
+        with self.assertRaisesRegex(
+            self.ComputeBackendError,
+            "requires durable usage settlement",
+        ):
+            repository.record_backend_state(failed)
+        repository.finalize_terminal(
+            failed,
+            usage=self.UsageAccounting(
+                wall_seconds=3.0,
+                gpu_hours=0.0,
+                cpu_core_hours=0.02,
+                backend_report={"exit_code": 1},
+            ),
+        )
+        row = self.db.fetchone(
+            """
+            SELECT status, failure_reason, usage_json
+            FROM compute_jobs_v1 WHERE id=?
+            """,
+            (claim.record_id,),
+        )
+        self.assertEqual(row["status"], "failed")
+        self.assertEqual(row["failure_reason"], "injected_failure")
+        self.assertTrue(row["usage_json"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -11,7 +11,9 @@ from __future__ import annotations
 import json
 from typing import Any, Mapping
 
-from agents.llm_client import call_llm_json
+import hashlib
+
+from agents.llm_client import call_llm_json_for_role, configured_role_prompt_version
 from config import BENCHMARK_DESIGN_LLM_ENABLED, BENCHMARK_DESIGN_LLM_REQUIRED
 
 
@@ -596,9 +598,22 @@ def _llm_benchmark_design(
     parsed: Mapping[str, Any],
     method: Mapping[str, Any],
     plan: Mapping[str, Any],
+    *,
+    llm_scope: Mapping[str, Any] | None,
 ) -> dict[str, Any] | None:
     if not _llm_design_enabled():
         return None
+    if not llm_scope:
+        return None
+    required = ("agenda_id", "idea_id", "resource_grant_id", "stage")
+    missing = [key for key in required if not llm_scope.get(key)]
+    if missing:
+        return {
+            "status": DESIGN_STATUS_BLOCKED,
+            "blockers": [
+                "benchmark design LLM scope is incomplete: " + ",".join(missing)
+            ],
+        }
     prompt = {
         "title": parsed.get("title"),
         "problem_statement": parsed.get("problem_statement"),
@@ -606,11 +621,21 @@ def _llm_benchmark_design(
         "proposed_method": method,
         "current_experimental_plan": plan,
     }
+    prompt_text = json.dumps(prompt, ensure_ascii=False, indent=2)[:16000]
+    digest = hashlib.sha256(prompt_text.encode("utf-8")).hexdigest()
     try:
-        result, _tokens = call_llm_json(
+        result, _tokens, _route = call_llm_json_for_role(
             BENCHMARK_DESIGN_SYSTEM,
-            json.dumps(prompt, ensure_ascii=False, indent=2)[:16000],
-            temperature=0.0,
+            prompt_text,
+            agenda_id=int(llm_scope["agenda_id"]),
+            idea_id=int(llm_scope["idea_id"]),
+            role="proposer",
+            stage=str(llm_scope["stage"]),
+            resource_grant_id=int(llm_scope["resource_grant_id"]),
+            operation="benchmark_design",
+            idempotency_key=f"benchmark-design:{digest}",
+            prompt_version=configured_role_prompt_version("proposer"),
+            max_tokens=int(llm_scope.get("max_tokens") or 4096),
         )
     except Exception as exc:
         return {
@@ -626,11 +651,18 @@ def build_benchmark_design_contract(
     parsed: Mapping[str, Any],
     method: Mapping[str, Any] | None = None,
     plan: Mapping[str, Any] | None = None,
+    *,
+    llm_scope: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     method = method or {}
     plan = plan or {}
     rule = infer_benchmark_domain(parsed, method, plan)
-    llm_design = _llm_benchmark_design(parsed, method, plan)
+    llm_design = _llm_benchmark_design(
+        parsed,
+        method,
+        plan,
+        llm_scope=llm_scope,
+    )
     llm_status = _text(llm_design.get("status")) if isinstance(llm_design, dict) else ""
     llm_resolved = llm_status == DESIGN_STATUS_RESOLVED
 
@@ -856,4 +888,3 @@ def apply_benchmark_design_contract(plan: Mapping[str, Any], contract: Mapping[s
         ]
     updated.pop("benchmark_design_blockers", None)
     return updated
-

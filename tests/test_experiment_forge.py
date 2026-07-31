@@ -75,7 +75,7 @@ class GenerateScaffoldTests(unittest.TestCase):
 
     def test_autofill_experiment_contracts_fills_missing_review_fields(self):
         llm_gate = {"status": "literature_review_required", "blockers": ["needs domain benchmark review"]}
-        with mock.patch("agents.benchmark_design_agent.call_llm_json", return_value=(llm_gate, 0)):
+        with mock.patch("agents.benchmark_design_agent.call_llm_json_for_role", return_value=(llm_gate, 0, {})):
             enriched = experiment_forge._autofill_experiment_contracts(
                 {
                     "id": 7,
@@ -88,7 +88,13 @@ class GenerateScaffoldTests(unittest.TestCase):
                         "procedure": "Compare coders, measure BER and detector AUC, and report bits/token.",
                     },
                     "supporting_papers": ["ACF", "Discop"],
-                }
+                },
+                llm_scope={
+                    "agenda_id": 1,
+                    "idea_id": 7,
+                    "resource_grant_id": 3,
+                    "stage": "experiment_forge",
+                },
             )
 
         self.assertTrue(enriched["proposed_method"]["definition"])
@@ -100,7 +106,7 @@ class GenerateScaffoldTests(unittest.TestCase):
 
     def test_autofill_experiment_contracts_makes_gpu_plan_real_benchmark_reviewable(self):
         llm_gate = {"status": "literature_review_required", "blockers": ["needs domain benchmark review"]}
-        with mock.patch("agents.benchmark_design_agent.call_llm_json", return_value=(llm_gate, 0)):
+        with mock.patch("agents.benchmark_design_agent.call_llm_json_for_role", return_value=(llm_gate, 0, {})):
             enriched = experiment_forge._autofill_experiment_contracts(
                 {
                     "id": 16,
@@ -117,7 +123,13 @@ class GenerateScaffoldTests(unittest.TestCase):
                         "metrics": [{"name": "gpu_probe_score"}],
                         "compute_budget": {"gpu_hours": 0.01},
                     },
-                }
+                },
+                llm_scope={
+                    "agenda_id": 1,
+                    "idea_id": 16,
+                    "resource_grant_id": 3,
+                    "stage": "experiment_forge",
+                },
             )
 
         self.assertGreaterEqual(len(enriched["experimental_plan"]["baselines"]), 2)
@@ -225,7 +237,7 @@ class GenerateScaffoldTests(unittest.TestCase):
             "primary_metric": {"name": "selective_risk", "direction": "lower"},
             "blockers": [],
         }
-        with mock.patch("agents.benchmark_design_agent.call_llm_json", return_value=(llm_contract, 33)):
+        with mock.patch("agents.benchmark_design_agent.call_llm_json_for_role", return_value=(llm_contract, 33, {})):
             plan = experiment_forge._ensure_real_benchmark_plan(
                 {
                     "title": "FOIA privilege selector",
@@ -241,6 +253,12 @@ class GenerateScaffoldTests(unittest.TestCase):
                     "metrics": {"primary": "cost_adjusted_accuracy"},
                 },
                 "gpu_large",
+                llm_scope={
+                    "agenda_id": 1,
+                    "idea_id": 2,
+                    "resource_grant_id": 3,
+                    "stage": "experiment_forge",
+                },
             )
 
         self.assertFalse(plan["generated_runner_supported"])

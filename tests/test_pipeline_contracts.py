@@ -47,8 +47,10 @@ class DeepInsightSpecTests(unittest.TestCase):
 class ManuscriptInputStateTests(unittest.TestCase):
     def test_submission_ready_blocks_non_formal_state(self):
         state = ManuscriptInputState(
+            agenda_id=1,
             run_id=1,
             deep_insight_id=2,
+            resource_grant_id=3,
             formal_experiment=False,
             smoke_test_only=True,
             title="Smoke",
@@ -149,8 +151,10 @@ class ManuscriptInputStateTests(unittest.TestCase):
 
     def test_submission_ready_allows_benchmark_draft_with_incomplete_extended_package(self):
         state = ManuscriptInputState(
+            agenda_id=1,
             run_id=1,
             deep_insight_id=2,
+            resource_grant_id=3,
             formal_experiment=True,
             smoke_test_only=False,
             title="Benchmark Draft",
@@ -260,8 +264,10 @@ class ManuscriptInputStateTests(unittest.TestCase):
 
     def test_submission_ready_allows_confirmed_full_benchmark_package(self):
         state = ManuscriptInputState(
+            agenda_id=1,
             run_id=1,
             deep_insight_id=2,
+            resource_grant_id=3,
             formal_experiment=True,
             smoke_test_only=False,
             title="Pilot",

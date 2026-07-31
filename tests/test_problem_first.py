@@ -273,6 +273,7 @@ class ProblemFirstTests(TempDbTestCase):
                     }
                 },
                 123,
+                {"provider": "p", "model": "m"},
             ),
             (
                 {
@@ -288,12 +289,24 @@ class ProblemFirstTests(TempDbTestCase):
                     "problem_awareness": {},
                 },
                 87,
+                {"provider": "p", "model": "m"},
             ),
         ]
         with (
             mock.patch("agents.paper_idea_agent.get_tier2_signals", return_value=signals),
             mock.patch("agents.paper_idea_agent.select_problem_first_candidates", return_value=[problem]),
-            mock.patch("agents.paper_idea_agent.call_llm_json", side_effect=llm_outputs) as call_llm_json,
+            mock.patch(
+                "agents.paper_idea_agent.call_llm_json_for_role",
+                side_effect=llm_outputs,
+            ) as call_llm_json,
+            mock.patch(
+                "agents.paper_idea_agent._proposal_candidate_and_grant",
+                return_value=(71, {"id": 91, "token_cap": 1000}),
+            ),
+            mock.patch(
+                "agents.paper_idea_agent.configured_role_prompt_version",
+                return_value="proposer-v1",
+            ),
             mock.patch("agents.paper_idea_agent.get_solution_signals", return_value=[]),
             mock.patch("agents.paper_idea_agent.graph_novelty_gate", return_value=None),
             mock.patch("agents.paper_idea_agent._find_existing_tier2_duplicate", return_value=None),
@@ -310,6 +323,8 @@ class ProblemFirstTests(TempDbTestCase):
 
         self.assertEqual(len(ideas), 1)
         self.assertEqual(ideas[0]["research_problem_id"], 7)
+        self.assertEqual(ideas[0]["proposal_candidate_id"], 71)
+        self.assertEqual(ideas[0]["resource_grant_id"], 91)
         self.assertEqual(call_llm_json.call_count, 2)
         self.assertIn("source_signal_refs", ideas[0])
 

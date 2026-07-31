@@ -33,14 +33,19 @@ def _sync_normalized_paper_title(insight: dict, normalized_title: str, paper_int
     title = str(normalized_title or "").strip()
     if not insight_id or not title or previous == title:
         return
+    agenda_id = int((insight or {}).get("agenda_id") or 0)
+    if agenda_id <= 0:
+        raise ContractValidationError(
+            "normalizing a persisted manuscript title requires agenda scope"
+        )
     if isinstance(paper_intent, dict):
         paper_intent.setdefault("previous_title", previous)
         paper_intent["paper_title"] = title
         paper_intent["title_source"] = "manuscript_input_title_policy"
     try:
         db.execute(
-            "UPDATE deep_insights SET title=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-            (title, int(insight_id)),
+            "UPDATE deep_insights SET title=?, updated_at=CURRENT_TIMESTAMP WHERE id=? AND agenda_id=?",
+            (title, int(insight_id), agenda_id),
         )
         db.commit()
         insight["title"] = title
@@ -561,8 +566,10 @@ def build_manuscript_input_state(run: dict, insight: dict, iterations: list[dict
     _sync_normalized_paper_title(insight, normalized_title, paper_intent)
 
     state = ManuscriptInputState(
+        agenda_id=run.get("agenda_id"),
         run_id=run.get("id"),
         deep_insight_id=run.get("deep_insight_id"),
+        resource_grant_id=run.get("resource_grant_id"),
         formal_experiment=bool(result_packet.get("formal_experiment")),
         smoke_test_only=bool(result_packet.get("smoke_test_only")),
         title=normalized_title,

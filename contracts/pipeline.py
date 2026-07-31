@@ -536,8 +536,10 @@ class ExperimentResultPacket(ContractRecord):
 
 @dataclass
 class ManuscriptInputState(ContractRecord):
+    agenda_id: int | None = None
     run_id: int | None = None
     deep_insight_id: int | None = None
+    resource_grant_id: int | None = None
     formal_experiment: bool = False
     smoke_test_only: bool = False
     title: str = ""
@@ -592,6 +594,15 @@ class ManuscriptInputState(ContractRecord):
 
     def require_submission_ready(self) -> None:
         self.validate()
+        if min(
+            int(self.agenda_id or 0),
+            int(self.deep_insight_id or 0),
+            int(self.resource_grant_id or 0),
+        ) <= 0:
+            raise ContractValidationError(
+                "submission-ready manuscript requires agenda, idea, and "
+                "ResourceGrant scope"
+            )
         if not self.formal_experiment or self.smoke_test_only:
             raise ContractValidationError("Only formal experiment states may generate submission bundles")
         if not self.result_packet:
