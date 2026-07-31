@@ -23,7 +23,7 @@ import was performed. `legacy` means the caller still invokes `call_llm` or
 | legacy PaperOrchestra refinement-loop helper | legacy, no known generic call site | must be routed or removed before activation | open |
 | legacy Tier-1 paradigm discovery | generic scheduler blocked | problem-first proposal identity + grant | fail-closed; legacy implementation retained only for reference |
 | global legacy insight rank endpoint | HTTP 410, no background call | portfolio decision packet | fail-closed |
-| extraction/abstraction/reasoning/taxonomy/domain summary | legacy ingestion | bounded ingestion identity and grant contract | open |
+| extraction/abstraction/reasoning/taxonomy/domain summary | proposer role + ingestion ResourceGrant | stable agenda/idea/stage grant | adapted; background legacy worker disabled; CI pending |
 | example CGGR plugin | legacy/non-production | explicit example-only policy | excluded from generic runtime |
 
 ## Pre-candidate authority decision
@@ -41,7 +41,10 @@ pending and no LLM call occurs.
 post-agenda legacy caller is a release blocker unless it is demonstrably
 non-resource-consuming pure formatting with a separate integrity gate.
 
-Current AST inventory: 24 direct calls, comprising 10 open pre-agenda
-ingestion calls and 14 calls in explicitly blocked, non-default-registered or
-no-generic-call-site modules; zero unclassified. Passing this inventory proves
-completeness only. It does not authorize the 10 ingestion calls.
+Current AST inventory: 14 direct calls, all in explicitly blocked,
+non-default-registered or no-generic-call-site modules; zero ingestion and zero
+unclassified calls. The ingestion implementation uses
+`meta_harness.scoped_llm.proposer_json`, verifies the active persisted grant
+before pipeline work and fails multi-role extraction as a unit. Passing this
+inventory proves completeness only; isolated route/ledger/provider CI remains
+required.

@@ -25,8 +25,12 @@ acceptance state`). Control-plane hardening checkpoint:
 `954b858418c4258d2b3c521c6fad39259e47bb8a`
 (`fix: close legacy web control bypasses`). Residual bypass checkpoint:
 `d192a8dbdce8bed61bbc3d094bf1a17d171239d4`
-(`fix: remove residual execution and secret hint bypasses`). None has been
-pushed or accepted as a release.
+(`fix: remove residual execution and secret hint bypasses`). Startup recovery
+ordering checkpoint: `692bb625309ab096f80464f17dcb44891c126aa0`
+(`fix: reconcile compute before research startup`). Scoped ingestion LLM
+checkpoint: `a7262a3d7bb4e7fa3983f31d5a7082f9f5118e41`
+(`fix: require grants for ingestion LLM work`). None has been pushed or
+accepted as a release.
 
 ### Lineage and why this candidate exists
 
@@ -103,6 +107,8 @@ GitHub origin/master@6048a95
 - Durable CPU validation transport that claims a grant-scoped compute job
   before execution, resumes by idempotency key and certifies success only
   after measured usage and required artifact collection.
+- Shared scoped-ingestion LLM adapter that verifies agenda, idea, stage,
+  ResourceGrant, token cap and stable idempotency before proposer routing.
 - Multi-account Colab lifecycle adapter with isolated HOME/OAuth/session/quota,
   secret references and credential/backup path rejection.
 - Single monotonic scientific evidence state machine from `planned` through
@@ -130,6 +136,10 @@ GitHub origin/master@6048a95
 
 - Auto-research default cycle now queues only explicitly agenda-scoped work for
   portfolio review; legacy global event/backlog consumption is not invoked.
+- Compute recovery now completes before the auto-research worker starts; an
+  unrecognized scheduler startup result stops application startup.
+- Legacy background ingestion is disabled by default and fails startup closed
+  if explicitly enabled without a dynamic agenda-scoped ResourceGrant job.
 - Core problem, idea, job, run, artifact, claim, manuscript and evidence-edge
   writes carry agenda scope.
 - Experiment feedback updates agenda-local signal outcomes rather than shared
@@ -165,6 +175,9 @@ GitHub origin/master@6048a95
   portfolio admission are their supported replacement.
 - Forge codebase selection and scaffold generation no longer retain an
   ungranted direct-LLM or silent deterministic fallback path.
+- Extraction, contradiction, abstraction, insight, taxonomy and domain-summary
+  LLM work uses the granted proposer route. Multi-role extraction fails as a
+  unit and cannot silently fall back to a lower-quality monolithic call.
 - Validation reports operational `supported` instead of directly creating
   `confirmed`; positive problem, knowledge, manuscript and meta-learning paths
   require a persisted supported scientific decision.
@@ -219,11 +232,11 @@ The example plugin is non-production and disabled unless explicitly selected.
 
 Allowed static checks currently report:
 
-- 258 Python files parsed by the broad AST pass and 248 by the release static
+- 272 Python files parsed by the broad AST pass and 250 by the release static
   audit at the latest working-tree checkpoint;
 - no finding from the topic/integrity/migration/secret static audit;
-- SQL AST audit: 796 literal calls, 793 statically countable, no definite
-  mismatch, and 112 dynamic calls left for review/CI;
+- SQL AST audit: 797 literal calls, 794 statically countable, no definite
+  mismatch, and 114 dynamic calls left for review/CI;
 - additive migration plan: 84 statements, 24,742 bytes, SHA-256
   `f0fcc7680ad211774d53d40179c34cf01044537d009407e5d58e6a74c7c862a2`,
   no destructive token and no database access;
@@ -233,9 +246,9 @@ Allowed static checks currently report:
   definite unscoped or dynamic mutations.
 - scientific-state authority audit finds two state-bearing SQL literals and
   zero unauthorized UPDATE/INSERT locations.
-- direct-LLM audit classifies all 24 remaining legacy calls: 10 pre-agenda
-  ingestion calls remain an open budget-boundary item; 14 are in blocked,
-  non-registered or no-call-site legacy modules; zero are unclassified.
+- direct-LLM audit classifies all 14 remaining legacy calls in blocked,
+  non-registered or no-call-site modules; zero ingestion calls and zero
+  unclassified calls remain.
 
 Not run: pytest, application imports/startup, PostgreSQL migration, production
 backup startup, provider/backend calls, CPU/GPU/SSH/Colab work, candidate
@@ -245,9 +258,9 @@ remains an isolated CI item.
 
 ### Known incomplete integration
 
-- The 10 classified pre-agenda direct LLM callers must receive a granted
-  bounded-ingestion path or remain disabled; the inventory is exhaustive and
-  fails on new unclassified sites.
+- The granted ingestion route and startup fail-closed boundary are implemented,
+  but their API/worker lifecycle, metering and failure behavior still require
+  isolated PostgreSQL/provider CI.
 - The legacy GPU worker scheduler still contains transport-specific internals;
   CPU/local/SSH admission and durable settlement are bridged, while Colab
   durable queue/worker wiring remains incomplete.
