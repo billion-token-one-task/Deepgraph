@@ -95,10 +95,22 @@ def configured_role_route_policy(role: str) -> dict[str, dict]:
 
 
 def configured_role_prompt_version(role: str) -> str:
+    if role not in {"proposer", "evaluator", "reviewer"}:
+        raise ValueError("invalid LLM role")
+    # Prompt provenance is non-secret policy. Resolve it from the declared
+    # route entries even when provider references are intentionally absent in
+    # isolated policy tests; execution still fails closed in the route client.
+    declared = LLM_ROLE_ROUTES.get(role, [])
     versions = {
-        str(policy.get("prompt_version") or "").strip()
-        for policy in configured_role_route_policy(role).values()
+        str(item.get("prompt_version") or "").strip()
+        for item in declared
+        if isinstance(item, dict)
     }
+    if not versions or not (versions - {""}):
+        versions = {
+            str(policy.get("prompt_version") or "").strip()
+            for policy in configured_role_route_policy(role).values()
+        }
     versions.discard("")
     if len(versions) != 1:
         raise LLMProviderUnavailableError(

@@ -1,6 +1,7 @@
 -- meta-harness-v1 additive PostgreSQL migration.
 -- DO NOT run on production directly. Validate twice against an isolated restore.
--- No DROP, TRUNCATE, destructive type change, or implicit backlog assignment.
+-- No destructive table operation, destructive type change, or implicit backlog
+-- assignment.
 
 CREATE TABLE IF NOT EXISTS deepgraph_schema_migrations (
     migration_key TEXT PRIMARY KEY,

@@ -100,7 +100,9 @@ class EvaluatorIsolationTests(unittest.TestCase):
             )
             with mock.patch(
                 "meta_harness.evaluator_runner.shutil.which",
-                return_value="/usr/bin/bwrap",
+                # The subprocess is mocked, but the production guard still
+                # requires the resolved isolation path to be a real file.
+                return_value=str(entrypoint),
             ):
                 result = runner.run(candidate=candidate, spec=spec)
 
