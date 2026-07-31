@@ -424,7 +424,7 @@ class MetaHarnessRepository:
                 SET scientific_evidence_state=?,
                     scientific_reviewer_approved_by=COALESCE(?, scientific_reviewer_approved_by),
                     scientific_reviewer_approved_at=CASE
-                        WHEN ? IS NOT NULL THEN CURRENT_TIMESTAMP
+                        WHEN CAST(? AS TEXT) IS NOT NULL THEN CURRENT_TIMESTAMP
                         ELSE scientific_reviewer_approved_at
                     END
                 WHERE id=? AND agenda_id=? AND scientific_evidence_state=?

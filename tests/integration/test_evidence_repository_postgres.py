@@ -37,8 +37,11 @@ def _safe_url() -> bool:
 class IsolatedEvidenceRepositoryTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        os.environ["DEEPGRAPH_DATABASE_URL"] = URL
+        # Apply the guarded migration before selecting the application URL so
+        # the migration's equal-production-URL rejection remains fail-closed.
+        os.environ["DEEPGRAPH_DATABASE_URL"] = ""
         apply_to_isolated_restore(URL, source_commit=SOURCE_COMMIT)
+        os.environ["DEEPGRAPH_DATABASE_URL"] = URL
 
         from db import database as database
         from meta_harness.evidence_state import EvidenceTransitionContext
