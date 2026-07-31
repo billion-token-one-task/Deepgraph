@@ -829,6 +829,7 @@ def queue_run(
     gpu_count: int = 1,
     vram_required_gb: float = 0,
     timeout_s: int | None = None,
+    meta_harness_idempotency_key: str | None = None,
 ) -> int:
     db.init_db()
     run = db.fetchone(
@@ -852,6 +853,32 @@ def queue_run(
         "full_benchmark",
     }:
         raise RuntimeError("GPU queue requires an active pilot/full_benchmark ResourceGrant")
+    durable_key = str(meta_harness_idempotency_key or "").strip()
+    if db._use_pg():  # noqa: SLF001
+        if not durable_key:
+            raise RuntimeError(
+                "PostgreSQL GPU queue requires durable ComputeScheduler admission"
+            )
+        claim = db.fetchone(
+            """
+            SELECT id FROM compute_jobs_v1
+            WHERE agenda_id=? AND idea_id=? AND resource_grant_id=?
+              AND idempotency_key=? AND command_ref=?
+              AND backend_kind IN ('local_gpu', 'ssh_gpu')
+              AND status='submitting'
+            """,
+            (
+                int(run["agenda_id"]),
+                int(insight_id),
+                int(resource_grant_id),
+                durable_key,
+                f"experiment-run:{int(run_id)}",
+            ),
+        )
+        if not claim:
+            raise RuntimeError(
+                "GPU queue durable compute claim is missing or out of scope"
+            )
     if timeout_s is not None and int(timeout_s) <= 0:
         raise ValueError("GPU job timeout must be a positive hard limit")
     effective_vram_required_gb, scheduling_note = _effective_vram_required_gb(resource_class, vram_required_gb)
@@ -860,8 +887,8 @@ def queue_run(
         INSERT INTO gpu_jobs
         (agenda_id, resource_grant_id, deep_insight_id, experiment_run_id,
          resource_class, gpu_count, vram_required_gb, timeout_s, priority,
-         status, error_message)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?)
+         status, error_message, meta_harness_idempotency_key)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)
         RETURNING id
         """,
         (
@@ -875,6 +902,7 @@ def queue_run(
             GPU_JOB_TIMEOUT_SECONDS if timeout_s is None else timeout_s,
             priority,
             scheduling_note,
+            durable_key or None,
         ),
     )
     db.commit()
@@ -1603,33 +1631,43 @@ def _loop() -> None:
 def start() -> dict:
     global _scheduler_thread
     db.init_db()
-    durable_recovery: dict[str, int] = {}
-    if db._use_pg():  # noqa: SLF001
-        from orchestrator.meta_compute_runtime import reconcile_on_startup
-
-        durable_recovery = reconcile_on_startup()
-    try:
-        workers = register_default_workers()
-    except Exception as exc:  # pragma: no cover - startup SQLite contention guard
-        try:
-            db.rollback()
-        except Exception:
-            pass
-        from orchestrator.pipeline import log_event
-
-        log_event("warning", {"step": "gpu_scheduler_register_workers", "error": str(exc)})
-        try:
-            workers = list_workers()
-        except Exception:
-            workers = []
     with _scheduler_lock:
         if _scheduler_thread and _scheduler_thread.is_alive():
-            return {
-                "status": "already_running",
-                "durable_recovery": durable_recovery,
-            }
+            return {"status": "already_running"}
         if not _try_acquire_process_lock():
             return {"status": "already_running_elsewhere", "workers": list_workers()}
+        durable_recovery: dict[str, int] = {}
+        try:
+            # Only the process holding the scheduler lock may quarantine or
+            # settle durable work. A second web process must not reinterpret
+            # the active worker's running jobs as restart residue.
+            if db._use_pg():  # noqa: SLF001
+                from orchestrator.meta_compute_runtime import reconcile_on_startup
+
+                durable_recovery = reconcile_on_startup()
+            try:
+                workers = register_default_workers()
+            except Exception as exc:  # pragma: no cover - SQLite compatibility
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+                from orchestrator.pipeline import log_event
+
+                log_event(
+                    "warning",
+                    {
+                        "step": "gpu_scheduler_register_workers",
+                        "error": str(exc),
+                    },
+                )
+                try:
+                    workers = list_workers()
+                except Exception:
+                    workers = []
+        except Exception:
+            _release_process_lock()
+            raise
         recovered = (
             recover_stale_local_running_jobs(workers)
             + recover_stale_ssh_running_jobs()
@@ -1638,15 +1676,34 @@ def start() -> dict:
         _stop_event.clear()
         _scheduler_thread = threading.Thread(target=_loop, daemon=True, name="deepgraph-gpu-scheduler")
         _scheduler_thread.start()
+        colab_worker_status = {"status": "disabled"}
+        try:
+            from orchestrator.meta_compute_runtime import _enabled_backend_kinds
+
+            if "colab_gpu" in _enabled_backend_kinds():
+                from orchestrator.colab_worker import start as start_colab_worker
+
+                colab_worker_status = start_colab_worker()
+        except Exception:
+            _stop_event.set()
+            _release_process_lock()
+            raise
     return {
         "status": "started",
         "workers": list_workers(),
         "recovered_stale_jobs": recovered,
         "durable_recovery": durable_recovery,
+        "colab_worker": colab_worker_status,
     }
 
 
 def stop() -> dict:
     _stop_event.set()
+    try:
+        from orchestrator.colab_worker import stop as stop_colab_worker
+
+        stop_colab_worker()
+    except Exception:
+        pass
     _release_process_lock()
     return {"status": "stopping"}

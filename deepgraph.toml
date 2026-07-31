@@ -184,8 +184,15 @@ credential_ref = "env:DEEPGRAPH_SSH_CREDENTIAL"
 [compute_backends.colab_gpu]
 enabled = false
 accounts_manifest_ref = "env:DEEPGRAPH_COLAB_ACCOUNTS_MANIFEST"
+binary = ""
 allowed_code_root = "{project_root}/workspace/meta_harness/candidates"
 allowed_artifact_root = "{project_root}/workspace/meta_harness/artifacts"
+poll_seconds = 5
+
+[scoped_ingestion]
+worker_enabled = false
+poll_seconds = 10
+lease_seconds = 1800
 
 [scientific_evidence]
 states = ["planned", "sanity_passed", "full_benchmark_complete", "evidence_audited", "scientifically_decided", "manuscript_allowed"]
@@ -200,6 +207,13 @@ candidate_root = "{project_root}/workspace/meta_harness/candidates"
 database_namespace_prefix = "meta_harness_candidate_"
 max_modules = 2
 max_changed_lines = 200
+evaluator_isolation_binary = "bwrap"
+evaluator_root = "{project_root}/meta_harness/evaluators"
+holdout_root = "{project_root}/meta_harness/held_out"
+evaluator_artifact_root = "{project_root}/workspace/meta_harness/evaluator_artifacts"
+# Set both explicitly in isolated CI; empty values make evaluator startup fail closed.
+production_path = ""
+production_database_namespace = ""
 required_suites = ["held_in", "held_out", "canary"]
 require_reviewer_approval = true
 

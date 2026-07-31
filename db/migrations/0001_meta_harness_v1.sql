@@ -310,8 +310,13 @@ ALTER TABLE IF EXISTS experiment_runs
     ADD COLUMN IF NOT EXISTS resource_grant_id BIGINT REFERENCES resource_grants(id);
 ALTER TABLE IF EXISTS gpu_jobs
     ADD COLUMN IF NOT EXISTS resource_grant_id BIGINT REFERENCES resource_grants(id);
+ALTER TABLE IF EXISTS gpu_jobs
+    ADD COLUMN IF NOT EXISTS meta_harness_idempotency_key TEXT;
 ALTER TABLE IF EXISTS benchmark_harness_jobs
     ADD COLUMN IF NOT EXISTS resource_grant_id BIGINT REFERENCES resource_grants(id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_gpu_jobs_meta_harness_identity
+    ON gpu_jobs(agenda_id, meta_harness_idempotency_key)
+    WHERE meta_harness_idempotency_key IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS outcome_records (
     id BIGSERIAL PRIMARY KEY,
@@ -403,6 +408,74 @@ CREATE TABLE IF NOT EXISTS compute_jobs_v1 (
 );
 CREATE INDEX IF NOT EXISTS idx_compute_jobs_v1_active
     ON compute_jobs_v1(agenda_id, status, timeout_at, id);
+
+CREATE TABLE IF NOT EXISTS colab_work_requests_v1 (
+    id BIGSERIAL PRIMARY KEY,
+    agenda_id BIGINT NOT NULL REFERENCES research_agendas(id),
+    idea_id BIGINT NOT NULL,
+    experiment_run_id BIGINT NOT NULL REFERENCES experiment_runs(id),
+    resource_grant_id BIGINT NOT NULL REFERENCES resource_grants(id),
+    compute_job_id BIGINT REFERENCES compute_jobs_v1(id),
+    stage TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    code_dir TEXT NOT NULL,
+    command_tokens_json TEXT NOT NULL,
+    environment_json TEXT NOT NULL DEFAULT '{}',
+    artifact_map_json TEXT NOT NULL,
+    artifact_output_dir TEXT NOT NULL,
+    timeout_seconds INTEGER NOT NULL CHECK (timeout_seconds > 0),
+    status TEXT NOT NULL CHECK (
+        status IN (
+            'admitting', 'queued', 'running', 'succeeded', 'failed',
+            'timed_out', 'cancelled', 'manual_reconciliation'
+        )
+    ),
+    worker_id TEXT,
+    account_ref TEXT,
+    session_ref TEXT,
+    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+    result_json TEXT,
+    artifact_manifest_json TEXT,
+    wall_seconds DOUBLE PRECISION CHECK (wall_seconds IS NULL OR wall_seconds >= 0),
+    failure_reason TEXT,
+    started_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (agenda_id, idempotency_key),
+    UNIQUE (compute_job_id)
+);
+CREATE INDEX IF NOT EXISTS idx_colab_work_requests_v1_queue
+    ON colab_work_requests_v1(status, created_at, id);
+
+CREATE TABLE IF NOT EXISTS scoped_ingestion_jobs_v1 (
+    id BIGSERIAL PRIMARY KEY,
+    agenda_id BIGINT NOT NULL REFERENCES research_agendas(id),
+    idea_id BIGINT NOT NULL,
+    resource_grant_id BIGINT NOT NULL REFERENCES resource_grants(id),
+    stage TEXT NOT NULL,
+    idempotency_key TEXT NOT NULL,
+    paper_ids_json TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (
+        status IN (
+            'queued', 'running', 'retryable', 'succeeded', 'failed',
+            'manual_reconciliation', 'cancelled'
+        )
+    ),
+    max_attempts INTEGER NOT NULL DEFAULT 3 CHECK (max_attempts > 0),
+    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+    lease_owner TEXT,
+    lease_expires_at TIMESTAMPTZ,
+    result_json TEXT,
+    failure_reason TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    started_at TIMESTAMPTZ,
+    completed_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (agenda_id, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_scoped_ingestion_jobs_v1_queue
+    ON scoped_ingestion_jobs_v1(status, created_at, id);
 
 CREATE TABLE IF NOT EXISTS harness_candidates (
     id BIGSERIAL PRIMARY KEY,

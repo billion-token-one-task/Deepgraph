@@ -14,6 +14,10 @@ from pathlib import Path
 from config import (
     COMPUTE_ARTIFACT_ROOT,
     COMPUTE_BACKENDS_ENABLED,
+    COMPUTE_COLAB_ACCOUNTS_MANIFEST_REF,
+    COMPUTE_COLAB_ALLOWED_ARTIFACT_ROOT,
+    COMPUTE_COLAB_ALLOWED_CODE_ROOT,
+    COMPUTE_COLAB_CLI_BINARY,
     COMPUTE_SSH_CREDENTIAL_REF,
     COMPUTE_SSH_TARGET_REF,
     GPU_MODE,
@@ -21,8 +25,10 @@ from config import (
 from contracts.meta_harness import ResourceGrant
 from db import database as db
 from meta_harness.compute import (
+    ACTIVE_JOB_STATES,
     ArtifactCollection,
     BackendCapability,
+    ColabGPUBackend,
     CPUBackend,
     ComputeBackendError,
     ComputeJob,
@@ -34,6 +40,11 @@ from meta_harness.compute import (
     UsageAccounting,
 )
 from meta_harness.compute_repository import ComputeJobRepository
+from meta_harness.backends.colab_durable import (
+    ColabWorkRepository,
+    ColabWorkSpec,
+    build_transport as build_colab_transport,
+)
 
 
 def _load_json_list(value) -> list:
@@ -379,6 +390,7 @@ class LegacyGPUQueueTransport:
             priority=3 if request.stage == "full_benchmark" else 1,
             vram_required_gb=40 if resource_class == "gpu_large" else 16,
             timeout_s=request.timeout_seconds,
+            meta_harness_idempotency_key=request.idempotency_key,
         )
         return ComputeJob(
             backend_kind=self.backend_kind,
@@ -611,10 +623,13 @@ def build_scheduler() -> ComputeScheduler:
         else:
             backends.append(LocalGPUBackend(transport))
     if "colab_gpu" in enabled:
-        # The isolated CLI executor exists, but durable queue/worker binding is
-        # intentionally not fabricated here. Submissions fail as not_configured
-        # until the v1 Colab transport is implemented and canary-validated.
-        pass
+        transport = build_colab_transport(
+            binary=COMPUTE_COLAB_CLI_BINARY,
+            accounts_manifest_ref=COMPUTE_COLAB_ACCOUNTS_MANIFEST_REF,
+            allowed_code_root=str(COMPUTE_COLAB_ALLOWED_CODE_ROOT),
+            allowed_artifact_root=str(COMPUTE_COLAB_ALLOWED_ARTIFACT_ROOT),
+        )
+        backends.append(ColabGPUBackend(transport, list(transport.accounts)))
     return ComputeScheduler(
         backends,
         job_store=ComputeJobRepository(),
@@ -699,6 +714,48 @@ def submit_experiment_run(
         grant=grant,
         preferred_backends=[backend_kind],
     )
+
+
+def submit_colab_work(spec: ColabWorkSpec) -> ComputeJob:
+    """Persist an operator request, then admit it through durable compute."""
+    spec.validate()
+    if "colab_gpu" not in _enabled_backend_kinds():
+        raise ComputeBackendError("requested compute backend is disabled:colab_gpu")
+    repository = ColabWorkRepository()
+    request_id = repository.create(spec)
+    grant_row = db.fetchone(
+        """
+        SELECT * FROM resource_grants
+        WHERE id=? AND agenda_id=? AND idea_id=?
+          AND status='active' AND expires_at > CURRENT_TIMESTAMP
+        """,
+        (spec.resource_grant_id, spec.agenda_id, spec.idea_id),
+    )
+    if not grant_row:
+        raise ComputeBackendError(
+            "active scoped ResourceGrant is required for Colab work"
+        )
+    grant = _grant_from_row(grant_row)
+    job = build_scheduler().submit(
+        ComputeSubmission(
+            agenda_id=spec.agenda_id,
+            idea_id=spec.idea_id,
+            stage=spec.stage,
+            resource_grant_id=spec.resource_grant_id,
+            idempotency_key=spec.idempotency_key,
+            command_ref=f"colab-work-request:{request_id}",
+            artifact_namespace=(
+                f"agenda-{spec.agenda_id}/idea-{spec.idea_id}/"
+                f"colab-{request_id}"
+            ),
+            timeout_seconds=spec.timeout_seconds,
+            requested_gpu_hours=spec.timeout_seconds / 3600.0,
+        ),
+        grant=grant,
+        preferred_backends=["colab_gpu"],
+    )
+    repository.bind_compute_job(request_id)
+    return job
 
 
 def mark_cpu_running(job: ComputeJob) -> None:
@@ -837,6 +894,48 @@ def settle_legacy_job(gpu_job_id: int) -> str:
     return observed.status
 
 
+def settle_colab_request(request_id: int) -> str:
+    backend_job_id = f"colab-work-request:{int(request_id)}"
+    row = db.fetchone(
+        """
+        SELECT cj.backend_kind, cj.backend_job_id, cj.idempotency_key,
+               cj.status, cj.heartbeat_at, cj.failure_reason,
+               rg.artifact_requirements_json
+        FROM compute_jobs_v1 AS cj
+        JOIN resource_grants AS rg ON rg.id=cj.resource_grant_id
+        WHERE cj.backend_job_id=? AND cj.backend_kind='colab_gpu'
+        """,
+        (backend_job_id,),
+    )
+    if not row:
+        return "not_managed"
+    state = str(row.get("status") or "")
+    if state in {
+        "succeeded",
+        "failed",
+        "cancelled",
+        "timed_out",
+        "submission_unknown",
+        "usage_unknown",
+    }:
+        return state
+    observed = build_scheduler().refresh_and_settle(
+        ComputeJob(
+            backend_kind="colab_gpu",
+            backend_job_id=backend_job_id,
+            idempotency_key=str(row["idempotency_key"]),
+            status=state if state in ACTIVE_JOB_STATES else "running",
+            heartbeat_at=_iso(row.get("heartbeat_at")),
+            failure_reason=row.get("failure_reason"),
+        ),
+        requirements=tuple(
+            str(value)
+            for value in _load_json_list(row.get("artifact_requirements_json"))
+        ),
+    )
+    return observed.status
+
+
 def reconcile_on_startup() -> dict[str, int]:
     if not db._use_pg():  # noqa: SLF001
         raise ComputeBackendError(
@@ -849,7 +948,18 @@ def reconcile_on_startup() -> dict[str, int]:
         "usage_unknown": 0,
         "terminal_settled": 0,
         "settlement_errors": 0,
+        "colab_restart_quarantined": 0,
+        "colab_admission_rebound": 0,
+        "colab_uncertain_quarantined": 0,
     }
+    colab_recovery = ColabWorkRepository().reconcile_on_startup()
+    totals["colab_restart_quarantined"] = colab_recovery[
+        "running_quarantined"
+    ]
+    totals["colab_admission_rebound"] = colab_recovery["admission_rebound"]
+    totals["colab_uncertain_quarantined"] = colab_recovery[
+        "uncertain_quarantined"
+    ]
     agendas = db.fetchall(
         """
         SELECT DISTINCT agenda_id
@@ -870,7 +980,7 @@ def reconcile_on_startup() -> dict[str, int]:
             SELECT backend_job_id
             FROM compute_jobs_v1
             WHERE agenda_id=?
-              AND backend_kind IN ('cpu', 'local_gpu', 'ssh_gpu')
+              AND backend_kind IN ('cpu', 'local_gpu', 'ssh_gpu', 'colab_gpu')
               AND status IN ('submitted', 'running', 'cancel_requested',
                              'collecting')
             ORDER BY id
@@ -886,6 +996,10 @@ def reconcile_on_startup() -> dict[str, int]:
                 elif str(row["backend_job_id"]).startswith("legacy-gpu-job:"):
                     result = settle_legacy_job(
                         _parse_backend_job_id(str(row["backend_job_id"]))
+                    )
+                elif str(row["backend_job_id"]).startswith("colab-work-request:"):
+                    result = settle_colab_request(
+                        int(str(row["backend_job_id"]).split(":", 1)[1])
                     )
                 else:
                     raise ComputeBackendError(

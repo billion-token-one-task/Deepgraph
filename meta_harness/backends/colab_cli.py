@@ -301,7 +301,7 @@ class ColabCLIExecutor:
             env=environment,
         )
 
-    def execute(
+    def run_request(
         self,
         request: ColabExecutionRequest,
         *,

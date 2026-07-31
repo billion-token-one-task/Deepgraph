@@ -14,9 +14,11 @@ from config import (
     AUTO_PIPELINE_ENABLED,
     AUTO_RESEARCH_ENABLED,
     BACKFILL_GRAPH_ON_START,
+    COMPUTE_BACKENDS_ENABLED,
     IDEA_WORKSPACE_DIR,
     REFRESH_MERGE_CANDIDATES_ON_START,
     ROOT_NODE_ID,
+    SCOPED_INGESTION_WORKER_ENABLED,
     WEB_HOST,
     WEB_PORT,
     WORKSPACE_DIR,
@@ -152,11 +154,33 @@ def main():
                 )
             print("Paper ingestion worker ready.", flush=True)
 
-        if AUTO_RESEARCH_ENABLED:
-            from orchestrator.auto_research import start as start_auto_research
+        if SCOPED_INGESTION_WORKER_ENABLED:
+            from orchestrator.scoped_ingestion_worker import (
+                start as start_scoped_ingestion_worker,
+            )
+
+            print("Starting scoped ingestion worker...", flush=True)
+            scoped_ingestion_status = start_scoped_ingestion_worker()
+            if scoped_ingestion_status.get("status") not in {
+                "started",
+                "already_running",
+            }:
+                raise RuntimeError(
+                    "Scoped ingestion worker failed closed during startup: "
+                    f"{scoped_ingestion_status.get('status') or 'unknown'}"
+                )
+            print("Scoped ingestion worker ready.", flush=True)
+
+        configured_compute = {
+            str(value).strip().lower()
+            for value in (COMPUTE_BACKENDS_ENABLED or [])
+        }
+        if AUTO_RESEARCH_ENABLED or configured_compute.intersection(
+            {"local_gpu", "ssh_gpu", "colab_gpu"}
+        ):
             from orchestrator.gpu_scheduler import start as start_gpu_scheduler
             # Durable compute reconciliation must finish before the research
-            # loop can claim portfolio work or submit another execution.
+            # loop or a configured asynchronous backend worker starts.
             print("Starting compute scheduler and recovery...", flush=True)
             scheduler_status = start_gpu_scheduler()
             if scheduler_status.get("status") not in {
@@ -169,6 +193,10 @@ def main():
                     f"{scheduler_status.get('status') or 'unknown'}"
                 )
             print("Compute scheduler and recovery ready.", flush=True)
+
+        if AUTO_RESEARCH_ENABLED:
+            from orchestrator.auto_research import start as start_auto_research
+
             print("Starting Auto Research worker...", flush=True)
             start_auto_research()
             print("Auto Research worker ready.", flush=True)

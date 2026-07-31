@@ -340,6 +340,45 @@ COMPUTE_COLAB_ACCOUNTS_MANIFEST_REF = _env_str(
     "",
     "compute_backends.colab_gpu.accounts_manifest_ref",
 )
+COMPUTE_COLAB_CLI_BINARY = _env_str(
+    "DEEPGRAPH_COLAB_CLI_BINARY",
+    "",
+    "compute_backends.colab_gpu.binary",
+)
+COMPUTE_COLAB_ALLOWED_CODE_ROOT = Path(
+    _env_str(
+        "DEEPGRAPH_COLAB_ALLOWED_CODE_ROOT",
+        str(WORKSPACE_DIR / "meta_harness" / "candidates"),
+        "compute_backends.colab_gpu.allowed_code_root",
+    )
+).expanduser()
+COMPUTE_COLAB_ALLOWED_ARTIFACT_ROOT = Path(
+    _env_str(
+        "DEEPGRAPH_COLAB_ALLOWED_ARTIFACT_ROOT",
+        str(WORKSPACE_DIR / "meta_harness" / "artifacts"),
+        "compute_backends.colab_gpu.allowed_artifact_root",
+    )
+).expanduser()
+COMPUTE_COLAB_POLL_SECONDS = _env_int(
+    "DEEPGRAPH_COLAB_POLL_SECONDS",
+    5,
+    "compute_backends.colab_gpu.poll_seconds",
+)
+SCOPED_INGESTION_WORKER_ENABLED = _env_bool(
+    "DEEPGRAPH_SCOPED_INGESTION_WORKER_ENABLED",
+    False,
+    "scoped_ingestion.worker_enabled",
+)
+SCOPED_INGESTION_POLL_SECONDS = _env_int(
+    "DEEPGRAPH_SCOPED_INGESTION_POLL_SECONDS",
+    10,
+    "scoped_ingestion.poll_seconds",
+)
+SCOPED_INGESTION_LEASE_SECONDS = _env_int(
+    "DEEPGRAPH_SCOPED_INGESTION_LEASE_SECONDS",
+    1800,
+    "scoped_ingestion.lease_seconds",
+)
 SCIENTIFIC_EVIDENCE_POLICY = dict(_toml_get("scientific_evidence", {}) or {})
 HARNESS_POLICY_VERSION = _env_str(
     "DEEPGRAPH_HARNESS_POLICY_VERSION",
@@ -367,6 +406,42 @@ HARNESS_MAX_CHANGED_LINES = _env_int(
     "DEEPGRAPH_HARNESS_MAX_CHANGED_LINES",
     200,
     "harness_evolution.max_changed_lines",
+)
+HARNESS_EVALUATOR_ISOLATION_BINARY = _env_str(
+    "DEEPGRAPH_HARNESS_EVALUATOR_ISOLATION_BINARY",
+    "bwrap",
+    "harness_evolution.evaluator_isolation_binary",
+)
+HARNESS_EVALUATOR_ROOT = Path(
+    _env_str(
+        "DEEPGRAPH_HARNESS_EVALUATOR_ROOT",
+        str(PROJECT_ROOT / "meta_harness" / "evaluators"),
+        "harness_evolution.evaluator_root",
+    )
+).expanduser()
+HARNESS_HOLDOUT_ROOT = Path(
+    _env_str(
+        "DEEPGRAPH_HARNESS_HOLDOUT_ROOT",
+        str(PROJECT_ROOT / "meta_harness" / "held_out"),
+        "harness_evolution.holdout_root",
+    )
+).expanduser()
+HARNESS_EVALUATOR_ARTIFACT_ROOT = Path(
+    _env_str(
+        "DEEPGRAPH_HARNESS_EVALUATOR_ARTIFACT_ROOT",
+        str(WORKSPACE_DIR / "meta_harness" / "evaluator_artifacts"),
+        "harness_evolution.evaluator_artifact_root",
+    )
+).expanduser()
+HARNESS_PRODUCTION_PATH = _env_str(
+    "DEEPGRAPH_HARNESS_PRODUCTION_PATH",
+    "",
+    "harness_evolution.production_path",
+)
+HARNESS_PRODUCTION_DATABASE_NAMESPACE = _env_str(
+    "DEEPGRAPH_HARNESS_PRODUCTION_DATABASE_NAMESPACE",
+    "",
+    "harness_evolution.production_database_namespace",
 )
 FAILURE_POLICY = dict(_toml_get("failure_policy", {}) or {})
 TRACE_DIRECTORY = Path(
