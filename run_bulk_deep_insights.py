@@ -11,6 +11,7 @@ Usage (from repo root):
 from __future__ import annotations
 
 import json
+import argparse
 import sys
 from pathlib import Path
 from datetime import datetime, timezone
@@ -22,12 +23,17 @@ from orchestrator.discovery_scheduler import run_bulk_deep_insights  # noqa: E40
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--agenda-id", type=int, required=True)
+    args = parser.parse_args()
+    if args.agenda_id <= 0:
+        parser.error("--agenda-id must be positive")
     print(
         "[BULK] Starting run_bulk_deep_insights at",
         datetime.now(timezone.utc).isoformat(),
         flush=True,
     )
-    out = run_bulk_deep_insights()
+    out = run_bulk_deep_insights(agenda_id=args.agenda_id)
     log_path = Path(__file__).resolve().parent / "bulk_discovery_result.json"
     log_path.write_text(json.dumps(out, indent=2, default=str), encoding="utf-8")
     print("[BULK] Done. Summary written to", log_path, flush=True)

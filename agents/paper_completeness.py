@@ -426,7 +426,7 @@ def is_routing_or_gating_state(state: dict[str, Any], manifest: dict[str, Any] |
             " ".join(_as_list(manifest.get("metrics"))),
         ]
     ).lower()
-    return any(term in haystack for term in ("routing", "router", "gating", "gate", "selective", "deliberation", "cggr"))
+    return any(term in haystack for term in ("routing", "router", "gating", "gate", "selective", "deliberation"))
 
 
 def _has_quantitative_artifact(manifest: dict[str, Any], *names: str) -> bool:

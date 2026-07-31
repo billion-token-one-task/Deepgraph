@@ -292,9 +292,39 @@ def schedule_benchmark_completion(
     blockers = benchmark_completion_blockers(bundle)
     if not blockers:
         return False
+    scope = db.fetchone(
+        """
+        SELECT er.agenda_id, er.deep_insight_id, er.resource_grant_id,
+               rg.stage AS grant_stage, rg.status AS grant_status,
+               rg.expires_at AS grant_expires_at
+        FROM experiment_runs er
+        LEFT JOIN resource_grants rg
+          ON rg.id=er.resource_grant_id
+         AND rg.status='active'
+         AND rg.expires_at > CURRENT_TIMESTAMP
+        WHERE er.id=?
+        """,
+        (run_id,),
+    )
+    agenda_id = int((scope or {}).get("agenda_id") or 0)
+    if (
+        agenda_id <= 0
+        or int((scope or {}).get("deep_insight_id") or 0) != int(insight_id)
+        or int((scope or {}).get("resource_grant_id") or 0) <= 0
+        or (scope or {}).get("grant_stage") != "full_benchmark"
+        or (scope or {}).get("grant_status") != "active"
+    ):
+        raise PermissionError(
+            "benchmark completion requires a scoped active full_benchmark ResourceGrant"
+        )
     loop_route = route_blockers(
         blockers,
-        context={"source": source, "stage": BENCHMARK_COMPLETION_STAGE, "run_id": run_id},
+        context={
+            "agenda_id": agenda_id,
+            "source": source,
+            "stage": BENCHMARK_COMPLETION_STAGE,
+            "run_id": run_id,
+        },
     )
     short_error = "; ".join(blockers[:6])
     loop_note = compact_loop_note(loop_route)
@@ -305,8 +335,12 @@ def schedule_benchmark_completion(
     if loop_note:
         note = f"{note} {loop_note}"
     existing = db.fetchone(
-        "SELECT id, resource_class FROM auto_research_jobs WHERE deep_insight_id=?",
-        (insight_id,),
+        """
+        SELECT id, resource_class
+        FROM auto_research_jobs
+        WHERE deep_insight_id=? AND agenda_id=?
+        """,
+        (insight_id, agenda_id),
     )
     chosen_resource = resource_class or (existing.get("resource_class") if existing else None) or "gpu_large"
     if existing:
@@ -326,7 +360,7 @@ def schedule_benchmark_completion(
                 last_error=?,
                 last_checked_at=CURRENT_TIMESTAMP,
                 updated_at=CURRENT_TIMESTAMP
-            WHERE deep_insight_id=?
+            WHERE deep_insight_id=? AND agenda_id=?
             """,
             (
                 BENCHMARK_COMPLETION_STAGE,
@@ -335,23 +369,35 @@ def schedule_benchmark_completion(
                 note,
                 short_error,
                 insight_id,
+                agenda_id,
             ),
         )
     else:
         db.execute(
             """
             INSERT INTO auto_research_jobs
-              (deep_insight_id, status, stage, experiment_run_id, resource_class,
-               scheduler_priority, last_note, last_error)
-            VALUES (?, 'queued', ?, ?, ?, 2, ?, ?)
+              (agenda_id, deep_insight_id, resource_grant_id, status, stage,
+               experiment_run_id, resource_class, scheduler_priority,
+               last_note, last_error)
+            VALUES (?, ?, ?, 'queued', ?, ?, ?, 2, ?, ?)
             """,
-            (insight_id, BENCHMARK_COMPLETION_STAGE, run_id, chosen_resource, note, short_error),
+            (
+                agenda_id,
+                insight_id,
+                int(scope["resource_grant_id"]),
+                BENCHMARK_COMPLETION_STAGE,
+                run_id,
+                chosen_resource,
+                note,
+                short_error,
+            ),
         )
     db.commit()
     db.emit_pipeline_event(
         "benchmark_completion_required",
         {
             "deep_insight_id": insight_id,
+            "agenda_id": agenda_id,
             "experiment_run_id": run_id,
             "source": source,
             "blockers": blockers,

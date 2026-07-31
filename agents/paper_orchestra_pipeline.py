@@ -932,21 +932,10 @@ def _tighten_float_layout_source(source: str) -> str:
 
 
 
-TABLE_METHOD_LABELS = {
-    "Vanilla Direct Answering": "Direct",
-    "Certified Residual Policy Packets": "CRPP",
-    "Confidence Gate": "Conf. Gate",
-    "Confidence Routing": "Conf. Gate",
-    "Disagreement Routing": "Disagree",
-    "Random Budget-Matched Routing": "Rand. Budget",
-    "CAR-Style Certainty Adaptive Routing": "CAR",
-    "Self-Route-Style Mode Routing": "Self-Route",
-    "Rational-Metareasoning VOC Routing": "VOC",
-    "Always-Reason Chain-of-Thought": "Always-CoT",
-    "Always Reason Chain of Thought": "Always-CoT",
-    "Self-Consistency Reasoning": "Self-Cons.",
-    "Least-to-Most Prompting": "LtM",
-}
+# Generic layout code intentionally has no method aliases. Domain-specific
+# abbreviations belong to an explicitly enabled plugin and must not change
+# evidence or table values.
+TABLE_METHOD_LABELS: dict[str, str] = {}
 
 
 def _shorten_table_method_labels(source: str) -> str:
@@ -999,66 +988,8 @@ def _table_data_lines(block: str) -> list[str]:
 
 
 def _group_main_results_rows(block: str) -> str:
-    if "Direct and packet-based methods" in block or "Adaptive routing baselines" in block:
-        return block
-    if "CRPP &" not in block or "VOC &" not in block:
-        return block
-    if r"\midrule" not in block or r"\bottomrule" not in block:
-        return block
-    prefix, rest = block.split(r"\midrule", 1)
-    body, suffix = rest.rsplit(r"\bottomrule", 1)
-    rows = _table_data_lines(body)
-    if len(rows) < 8:
-        return block
-    row_by_method: dict[str, str] = {}
-    other_rows: list[str] = []
-    for row in rows:
-        method = row.split("&", 1)[0].strip()
-        row_by_method[method] = row.strip()
-    groups = [
-        ("Direct and packet-based methods", ["Direct", "CRPP"]),
-        ("Adaptive routing baselines", ["Conf. Gate", "Disagree", "Rand. Budget", "CAR", "Self-Route", "VOC"]),
-        ("High-compute reasoning baselines", ["Always-CoT", "Self-Cons.", "LtM"]),
-    ]
-    used: set[str] = set()
-    grouped: list[str] = []
-    for label, methods in groups:
-        present = [m for m in methods if m in row_by_method]
-        if not present:
-            continue
-        if grouped:
-            grouped.append(r"\midrule")
-        grouped.append(r"\multicolumn{6}{l}{\emph{" + label + r"}}\\")
-        grouped.append(r"\addlinespace[0.12em]")
-        for method in present:
-            grouped.append(row_by_method[method])
-            used.add(method)
-    for row in rows:
-        method = row.split("&", 1)[0].strip()
-        if method not in used:
-            other_rows.append(row.strip())
-    if other_rows:
-        if grouped:
-            grouped.append(r"\midrule")
-        grouped.extend(other_rows)
-    new_body = "\n" + "\n".join(grouped) + "\n"
-    return prefix + r"\midrule" + new_body + r"\bottomrule" + suffix
-
-
-def _complete_known_main_results_rows(block: str) -> str:
-    """Repair known score-only-looking rows when the run artifact has full metrics.
-
-    The paper writer sometimes preserves the VOC score but drops the cost columns,
-    making a completed benchmark row look like missing data. Keep this narrowly
-    scoped to the registered idea8/run13 values used by the manuscript.
-    """
-    if "VOC &" not in block:
-        return block
-    return re.sub(
-        r"(?m)^(\s*VOC\s*&\s*)0\.777\s*&\s*--\s*&\s*--\s*&\s*--\s*&\s*--\s*\\\\",
-        lambda match: match.group(1) + r"0.777 & 0.778 & 6.07 & 0.28 & 0.019 \\",
-        block,
-    )
+    """Leave semantic row grouping to explicitly enabled domain plugins."""
+    return block
 
 
 def _polish_table_layouts(source: str) -> str:
@@ -1067,7 +998,6 @@ def _polish_table_layouts(source: str) -> str:
 
     def _replace(match: re.Match[str]) -> str:
         block = match.group(0)
-        block = _complete_known_main_results_rows(block)
         stretch_match = re.search(r"\\renewcommand\s*\{\\arraystretch\}\s*\{([0-9]*\.?[0-9]+)\}", block)
         if stretch_match:
             try:
@@ -1113,47 +1043,6 @@ def _ensure_method_section_signal(source: str) -> str:
     return source
 
 
-def _deemphasize_significance_caveats(source: str) -> str:
-    if not source:
-        return source
-    replacements = {
-        "This is a best reported cost-adjusted point under the completed artifact protocol, but the margin is extremely small and statistically inconclusive at the conventional threshold, so the evidence supports CRPP as a calibrated engineering and diagnostic protocol rather than a broad superiority claim.":
-            "This is the best reported cost-adjusted point under the completed artifact protocol; the evidence supports CRPP as a calibrated engineering and diagnostic protocol for cost-aware cooperative inference.",
-        "Thus the evidence supports CRPP as a measured engineering improvement and diagnostic protocol on this benchmark, not as a statistically significant or broad superiority claim.":
-            "Thus the evidence supports CRPP as a measured engineering improvement and diagnostic protocol on this benchmark.",
-        "Relative to the strongest routing baseline, the measured gain is extremely small and not significant at the conventional $0.05$ level, so we frame the result as evidence that residual packets can preserve the cost--quality frontier under this protocol rather than as evidence of general dominance.":
-            "Relative to the strongest routing baseline, the measured gain is small but positive under the registered metric, supporting residual packets as a way to preserve the cost--quality frontier under this protocol.",
-        "Statistical testing uses paired comparisons across the completed benchmark artifacts; for the CRPP comparison to the strongest deployable baseline, the paired permutation result is $p=0.0625$, so we do not claim conventional statistical significance.":
-            "Paired comparisons across the completed benchmark artifacts are reported for transparency; the manuscript's primary claim is the registered best cost-adjusted point under the completed protocol.",
-        "This is numerically positive under the registered metric, but the magnitude is extremely small and the paired test is inconclusive at $p<0.05$.":
-            "This is the best registered cost-adjusted point in the completed artifact, with paired-test details reported for transparency.",
-        "However, because the best-point margin is not statistically significant at the conventional level, these artifacts should be read as engineering validation and diagnostic evidence, not as proof of a universally reliable mechanism.":
-            "These artifacts should be read as engineering validation and diagnostic evidence for the registered setting, rather than as proof of a universally reliable mechanism.",
-        "The paired permutation result of $p=0.0625$ means that the observed margin should not be described as statistically significant superiority.":
-            "The paired permutation result is reported for calibration; the manuscript's empirical claim is the registered best cost-adjusted point under the completed protocol.",
-        "Because the margin is extremely small and statistically inconclusive, the contribution is best understood as a measured engineering and diagnostic protocol for preserving the cost--quality frontier under a text-plus-packet communication design.":
-            "Although the margin is small, the contribution is a measured engineering and diagnostic protocol for preserving the cost--quality frontier under a text-plus-packet communication design.",
-        "The margin is extremely small and small but positive at the conventional threshold, so the evidence supports CRPP as a calibrated engineering and diagnostic protocol rather than a broad superiority claim.":
-            "The margin is extremely small, so the evidence supports CRPP as a calibrated engineering and diagnostic protocol rather than a broad superiority claim.",
-    }
-    for old, new in replacements.items():
-        source = source.replace(old, new)
-    source = source.replace("The central empirical result is deliberately modest:", "The central empirical result is:")
-    source = re.sub(r", an absolute gain of \$0\.000006245617\$ \(\$0\.000804\\%\$\) with paired permutation \$p=0\.0625\$\.", r", an absolute gain of $0.000006245617$ ($0.000804\%$).", source)
-    source = source.replace("with a very small and statistically inconclusive margin", "with a very small positive margin")
-    source = re.sub(r"\bstatistically inconclusive\b", "small in magnitude", source, flags=re.IGNORECASE)
-    source = re.sub(r"\bnot statistically significant\b", "small in magnitude", source, flags=re.IGNORECASE)
-    source = re.sub(r"\bnot significant at the conventional \$0\.05\$ level\b", "small in magnitude", source, flags=re.IGNORECASE)
-    source = re.sub(r"\bdo not claim conventional statistical significance\b", "report paired-test details descriptively", source, flags=re.IGNORECASE)
-    source = source.replace("small but positive at the conventional threshold", "small in magnitude")
-    source = re.sub(r"loaded from \\texttt\{[^}]*Qwen2-7B-Instruct[^}]*\}", "loaded from the Qwen2-7B-Instruct checkpoint", source)
-    source = source.replace(
-        "Main results across methods. The figure reports verified cost-adjusted accuracy, token and cost efficiency, latency, and route rate, with variation across random seeds where available in the artifact.",
-        "Main results for representative deployable methods. The table reports the full benchmark; this figure highlights Direct, Confidence Gate, and CRPP across cost-adjusted accuracy, token cost, latency, and route rate, with seed variation where available.",
-    )
-    return source
-
-
 def _move_early_concept_figures_after_intro_paragraph(source: str) -> str:
     if not source:
         return source
@@ -1190,7 +1079,6 @@ def _sanitize_visual_layout_source(source: str) -> str:
     source = _shorten_table_method_labels(source)
     source = _polish_table_layouts(source)
     source = _ensure_method_section_signal(source)
-    source = _deemphasize_significance_caveats(source)
     source = _tighten_float_layout_source(source)
     source = _remove_rhetorical_questions(source)
     source = _move_topmatter_figures_after_intro(source)
@@ -1202,7 +1090,6 @@ def _sanitize_visual_layout_source(source: str) -> str:
     source = _shorten_table_method_labels(source)
     source = _polish_table_layouts(source)
     source = _ensure_method_section_signal(source)
-    source = _deemphasize_significance_caveats(source)
     source = _tighten_float_layout_source(source)
     source = _remove_rhetorical_questions(source)
     source = _dedupe_repeated_figure_includes(source)
@@ -3392,11 +3279,26 @@ def _scientific_review_gate(main_tex: str, state: dict) -> dict:
         issues.append({"severity": "high", "issue": f"Scientific evidence is too small for a top-tier claim: only {total_examples} evaluation examples."})
     elif total_examples and total_examples < 1000:
         issues.append({"severity": "medium", "issue": f"Evaluation scale is thin for a top-tier empirical paper: only {total_examples} examples."})
-    if p_value is not None and p_value >= 0.05:
-        if not candidate_beats_strongest:
-            issues.append({"severity": "high", "issue": f"Core empirical result is not statistically significant at 0.05: p={p_value:.4g}."})
-        else:
-            issues.append({"severity": "low", "issue": f"Report p={p_value:.4g} descriptively; do not claim statistical significance, but do not block a best-metric result solely on p-value."})
+    if p_value is None:
+        issues.append({"severity": "high", "issue": "Core empirical claim has no p-value; significance and confirmation are blocked."})
+    elif p_value >= 0.05:
+        issues.append({"severity": "high", "issue": f"Core empirical result is not statistically significant at 0.05: p={p_value:.4g}."})
+    if candidate_metric is None:
+        issues.append({"severity": "high", "issue": "Candidate metric is missing; no scientific claim is permitted."})
+    if strongest_metric is None:
+        issues.append({"severity": "high", "issue": "Strongest baseline metric is missing; no confirmation is permitted."})
+    elif float(strongest_metric) == 0:
+        issues.append({"severity": "high", "issue": "Strongest baseline is zero; relative-gain confirmation is blocked."})
+    evaluator_verdict = str(
+        packet.get("verdict")
+        or summary.get("verdict")
+        or state.get("verdict")
+        or ""
+    ).lower()
+    if evaluator_verdict == "refuted":
+        issues.append({"severity": "high", "issue": "Independent evaluator refuted the claim; positive wording is blocked."})
+    if summary.get("full_benchmark_completed") is not True:
+        issues.append({"severity": "high", "issue": "Full benchmark is incomplete; pilot evidence cannot be confirmed."})
     if num_seeds and num_seeds < 5:
         issues.append({"severity": "medium", "issue": f"Seed coverage is thin for a top-tier empirical paper: {num_seeds} seed(s)."})
     if len(missing_baselines) >= 2:
@@ -3534,6 +3436,8 @@ def _submission_blockers_from_state(state: dict, error: str = "") -> list[str]:
         blockers.append(error)
     if not state:
         return blockers
+    if state.get("scientific_evidence_state") != "manuscript_allowed":
+        blockers.append("scientific_evidence_state is not manuscript_allowed.")
     if not state.get("formal_experiment") or state.get("smoke_test_only"):
         blockers.append("Run is not a formal non-smoke experiment.")
     packet = state.get("result_packet") if isinstance(state.get("result_packet"), dict) else {}
@@ -3822,6 +3726,14 @@ def generate_bundle_paper_orchestra(
     run = db.fetchone("SELECT * FROM experiment_runs WHERE id=?", (run_id,))
     if not run:
         return {"error": f"Run {run_id} not found"}
+    if not run.get("agenda_id"):
+        return {"error": "manuscript blocked: experiment run has no agenda_id"}
+    if run.get("scientific_evidence_state") != "manuscript_allowed":
+        return {
+            "error": "manuscript blocked: scientific_evidence_state is not manuscript_allowed"
+        }
+    if not run.get("scientific_reviewer_approved_by"):
+        return {"error": "manuscript blocked: reviewer approval is missing"}
     insight = db.fetchone("SELECT * FROM deep_insights WHERE id=?", (run["deep_insight_id"],))
     iterations = db.fetchall(
         "SELECT * FROM experiment_iterations WHERE run_id=? ORDER BY iteration_number",
@@ -3941,25 +3853,44 @@ def generate_bundle_paper_orchestra(
 
     manuscript_run_id: int
     initial_state_json = json.dumps(state, default=str)
-    existing = db.fetchone("SELECT * FROM manuscript_runs WHERE experiment_run_id=?", (run_id,))
+    existing = db.fetchone(
+        """
+        SELECT * FROM manuscript_runs
+        WHERE agenda_id=? AND experiment_run_id=?
+        """,
+        (int(run["agenda_id"]), run_id),
+    )
     if existing:
         manuscript_run_id = existing["id"]
         db.execute(
             """
             UPDATE manuscript_runs
             SET status='drafting', canonical_state=?, workdir=?, updated_at=CURRENT_TIMESTAMP
-            WHERE id=?
+            WHERE id=? AND agenda_id=?
             """,
-            (initial_state_json, str(manuscript_root), manuscript_run_id),
+            (
+                initial_state_json,
+                str(manuscript_root),
+                manuscript_run_id,
+                int(run["agenda_id"]),
+            ),
         )
     else:
         manuscript_run_id = db.insert_returning_id(
             """
-            INSERT INTO manuscript_runs (experiment_run_id, deep_insight_id, status, canonical_state, workdir)
-            VALUES (?, ?, 'drafting', ?, ?)
+            INSERT INTO manuscript_runs
+                (agenda_id, experiment_run_id, deep_insight_id, status,
+                 canonical_state, workdir)
+            VALUES (?, ?, ?, 'drafting', ?, ?)
             RETURNING id
             """,
-            (run_id, run["deep_insight_id"], initial_state_json, str(manuscript_root)),
+            (
+                int(run["agenda_id"]),
+                run_id,
+                run["deep_insight_id"],
+                initial_state_json,
+                str(manuscript_root),
+            ),
         )
     db.commit()
 

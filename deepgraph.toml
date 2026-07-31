@@ -36,7 +36,6 @@ mlflow_uri = ""
 use_tabcode = false
 protocol = "responses"
 base_url = "https://api2.tabcode.cc/openai"
-api_key = ""
 model = "gpt-5.4"
 rpm = 0
 extra_providers_json = ""
@@ -56,12 +55,10 @@ max_output_tokens = 32000
 enabled = false
 protocol = "responses"
 base_url = ""
-api_key = ""
 model = "gpt-5.4"
 rpm = 0
 
 [minimax]
-api_key = ""
 base_url = "https://api.minimaxi.com/v1"
 model = "MiniMax-M2.7-highspeed"
 rpm = 18
@@ -111,6 +108,115 @@ hf_limit = 8
 timeout_seconds = 12
 min_confidence = 0.42
 
+[agenda]
+active_ids = []
+default_token_budget = 100000
+default_gpu_hours_budget = 0.0
+backlog_policy = "explicit_import_only"
+scope_min_term_hits = 1
+default_backend_allowlist = ["cpu", "llm"]
+max_concurrency_per_agenda = 1
+
+[portfolio]
+policy_version = "portfolio_heuristic_v1"
+promote_count = 1
+exploration_fraction = 0.20
+falsification_fraction = 0.15
+surprise_fraction = 0.10
+kill_obsolescence_threshold = 0.80
+kill_execution_risk_threshold = 0.92
+max_family_share = 0.50
+park_hours = 168
+
+[resource_grants]
+required = true
+default_ttl_seconds = 3600
+pilot_token_cap = 20000
+pilot_gpu_hours_cap = 0.25
+full_benchmark_token_cap = 100000
+full_benchmark_gpu_hours_cap = 8.0
+required_artifacts = ["raw_metrics", "run_manifest", "environment_manifest", "claim_ledger"]
+
+[llm_routes]
+failure_policy = "fail_closed_or_manual"
+require_independent_evaluator = true
+record_actual_route = true
+
+[[llm_routes.proposer]]
+provider_ref = "env:DEEPGRAPH_LLM_PRIMARY"
+model_ref = "env:DEEPGRAPH_LLM_PRIMARY_MODEL"
+model_family_ref = "env:DEEPGRAPH_LLM_PRIMARY_FAMILY"
+prompt_version = "proposer_v1"
+
+[[llm_routes.evaluator]]
+provider_ref = "env:DEEPGRAPH_LLM_EVALUATOR"
+model_ref = "env:DEEPGRAPH_LLM_EVALUATOR_MODEL"
+model_family_ref = "env:DEEPGRAPH_LLM_EVALUATOR_FAMILY"
+prompt_version = "evaluator_v1"
+
+[[llm_routes.reviewer]]
+provider_ref = "env:DEEPGRAPH_LLM_REVIEWER"
+model_ref = "env:DEEPGRAPH_LLM_REVIEWER_MODEL"
+model_family_ref = "env:DEEPGRAPH_LLM_REVIEWER_FAMILY"
+prompt_version = "reviewer_v1"
+
+[compute_backends]
+enabled = ["cpu"]
+job_store = "postgresql"
+allow_ephemeral_idempotency = false
+failure_status = "failed"
+heartbeat_timeout_seconds = 300
+reconcile_expired_on_start = true
+submission_unknown_policy = "manual_reconciliation"
+artifact_root = "{project_root}/workspace/meta_harness/artifacts"
+
+[compute_backends.cpu]
+enabled = true
+
+[compute_backends.local_gpu]
+enabled = false
+
+[compute_backends.ssh_gpu]
+enabled = false
+target_ref = "env:DEEPGRAPH_SSH_TARGET"
+credential_ref = "env:DEEPGRAPH_SSH_CREDENTIAL"
+
+[compute_backends.colab_gpu]
+enabled = false
+accounts_manifest_ref = "env:DEEPGRAPH_COLAB_ACCOUNTS_MANIFEST"
+allowed_code_root = "{project_root}/workspace/meta_harness/candidates"
+allowed_artifact_root = "{project_root}/workspace/meta_harness/artifacts"
+
+[scientific_evidence]
+states = ["planned", "sanity_passed", "full_benchmark_complete", "evidence_audited", "scientifically_decided", "manuscript_allowed"]
+pilot_final_state = "sanity_passed"
+require_raw_artifacts = true
+require_claim_ledger = true
+require_holdout_evaluator = true
+
+[harness_evolution]
+policy_version = "harness_policy_v1"
+candidate_root = "{project_root}/workspace/meta_harness/candidates"
+database_namespace_prefix = "meta_harness_candidate_"
+max_modules = 2
+max_changed_lines = 200
+required_suites = ["held_in", "held_out", "canary"]
+require_reviewer_approval = true
+
+[failure_policy]
+provider_unavailable = "fail_closed_or_manual"
+compute_unavailable = "failed"
+heartbeat_expired = "timed_out"
+artifact_incomplete = "failed"
+never_map_failure_to_completed = true
+
+[trace]
+directory = "{project_root}/workspace/meta_harness/traces"
+artifact_manifest_required = true
+record_prompt_version = true
+record_provider_model = true
+record_token_cost = true
+
 [discovery]
 tier1_candidates = 5
 tier2_problems = 8
@@ -152,7 +258,7 @@ full_benchmark_require_strongest_win = true
 real_benchmark_time_budget_seconds = 3600
 validation_benchmark_max_examples = 64
 validation_benchmark_seeds = 3
-validation_benchmark_methods = "Vanilla Direct Answering,Always-Reason Chain-of-Thought,CGGR,CGGR/no_counterfactual_delta"
+validation_benchmark_methods = "Vanilla Direct Answering,Always-Reason Chain-of-Thought,Confidence Gate,Random Budget-Matched Routing"
 reproduction_repair_max_rounds = 8
 allow_smoke_validation = false
 evosci_verify_timeout = 900
@@ -178,10 +284,9 @@ job_timeout_seconds = 14400
 ssh_host = ""
 ssh_port = 22
 ssh_user = ""
-ssh_password = ""
 base_dir = "/root/deepgraph-remote-worker"
 python = "python"
-auto_pip_install = true
+auto_pip_install = false
 setup_timeout_seconds = 3600
 
 [manuscript]
@@ -197,7 +302,6 @@ iclr2026_template_files = [
 ]
 
 [paper_orchestra]
-semantic_scholar_api_key = ""
 paperbanana_cmd = ""
 refinement_iters = 4
 

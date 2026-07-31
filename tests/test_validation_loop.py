@@ -207,18 +207,23 @@ class ValidationLoopGitFallbackTests(unittest.TestCase):
             refute_min=30,
             benchmark_summary={
                 "primary_metric": "utility",
-                "candidate_method": "cggr",
-                "best_method": "cggr",
+                "candidate_method": "candidate",
+                "best_method": "candidate",
                 "num_seeds": 5,
+                "full_benchmark_completed": True,
+                "raw_artifacts_complete": True,
+                "claim_ledger_complete": True,
+                "evaluator_id": "held-out-evaluator",
+                "p_value": 0.01,
                 "per_method": {
                     "direct": {"utility": 0.71},
                     "adaptive_confidence": {"utility": 0.77},
-                    "cggr": {"utility": 0.80},
+                    "candidate": {"utility": 0.80},
                 },
             },
         )
 
-        self.assertEqual(verdict, "confirmed")
+        self.assertEqual(verdict, "supported")
 
     def test_repo_snapshot_restore_recovers_multi_file_state(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -240,31 +245,55 @@ class ValidationLoopGitFallbackTests(unittest.TestCase):
             self.assertEqual((code_dir / "helper.py").read_text(encoding="utf-8"), "VALUE = 1\n")
             self.assertFalse((code_dir / "new_file.py").exists())
 
-    def test_launch_coding_agent_returns_codex_summary_when_available(self):
+    def test_launch_coding_agent_uses_resource_granted_role_route(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             workdir = Path(tmpdir)
             code_dir = workdir / "code"
             code_dir.mkdir(parents=True, exist_ok=True)
             (code_dir / "train.py").write_text("print('baseline')\n", encoding="utf-8")
             spec = validation_loop.ExperimentSpec(
+                run_id=77,
                 deep_insight_id=1,
                 experimental_plan={"baselines": [], "datasets": [], "metrics": {}},
                 evidence_plan={"main_table": {"enabled": True}},
             )
+            route = {
+                "provider": "provider-a",
+                "model": "model-a",
+                "model_family": "family-a",
+                "prompt_version": "validation-v1",
+            }
 
             with (
-                mock.patch.object(validation_loop.codex_executor, "codex_available", return_value=True),
                 mock.patch.object(
-                    validation_loop.codex_executor,
-                    "run_codex_iteration",
+                    validation_loop.db,
+                    "fetchone",
                     return_value={
-                        "ok": True,
-                        "summary": "Codex changed repo files",
-                        "artifact_paths": {"codex_last_message": "/tmp/last.json"},
-                        "validation_status": "blocked_redesign_required",
+                        "agenda_id": 9,
+                        "deep_insight_id": 1,
+                        "resource_grant_id": 12,
+                        "stage": "validation",
                     },
                 ),
-                mock.patch.object(validation_loop, "_read_proxy_config", return_value={}),
+                mock.patch.object(
+                    validation_loop,
+                    "_read_proxy_config",
+                    return_value={},
+                ),
+                mock.patch(
+                    "agents.llm_client.configured_role_prompt_version",
+                    return_value="validation-v1",
+                ),
+                mock.patch(
+                    "agents.llm_client.call_llm_for_role",
+                    return_value=(
+                        "import math\n"
+                        "VALUE = 1\n"
+                        "print('candidate implementation with enough content', VALUE)\n",
+                        31,
+                        route,
+                    ),
+                ) as routed,
             ):
                 result = validation_loop._launch_coding_agent(
                     workdir,
@@ -279,35 +308,44 @@ class ValidationLoopGitFallbackTests(unittest.TestCase):
                     supervisor_plan={"mode": "bootstrap"},
                 )
 
-        self.assertEqual(result["executor"], "codex")
-        self.assertIn("Codex", result["description"])
-        self.assertIn("codex_last_message", result["artifact_paths"])
-        self.assertEqual(result["validation_status"], "blocked_redesign_required")
+        self.assertEqual(result["executor"], "role_routed_llm")
+        self.assertIn("llm_route", result["artifact_paths"])
+        self.assertEqual(result["artifact_paths"]["llm_route"], route)
+        self.assertEqual(routed.call_args.kwargs["resource_grant_id"], 12)
+        self.assertEqual(routed.call_args.kwargs["role"], "proposer")
 
-    def test_launch_coding_agent_does_not_legacy_fallback_after_codex_failure(self):
+    def test_launch_coding_agent_fails_closed_when_role_route_fails(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             workdir = Path(tmpdir)
             code_dir = workdir / "code"
             code_dir.mkdir(parents=True, exist_ok=True)
             (code_dir / "train.py").write_text("print('baseline')\n", encoding="utf-8")
             spec = validation_loop.ExperimentSpec(
+                run_id=77,
                 deep_insight_id=1,
                 experimental_plan={"baselines": [], "datasets": [], "metrics": {}},
                 evidence_plan={"main_table": {"enabled": True}},
             )
 
             with (
-                mock.patch.object(validation_loop.codex_executor, "codex_available", return_value=True),
                 mock.patch.object(
-                    validation_loop.codex_executor,
-                    "run_codex_iteration",
+                    validation_loop.db,
+                    "fetchone",
                     return_value={
-                        "ok": False,
-                        "stderr": "codex timed out",
-                        "artifact_paths": {"codex_result": "/tmp/result.json"},
+                        "agenda_id": 9,
+                        "deep_insight_id": 1,
+                        "resource_grant_id": 12,
+                        "stage": "validation",
                     },
                 ),
-                mock.patch("agents.llm_client.call_llm") as call_llm,
+                mock.patch(
+                    "agents.llm_client.configured_role_prompt_version",
+                    return_value="validation-v1",
+                ),
+                mock.patch(
+                    "agents.llm_client.call_llm_for_role",
+                    side_effect=RuntimeError("provider unavailable"),
+                ),
                 mock.patch.object(validation_loop, "_read_proxy_config", return_value={}),
             ):
                 result = validation_loop._launch_coding_agent(
@@ -323,11 +361,74 @@ class ValidationLoopGitFallbackTests(unittest.TestCase):
                     supervisor_plan={"mode": "redirect"},
                 )
 
-        self.assertEqual(result["executor"], "codex")
+        self.assertEqual(result["executor"], "role_routed_llm")
         self.assertTrue(result["code_generation_failed"])
-        self.assertIn("codex timed out", result["description"])
-        self.assertIn("codex_result", result["artifact_paths"])
-        call_llm.assert_not_called()
+        self.assertIn("provider unavailable", result["description"])
+        self.assertEqual(result["artifact_paths"], {})
+
+    def test_reproduction_repair_records_resource_granted_route(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workdir = Path(tmpdir)
+            code_dir = workdir / "code"
+            code_dir.mkdir()
+            route = {
+                "provider": "provider-a",
+                "model": "model-a",
+                "model_family": "family-a",
+                "prompt_version": "validation-v1",
+            }
+            with (
+                mock.patch.object(
+                    validation_loop,
+                    "_contract_context",
+                    return_value=({}, {}, {}),
+                ),
+                mock.patch.object(
+                    validation_loop.db,
+                    "fetchone",
+                    return_value={
+                        "agenda_id": 9,
+                        "deep_insight_id": 1,
+                        "resource_grant_id": 12,
+                        "stage": "validation",
+                    },
+                ),
+                mock.patch(
+                    "agents.llm_client.configured_role_prompt_version",
+                    return_value="validation-v1",
+                ),
+                mock.patch(
+                    "agents.llm_client.call_llm_json_for_role",
+                    return_value=(
+                        {
+                            "summary": "repair import path",
+                            "files": [
+                                {
+                                    "path": "train.py",
+                                    "content": "print('repaired')\n",
+                                }
+                            ],
+                        },
+                        23,
+                        route,
+                    ),
+                ) as routed,
+            ):
+                result = validation_loop._launch_reproduction_repair(
+                    run_id=77,
+                    workdir=workdir,
+                    code_dir=code_dir,
+                    repair_round=1,
+                    baseline_command="python train.py",
+                    metric_name="accuracy",
+                    last_result={"status": "crash", "error": "missing import"},
+                    environment_report={},
+                )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["executor"], "role_routed_llm")
+        self.assertEqual(result["llm_route"], route)
+        self.assertEqual(routed.call_args.kwargs["resource_grant_id"], 12)
 
     def test_resume_history_from_db_reconstructs_iteration_state(self):
         fairness_description = "x" * 120 + " benchmark_fairness_risk candidate-only canonicalizer"

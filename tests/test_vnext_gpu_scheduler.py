@@ -714,18 +714,23 @@ class GpuSchedulerTests(unittest.TestCase):
             database.execute(
                 """
                 UPDATE experiment_runs
-                SET status='completed', hypothesis_verdict='confirmed', effect_pct=12.5
+                SET status='completed', hypothesis_verdict='supported', effect_pct=12.5
                 WHERE id=?
                 """,
                 (run_id,),
             )
             database.commit()
-            return {"run_id": run_id, "verdict": "confirmed"}
+            return {"run_id": run_id, "verdict": "supported"}
 
         with (
             mock.patch.object(gpu_scheduler, "run_validation_loop", side_effect=_fake_validation_loop),
             mock.patch.object(gpu_scheduler, "process_completed_run"),
             mock.patch.object(gpu_scheduler, "collect_run_artifacts", return_value=[]),
+            mock.patch.object(
+                gpu_scheduler,
+                "positive_decision_authorized",
+                return_value=True,
+            ),
             mock.patch.object(gpu_scheduler, "generate_submission_bundle", return_value={"error": "latex failed"}),
             mock.patch.object(gpu_scheduler, "log_metrics"),
             mock.patch.object(gpu_scheduler, "log_artifact"),
@@ -737,7 +742,7 @@ class GpuSchedulerTests(unittest.TestCase):
         auto_job = database.fetchone("SELECT status, stage, last_error FROM auto_research_jobs WHERE deep_insight_id=1")
 
         self.assertEqual(run["status"], "completed")
-        self.assertEqual(run["hypothesis_verdict"], "confirmed")
+        self.assertEqual(run["hypothesis_verdict"], "supported")
         self.assertEqual(gpu_job["status"], "completed")
         self.assertIn("latex failed", gpu_job["error_message"])
         self.assertEqual(auto_job["status"], "queued")
@@ -780,13 +785,13 @@ class GpuSchedulerTests(unittest.TestCase):
             database.execute(
                 """
                 UPDATE experiment_runs
-                SET status='completed', hypothesis_verdict='confirmed', effect_pct=12.5
+                SET status='completed', hypothesis_verdict='supported', effect_pct=12.5
                 WHERE id=?
                 """,
                 (run_id,),
             )
             database.commit()
-            return {"run_id": run_id, "verdict": "confirmed"}
+            return {"run_id": run_id, "verdict": "supported"}
 
         with (
             mock.patch.object(gpu_scheduler, "run_validation_loop", side_effect=_fake_validation_loop),
@@ -839,11 +844,11 @@ class GpuSchedulerTests(unittest.TestCase):
         gpu_job = database.fetchone("SELECT status, error_message FROM gpu_jobs WHERE id=?", (job_id,))
         auto_job = database.fetchone("SELECT status, stage, last_note, last_error FROM auto_research_jobs WHERE deep_insight_id=1")
 
-        self.assertEqual(gpu_job["status"], "completed")
-        self.assertIn("no bundle", gpu_job["error_message"])
-        self.assertEqual(auto_job["status"], "queued")
-        self.assertEqual(auto_job["stage"], "manuscript_retry_after_quality_gate")
-        self.assertIn("no bundle", auto_job["last_error"])
+        self.assertEqual(gpu_job["status"], "failed")
+        self.assertIn("validation execution failed", gpu_job["error_message"])
+        self.assertEqual(auto_job["status"], "failed")
+        self.assertEqual(auto_job["stage"], "gpu_failed")
+        self.assertIn("validation execution failed", auto_job["last_error"])
 
     def test_run_job_uses_full_benchmark_completion_stage(self):
         workers = gpu_scheduler.register_default_workers()
@@ -869,13 +874,13 @@ class GpuSchedulerTests(unittest.TestCase):
             database.execute(
                 """
                 UPDATE experiment_runs
-                SET status='completed', hypothesis_verdict='confirmed', effect_pct=5.0
+                SET status='completed', hypothesis_verdict='supported', effect_pct=5.0
                 WHERE id=?
                 """,
                 (run_id,),
             )
             database.commit()
-            return {"run_id": run_id, "verdict": "confirmed", "full_benchmark_completed": True}
+            return {"run_id": run_id, "verdict": "supported", "full_benchmark_completed": True}
 
         with (
             mock.patch.object(gpu_scheduler, "run_full_benchmark_completion", side_effect=_fake_full_completion) as full_run,

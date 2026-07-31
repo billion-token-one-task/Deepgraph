@@ -13,7 +13,7 @@ from db import evidence_graph as graph
 _CACHE_TTL_SECONDS = 300.0
 _frontier_cache: dict[str, tuple[float, dict]] = {}
 _stakes_cache: dict[str, tuple[float, float]] = {}
-_signal_weights_cache: tuple[float, dict[str, float]] | None = None
+_signal_weights_cache: dict[int, tuple[float, dict[str, float]]] = {}
 
 
 def _json_load(value: Any, default):
@@ -71,18 +71,25 @@ def _store_cache(cache: dict, key: str, value) -> None:
     cache[key] = (time.time() + _CACHE_TTL_SECONDS, value)
 
 
-def signal_type_weight(signal_type: str) -> float:
-    global _signal_weights_cache
+def signal_type_weight(signal_type: str, *, agenda_id: int | None = None) -> float:
     now = time.time()
-    if _signal_weights_cache is None or now > _signal_weights_cache[0]:
+    try:
+        scoped_agenda_id = int(agenda_id or 0)
+    except (TypeError, ValueError):
+        scoped_agenda_id = 0
+    if scoped_agenda_id <= 0:
+        return 1.0
+    cached = _signal_weights_cache.get(scoped_agenda_id)
+    if cached is None or now > cached[0]:
         try:
             from agents.meta_learner import compute_signal_weights
 
-            weights = compute_signal_weights()
+            weights = compute_signal_weights(scoped_agenda_id)
         except Exception:
             weights = {}
-        _signal_weights_cache = (now + _CACHE_TTL_SECONDS, weights)
-    return float(_signal_weights_cache[1].get(signal_type, 1.0))
+        cached = (now + _CACHE_TTL_SECONDS, weights)
+        _signal_weights_cache[scoped_agenda_id] = cached
+    return float(cached[1].get(signal_type, 1.0))
 
 
 def _relation_count_for_node(node_id: str) -> int:
@@ -496,7 +503,10 @@ def compute_taste_score(
 
     signal_mix = candidate.get("signal_mix") or []
     if signal_mix:
-        signal_bonus = sum(signal_type_weight(signal) for signal in signal_mix) / len(signal_mix)
+        signal_bonus = sum(
+            signal_type_weight(signal, agenda_id=candidate.get("agenda_id"))
+            for signal in signal_mix
+        ) / len(signal_mix)
     else:
         signal_bonus = 1.0
 

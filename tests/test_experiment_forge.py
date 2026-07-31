@@ -8,6 +8,71 @@ from agents.experiment_review import review_experiment_candidate
 
 
 class GenerateScaffoldTests(unittest.TestCase):
+    def test_resource_granted_forge_llm_uses_scoped_role_route(self):
+        scope = {
+            "agenda_id": 11,
+            "idea_id": 22,
+            "resource_grant_id": 33,
+            "stage": "experiment_forge",
+        }
+        route = {
+            "provider": "provider-a",
+            "model": "model-a",
+            "model_family": "family-a",
+            "prompt_version": "forge-proposer-v1",
+        }
+        with (
+            mock.patch.object(
+                experiment_forge,
+                "configured_role_prompt_version",
+                return_value="forge-proposer-v1",
+            ),
+            mock.patch.object(
+                experiment_forge,
+                "call_llm_json_for_role",
+                return_value=({"ok": True}, 19, route),
+            ) as routed,
+        ):
+            result, tokens, actual_route = (
+                experiment_forge._resource_granted_proposer_json(
+                    "system",
+                    "prompt",
+                    llm_scope=scope,
+                    operation="experiment_forge.test",
+                    max_tokens=200,
+                )
+            )
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(tokens, 19)
+        self.assertEqual(actual_route, route)
+        kwargs = routed.call_args.kwargs
+        self.assertEqual(kwargs["agenda_id"], 11)
+        self.assertEqual(kwargs["idea_id"], 22)
+        self.assertEqual(kwargs["resource_grant_id"], 33)
+        self.assertEqual(kwargs["stage"], "experiment_forge")
+        self.assertEqual(kwargs["role"], "proposer")
+        self.assertEqual(kwargs["prompt_version"], "forge-proposer-v1")
+        self.assertTrue(
+            kwargs["idempotency_key"].startswith("experiment_forge.test:")
+        )
+
+    def test_scoped_code_scout_does_not_use_unrouted_agentic_fallback(self):
+        scope = {
+            "agenda_id": 11,
+            "idea_id": 22,
+            "resource_grant_id": 33,
+            "stage": "experiment_forge",
+        }
+        with mock.patch.object(
+            experiment_forge,
+            "_scout_codebase_single_shot",
+            side_effect=RuntimeError("injected routed provider outage"),
+        ) as routed:
+            with self.assertRaisesRegex(RuntimeError, "provider outage"):
+                experiment_forge.scout_codebase({"id": 22}, llm_scope=scope)
+        routed.assert_called_once_with({"id": 22}, llm_scope=scope)
+
     def test_autofill_experiment_contracts_fills_missing_review_fields(self):
         llm_gate = {"status": "literature_review_required", "blockers": ["needs domain benchmark review"]}
         with mock.patch("agents.benchmark_design_agent.call_llm_json", return_value=(llm_gate, 0)):

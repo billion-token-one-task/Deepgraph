@@ -625,6 +625,13 @@ def _bundle_manifest(bundle_root: Path) -> dict:
 
 
 def _store_assets(manuscript_run_id: int, bundle_root: Path, bundle_format: str) -> int:
+    manuscript = db.fetchone(
+        "SELECT agenda_id FROM manuscript_runs WHERE id=?",
+        (manuscript_run_id,),
+    )
+    agenda_id = int((manuscript or {}).get("agenda_id") or 0)
+    if agenda_id <= 0:
+        raise RuntimeError("manuscript assets require an agenda-scoped manuscript run")
     for path in sorted(bundle_root.rglob("*")):
         if not path.is_file():
             continue
@@ -639,18 +646,33 @@ def _store_assets(manuscript_run_id: int, bundle_root: Path, bundle_format: str)
             asset_type = "figure"
         db.execute(
             """
-            INSERT INTO manuscript_assets (manuscript_run_id, asset_type, label, path)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO manuscript_assets
+                (agenda_id, manuscript_run_id, asset_type, label, path)
+            VALUES (?, ?, ?, ?, ?)
             """,
-            (manuscript_run_id, asset_type, f"{bundle_format}:{path.name}", str(path)),
+            (
+                agenda_id,
+                manuscript_run_id,
+                asset_type,
+                f"{bundle_format}:{path.name}",
+                str(path),
+            ),
         )
     bid = db.insert_returning_id(
         """
-        INSERT INTO submission_bundles (manuscript_run_id, bundle_format, status, bundle_path, manifest_path)
-        VALUES (?, ?, 'ready', ?, ?)
+        INSERT INTO submission_bundles
+            (agenda_id, manuscript_run_id, bundle_format, status, bundle_path,
+             manifest_path)
+        VALUES (?, ?, ?, 'ready', ?, ?)
         RETURNING id
         """,
-        (manuscript_run_id, bundle_format, str(bundle_root), str(bundle_root / "artifact_manifest.json")),
+        (
+            agenda_id,
+            manuscript_run_id,
+            bundle_format,
+            str(bundle_root),
+            str(bundle_root / "artifact_manifest.json"),
+        ),
     )
     db.commit()
     return bid

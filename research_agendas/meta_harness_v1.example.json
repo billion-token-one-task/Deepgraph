@@ -1,0 +1,30 @@
+{
+  "version": "v1",
+  "name": "example-agenda",
+  "description": "Replace this text with one bounded research direction.",
+  "focus": [
+    "replace-with-scope-keyword"
+  ],
+  "prefer": {
+    "resource_class": [
+      "cpu"
+    ]
+  },
+  "reject": {
+    "keywords": []
+  },
+  "required_output": {
+    "goal": "verified_evidence"
+  },
+  "submitter": "replace-with-operator-id",
+  "token_budget": 100000,
+  "gpu_hours_budget": 0.0,
+  "max_concurrency": 1,
+  "backend_allowlist": [
+    "cpu",
+    "llm"
+  ],
+  "backlog_policy": "explicit_import_only",
+  "status": "paused_manual",
+  "is_active": false
+}

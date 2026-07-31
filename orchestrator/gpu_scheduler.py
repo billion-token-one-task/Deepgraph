@@ -27,12 +27,12 @@ from config import (
     GPU_REMOTE_BASE_DIR,
     GPU_REMOTE_PYTHON,
     GPU_REMOTE_SSH_HOST,
-    GPU_REMOTE_SSH_PASSWORD,
     GPU_REMOTE_SSH_PORT,
     GPU_REMOTE_SSH_USER,
     GPU_VISIBLE_DEVICES,
 )
 from db import database as db
+from meta_harness.scientific_authority import positive_decision_authorized
 from orchestrator import ssh_gpu_backend
 from orchestrator.benchmark_completion import (
     BENCHMARK_COMPLETION_STAGE,
@@ -333,7 +333,7 @@ def _ssh_run_has_live_process(worker: dict, run_id: int) -> bool:
     cmd = "\n".join(
         [
             f"remote_run={shlex.quote(remote_run)}",
-            "for pid in $(pgrep -f 'deepgraph_exec_run_|train.py|eval_cggr.py' || true); do",
+            "for pid in $(pgrep -f 'deepgraph_exec_run_|train.py|benchmark_runner.py|evaluation.py' || true); do",
             "  cwd=$(readlink /proc/$pid/cwd 2>/dev/null || true)",
             "  args=$(tr '\\0' ' ' < /proc/$pid/cmdline 2>/dev/null || true)",
             "  if printf '%s\\n%s\\n' \"$cwd\" \"$args\" | grep -F \"$remote_run\" >/dev/null 2>&1; then",
@@ -530,7 +530,7 @@ def register_default_workers() -> list[dict]:
                 "ssh_host": GPU_REMOTE_SSH_HOST,
                 "ssh_port": GPU_REMOTE_SSH_PORT,
                 "ssh_user": GPU_REMOTE_SSH_USER,
-                "ssh_password": GPU_REMOTE_SSH_PASSWORD,
+                "credential_ref": "env:DEEPGRAPH_GPU_REMOTE_SSH_PASSWORD",
                 "remote_base_dir": GPU_REMOTE_BASE_DIR,
                 "python_bin": GPU_REMOTE_PYTHON,
             }
@@ -803,6 +803,7 @@ def queue_run(
     *,
     insight_id: int,
     run_id: int,
+    resource_grant_id: int,
     resource_class: str,
     priority: int = 0,
     gpu_count: int = 1,
@@ -810,15 +811,42 @@ def queue_run(
     timeout_s: int | None = None,
 ) -> int:
     db.init_db()
+    run = db.fetchone(
+        "SELECT agenda_id, resource_grant_id FROM experiment_runs WHERE id=? AND deep_insight_id=?",
+        (run_id, insight_id),
+    )
+    if not run or int(run.get("agenda_id") or 0) <= 0:
+        raise RuntimeError("GPU queue requires an agenda-scoped experiment run")
+    if int(run.get("resource_grant_id") or 0) != int(resource_grant_id or 0):
+        raise RuntimeError("GPU queue ResourceGrant does not match the experiment run")
+    grant = db.fetchone(
+        """
+        SELECT id, stage FROM resource_grants
+        WHERE id=? AND agenda_id=? AND idea_id=?
+          AND status='active' AND expires_at > CURRENT_TIMESTAMP
+        """,
+        (resource_grant_id, int(run["agenda_id"]), insight_id),
+    )
+    if not grant or str(grant.get("stage") or "") not in {
+        "pilot",
+        "full_benchmark",
+    }:
+        raise RuntimeError("GPU queue requires an active pilot/full_benchmark ResourceGrant")
+    if timeout_s is not None and int(timeout_s) <= 0:
+        raise ValueError("GPU job timeout must be a positive hard limit")
     effective_vram_required_gb, scheduling_note = _effective_vram_required_gb(resource_class, vram_required_gb)
     jid = db.insert_returning_id(
         """
         INSERT INTO gpu_jobs
-        (deep_insight_id, experiment_run_id, resource_class, gpu_count, vram_required_gb, timeout_s, priority, status, error_message)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?)
+        (agenda_id, resource_grant_id, deep_insight_id, experiment_run_id,
+         resource_class, gpu_count, vram_required_gb, timeout_s, priority,
+         status, error_message)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?)
         RETURNING id
         """,
         (
+            int(run["agenda_id"]),
+            resource_grant_id,
             insight_id,
             run_id,
             resource_class,
@@ -877,10 +905,11 @@ def collect_run_artifacts(run_id: int) -> list[dict]:
             continue
         db.execute(
             """
-            INSERT INTO experiment_artifacts (run_id, artifact_type, path)
-            VALUES (?, ?, ?)
+            INSERT INTO experiment_artifacts
+                (agenda_id, run_id, artifact_type, path)
+            VALUES (?, ?, ?, ?)
             """,
-            (run_id, artifact_type, str(path)),
+            (int(run["agenda_id"]), run_id, artifact_type, str(path)),
         )
         artifacts.append({"artifact_type": artifact_type, "path": str(path)})
     db.commit()
@@ -1138,9 +1167,12 @@ def _current_run_is_successful(run_id: int) -> bool:
     run = db.fetchone("SELECT status, hypothesis_verdict FROM experiment_runs WHERE id=?", (run_id,))
     if not run:
         return False
-    if run.get("status") in {"completed", "bundle_ready"}:
-        return True
-    return bool(run.get("hypothesis_verdict"))
+    verdict = str(run.get("hypothesis_verdict") or "").strip().lower()
+    return (
+        run.get("status") in {"completed", "bundle_ready"}
+        and verdict
+        in {"supported", "confirmed", "refuted", "inconclusive", "reproduced"}
+    )
 
 
 def _current_run_closed_loop_complete(run_id: int) -> bool:
@@ -1273,6 +1305,23 @@ def _run_job(job: dict, worker: dict) -> None:
                 result = run_validation_loop(run_id, execution_context=execution_context)
             if not isinstance(result, dict):
                 result = {"verdict": "failed", "error": f"validation loop returned {type(result).__name__}"}
+            execution_verdict = str(result.get("verdict") or "").strip().lower()
+            if result.get("error") or execution_verdict in {
+                "failed",
+                "blocked",
+                "invalid",
+                "cancelled",
+                "timed_out",
+            }:
+                raise RuntimeError(
+                    "validation execution failed: "
+                    + str(
+                        result.get("error")
+                        or result.get("reason")
+                        or execution_verdict
+                        or "unknown"
+                    )
+                )
             try:
                 process_completed_run(run_id)
             except Exception as exc:
@@ -1289,7 +1338,11 @@ def _run_job(job: dict, worker: dict) -> None:
                 source="gpu_scheduler_pre_manuscript",
                 resource_class=job.get("resource_class", "gpu_large"),
             )
-            if not completion_queued:
+            scientific_decision_ready = positive_decision_authorized(
+                agenda_id=int(job.get("agenda_id") or 0),
+                run_id=run_id,
+            )
+            if not completion_queued and scientific_decision_ready:
                 try:
                     bundle = generate_submission_bundle(run_id)
                 except Exception as exc:
@@ -1297,6 +1350,11 @@ def _run_job(job: dict, worker: dict) -> None:
                     post_run_errors.append(_append_error("submission_bundle_failed", exc))
                 if "error" in bundle:
                     post_run_errors.append("submission_bundle_result_error: " + str(bundle.get("error")))
+            elif not completion_queued:
+                bundle = {
+                    "error": "supported scientific decision required before manuscript",
+                    "status": "scientific_decision_required",
+                }
             log_metrics(
                 {
                     "effect_pct": db.fetchone("SELECT effect_pct FROM experiment_runs WHERE id=?", (run_id,)).get("effect_pct"),
@@ -1307,7 +1365,7 @@ def _run_job(job: dict, worker: dict) -> None:
                     log_artifact(artifact["path"])
             except Exception as exc:
                 post_run_errors.append(_append_error("artifact_logging_failed", exc))
-        if not completion_queued:
+        if not completion_queued and scientific_decision_ready:
             completion_queued = schedule_benchmark_completion(
                 insight_id,
                 run_id,
@@ -1329,41 +1387,60 @@ def _run_job(job: dict, worker: dict) -> None:
             ),
         )
         if not completion_queued:
-            retry_fields = _bundle_failure_retry_fields(bundle if isinstance(bundle, dict) else None)
-            if retry_fields:
+            if not scientific_decision_ready:
                 db.execute(
                     """
                     UPDATE auto_research_jobs
-                    SET status=?, stage=?, artifact_bundle_id=?, last_note=?, last_error=?,
+                    SET status='review_pending',
+                        stage='scientific_decision_required',
+                        artifact_bundle_id=NULL,
+                        last_note=?,
+                        last_error=NULL,
                         assigned_worker=NULL, updated_at=CURRENT_TIMESTAMP
                     WHERE deep_insight_id=?
                     """,
                     (
-                        retry_fields["status"],
-                        retry_fields["stage"],
-                        (bundle.get("bundle_ids") or [None])[-1] if isinstance(bundle, dict) else None,
-                        retry_fields["last_note"],
-                        retry_fields["last_error"] or gpu_error,
+                        "Execution completed; waiting for evidence audit and "
+                        "an independent supported scientific decision.",
                         insight_id,
                     ),
                 )
             else:
-                bundle_ok = isinstance(bundle, dict) and "error" not in bundle
-                db.execute(
-                    """
-                    UPDATE auto_research_jobs
-                    SET status=?, stage=?, artifact_bundle_id=?, last_note=?, last_error=?
-                    WHERE deep_insight_id=?
-                    """,
-                    (
-                        "bundle_ready" if bundle_ok else "completed",
-                        "writing_submission" if bundle_ok else "closed_loop_complete",
-                        (bundle.get("bundle_ids") or [None])[-1] if isinstance(bundle, dict) else None,
-                        f"GPU run completed with verdict={result.get('verdict', 'unknown')}. Submission bundle status={'ok' if bundle_ok else 'failed'}.",
-                        gpu_error,
-                        insight_id,
-                    ),
-                )
+                retry_fields = _bundle_failure_retry_fields(bundle if isinstance(bundle, dict) else None)
+                if retry_fields:
+                    db.execute(
+                        """
+                        UPDATE auto_research_jobs
+                        SET status=?, stage=?, artifact_bundle_id=?, last_note=?, last_error=?,
+                            assigned_worker=NULL, updated_at=CURRENT_TIMESTAMP
+                        WHERE deep_insight_id=?
+                        """,
+                        (
+                            retry_fields["status"],
+                            retry_fields["stage"],
+                            (bundle.get("bundle_ids") or [None])[-1] if isinstance(bundle, dict) else None,
+                            retry_fields["last_note"],
+                            retry_fields["last_error"] or gpu_error,
+                            insight_id,
+                        ),
+                    )
+                else:
+                    bundle_ok = isinstance(bundle, dict) and "error" not in bundle
+                    db.execute(
+                        """
+                        UPDATE auto_research_jobs
+                        SET status=?, stage=?, artifact_bundle_id=?, last_note=?, last_error=?
+                        WHERE deep_insight_id=?
+                        """,
+                        (
+                            "bundle_ready" if bundle_ok else "completed",
+                            "writing_submission" if bundle_ok else "closed_loop_complete",
+                            (bundle.get("bundle_ids") or [None])[-1] if isinstance(bundle, dict) else None,
+                            f"GPU run completed with verdict={result.get('verdict', 'unknown')}. Submission bundle status={'ok' if bundle_ok else 'failed'}.",
+                            gpu_error,
+                            insight_id,
+                        ),
+                    )
         db.commit()
         db.emit_pipeline_event(
             "gpu_job_completed",

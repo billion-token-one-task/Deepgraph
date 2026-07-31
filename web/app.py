@@ -25,6 +25,9 @@ from agents.taxonomy_expander import run_expansion
 app = Flask(__name__,
             template_folder="templates",
             static_folder="static")
+from web.meta_harness_routes import blueprint as meta_harness_blueprint
+
+app.register_blueprint(meta_harness_blueprint)
 
 _pipeline_running = False
 _pipeline_lock = threading.Lock()
@@ -1725,8 +1728,11 @@ def api_research_launch():
     """Launch EvoScientist research from a DeepGraph insight."""
     from agents.research_bridge import launch_evoscientist
     insight_id = request.json.get("insight_id") if request.is_json else None
+    resource_grant_id = request.json.get("resource_grant_id") if request.is_json else None
     if not insight_id:
         return jsonify({"error": "insight_id required"}), 400
+    if not resource_grant_id:
+        return jsonify({"error": "resource_grant_id required"}), 400
     try:
         result = launch_evoscientist(int(insight_id))
         return jsonify(result)
@@ -1833,22 +1839,28 @@ def api_generate_deep_insights():
     from orchestrator.discovery_scheduler import run_full_discovery
     tier = request.json.get("tier", "both") if request.is_json else "both"
     bulk = bool(request.json.get("bulk")) if request.is_json else False
+    try:
+        agenda_id = int(request.json.get("agenda_id")) if request.is_json else 0
+    except (TypeError, ValueError):
+        agenda_id = 0
+    if agenda_id <= 0:
+        return jsonify({"error": "positive agenda_id is required"}), 400
 
     def do_discovery():
         if tier == "1":
             from orchestrator.discovery_scheduler import harvest_signals, run_tier1_discovery
             harvest_signals()
-            run_tier1_discovery(bulk=bulk)
+            run_tier1_discovery(agenda_id=agenda_id, bulk=bulk)
         elif tier == "2":
             from orchestrator.discovery_scheduler import harvest_signals, run_tier2_discovery
             harvest_signals()
-            run_tier2_discovery(bulk=bulk)
+            run_tier2_discovery(agenda_id=agenda_id, bulk=bulk)
         else:
-            run_full_discovery(bulk=bulk)
+            run_full_discovery(agenda_id=agenda_id, bulk=bulk)
 
     t = threading.Thread(target=do_discovery, daemon=True)
     t.start()
-    return jsonify({"status": "started", "tier": tier, "bulk": bulk})
+    return jsonify({"status": "started", "agenda_id": agenda_id, "tier": tier, "bulk": bulk})
 
 
 @app.route("/api/deep_insights/<int:insight_id>/verify", methods=["POST"])
@@ -2230,12 +2242,19 @@ def api_forge_experiment():
 
     def do_forge():
         log_event("sciforge", {"step": "forge_start", "insight_id": insight_id})
-        result = forge_experiment(int(insight_id))
+        result = forge_experiment(
+            int(insight_id),
+            resource_grant_id=int(resource_grant_id),
+        )
         log_event("sciforge", {"step": "forge_done", **{k: v for k, v in result.items() if k != "codebase"}})
 
     t = threading.Thread(target=do_forge, daemon=True)
     t.start()
-    return jsonify({"status": "started", "insight_id": insight_id})
+    return jsonify({
+        "status": "started",
+        "insight_id": insight_id,
+        "resource_grant_id": resource_grant_id,
+    })
 
 
 @app.route("/api/experiments/<int:run_id>/run", methods=["POST"])
@@ -2277,13 +2296,19 @@ def api_run_full_experiment():
     from agents.knowledge_loop import process_completed_run
 
     insight_id = request.json.get("insight_id") if request.is_json else None
+    resource_grant_id = request.json.get("resource_grant_id") if request.is_json else None
     if not insight_id:
         return jsonify({"error": "insight_id required"}), 400
+    if not resource_grant_id:
+        return jsonify({"error": "resource_grant_id required"}), 400
 
     def do_full():
         log_event("sciforge", {"step": "full_start", "insight_id": insight_id})
         try:
-            forge_result = forge_experiment(int(insight_id))
+            forge_result = forge_experiment(
+                int(insight_id),
+                resource_grant_id=int(resource_grant_id),
+            )
             if "error" in forge_result:
                 log_event("error", {"step": "forge", "error": forge_result["error"]})
                 return
@@ -2311,7 +2336,7 @@ def api_meta_report():
     """Get the meta-learning report on hypothesis quality."""
     from agents.meta_learner import get_full_meta_report
     try:
-        return jsonify(get_full_meta_report())
+        return jsonify(get_full_meta_report(request.args.get("agenda_id")))
     except Exception as exc:
         return _api_failure("meta_report", exc)
 

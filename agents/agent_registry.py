@@ -90,14 +90,6 @@ AGENT_BOUNDARIES: tuple[AgentBoundary, ...] = (
             "agents.result_interpreter",
             "agents.evosci_requirements",
         ),
-        scripts=(
-            "scripts.audit_cggr_shard_contract",
-            "scripts.audit_paper_benchmark_artifacts",
-            "scripts.materialize_audited_cggr_results",
-            "scripts.merge_cggr_method_shards",
-            "scripts.prepare_cggr_top_venue_baseline_shard",
-            "scripts.triage_cggr_audit_failure",
-        ),
     ),
     AgentBoundary(
         key="experiment_execution",
@@ -115,9 +107,6 @@ AGENT_BOUNDARIES: tuple[AgentBoundary, ...] = (
         ),
         scripts=(
             "scripts.run_gpu_scheduler_forever",
-            "scripts.stage_and_launch_cggr_top_venue_baseline_shard",
-            "scripts.watch_and_merge_cggr_shards",
-            "scripts.watch_cggr_live_health",
         ),
     ),
     AgentBoundary(
@@ -130,18 +119,14 @@ AGENT_BOUNDARIES: tuple[AgentBoundary, ...] = (
             "agents.manuscript_pipeline",
             "agents.paper_orchestra_pipeline",
             "agents.paper_orchestra_prompts",
-            "agents.figure_agent",
             "agents.paperorchestra.full_pipeline",
-            "agents.paperorchestra.figure_orchestra",
             "agents.paperorchestra.literature_discovery",
             "agents.paperorchestra.reference_manager",
             "agents.paperorchestra.experiment_plot_reference",
-            "agents.paperorchestra.plotting_orchestra",
             "agents.paperorchestra.refinement_loop",
             "agents.paperorchestra.semantic_scholar",
         ),
         scripts=(
-            "scripts.paperbanana_wrapper",
             "scripts.repair_manuscript_artifacts",
         ),
     ),
@@ -179,4 +164,3 @@ def iter_agent_boundaries() -> tuple[AgentBoundary, ...]:
 
 def get_agent_boundary(key: str) -> AgentBoundary:
     return AGENT_BOUNDARY_BY_KEY[key]
-

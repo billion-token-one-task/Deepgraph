@@ -27,6 +27,35 @@ class TempDbTestCase(unittest.TestCase):
         database.DATABASE_URL = ""
         database.DB_PATH = self.db_path
         database.init_db()
+        # meta-harness-v1 is PostgreSQL-first. These compatibility columns keep
+        # the legacy SQLite unit fixture scoped without pretending to validate
+        # the PostgreSQL migration.
+        for table in (
+            "research_problems",
+            "deep_insights",
+            "experimental_evidence_edges",
+        ):
+            database.execute(f"ALTER TABLE {table} ADD COLUMN agenda_id INTEGER")
+        database.execute(
+            """
+            CREATE TABLE agenda_signal_outcomes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                agenda_id INTEGER NOT NULL,
+                run_id INTEGER,
+                experimental_claim_id INTEGER,
+                signal_table TEXT NOT NULL,
+                signal_content_hash TEXT NOT NULL,
+                verdict TEXT NOT NULL,
+                effect_size REAL,
+                p_value REAL,
+                conditions_json TEXT NOT NULL DEFAULT '{}',
+                idempotency_key TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (agenda_id, idempotency_key)
+            )
+            """
+        )
+        database.commit()
 
     def tearDown(self):
         for attr in ("pg_conn", "sqlite_conn", "conn"):
@@ -62,7 +91,7 @@ class ProblemFirstTests(TempDbTestCase):
         harvest_protocol_artifacts(min_support=1)
 
     def test_discover_research_problems_promotes_problem_signal(self):
-        problems = discover_research_problems(limit=5, persist=True)
+        problems = discover_research_problems(limit=5, agenda_id=1, persist=True)
         self.assertTrue(problems)
         problem = problems[0]
         self.assertGreater(problem["problem_quality_score"], 0)
@@ -72,7 +101,7 @@ class ProblemFirstTests(TempDbTestCase):
         self.assertIsNotNone(stored)
 
     def test_problem_first_cycle_records_inconclusive_attempts(self):
-        problem = discover_research_problems(limit=1, persist=True)[0]
+        problem = discover_research_problems(limit=1, agenda_id=1, persist=True)[0]
 
         def _worker(_problem, approach):
             return {
@@ -88,7 +117,7 @@ class ProblemFirstTests(TempDbTestCase):
             "agents.problem_first.propose_approach",
             return_value={"summary": "try protocol-robust calibration", "source_signal_refs": {}},
         ):
-            result = problem_first_cycle(max_attempts=1, worker=_worker)
+            result = problem_first_cycle(agenda_id=1, max_attempts=1, worker=_worker)
 
         self.assertEqual(result["status"], "attempt_limit")
         stored_problem = database.fetchone(
@@ -100,8 +129,35 @@ class ProblemFirstTests(TempDbTestCase):
         attempts = json.loads(stored_problem["ruled_out_approaches"])
         self.assertEqual(attempts[-1]["verdict"], "inconclusive")
 
+    def test_positive_worker_result_cannot_solve_without_decided_run(self):
+        problem = discover_research_problems(limit=1, agenda_id=1, persist=True)[0]
+
+        def _worker(_problem, approach):
+            return {
+                "verdict": "confirmed",
+                "run_id": None,
+                "source_signal_refs": approach.get("source_signal_refs"),
+            }
+
+        with mock.patch(
+            "agents.problem_first.propose_approach",
+            return_value={"summary": "candidate", "source_signal_refs": {}},
+        ):
+            result = problem_first_cycle(
+                agenda_id=1,
+                max_attempts=1,
+                worker=_worker,
+            )
+
+        self.assertEqual(result["status"], "awaiting_scientific_decision")
+        stored = database.fetchone(
+            "SELECT status FROM research_problems WHERE id=?",
+            (problem["id"],),
+        )
+        self.assertNotEqual(stored["status"], "solved")
+
     def test_writeback_experiment_result_updates_posterior_and_problem_state(self):
-        problem = discover_research_problems(limit=1, persist=True)[0]
+        problem = discover_research_problems(limit=1, agenda_id=1, persist=True)[0]
         signal_refs = {
             "signals": [problem["source_signal_ref"]],
             "node_ids": problem["node_ids"],
@@ -110,12 +166,13 @@ class ProblemFirstTests(TempDbTestCase):
         insight_id = database.insert_returning_id(
             """
             INSERT INTO deep_insights
-              (tier, title, problem_statement, source_node_ids, source_paper_ids,
+              (agenda_id, tier, title, problem_statement, source_node_ids, source_paper_ids,
                source_signal_ids, source_signal_refs, research_problem_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING id
             """,
             (
+                1,
                 2,
                 "Protocol-aware idea",
                 problem["problem_statement"],
@@ -129,7 +186,8 @@ class ProblemFirstTests(TempDbTestCase):
         database.commit()
 
         summary = writeback_experiment_result(
-            run_id=7,
+            agenda_id=1,
+            run_id=None,
             deep_insight_id=insight_id,
             verdict="refuted",
             effect_size=-0.15,
@@ -140,11 +198,19 @@ class ProblemFirstTests(TempDbTestCase):
 
         self.assertEqual(len(summary["updated_signals"]), 1)
         row = database.fetchone(
-            "SELECT refute_count, empirical_posterior FROM protocol_artifacts WHERE content_hash=?",
-            (problem["source_signal_ref"]["content_hash"],),
+            """
+            SELECT verdict, signal_table, signal_content_hash
+            FROM agenda_signal_outcomes
+            WHERE agenda_id=?
+            """,
+            (1,),
         )
-        self.assertEqual(row["refute_count"], 1)
-        self.assertIsNotNone(row["empirical_posterior"])
+        self.assertEqual(row["verdict"], "refuted")
+        self.assertEqual(row["signal_table"], "protocol_artifacts")
+        self.assertEqual(
+            row["signal_content_hash"],
+            problem["source_signal_ref"]["content_hash"],
+        )
 
         stored_problem = database.fetchone(
             "SELECT attempts_count, ruled_out_approaches FROM research_problems WHERE id=?",
@@ -236,7 +302,11 @@ class ProblemFirstTests(TempDbTestCase):
             mock.patch("agents.paper_idea_agent.enrich_deep_insight", side_effect=lambda x: x),
             mock.patch("agents.paper_idea_agent.TIER2_EVOSCI_PREINSERT_REVIEW", False),
         ):
-            ideas = discover_paper_ideas(max_problems=1, max_papers=1)
+            ideas = discover_paper_ideas(
+                max_problems=1,
+                max_papers=1,
+                agenda_id=1,
+            )
 
         self.assertEqual(len(ideas), 1)
         self.assertEqual(ideas[0]["research_problem_id"], 7)

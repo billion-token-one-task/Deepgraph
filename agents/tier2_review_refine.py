@@ -426,18 +426,12 @@ def _reviewer_context(review_a: dict, review_b: dict, history: list[dict]) -> di
 
 
 def _call_reviewer(system: str, prompt: str, provider_index: int) -> tuple[dict, int, dict]:
-    try:
-        payload, tokens, provider = call_llm_json_with_provider(
-            system,
-            prompt,
-            provider_index=provider_index,
-        )
-        return payload if isinstance(payload, dict) else {}, tokens, provider
-    except Exception:
-        payload, tokens = call_llm_json(system, prompt)
-        providers = get_provider_models()
-        provider = providers[0] if providers else {"name": "default", "model": "unknown"}
-        return payload if isinstance(payload, dict) else {}, tokens, provider
+    payload, tokens, provider = call_llm_json_with_provider(
+        system,
+        prompt,
+        provider_index=provider_index,
+    )
+    return payload if isinstance(payload, dict) else {}, tokens, provider
 
 
 def _apply_refinement(insight: dict, refined: dict) -> dict:
@@ -463,8 +457,20 @@ def debate_and_refine_tier2_idea(
     """Run reviewer debate and return (updated_insight, metadata)."""
     rounds = max(0, int(TIER2_DEBATE_ROUNDS if rounds is None else rounds))
     providers = get_provider_models()
+    if rounds and len(providers) < 2:
+        raise RuntimeError(
+            "Tier-2 evaluator debate requires two independently routed providers; "
+            "manual review required"
+        )
+    if rounds and (
+        providers[0].get("name") == providers[1].get("name")
+        and providers[0].get("model_family") == providers[1].get("model_family")
+    ):
+        raise RuntimeError(
+            "Tier-2 evaluator routes are not independent; manual review required"
+        )
     reviewer_a_provider = 0
-    reviewer_b_provider = 1 if len(providers) > 1 else 0
+    reviewer_b_provider = 1
     history: list[dict] = []
     total_tokens = 0
     updated = dict(insight)

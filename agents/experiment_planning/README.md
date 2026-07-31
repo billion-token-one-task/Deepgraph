@@ -13,12 +13,11 @@ Primary legacy modules:
 
 Primary scripts:
 
-- `scripts.audit_cggr_shard_contract`
-- `scripts.audit_paper_benchmark_artifacts`
-- `scripts.materialize_audited_cggr_results`
-- `scripts.merge_cggr_method_shards`
-- `scripts.prepare_cggr_top_venue_baseline_shard`
-- `scripts.triage_cggr_audit_failure`
+- Topic-specific benchmark auditors are opt-in examples under
+  `plugins/examples/cggr/scripts`; the generic planning boundary does not
+  register them.
+
+Topic-specific CGGR planning utilities are isolated under
+`plugins/examples/cggr` and are not part of this generic boundary.
 
 Configuration lives in `deepgraph.toml` under `experiment`, `codex`, `gpu`, `tracking`, and `paths`.
-

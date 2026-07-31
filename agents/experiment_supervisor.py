@@ -282,8 +282,10 @@ def build_supervisor_plan(
             next_actions[0] = "Stop repeating token-cap or budget-only micro-tuning on the same sanity slice."
             next_actions.append("Prefer a substantive routing, calibration, or accuracy-improving mechanism over another answer-cap shrink.")
         if failed_prompt_shortening:
-            next_actions.append("Do not change the zero-budget open-answer prompt into a shortest-answer or answer-span prompt; recent discarded attempts in that family lost utility.")
-            next_actions.append("Do not edit `_build_cggr_zero_budget_prompt`, `_cggr_zero_budget_max_tokens`, or add question-type regexes that alter zero-budget answer shape.")
+            next_actions.append(
+                "Do not repeat the failed prompt-shortening intervention; use "
+                "the recorded failure cluster and choose a different mechanism."
+            )
         if failed_context_propagation:
             next_actions.append("Do not repeat broad benchmark-context propagation or prompt-context rewrites for all methods; a recent fair-context attempt lost utility.")
     elif mode == "refine":
@@ -324,10 +326,8 @@ def build_supervisor_plan(
 
     if failed_prompt_shortening:
         guardrails.append(
-            "Do not alter the candidate zero-budget open-answer prompt toward shortest-answer, answer-span, or phrase-only output; that discarded intervention family already lost utility."
-        )
-        guardrails.append(
-            "Do not edit `_build_cggr_zero_budget_prompt`, `_cggr_zero_budget_max_tokens`, zero-budget reasoning-budget metadata, or answer-shape regex helpers in this iteration."
+            "Do not repeat a prompt-shortening intervention already rejected by "
+            "the recorded failure cluster."
         )
     if failed_context_propagation:
         guardrails.append(
