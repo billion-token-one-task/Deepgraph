@@ -10,27 +10,27 @@ accepted. Record that evidence using
 | # | Gate | Current evidence | Status |
 |---|---|---|---|
 | 1 | fixed results and caveat weakening removed | symbols removed; generic topic scan, integrity fixtures and 71-test policy lane passed | accepted in isolated policy lane |
-| 2 | production backup starts; add-only repeatable migration | guarded additive SQL, checksum and twice-run test written | pending PostgreSQL restore |
+| 2 | production backup starts; add-only repeatable migration | synthetic disposable schema restore passed; first migration `applied`, second `already_applied`; real production-backup restore not supplied | pending real backup restore |
 | 3 | tests cannot touch production DB | test entry forcibly clears production DB URL; static audit and isolation test passed | accepted for unit/adapted entry; PostgreSQL enforcement pending |
-| 4 | generation/consumption only inside agenda | selector/orchestrator/problem/idea/core queues require `agenda_id`; 154-mutation scope audit is clean | static/policy passed; PostgreSQL/fault CI pending |
-| 5 | old backlog excluded | migration leaves scope null; explicit import ledger only | implemented, PostgreSQL pending |
-| 6 | core objects carry correct `agenda_id` | migration/contracts/repositories and all literal legacy mutations are explicitly scoped | implemented, PostgreSQL CI pending |
+| 4 | generation/consumption only inside agenda | selector/orchestrator/problem/idea/core queues require `agenda_id`; 154-mutation scope audit and disposable cross-agenda/orphan checks are clean | static/policy/synthetic PostgreSQL passed |
+| 5 | old backlog excluded | migration leaves scope null; explicit import ledger only; synthetic restore preserved unscoped backlog | synthetic PostgreSQL passed; real backup pending |
+| 6 | core objects carry correct `agenda_id` | migration/contracts/repositories and all literal legacy mutations are explicitly scoped; disposable FK/scope checks passed | static/synthetic PostgreSQL passed |
 | 7 | Frontier Gate rejects obsolete/duplicate | gate, persisted decision, API response and bypass prevention implemented | CI pending |
-| 8 | pilot/GPU/full benchmark require grant | proposal/ingestion/post-agenda LLM roles and CPU/local/SSH/Colab durable admission are grant-scoped; PostgreSQL legacy GPU queue requires the compute identity | policy/static passed; PostgreSQL runtime pending |
-| 9 | backend/LLM failures never complete/confirm | fail-closed route/backend contracts; refreshed synthetic fault lane is 60 passed; PostgreSQL/provider execution remains pending | policy/fault passed; PostgreSQL pending |
-| 10 | harness patch passes three suites | 71 pure policy tests; validation-loop fairness/manifest lane is 22 passed; real held-in/held-out/canary bubblewrap evaluator passed; adapted legacy lane is 39 passed / 30 failed and individually classified as obsolete/new-contract mismatches | rejected / legacy classification recorded |
-| 11 | candidate cannot modify protected inputs/data | prior real bubblewrap held-in/held-out/canary lane passed; post-fix rerun preserved candidate tree hash but bwrap failed to create its isolated network (`NETLINK_ROUTE ... Operation not permitted`); mocked contract and no-fallback negative passed | prior lane accepted; fresh rerun blocked by host |
-| 12 | restart resumes without duplicate | durable compute/Colab/ingestion claims, safe bind recovery, unknown-outcome quarantine and reconciliation-before-auto-research startup exist | PostgreSQL restart/fault evidence missing |
+| 8 | pilot/GPU/full benchmark require grant | proposal/ingestion/post-agenda LLM roles and CPU/local/SSH/Colab durable admission are grant-scoped; disposable PostgreSQL queue harness passed grant/scope checks | synthetic PostgreSQL passed; external provider pending |
+| 9 | backend/LLM failures never complete/confirm | fail-closed route/backend contracts; refreshed synthetic fault lane is 60 passed; disposable PostgreSQL compute/Colab failure quarantine passed | policy/fault/synthetic PostgreSQL passed; provider pending |
+| 10 | harness patch passes three suites | 71 pure policy tests; validation-loop fairness/manifest lane 22 passed; real held-in/held-out/canary bubblewrap evaluator passed; adapted legacy lane 39 passed / 30 failed and individually classified | rejected / legacy classification recorded |
+| 11 | candidate cannot modify protected inputs/data | fresh real bubblewrap held-in/held-out/canary, protected-write and no-fallback negatives passed; candidate tree hash unchanged | accepted for disposable evaluator fixture |
+| 12 | restart resumes without duplicate | disposable PostgreSQL compute (4), Colab quarantine and scoped-ingestion lease/retry harness passed; real backup/provider restart remains open | synthetic PostgreSQL passed; real backup/provider pending |
 | 13 | predictions calibrate against outcomes | trusted assembler, non-success usage settlement, prediction errors and Brier/MAE/RMSE report implemented | no real OutcomeRecord sample |
-| 14 | negative/zero/no-metric/compile failure cannot promote | scientific contract and refreshed validation-loop fairness/manifest lane passed 22/22; PostgreSQL and full legacy runtime remain pending | policy/fault passed; PostgreSQL pending |
+| 14 | negative/zero/no-metric/compile failure cannot promote | scientific contract and refreshed validation-loop fairness/manifest lane passed 22/22; PostgreSQL compute/evidence lane passed; full legacy runtime remains classified | policy/fault/PostgreSQL passed; legacy classification remains |
 | 15 | minimum Web/API/statistics compatible | count-only status and operator-authenticated mutation API added; temp SQLite app import/startup passed | PostgreSQL/API runtime pending |
 | 16 | `7d0b42a` rollback rehearsed | exact immutable ref checked in detached worktree; temp SQLite rollback startup passed | isolated rehearsal passed; production rollback not run |
 
 ## Static evidence recorded in this session
 
-- Post-fix verification commit: `d3650fe0a2270eb265ef9dc40041b3ccab537efd`;
-  Git tree `7e3183cd039cb7bace420355a6aad6b0a67f1358`, tracked-content tree
-  SHA-256 `c9a2efac23e30abda6c9ab87242d76ecfa66d6679272404fbf27402d86db6114`.
+- Post-fix verification commit: `d33a9f5fbb1bb912f6edff2f87b749d38ec19d25`;
+  Git tree `607a1fb701357aad77c7003743093f51ab867ce2`, tracked-content tree
+  SHA-256 `18a5a677ee13ed81d550710c5c390ae3e3b3c23c0991036af465237f164abe2f`.
   The source freeze commit `6851a991154906f11d8cfc247d22a5d5caa0a834` and
   `integration/meta-harness-v1@77e8ac0` remain unchanged.
 - 260 Python files parsed by the final static AST audit;
@@ -46,12 +46,12 @@ accepted. Record that evidence using
   zero unauthorized mutation locations;
 - direct-LLM audit classified all 14 legacy direct calls with zero ingestion
   and zero unclassified calls; those 14 remain isolated legacy surfaces;
-- post-fix static report hashes: static
-  `91c9dcc5af43b4b439191175a4dc6024fdb32e542de6e3a0d98d88416e8d564c`, scope
-  `0f8de09da9f5d057f1c3141eb84a47ff1863a7a908623e9358e6123ed3491e7f`, SQL
-  `99a7c03d4c21f759e7ecd0c563c6c9946f62a939e91633172b31304ac288e5db`, state
-  `ab02a1636e736faa8fba8ec8aa00e3df8d0204857e5b74c4907557839d84acc5`, LLM
-  `7ea25bcbf45728afb0c11edaf092dd32ecb28da53a045c2b6ce0b95ad751e5e4`, and
+- final static report hashes: static
+  `e091c3d4484b4d59b5ed0af2355f1dcb4d22c9f26ec23abd4358b89f5408927d`, scope
+  `4038c4265f3d05d1a83dc1a52295e94f5c98ee89c20eb1f92321ae440ade840d`, SQL
+  `286c3c35345b3c3dbaa2b653adb89cb7a3e8416547904a7d39cdaf2142fd9ca7`, state
+  `fbb44b6ad15756f980fd654efb0acf2dc810565367423fa4f917001cf9865b73`, LLM
+  `90da4875b8e4cf2e24c1016fb87dbbe884a04c61a43ec22555918572ea673ad9`, and
   migration `a6bb48b17dc02ac0269097f44d15c69129fe1a414fdbb0000ed663a0a34e7009`.
 - no database or application was accessed by the static checks. A separate
   temp-SQLite startup smoke imported `main` and `web.app` successfully.
@@ -78,27 +78,31 @@ also local and unpushed.
 - Frozen source candidate: `6851a991154906f11d8cfc247d22a5d5caa0a834`; the
   candidate tree hash before and after real evaluator execution was
   `b1c1e8ebfbc0607cc39bb617dad9d56fd949d214122a37dd70541bd634d9feab`.
-- Pure policy/adapted-entry lane: `71 passed`; report SHA-256
-  `76c9e6d391f2e6d62b21e29a49b6fb56125a043adaf660d5fd9d391f55cd2669`.
-- Targeted synthetic fault suite after the validation-loop guard repair:
+- Pure policy lane: `71 passed`; report SHA-256
+  `f03d5c20230a5e3b048f0e203f77466578a094309110b6001e044cc34f1c068b`.
+- Targeted synthetic fault suite after adapting the new supervisor contract:
   `60 passed` (report SHA-256
-  `d41e3e25974b8dd8b9343e3b0b81cfe6a0a75088aac7017823f410a055d30f97`);
+  `ac999ae38f1b85b3e4e02a5cd5369e686a2b929df72d000afd6f355b9db46d9f`);
   the validation-loop subset is `22 passed` (report SHA-256
-  `8c7f1fdad2f6e5c3a60fb237d75de6e9f9d84e96af3022b6b274f4b843168075`).
+  `34ecfb71ad791822cf59270e77c6244dd92b671d0b3e0098c093d7c512e86cde`).
   The adapted legacy lane remains `39 passed, 30 failed`; every failure is
   classified in [LEGACY_TEST_CLASSIFICATION.md](LEGACY_TEST_CLASSIFICATION.md)
   and no safety contract was weakened.
 - Real bubblewrap evaluator: held-in, held-out and canary all passed with
   evaluator hash `45bddd4cbd5eba5ba6a6377b765debcd4e67fa15fcab879bbb321c752d6c362d`;
   protected-write, network and missing-bwrap fallback negative checks passed.
-- PostgreSQL integration tests were guarded and skipped in separate processes
-  (migration 1 skipped, compute 4 skipped, evidence 1 skipped; report hashes
-  `d8e17839871bd0d3b856105bc4462f330eb464d72898ee3d71a1be24ab3018f7`,
-  `9bd69a10017890a84349f080bd2ffaea2a064772959dce88c1a9b7927bc6f98e`, and
-  `f0578970c449ae746a699b3d622f1e6eca6ed1c223ad6c53898528d57055a27e`). No
-  local server, initdb/pg_ctl, or usable Docker daemon was available, so
-  restore, migration twice, count preservation, concurrency, restart and
-  PostgreSQL fault lanes remain unverified.
+- Disposable PostgreSQL schema restore lane passed migration first/second
+  (`applied`/`already_applied`), compute `4 passed`, evidence `1 passed`,
+  synthetic baseline preservation, zero orphan/cross-scope rows, concurrent
+  multi-agenda grant checks, Colab restart quarantine and scoped ingestion
+  lease/retry/failure checks. Report hashes: migration
+  `ac03dc55bdc1ce87ab5a711fdf5a7d72d345e62c471c4cb4e9de283e03475f14`,
+  compute `5cd5265d12717754cd621e2d12792e961e4c63e7a7a2656d4537bcd2eeb45b51`,
+  evidence `6262dd4ae1e1610248aa7a1d90c86e6b7861110a1a434aeede186690d3652770`,
+  queue `587d554dae9e9f724fec3011be4f16ed3525b70a2c47ff34998d180c243b4e68`,
+  SQL checks `12a71f92fe192ef98295f5ec941eecfc6dd00ed2f2e8c13fe46ce2f834d32496`.
+  This was not a production backup restore; no production dump or provider
+  cooldown restart evidence was supplied.
 - Actual CPU/GPU/Colab canaries were not run. The Colab CLI was inspected only
   for contract/help availability; no OAuth, provider, production or remote
   credentials were used.

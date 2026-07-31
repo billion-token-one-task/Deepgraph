@@ -1,5 +1,23 @@
 # Session status — 2026-07-31 UTC
 
+## Continuation outcome (post-review)
+
+- Current candidate branch is `integration/master-candidate-20260731`, with
+  verification commit `d33a9f5fbb1bb912f6edff2f87b749d38ec19d25`; no push,
+  merge, deployment, production database connection or remote-ref mutation
+  occurred.
+- Disposable PostgreSQL 18 was initialized under `/tmp`, loaded from a
+  vector-neutralized temporary schema copy (no production dump supplied), and
+  passed migration first/second, synthetic baseline preservation,
+  FK/orphan/scope, multi-agenda reservation, durable compute restart,
+  Colab quarantine and scoped-ingestion lease/retry checks.
+- Real bubblewrap held-in/held-out/canary and protected-write/no-fallback
+  negatives passed with the candidate tree hash unchanged.
+- Final policy/fault lanes passed 71/60 (validation-loop subset 22); adapted
+  legacy remains 39 passed/30 classified failures. PostgreSQL real-backup,
+  provider/hardware canaries and reviewer approval remain open, so the decision
+  remains **REJECTED — not eligible to replace master**.
+
 ## Continuation checkpoint
 
 - Durable queues and isolated evaluator implementation are locally committed
@@ -101,7 +119,7 @@ Current decision remains: not eligible to replace master.
 
 - Candidate directory:
   `/home/ec2-user/Deepgraph-meta-harness-v1`
-- Candidate branch: `integration/meta-harness-v1`
+- Candidate branch: `integration/master-candidate-20260731`
 - Candidate base:
   `6048a9568c79b011074e0dba2662fd473cfab250`
 - Immutable local production ref:

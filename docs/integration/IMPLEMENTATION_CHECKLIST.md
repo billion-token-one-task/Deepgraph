@@ -125,11 +125,13 @@ artifacts named in its evidence column may promote it to `[x]`.
 - [x] **P2-13** Old rows receive nullable scope columns but are not
   automatically assigned.
 - [~] **P2-14** Reserve-before-call and atomic ledger updates are implemented;
-  PostgreSQL concurrency test pending.
-- [~] **P2-15** Token/GPU cap overrun pauses the agenda; fault test pending.
+  disposable PostgreSQL multi-agenda/concurrency harness passed; real backup
+  lane remains required.
+- [~] **P2-15** Token/GPU cap overrun pauses the agenda; disposable cap and
+  max-concurrency fault checks passed; provider/real-backup lane remains open.
 - [~] **P2-16** Resume requires a new cap above spent+reserved; CI pending.
 - [~] **P2-17** ResourceGrant issuance reserves agenda capacity atomically;
-  PostgreSQL CI pending.
+  disposable PostgreSQL issuance and cross-scope rejection passed.
 - [~] **P2-18** Expired grants release reservations and block queued jobs after
   reconciliation; restart CI pending.
 - [x] **P2-19** Scoped problem creation requires `agenda_id`.
@@ -142,9 +144,9 @@ artifacts named in its evidence column may promote it to `[x]`.
   grant scope.
 - [x] **P2-24** Validation, claim, manuscript and bundle core insertions carry
   agenda scope.
-- [~] **P2-25** The AST-only audit finds 134 agenda-owned literal
-  UPDATE/DELETE mutations and zero definite statements without `agenda_id`.
-  Cross-agenda PostgreSQL/fault tests remain required before acceptance.
+- [~] **P2-25** The AST audit finds 154 agenda-owned literal mutations and zero
+  definite statements without `agenda_id`; disposable PostgreSQL cross-agenda
+  and orphan checks passed.
 - [x] **P2-26** Signal-outcome learning is agenda-local; shared ingestion
   signal counters are not mutated by experiment feedback.
 
@@ -164,13 +166,14 @@ artifacts named in its evidence column may promote it to `[x]`.
 - [x] **P2M-08** Frontier/decision/grant/outcome/LLM/compute/harness tables are
   present in the migration.
 - [x] **P2M-09** Legacy scope columns are nullable for add-only compatibility.
-- [~] **P2M-10** Migration preserves all pre-existing counts. Test written;
-  disposable restore pending.
-- [~] **P2M-11** Migration is repeatable and the second run is a checksum no-op.
-  Test written; disposable restore pending.
-- [~] **P2M-12** Restored production backup starts after migration. Not run.
-- [ ] **P2M-13** Foreign-key/orphan and lock-duration evidence must be captured
-  in isolated PostgreSQL CI.
+- [~] **P2M-10** Migration preserves synthetic pre-existing counts on the
+  disposable schema restore; a real production backup count check is pending.
+- [x] **P2M-11** Migration first run applied and second run returned a checksum
+  no-op on the disposable PostgreSQL restore.
+- [~] **P2M-12** Synthetic restored schema starts after migration; a real
+  production backup restore was not supplied.
+- [~] **P2M-13** Disposable foreign-key/orphan/scope checks passed; lock-duration
+  and production-backup evidence remain open.
 
 ## P3. LLM routing
 
@@ -184,7 +187,8 @@ artifacts named in its evidence column may promote it to `[x]`.
 - [x] **P3-06** Actual token usage and failures create route observations.
 - [x] **P3-07** LLM sub-reservations cannot exceed the parent ResourceGrant.
 - [x] **P3-08** Request grant ID must match the persisted grant.
-- [~] **P3-09** Failure injection tests exist but were not run.
+- [~] **P3-09** Synthetic failure-injection tests passed; provider-backed
+  cooldown restart remains pending.
 - [~] **P3-10** Forge scout/scaffold/repair, validation iteration/
   reproduction-repair, proposal method/experiment design, benchmark design,
   Tier-2 evaluator/reviewer debate, manuscript revision and plain final review
@@ -195,7 +199,7 @@ artifacts named in its evidence column may promote it to `[x]`.
   [LLM_CALLER_INVENTORY.md](LLM_CALLER_INVENTORY.md).
 - [~] **P3-11** Provider cooldowns are persisted in
   `llm_provider_cooldowns`, reloaded by reconstructed routers and extended
-  monotonically; PostgreSQL restart/fault CI is pending.
+  monotonically; synthetic fault passed, provider restart evidence pending.
 - [~] **P3-12** Explicit provider-returned cost fields are captured and
   persisted with route observations; unknown cost remains `NULL` rather than
   estimated. Provider payload variants require isolated fixture verification.
@@ -238,10 +242,10 @@ artifacts named in its evidence column may promote it to `[x]`.
   execution internals still use the guarded legacy worker transport and need
   isolated runtime replacement/CI.
 - [~] **P4-17** Durable compute idempotency/recovery uses `compute_jobs_v1`;
-  claim-before-submit and restart reuse are implemented, isolated PostgreSQL
-  execution pending.
-- [~] **P4-18** Backend failure/timeout/missing artifact tests exist; isolated
-  execution pending.
+  claim-before-submit, restart reuse and four-test disposable PostgreSQL
+  execution passed.
+- [~] **P4-18** Backend failure/timeout/missing artifact tests and disposable
+  usage-unknown recovery passed; external backend execution remains pending.
 - [x] **P4-19** Scheduler construction fails closed without a durable store;
   ephemeral idempotency requires an explicit test-only flag.
 - [x] **P4-20** A transport exception after durable claim records
@@ -255,20 +259,20 @@ artifacts named in its evidence column may promote it to `[x]`.
   verification remains pending.
 - [~] **P4-23** Failed/cancelled/timed-out backends must persist measured usage
   before terminal settlement; expired jobs with unknown usage are quarantined
-  as `usage_unknown`. The additive schema CHECK permits that state and an
-  isolated expiry test is written; failure/timeout PostgreSQL CI is pending.
+  as `usage_unknown`. Disposable PostgreSQL expiry/quarantine passed; external
+  backend usage remains pending.
 - [~] **P4-24** CPU validation now claims a durable, agenda/idea/grant-scoped
   compute job before entering the synchronous legacy loop, uses stable
   idempotency on retry and settles measured iteration usage plus grant-required
-  artifacts. Isolated PostgreSQL execution/restart/fault verification is
-  pending.
+  artifacts. Disposable PostgreSQL execution/restart/fault verification passed.
 - [x] **P4-25** CPU exceptions, non-completed legacy returns and artifact
   certification failure cannot be converted into durable compute success.
 - [~] **P4-26** `colab_work_requests_v1` persists immutable scoped payloads
   before `ComputeScheduler` admission; a claim-before-session worker,
   deterministic backend identity, artifact/usage settlement and restart
-  quarantine are registered when `colab_gpu` is enabled. PostgreSQL fault
-  execution and CLI/canary compatibility remain pending.
+  quarantine are registered when `colab_gpu` is enabled. Disposable PostgreSQL
+  fault/restart quarantine passed; real Colab CLI/canary compatibility remains
+  pending.
 - [x] **P4-27** Runtime scheduler construction honors
   `compute_backends.enabled`; unknown or disabled backends fail closed and SSH
   uses configured reference-only settings.
@@ -350,11 +354,13 @@ artifacts named in its evidence column may promote it to `[x]`.
 - [~] **P6-20** `EvidenceGraphFrontierSource` assembles immutable-query-ref
   packets from agenda-scoped research problems, explicitly linked papers,
   results and negative evidence. Operator input supplies assessments, not
-  evidence arrays. PostgreSQL/API runtime verification is pending.
+  evidence arrays. Disposable PostgreSQL scope checks passed; API runtime is
+  pending.
 - [~] **P6-21** Operator outcome API accepts only grant/run IDs and assembles
   tokens, compute usage, effects, verdict, artifacts and prediction errors
   from persisted sources. Non-success terminal usage is now durable; unknown
-  usage is quarantined. PostgreSQL end-to-end verification remains open.
+  usage is quarantined. Disposable evidence PostgreSQL verification passed;
+  production/API end-to-end verification remains open.
 - [-] **P6-22** Policy training is excluded from v1; real OutcomeRecord samples
   are still required before any later calibrated policy proposal.
 
@@ -380,15 +386,14 @@ artifacts named in its evidence column may promote it to `[x]`.
   alone cannot approve.
 - [x] **P7-13** Harness repository persists agenda-scoped lineage/evaluation
   records.
-- [~] **P7-14** Candidate isolation tests cover a hash-pinned bubblewrap
+- [x] **P7-14** Candidate isolation tests cover a hash-pinned bubblewrap
   command with read-only candidate/evaluator/suite mounts, cleared environment,
   unshared network, isolated output and before/after candidate tree hashes.
-  The prior real fixture lane passed; the post-fix rerun was blocked by the
-  host bwrap `NETLINK_ROUTE` restriction, while mocked and no-fallback
-  negatives passed.
-- [~] **P7-15** An earlier disposable candidate fixture ran held-in, held-out
-  and canary; the post-fix real rerun is host-blocked, so no fresh evaluator
-  acceptance is claimed.
+  Fresh real held-in/held-out/canary and protected-write/network/no-fallback
+  negatives passed with unchanged candidate tree hashes.
+- [x] **P7-15** Disposable candidate fixture held-in, held-out and canary suites
+  passed on the post-fix real rerun; this is evaluator evidence, not hardware
+  or provider canary evidence.
 - [~] **P7-16** Detached HMAC approval envelopes bind reviewer, key ID,
   purpose, subject and issuance time, with secret material referenced only by
   environment variable. External reviewer identity/key issuance and rotation
@@ -463,17 +468,18 @@ artifacts named in its evidence column may promote it to `[x]`.
   fail-closed guard repairs. Adapted legacy remains 39 passed/30 failed; each
   failure is classified in
   [LEGACY_TEST_CLASSIFICATION.md](LEGACY_TEST_CLASSIFICATION.md) as obsolete
-  or requiring a new scoped/granted fixture. PostgreSQL runtime remains open.
-- [ ] **V-08** Disposable PostgreSQL twice-run/count-preservation test is
-  written but could not run: no local server or usable Docker daemon.
+  or requiring a new scoped/granted fixture. Synthetic PostgreSQL runtime and
+  queue/recovery checks passed; real backup/provider lanes remain open.
+- [~] **V-08** Disposable PostgreSQL twice-run, synthetic count-preservation,
+  orphan/scope and queue/recovery tests passed. A real production backup restore
+  remains required.
 - [~] **V-08A** Durable compute restart/unknown-submission/artifact-finalization
-  tests are written and guarded; PostgreSQL execution skipped.
-- [~] **V-08B** Content-addressed evidence audit/decision transition
-  tests are written and guarded; PostgreSQL execution skipped.
-- [~] **V-09** Prior real bubblewrap held-in/held-out/canary evaluator lanes
-  passed and protected-write/network/missing-bwrap negatives passed. The
-  post-fix rerun preserved the fixture tree hash but was blocked by host
-  bwrap network namespace permissions.
+  tests passed in the disposable PostgreSQL lane (4 passed).
+- [~] **V-08B** Content-addressed evidence audit/decision transition passed in
+  the disposable PostgreSQL lane (1 passed).
+- [x] **V-09** Real bubblewrap held-in/held-out/canary evaluator lanes and
+  protected-write/network/missing-bwrap negatives passed with unchanged tree
+  hashes.
 - [x] **V-10** Migration, CI, canary, rollback and configuration runbooks exist.
 - [x] **V-11** Master acceptance matrix states **REJECTED — not eligible**;
   PostgreSQL, adapted legacy, hardware canary and reviewer gates remain open.
@@ -495,8 +501,8 @@ artifacts named in its evidence column may promote it to `[x]`.
 - [ ] **V-14** No push until explicit approval and quiescence check.
 - [x] **V-15** Frozen source candidate is
   `6851a991154906f11d8cfc247d22a5d5caa0a834`; verification commit is
-  `d3650fe0a2270eb265ef9dc40041b3ccab537efd` with tracked-content tree
-  `c9a2efac23e30abda6c9ab87242d76ecfa66d6679272404fbf27402d86db6114`.
+  `d33a9f5fbb1bb912f6edff2f87b749d38ec19d25` with tracked-content tree
+  `18a5a677ee13ed81d550710c5c390ae3e3b3c23c0991036af465237f164abe2f`.
   Documentation/evidence remains local and unpushed.
 - [x] **V-16** Exact `7d0b42a` rollback worktree was clean and isolated
   temp-SQLite startup passed; production rollback was not run.
