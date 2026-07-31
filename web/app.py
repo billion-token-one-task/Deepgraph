@@ -1773,15 +1773,18 @@ def api_research_proposal(insight_id):
 
 @app.route("/api/insights/rank", methods=["POST"])
 def api_rank_insights():
-    """Rank all insights by paradigm-breaking potential."""
-    from agents.insight_ranker import rank_insights_batch
-    def run_ranking():
-        log_event("ranking_start", {})
-        stats = rank_insights_batch()
-        log_event("ranking_done", stats)
-    thread = threading.Thread(target=run_ranking, daemon=True)
-    thread.start()
-    return jsonify({"status": "started"})
+    """Block the unscoped legacy LLM ranker.
+
+    Ranking/admission for v1 is performed by agenda-scoped decision packets
+    and the portfolio API; the legacy endpoint has no candidate identity or
+    ResourceGrant boundary.
+    """
+    return jsonify(
+        {
+            "error": "legacy_unscoped_ranker_disabled",
+            "replacement": "/api/meta-harness/portfolio/decide",
+        }
+    ), 410
 
 
 # ── Deep Insights (Tier 1 / Tier 2) ─────────────────────────────────
@@ -1845,13 +1848,18 @@ def api_generate_deep_insights():
         agenda_id = 0
     if agenda_id <= 0:
         return jsonify({"error": "positive agenda_id is required"}), 400
+    if tier == "1":
+        return jsonify(
+            {
+                "error": "legacy_tier1_discovery_disabled",
+                "replacement": (
+                    "agenda-scoped problem-first proposal and portfolio admission"
+                ),
+            }
+        ), 410
 
     def do_discovery():
-        if tier == "1":
-            from orchestrator.discovery_scheduler import harvest_signals, run_tier1_discovery
-            harvest_signals()
-            run_tier1_discovery(agenda_id=agenda_id, bulk=bulk)
-        elif tier == "2":
+        if tier == "2":
             from orchestrator.discovery_scheduler import harvest_signals, run_tier2_discovery
             harvest_signals()
             run_tier2_discovery(agenda_id=agenda_id, bulk=bulk)

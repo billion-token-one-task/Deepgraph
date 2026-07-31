@@ -110,6 +110,7 @@ class InsightStorageValidationTests(unittest.TestCase):
         with mock.patch("agents.paradigm_agent.db.insert_returning_id") as insert_returning_id:
             rid = store_deep_insight(
                 {
+                    "agenda_id": 1,
                     "tier": 1,
                     "status": "candidate",
                     "title": "Mechanism-first insight",
@@ -125,21 +126,18 @@ class InsightStorageValidationTests(unittest.TestCase):
 
 
 class DiscoverySchedulerSkipTests(unittest.TestCase):
-    def test_run_tier1_discovery_skips_zero_id_and_keeps_next_result(self):
-        insights = [
-            {"title": "Bad insight"},
-            {"title": "Good insight", "adversarial_score": 7},
-        ]
+    def test_run_tier1_discovery_blocks_pre_identity_llm_path(self):
+        with mock.patch.object(discovery_scheduler, "log_event") as log_event:
+            stored = discovery_scheduler.run_tier1_discovery(
+                max_candidates=2,
+                agenda_id=1,
+            )
 
-        with (
-            mock.patch.object(discovery_scheduler, "_init_schema_v2"),
-            mock.patch("agents.paradigm_agent.discover_paradigm_insights", return_value=insights),
-            mock.patch("agents.paradigm_agent.store_deep_insight", side_effect=[0, 42]),
-            mock.patch.object(discovery_scheduler, "log_event"),
-        ):
-            stored = discovery_scheduler.run_tier1_discovery(max_candidates=2)
-
-        self.assertEqual(stored, [{"id": 42, "title": "Good insight", "adversarial_score": 7}])
+        self.assertEqual(stored, [])
+        self.assertEqual(
+            log_event.call_args.args[1]["reason"],
+            "pre_identity_ungranted_llm_path",
+        )
 
 
 if __name__ == "__main__":

@@ -52,6 +52,7 @@ from agents.evosci_requirements import (
 from config import (
     AUTO_RESEARCH_INTERVAL_SECONDS,
     AUTO_RESEARCH_MAX_ACTIVE,
+    EXPERIMENT_TIME_BUDGET,
     GPU_JOB_TIMEOUT_SECONDS,
     REQUIRE_EVOSCIENTIST_FOR_EXPERIMENTS,
 )
@@ -4285,6 +4286,14 @@ def _process_candidate(insight: dict) -> None:
         log_event("auto_research", {"step": "gpu_job_queued", "insight_id": insight_id, "run_id": existing_run["id"]})
         return
 
+    compute_job = meta_compute_runtime.submit_experiment_run(
+        agenda_id=int(existing_run.get("agenda_id") or 0),
+        idea_id=insight_id,
+        experiment_run_id=int(existing_run["id"]),
+        resource_grant_id=int(existing_run.get("resource_grant_id") or 0),
+        timeout_seconds=max(EXPERIMENT_TIME_BUDGET, GPU_JOB_TIMEOUT_SECONDS),
+        backend_kind="cpu",
+    )
     if _active_execution_run_id() is not None:
         _upsert_job(
             insight_id,
@@ -4292,10 +4301,14 @@ def _process_candidate(insight: dict) -> None:
             stage="cpu_execution_wait",
             experiment_run_id=existing_run["id"],
             resource_class=resource_class,
-            last_note="CPU validation lane is busy; queued for the execution queue.",
+            last_note=(
+                "CPU validation lane is busy; durable compute job "
+                f"{compute_job.backend_job_id} remains queued."
+            ),
             last_error=None,
         )
         return
+    meta_compute_runtime.mark_cpu_running(compute_job)
     _upsert_job(
         insight_id,
         status="running_cpu",
@@ -4306,7 +4319,79 @@ def _process_candidate(insight: dict) -> None:
         last_error=None,
     )
     log_event("auto_research", {"step": "experiment_started", "insight_id": insight_id, "run_id": existing_run["id"]})
-    result = _execute_cpu_validation_loop(insight_id, existing_run["id"])
+    try:
+        result = _execute_cpu_validation_loop(insight_id, existing_run["id"])
+    except Exception as exc:
+        db.execute(
+            """
+            UPDATE experiment_runs
+            SET status='failed', error_message=?,
+                completed_at=COALESCE(completed_at, CURRENT_TIMESTAMP)
+            WHERE id=? AND agenda_id=?
+              AND status NOT IN ('completed', 'failed', 'cancelled')
+            """,
+            (
+                f"cpu_validation_exception:{type(exc).__name__}",
+                int(existing_run["id"]),
+                int(existing_run["agenda_id"]),
+            ),
+        )
+        db.commit()
+        meta_compute_runtime.settle_cpu_run(int(existing_run["id"]))
+        raise
+    run_after_cpu = db.fetchone(
+        """
+        SELECT status, error_message
+        FROM experiment_runs
+        WHERE id=? AND agenda_id=?
+        """,
+        (int(existing_run["id"]), int(existing_run["agenda_id"])),
+    ) or {}
+    if str(run_after_cpu.get("status") or "") != "completed":
+        failure = (
+            str(run_after_cpu.get("error_message") or "").strip()
+            or str((result or {}).get("reason") or (result or {}).get("error") or "")
+            or "cpu_validation_did_not_complete"
+        )
+        db.execute(
+            """
+            UPDATE experiment_runs
+            SET status='failed', error_message=?,
+                completed_at=COALESCE(completed_at, CURRENT_TIMESTAMP)
+            WHERE id=? AND agenda_id=?
+              AND status NOT IN ('failed', 'cancelled')
+            """,
+            (
+                failure[:4000],
+                int(existing_run["id"]),
+                int(existing_run["agenda_id"]),
+            ),
+        )
+        db.commit()
+    try:
+        compute_status = meta_compute_runtime.settle_cpu_run(
+            int(existing_run["id"])
+        )
+    except Exception as exc:
+        db.execute(
+            """
+            UPDATE experiment_runs
+            SET status='failed', error_message=?,
+                completed_at=COALESCE(completed_at, CURRENT_TIMESTAMP)
+            WHERE id=? AND agenda_id=? AND status='completed'
+            """,
+            (
+                f"compute_certification_failed:{type(exc).__name__}",
+                int(existing_run["id"]),
+                int(existing_run["agenda_id"]),
+            ),
+        )
+        db.commit()
+        raise
+    if compute_status != "succeeded":
+        raise RuntimeError(
+            f"CPU validation did not settle successfully: {compute_status}"
+        )
     process_completed_run(existing_run["id"])
     benchmark_bundle = benchmark_completion_bundle_from_run(existing_run["id"], result=result if isinstance(result, dict) else None)
     if schedule_benchmark_completion(

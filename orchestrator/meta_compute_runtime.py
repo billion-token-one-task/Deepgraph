@@ -17,6 +17,7 @@ from db import database as db
 from meta_harness.compute import (
     ArtifactCollection,
     BackendCapability,
+    CPUBackend,
     ComputeBackendError,
     ComputeJob,
     ComputeScheduler,
@@ -67,8 +68,246 @@ def _parse_run_ref(value: str) -> int:
     return run_id
 
 
+def _parse_cpu_job_id(value: str) -> int:
+    prefix = "cpu-experiment-run:"
+    if not str(value).startswith(prefix):
+        raise ComputeBackendError("CPU backend job id is invalid")
+    try:
+        run_id = int(str(value)[len(prefix) :])
+    except ValueError as exc:
+        raise ComputeBackendError("CPU backend job id is invalid") from exc
+    if run_id <= 0:
+        raise ComputeBackendError("CPU backend job id is invalid")
+    return run_id
+
+
 def _iso(value) -> str | None:
     return str(value) if value else None
+
+
+class LegacyCPUValidationTransport:
+    """Durable admission adapter for the synchronous validation worker.
+
+    ``submit`` only creates the backend identity. The auto-research worker
+    explicitly marks it running before invoking the legacy validation loop,
+    then settles measured usage and artifacts through ``ComputeScheduler``.
+    """
+
+    backend_kind = "cpu"
+
+    def capability(self) -> BackendCapability:
+        return BackendCapability(
+            backend_kind=self.backend_kind,
+            available=True,
+            detail={
+                "transport": "legacy_cpu_validation",
+                "admission": "durable_compute_jobs_v1",
+            },
+        )
+
+    def _run(self, backend_job_id: str) -> dict:
+        run_id = _parse_cpu_job_id(backend_job_id)
+        row = db.fetchone(
+            """
+            SELECT id, agenda_id, deep_insight_id, resource_grant_id, status,
+                   started_at, completed_at, error_message
+            FROM experiment_runs
+            WHERE id=?
+            """,
+            (run_id,),
+        )
+        if not row:
+            raise ComputeBackendError("CPU experiment run was not found")
+        return row
+
+    def submit(self, request: ComputeSubmission) -> ComputeJob:
+        run_id = _parse_run_ref(request.command_ref)
+        run = db.fetchone(
+            """
+            SELECT id, agenda_id, deep_insight_id, resource_grant_id,
+                   resource_class
+            FROM experiment_runs
+            WHERE id=?
+            """,
+            (run_id,),
+        )
+        if (
+            not run
+            or int(run.get("agenda_id") or 0) != request.agenda_id
+            or int(run.get("deep_insight_id") or 0) != request.idea_id
+            or int(run.get("resource_grant_id") or 0)
+            != request.resource_grant_id
+            or str(run.get("resource_class") or "cpu") != "cpu"
+        ):
+            raise ComputeBackendError("CPU experiment scope mismatch")
+        return ComputeJob(
+            backend_kind=self.backend_kind,
+            backend_job_id=f"cpu-experiment-run:{run_id}",
+            idempotency_key=request.idempotency_key,
+            status="submitted",
+            heartbeat_at=datetime.now(timezone.utc).isoformat(),
+        )
+
+    def status(self, backend_job_id: str) -> ComputeJob:
+        row = self._run(backend_job_id)
+        legacy = str(row.get("status") or "").strip().lower()
+        if legacy == "completed":
+            status = "succeeded"
+        elif legacy in {"failed", "superseded", "reset", "archived"}:
+            status = "failed"
+        elif legacy in {"cancelled", "canceled"}:
+            status = "cancelled"
+        elif legacy in {"reproducing", "testing", "running", "running_cpu"}:
+            status = "running"
+        else:
+            status = "submitted"
+        reason = str(row.get("error_message") or "").strip() or None
+        if status == "failed" and reason is None:
+            reason = f"experiment_run_{legacy or 'failed'}"
+        return ComputeJob(
+            backend_kind=self.backend_kind,
+            backend_job_id=backend_job_id,
+            idempotency_key="persisted",
+            status=status,
+            heartbeat_at=_iso(
+                row.get("completed_at")
+                or row.get("started_at")
+            ),
+            failure_reason=reason if status == "failed" else None,
+        )
+
+    def heartbeat(self, backend_job_id: str) -> ComputeJob:
+        return self.status(backend_job_id)
+
+    def cancel(self, backend_job_id: str) -> ComputeJob:
+        row = self._run(backend_job_id)
+        legacy = str(row.get("status") or "").strip().lower()
+        if legacy not in {"planned", "ready", "queued", "pending"}:
+            raise ComputeBackendError(
+                "running CPU cancellation requires cooperative worker control"
+            )
+        cursor = db.execute(
+            """
+            UPDATE experiment_runs
+            SET status='cancelled', completed_at=CURRENT_TIMESTAMP,
+                error_message='cancelled_before_dispatch'
+            WHERE id=? AND agenda_id=? AND status=?
+            """,
+            (int(row["id"]), int(row["agenda_id"]), legacy),
+        )
+        if int(getattr(cursor, "rowcount", 0) or 0) != 1:
+            db.rollback()
+            raise ComputeBackendError("CPU cancellation race")
+        db.commit()
+        return ComputeJob(
+            self.backend_kind,
+            backend_job_id,
+            "persisted",
+            "cancelled",
+            heartbeat_at=datetime.now(timezone.utc).isoformat(),
+        )
+
+    def collect_artifacts(
+        self, backend_job_id: str, requirements: tuple[str, ...]
+    ) -> ArtifactCollection:
+        row = self._run(backend_job_id)
+        run_id = int(row["id"])
+        artifacts = db.fetchall(
+            """
+            SELECT artifact_type, path
+            FROM experiment_artifacts
+            WHERE agenda_id=? AND run_id=?
+            ORDER BY id
+            """,
+            (int(row["agenda_id"]), run_id),
+        )
+        counts = db.fetchone(
+            """
+            SELECT
+                (SELECT COUNT(*) FROM experiment_iterations
+                 WHERE agenda_id=? AND run_id=?) AS iteration_count,
+                (SELECT COUNT(*) FROM experimental_claims
+                 WHERE agenda_id=? AND run_id=?) AS claim_count
+            """,
+            (
+                int(row["agenda_id"]),
+                run_id,
+                int(row["agenda_id"]),
+                run_id,
+            ),
+        ) or {}
+        manifest: dict[str, object] = {
+            "artifacts": [
+                {
+                    "name": str(item.get("artifact_type") or ""),
+                    "path": str(item.get("path") or ""),
+                }
+                for item in artifacts
+            ],
+            "experiment_run_id": run_id,
+            "run_manifest": {"uri": f"db:experiment_runs:{run_id}"},
+        }
+        names = {
+            str(item.get("artifact_type") or "")
+            for item in artifacts
+            if item.get("artifact_type")
+        }
+        for item in artifacts:
+            filename = Path(str(item.get("path") or "")).name
+            if filename:
+                names.add(filename)
+            if filename in {
+                "environment_manifest.json",
+                "environment.json",
+                "environment_report.json",
+                "runtime_environment.json",
+            }:
+                names.add("environment_manifest")
+                manifest["environment_manifest"] = {
+                    "uri": str(item.get("path") or "")
+                }
+        names.add("run_manifest")
+        if int(counts.get("iteration_count") or 0) > 0:
+            names.add("raw_metrics")
+            manifest["raw_metrics"] = {
+                "uri": f"db:experiment_iterations:run:{run_id}",
+                "row_count": int(counts["iteration_count"]),
+            }
+        if int(counts.get("claim_count") or 0) > 0:
+            names.add("claim_ledger")
+            manifest["claim_ledger"] = {
+                "uri": f"db:experimental_claims:run:{run_id}",
+                "row_count": int(counts["claim_count"]),
+            }
+        missing = tuple(sorted(set(requirements) - names))
+        return ArtifactCollection(
+            manifest=manifest,
+            complete=bool(artifacts) and not missing,
+            missing_requirements=missing,
+        )
+
+    def usage(self, backend_job_id: str) -> UsageAccounting:
+        row = self._run(backend_job_id)
+        usage = db.fetchone(
+            """
+            SELECT COALESCE(SUM(duration_seconds), 0) AS measured_seconds,
+                   COALESCE(MAX(peak_memory_mb), 0) AS peak_memory_mb
+            FROM experiment_iterations
+            WHERE agenda_id=? AND run_id=?
+            """,
+            (int(row["agenda_id"]), int(row["id"])),
+        ) or {}
+        measured_seconds = float(usage.get("measured_seconds") or 0)
+        return UsageAccounting(
+            wall_seconds=measured_seconds,
+            gpu_hours=0.0,
+            cpu_core_hours=measured_seconds / 3600.0,
+            backend_report={
+                "source": "experiment_iterations.duration_seconds",
+                "cpu_core_assumption": 1,
+                "peak_memory_mb": float(usage.get("peak_memory_mb") or 0),
+            },
+        )
 
 
 class LegacyGPUQueueTransport:
@@ -345,7 +584,7 @@ def build_scheduler() -> ComputeScheduler:
     else:
         backend = LocalGPUBackend(transport)
     return ComputeScheduler(
-        [backend],
+        [CPUBackend(LegacyCPUValidationTransport()), backend],
         job_store=ComputeJobRepository(),
     )
 
@@ -379,6 +618,7 @@ def submit_experiment_run(
     experiment_run_id: int,
     resource_grant_id: int,
     timeout_seconds: int,
+    backend_kind: str | None = None,
 ) -> ComputeJob:
     grant_row = db.fetchone(
         """
@@ -393,7 +633,13 @@ def submit_experiment_run(
             "active scoped ResourceGrant is required for compute"
         )
     grant = _grant_from_row(grant_row)
-    backend_kind = _backend_kind()
+    backend_kind = str(backend_kind or _backend_kind())
+    if backend_kind not in {"cpu", "local_gpu", "ssh_gpu"}:
+        raise ComputeBackendError(
+            "runtime backend must be cpu or the configured legacy GPU transport"
+        )
+    if backend_kind in {"local_gpu", "ssh_gpu"} and backend_kind != _backend_kind():
+        raise ComputeBackendError("requested GPU backend is not configured")
     request = ComputeSubmission(
         agenda_id=int(agenda_id),
         idea_id=int(idea_id),
@@ -408,13 +654,102 @@ def submit_experiment_run(
             f"agenda-{agenda_id}/idea-{idea_id}/run-{experiment_run_id}"
         ),
         timeout_seconds=int(timeout_seconds),
-        requested_gpu_hours=float(grant.max_gpu_hours),
+        requested_gpu_hours=(
+            0.0 if backend_kind == "cpu" else float(grant.max_gpu_hours)
+        ),
     )
     return build_scheduler().submit(
         request,
         grant=grant,
         preferred_backends=[backend_kind],
     )
+
+
+def mark_cpu_running(job: ComputeJob) -> None:
+    if job.backend_kind != "cpu":
+        raise ComputeBackendError("only a CPU compute job can enter the CPU lane")
+    run_id = _parse_cpu_job_id(job.backend_job_id)
+    run = db.fetchone(
+        "SELECT agenda_id FROM experiment_runs WHERE id=?",
+        (run_id,),
+    )
+    if not run:
+        raise ComputeBackendError("CPU experiment run was not found")
+    cursor = db.execute(
+        """
+        UPDATE experiment_runs
+        SET status='running_cpu',
+            started_at=COALESCE(started_at, CURRENT_TIMESTAMP)
+        WHERE id=? AND agenda_id=?
+          AND status NOT IN (
+              'completed', 'failed', 'cancelled', 'superseded', 'reset',
+              'archived', 'manuscript_blocked', 'bundle_ready'
+          )
+        """,
+        (run_id, int(run["agenda_id"])),
+    )
+    if int(getattr(cursor, "rowcount", 0) or 0) != 1:
+        db.rollback()
+        raise ComputeBackendError("CPU experiment run is not startable")
+    db.commit()
+    ComputeJobRepository().record_backend_state(
+        ComputeJob(
+            backend_kind=job.backend_kind,
+            backend_job_id=job.backend_job_id,
+            idempotency_key=job.idempotency_key,
+            status="running",
+            heartbeat_at=datetime.now(timezone.utc).isoformat(),
+        )
+    )
+
+
+def settle_cpu_run(experiment_run_id: int) -> str:
+    backend_job_id = f"cpu-experiment-run:{int(experiment_run_id)}"
+    row = db.fetchone(
+        """
+        SELECT cj.backend_kind, cj.backend_job_id, cj.idempotency_key,
+               cj.status, cj.heartbeat_at, cj.failure_reason,
+               rg.artifact_requirements_json
+        FROM compute_jobs_v1 AS cj
+        JOIN resource_grants AS rg ON rg.id=cj.resource_grant_id
+        WHERE cj.backend_job_id=? AND cj.backend_kind='cpu'
+        """,
+        (backend_job_id,),
+    )
+    if not row:
+        return "not_managed"
+    if str(row.get("status") or "") in {
+        "succeeded",
+        "failed",
+        "cancelled",
+        "timed_out",
+        "submission_unknown",
+        "usage_unknown",
+    }:
+        return str(row.get("status"))
+    observed = build_scheduler().refresh_and_settle(
+        ComputeJob(
+            backend_kind="cpu",
+            backend_job_id=backend_job_id,
+            idempotency_key=str(row["idempotency_key"]),
+            status=(
+                str(row["status"])
+                if str(row["status"]) in {
+                    "submitted",
+                    "running",
+                    "cancel_requested",
+                }
+                else "running"
+            ),
+            heartbeat_at=_iso(row.get("heartbeat_at")),
+            failure_reason=row.get("failure_reason"),
+        ),
+        requirements=tuple(
+            str(value)
+            for value in _load_json_list(row.get("artifact_requirements_json"))
+        ),
+    )
+    return observed.status
 
 
 def settle_legacy_job(gpu_job_id: int) -> str:
@@ -499,8 +834,7 @@ def reconcile_on_startup() -> dict[str, int]:
             SELECT backend_job_id
             FROM compute_jobs_v1
             WHERE agenda_id=?
-              AND backend_kind IN ('local_gpu', 'ssh_gpu')
-              AND backend_job_id LIKE 'legacy-gpu-job:%'
+              AND backend_kind IN ('cpu', 'local_gpu', 'ssh_gpu')
               AND status IN ('submitted', 'running', 'cancel_requested',
                              'collecting')
             ORDER BY id
@@ -509,9 +843,18 @@ def reconcile_on_startup() -> dict[str, int]:
         )
         for row in live:
             try:
-                result = settle_legacy_job(
-                    _parse_backend_job_id(str(row["backend_job_id"]))
-                )
+                if str(row["backend_job_id"]).startswith("cpu-experiment-run:"):
+                    result = settle_cpu_run(
+                        _parse_cpu_job_id(str(row["backend_job_id"]))
+                    )
+                elif str(row["backend_job_id"]).startswith("legacy-gpu-job:"):
+                    result = settle_legacy_job(
+                        _parse_backend_job_id(str(row["backend_job_id"]))
+                    )
+                else:
+                    raise ComputeBackendError(
+                        "managed compute backend job id is invalid"
+                    )
                 if result in {"succeeded", "failed", "cancelled", "timed_out"}:
                     totals["terminal_settled"] += 1
             except Exception:
