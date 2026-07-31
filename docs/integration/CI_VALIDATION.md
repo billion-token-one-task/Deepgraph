@@ -1,8 +1,13 @@
 # Validation matrix for isolated CI
 
-No command in this document was run on the current host. In particular,
-`pytest`, application imports/startup, migrations, builds, provider calls,
-SSH, Colab, and GPU work remain unexecuted here.
+Final-session record (2026-07-31): static audits passed; the isolated Python
+3.13 policy lane passed 71 tests; a temp-SQLite application startup smoke
+passed; and real bubblewrap held-in/held-out/canary plus protected-write,
+network and missing-bwrap fallback negative tests passed. The PostgreSQL lane
+was blocked because no local server or usable Docker daemon was available.
+Adapted legacy tests were 39 passed/30 failed, and the broader synthetic fault
+collection was 55 passed/5 stale validation failures. No production URL,
+provider credential, deployment, or database was used.
 
 Record the isolated run in
 [ISOLATED_CI_EVIDENCE_TEMPLATE.md](ISOLATED_CI_EVIDENCE_TEMPLATE.md). Empty or
@@ -44,7 +49,9 @@ env -u DEEPGRAPH_DATABASE_URL -u DATABASE_URL \
     tests/test_benchmark_design_agent.py \
     tests/test_scientific_authority.py \
     tests/test_meta_learner.py \
-    tests/test_outcome_assembly.py
+    tests/test_outcome_assembly.py \
+    tests/test_paradigm_prompt.py \
+    tests/test_test_db_isolation.py
 ```
 
 Use mocks only. No network, provider, subprocess compute, or production paths

@@ -7,7 +7,15 @@ tag/deployment record.
 
 ## [Unreleased] — meta-harness-v1 integration candidate — 2026-07-31
 
-Status: **development branch; not accepted for master; not deployed**.
+Status: **development branch; rejected for master; not deployed**.
+
+Final isolated acceptance record: source candidate frozen at
+`6851a991154906f11d8cfc247d22a5d5caa0a834` with candidate tree
+`b1c1e8ebfbc0607cc39bb617dad9d56fd949d214122a37dd70541bd634d9feab`.
+Static audit, the 71-test pure policy lane and real bubblewrap evaluator
+lanes passed. PostgreSQL restore/migration/restart, adapted legacy
+compatibility, hardware/provider canaries and reviewer approval remain open;
+therefore no master replacement is authorized.
 
 Local implementation checkpoint:
 `c25e63c` (`feat: build controlled meta-harness-v1 candidate`). This hash has
