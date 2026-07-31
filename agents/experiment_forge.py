@@ -34,7 +34,6 @@ from agents.evosci_requirements import evosci_strict_gate_insight
 from agents.experiment_review import review_experiment_candidate
 from agents.idea_route import classify_idea_route
 from agents.llm_client import (
-    call_llm_json,
     call_llm_json_for_role,
     configured_role_prompt_version,
 )
@@ -2176,19 +2175,14 @@ def _resource_granted_proposer_json(
 
 def scout_codebase(insight: dict, *, llm_scope: dict | None = None) -> dict:
     """Find the best codebase for implementing a hypothesis."""
-    if llm_scope is not None:
-        # The legacy agentic scout has its own unconstrained LLM calls. A
-        # resource-granted forge therefore uses only the routed implementation.
-        return _scout_codebase_single_shot(insight, llm_scope=llm_scope)
-    try:
-        from agents.codebase_scout import scout_codebase_agentic
-
-        result = scout_codebase_agentic(insight)
-        if isinstance(result, dict) and result.get("url"):
-            return result
-    except Exception as exc:
-        print(f"[FORGE] Agentic code scout failed: {exc}; falling back to single-shot scout.", flush=True)
-    return _scout_codebase_single_shot(insight)
+    if llm_scope is None:
+        raise PermissionError(
+            "experiment codebase selection requires a ResourceGrant-backed "
+            "LLM scope"
+        )
+    # The legacy agentic scout has its own unconstrained LLM calls. A
+    # resource-granted forge uses only the routed implementation.
+    return _scout_codebase_single_shot(insight, llm_scope=llm_scope)
 
 
 def _scout_codebase_single_shot(
@@ -2253,28 +2247,22 @@ def _scout_codebase_single_shot(
 
     prompt = "\n".join(context_parts)
 
-    try:
-        if llm_scope is None:
-            result, _ = call_llm_json(CODE_SCOUT_SYSTEM, prompt)
-            route = None
-        else:
-            result, _, route = _resource_granted_proposer_json(
-                CODE_SCOUT_SYSTEM,
-                prompt,
-                llm_scope=llm_scope,
-                operation="experiment_forge.code_scout",
-                max_tokens=4000,
-            )
-        codebase = result.get("codebase", {"url": "scratch", "name": "minimal", "reason": "no suitable repo found"})
-        normalized = _normalize_codebase_metadata(codebase)
-        if route:
-            normalized["llm_route"] = route
-        return normalized
-    except Exception as e:
-        if llm_scope is not None:
-            raise
-        print(f"[FORGE] Code scout failed: {e}", flush=True)
-        return {"url": "scratch", "name": "minimal", "reason": f"scout error: {e}"}
+    if llm_scope is None:
+        raise PermissionError(
+            "experiment code scout requires a ResourceGrant-backed LLM scope"
+        )
+    result, _, route = _resource_granted_proposer_json(
+        CODE_SCOUT_SYSTEM,
+        prompt,
+        llm_scope=llm_scope,
+        operation="experiment_forge.code_scout",
+        max_tokens=4000,
+    )
+    codebase = result.get("codebase", {"url": "scratch", "name": "minimal", "reason": "no suitable repo found"})
+    normalized = _normalize_codebase_metadata(codebase)
+    if route:
+        normalized["llm_route"] = route
+    return normalized
 
 
 def setup_workspace(insight_id: int, run_id: int, codebase: dict, *, insight: dict | None = None) -> Path:
@@ -2429,24 +2417,17 @@ def generate_scaffold(
         used_fallback = True
         tokens = 0
     else:
-        try:
-            if llm_scope is None:
-                result, tokens = call_llm_json(SCAFFOLD_SYSTEM, prompt)
-            else:
-                result, tokens, llm_route = _resource_granted_proposer_json(
-                    SCAFFOLD_SYSTEM,
-                    prompt,
-                    llm_scope=llm_scope,
-                    operation="experiment_forge.scaffold",
-                    max_tokens=12000,
-                )
-        except Exception as e:
-            if llm_scope is not None:
-                raise
-            print(f"[FORGE] Scaffold generation failed: {e}", flush=True)
-            result = _fallback_scaffold(method, plan, codebase)
-            used_fallback = True
-            tokens = 0
+        if llm_scope is None:
+            raise PermissionError(
+                "experiment scaffold requires a ResourceGrant-backed LLM scope"
+            )
+        result, tokens, llm_route = _resource_granted_proposer_json(
+            SCAFFOLD_SYSTEM,
+            prompt,
+            llm_scope=llm_scope,
+            operation="experiment_forge.scaffold",
+            max_tokens=12000,
+        )
 
     program_md = result.get("program_md", "")
     evaluate_py = result.get("evaluate_py", "")

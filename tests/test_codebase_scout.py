@@ -342,17 +342,16 @@ class CodebaseScoutTests(unittest.TestCase):
         self.assertEqual(picked["url"], "https://github.com/example/harness")
         self.assertEqual(picked["main_train_file"], "train.py")
 
-    def test_experiment_forge_uses_agentic_scout_first(self):
+    def test_experiment_forge_blocks_ungranted_agentic_scout(self):
         from agents import experiment_forge
 
-        with (
-            mock.patch("agents.codebase_scout.scout_codebase_agentic", return_value={"url": "https://github.com/example/repo", "name": "repo", "main_train_file": "train.py"}),
-            mock.patch.object(experiment_forge, "_scout_codebase_single_shot") as fallback,
-        ):
-            result = experiment_forge.scout_codebase({"id": 1})
-
-        self.assertEqual(result["url"], "https://github.com/example/repo")
-        fallback.assert_not_called()
+        with mock.patch.object(
+            experiment_forge,
+            "_scout_codebase_single_shot",
+        ) as routed:
+            with self.assertRaisesRegex(PermissionError, "ResourceGrant"):
+                experiment_forge.scout_codebase({"id": 1})
+        routed.assert_not_called()
 
 
 if __name__ == "__main__":

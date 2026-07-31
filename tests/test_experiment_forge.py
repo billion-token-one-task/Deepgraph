@@ -432,11 +432,11 @@ class GenerateScaffoldTests(unittest.TestCase):
         self.assertIn("claim_route", scaffold["success_criteria"])
         self.assertFalse(scaffold["benchmark_manifest"]["sanity_only"])
 
-    def test_real_benchmark_runner_has_optional_top_venue_baselines(self):
+    def test_generic_method_without_runner_plugin_gets_blocker(self):
         insight = {
             "resource_class": "gpu_large",
             "proposed_method": {
-                "name": "CGGR",
+                "name": "Generic Candidate",
                 "type": "reasoning",
                 "definition": "Estimate counterfactual reasoning gain before spending extra inference budget.",
             },
@@ -457,7 +457,7 @@ class GenerateScaffoldTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             workdir = Path(tmpdir)
 
-            def _fake_call_llm_json(system: str, prompt: str):
+            def _fake_role_call(*args, **kwargs):
                 return (
                     {
                         "program_md": "# program",
@@ -466,23 +466,36 @@ class GenerateScaffoldTests(unittest.TestCase):
                         "train_py": "print('unused')\n",
                     },
                     17,
+                    {
+                        "provider": "test-provider",
+                        "model": "test-model",
+                        "model_family": "test-family",
+                        "prompt_version": "test-v1",
+                    },
                 )
 
             with mock.patch.object(
-                experiment_forge, "call_llm_json", side_effect=_fake_call_llm_json
+                experiment_forge,
+                "call_llm_json_for_role",
+                side_effect=_fake_role_call,
             ):
-                experiment_forge.generate_scaffold(insight, codebase, workdir)
+                experiment_forge.generate_scaffold(
+                    insight,
+                    codebase,
+                    workdir,
+                    llm_scope={
+                        "agenda_id": 1,
+                        "idea_id": 2,
+                        "resource_grant_id": 3,
+                        "stage": "pilot",
+                    },
+                )
 
             train_py = (workdir / "code" / "train.py").read_text(encoding="utf-8")
 
-        self.assertIn("TOP_VENUE_BASELINE_SPECS", train_py)
-        self.assertIn("DEEPGRAPH_BENCHMARK_INCLUDE_TOP_VENUE_BASELINES", train_py)
-        self.assertIn("CAR-Style Certainty Adaptive Routing", train_py)
-        self.assertIn("Self-Route-Style Mode Routing", train_py)
-        self.assertIn("Rational-Metareasoning VOC Routing", train_py)
-        self.assertIn("car_certainty_gate", train_py)
-        self.assertIn("self_route_mode", train_py)
-        self.assertIn("voc_metareasoning", train_py)
+        self.assertIn("no explicit audited runner_plugin", train_py)
+        self.assertIn("full_benchmark_completed", train_py)
+        self.assertIn("sys.exit(2)", train_py)
 
     def test_setup_workspace_falls_back_to_archive_when_git_missing(self):
         codebase = {

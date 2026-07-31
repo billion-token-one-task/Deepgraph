@@ -63,11 +63,9 @@ AGENT_BOUNDARIES: tuple[AgentBoundary, ...] = (
         config_sections=("discovery", "idea", "llm", "paper_orchestra"),
         modules=(
             "agents.insight_agent",
-            "agents.insight_ranker",
             "agents.reasoning_agent",
             "agents.abstraction_agent",
             "agents.research_bridge",
-            "agents.paradigm_agent",
             "agents.paper_idea_agent",
             "agents.novelty_verifier",
             "agents.evidence_planner",
@@ -123,7 +121,6 @@ AGENT_BOUNDARIES: tuple[AgentBoundary, ...] = (
             "agents.paperorchestra.literature_discovery",
             "agents.paperorchestra.reference_manager",
             "agents.paperorchestra.experiment_plot_reference",
-            "agents.paperorchestra.refinement_loop",
             "agents.paperorchestra.semantic_scholar",
         ),
         scripts=(
