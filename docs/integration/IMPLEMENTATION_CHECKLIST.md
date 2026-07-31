@@ -31,8 +31,9 @@ artifacts named in its evidence column may promote it to `[x]`.
 - [x] **S-07** No production configuration, `.env`, systemd unit or service was
   modified/restarted.
 - [x] **S-08** No production database connection was opened.
-- [-] **S-09** `pytest`, app import/startup, migrations, builds, dependency
-  installs and CPU/GPU/SSH/Colab experiments are prohibited on this host.
+- [~] **S-09** Isolated Python 3.13 dependency install, pytest, app
+  import/startup and compile checks ran in temporary paths; PostgreSQL,
+  production-path and CPU/GPU/SSH/Colab execution remained out of scope.
 - [x] **S-10** No `.env.bak-*`, `*.bak-*`, dump, `backups/`, OAuth HOME, token
   or credential was read or added.
 - [x] **S-11** No push, remote ref, branch deletion, master replacement,
@@ -44,7 +45,9 @@ artifacts named in its evidence column may promote it to `[x]`.
 
 - [x] **L-01** Independent clone exists at
   `/home/ec2-user/Deepgraph-meta-harness-v1`.
-- [x] **L-02** Local branch is `integration/meta-harness-v1`.
+- [x] **L-02** Original candidate remains `integration/meta-harness-v1` at
+  `77e8ac0`; frozen acceptance branch is
+  `integration/master-candidate-20260731`.
 - [x] **L-03** Candidate base is
   `origin/master@6048a9568c79b011074e0dba2662fd473cfab250`.
 - [x] **L-04** Local archive ref for production resolves to
@@ -437,8 +440,7 @@ artifacts named in its evidence column may promote it to `[x]`.
 ## V. Validation and delivery
 
 - [x] **V-01** Static audit script has no app import/database access.
-- [x] **V-02** 279 Python files passed the broad AST parse and 257 files passed
-  the release static audit at the latest checkpoint.
+- [x] **V-02** 260 Python files passed the final static AST parse/audit.
 - [x] **V-03** Side-effect-free SQL AST audit found no definite mismatch:
   839 literal calls, 836 statically countable, and 114 dynamic calls explicitly
   left for review/CI.
@@ -452,18 +454,20 @@ artifacts named in its evidence column may promote it to `[x]`.
 - [x] **V-05** Agenda example JSON parsed.
 - [x] **V-06** Migration dry-plan recorded statement count/checksum/no
   destructive token.
-- [~] **V-07** Pure policy/integrity/fault/calibration/durable-queue/evaluator
-  isolation tests are written, not run.
-- [~] **V-08** Disposable PostgreSQL twice-run/count-preservation test is
-  written, not run.
+- [~] **V-07** Pure policy lane passed 71 tests. Targeted synthetic backend
+  tests passed 53; the broader fault collection remains 55 passed/5 stale
+  validation failures, and adapted legacy tests remain 39 passed/30 failed.
+- [ ] **V-08** Disposable PostgreSQL twice-run/count-preservation test is
+  written but could not run: no local server or usable Docker daemon.
 - [~] **V-08A** Durable compute restart/unknown-submission/artifact-finalization
-  PostgreSQL test is written and guarded, not run.
+  tests are written and guarded; PostgreSQL execution skipped.
 - [~] **V-08B** Content-addressed evidence audit/decision transition
-  PostgreSQL test is written and guarded, not run.
-- [~] **V-09** Candidate isolation/held-out/canary instructions are written,
-  not run.
+  tests are written and guarded; PostgreSQL execution skipped.
+- [x] **V-09** Real bubblewrap held-in/held-out/canary evaluator lanes passed;
+  protected-write, network and missing-bwrap fallback negative tests passed.
 - [x] **V-10** Migration, CI, canary, rollback and configuration runbooks exist.
-- [x] **V-11** Master acceptance matrix states “not eligible”.
+- [x] **V-11** Master acceptance matrix states **REJECTED — not eligible**;
+  PostgreSQL, adapted legacy, hardware canary and reviewer gates remain open.
 - [x] **V-12** Root changelog distinguishes added, changed, isolated, excluded
   and unverified work.
 - [x] **V-13** Local work is split into base implementation `c25e63c`,
@@ -480,8 +484,13 @@ artifacts named in its evidence column may promote it to `[x]`.
   `b17c7d110532197a7137a217ffa641b50486d295` and
   `f2f6ea96d27673f077966b4bd2f278717393b0d9`.
 - [ ] **V-14** No push until explicit approval and quiescence check.
-- [ ] **V-15** Final candidate commit hash must replace working-tree/intermediate
-  hashes in all acceptance artifacts.
+- [x] **V-15** Frozen source candidate is
+  `6851a991154906f11d8cfc247d22a5d5caa0a834`; evidence records its immutable
+  candidate tree hash. Documentation is a separate local evidence commit.
+- [x] **V-16** Exact `7d0b42a` rollback worktree was clean and isolated
+  temp-SQLite startup passed; production rollback was not run.
+- [x] **V-17** `main` and `web.app` imported and an isolated temp-SQLite startup
+  smoke passed with auto-research/pipeline workers disabled.
 
 ## Master decision
 
@@ -489,4 +498,5 @@ artifacts named in its evidence column may promote it to `[x]`.
   [ACCEPTANCE_EVIDENCE.md](ACCEPTANCE_EVIDENCE.md) are accepted with isolated
   evidence.
 
-Current decision: **not eligible to replace master**.
+Current decision: **REJECTED — not eligible to replace master**. Do not run the
+local master fast-forward merge.
