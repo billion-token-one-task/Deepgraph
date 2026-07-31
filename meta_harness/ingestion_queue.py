@@ -209,6 +209,12 @@ class ScopedIngestionRepository:
                   AND rg.expires_at > CURRENT_TIMESTAMP
                   AND ra.is_active=1
                   AND ra.status='active'
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM scoped_ingestion_jobs_v1 AS active
+                      WHERE active.agenda_id=sij.agenda_id
+                        AND active.status='running'
+                  )
                 ORDER BY sij.created_at, sij.id
                 LIMIT 1 FOR UPDATE OF sij, ra SKIP LOCKED
                 """
