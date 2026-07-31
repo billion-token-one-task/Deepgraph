@@ -99,6 +99,28 @@ class LegacyCPUValidationTransportTests(unittest.TestCase):
         self.assertEqual(usage.cpu_core_hours, 0.5)
         self.assertEqual(fetchone.call_args_list[-1].args[1], (2, 7))
 
+    def test_runtime_registry_honors_enabled_cpu_only_config(self):
+        with mock.patch.object(
+            meta_compute_runtime,
+            "COMPUTE_BACKENDS_ENABLED",
+            ["cpu"],
+        ):
+            scheduler = meta_compute_runtime.build_scheduler()
+
+        self.assertEqual(set(scheduler.capabilities()), {"cpu"})
+
+    def test_unknown_configured_backend_fails_closed(self):
+        with mock.patch.object(
+            meta_compute_runtime,
+            "COMPUTE_BACKENDS_ENABLED",
+            ["cpu", "invented_gpu"],
+        ):
+            with self.assertRaisesRegex(
+                ComputeBackendError,
+                "unknown configured compute backend",
+            ):
+                meta_compute_runtime.build_scheduler()
+
 
 if __name__ == "__main__":
     unittest.main()
