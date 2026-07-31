@@ -19,8 +19,10 @@ acceptance state`). Control-plane hardening checkpoint:
 `4d059cd8ab425e7806b095ce2daaa1697d390272`
 (`feat: unify CPU compute admission`). Legacy LLM boundary checkpoint:
 `f66cafead3f6b1046122d2e5df7637a300cca2f3`
-(`refactor: block ungranted legacy LLM paths`). None has been pushed or
-accepted as a release.
+(`refactor: block ungranted legacy LLM paths`). Compute registry checkpoint:
+`8f59a659df04229abf4d759e4d354e3899aac410`
+(`fix: enforce configured compute registry`). None has been pushed or accepted
+as a release.
 
 ### Lineage and why this candidate exists
 
@@ -143,6 +145,9 @@ GitHub origin/master@6048a95
 - CPU pilot admission now enters the same scheduler/repository. Validation
   exceptions, non-terminal returns and artifact-certification failures
   downgrade the legacy run and cannot produce durable compute success.
+- Runtime compute construction now honors the configured enabled registry and
+  SSH reference/artifact settings. Disabled, unknown and not-yet-wired Colab
+  backends fail closed instead of being silently activated.
 - Legacy pre-identity Tier-1 LLM discovery and the global unscoped LLM insight
   rank endpoint are disabled; agenda-scoped problem-first proposal and
   portfolio admission are their supported replacement.
