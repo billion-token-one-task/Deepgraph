@@ -11,7 +11,13 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
-from config import GPU_MODE
+from config import (
+    COMPUTE_ARTIFACT_ROOT,
+    COMPUTE_BACKENDS_ENABLED,
+    COMPUTE_SSH_CREDENTIAL_REF,
+    COMPUTE_SSH_TARGET_REF,
+    GPU_MODE,
+)
 from contracts.meta_harness import ResourceGrant
 from db import database as db
 from meta_harness.compute import (
@@ -569,22 +575,48 @@ def _backend_kind() -> str:
     return "ssh_gpu" if str(GPU_MODE).strip().lower() == "ssh" else "local_gpu"
 
 
-def build_scheduler() -> ComputeScheduler:
-    kind = _backend_kind()
-    transport = LegacyGPUQueueTransport(kind)
-    if kind == "ssh_gpu":
-        backend = SSHGPUBackend(
-            transport,
-            SSHGPUConfig(
-                target_ref="env:DEEPGRAPH_SSH_TARGET",
-                credential_ref="env:DEEPGRAPH_SSH_CREDENTIAL",
-                artifact_root="workspace/meta_harness/artifacts",
-            ),
+def _enabled_backend_kinds() -> set[str]:
+    enabled = {
+        str(value).strip().lower()
+        for value in (COMPUTE_BACKENDS_ENABLED or [])
+        if str(value).strip()
+    }
+    unknown = enabled - {"cpu", "local_gpu", "ssh_gpu", "colab_gpu"}
+    if unknown:
+        raise ComputeBackendError(
+            "unknown configured compute backend(s):" + ",".join(sorted(unknown))
         )
-    else:
-        backend = LocalGPUBackend(transport)
+    return enabled
+
+
+def build_scheduler() -> ComputeScheduler:
+    enabled = _enabled_backend_kinds()
+    backends = []
+    if "cpu" in enabled:
+        backends.append(CPUBackend(LegacyCPUValidationTransport()))
+    kind = _backend_kind()
+    if kind in enabled:
+        transport = LegacyGPUQueueTransport(kind)
+        if kind == "ssh_gpu":
+            backends.append(
+                SSHGPUBackend(
+                    transport,
+                    SSHGPUConfig(
+                        target_ref=COMPUTE_SSH_TARGET_REF,
+                        credential_ref=COMPUTE_SSH_CREDENTIAL_REF,
+                        artifact_root=str(COMPUTE_ARTIFACT_ROOT),
+                    ),
+                )
+            )
+        else:
+            backends.append(LocalGPUBackend(transport))
+    if "colab_gpu" in enabled:
+        # The isolated CLI executor exists, but durable queue/worker binding is
+        # intentionally not fabricated here. Submissions fail as not_configured
+        # until the v1 Colab transport is implemented and canary-validated.
+        pass
     return ComputeScheduler(
-        [CPUBackend(LegacyCPUValidationTransport()), backend],
+        backends,
         job_store=ComputeJobRepository(),
     )
 
@@ -640,6 +672,10 @@ def submit_experiment_run(
         )
     if backend_kind in {"local_gpu", "ssh_gpu"} and backend_kind != _backend_kind():
         raise ComputeBackendError("requested GPU backend is not configured")
+    if backend_kind not in _enabled_backend_kinds():
+        raise ComputeBackendError(
+            f"requested compute backend is disabled:{backend_kind}"
+        )
     request = ComputeSubmission(
         agenda_id=int(agenda_id),
         idea_id=int(idea_id),
