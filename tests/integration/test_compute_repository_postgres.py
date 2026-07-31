@@ -40,8 +40,13 @@ class IsolatedComputeRepositoryTests(unittest.TestCase):
     def setUpClass(cls):
         # This test must be its own process so config/db cannot have captured a
         # different database URL during earlier test imports.
-        os.environ["DEEPGRAPH_DATABASE_URL"] = URL
+        # Run the guarded migration before selecting the application URL.  The
+        # migration guard must reject a URL equal to DEEPGRAPH_DATABASE_URL;
+        # this ordering keeps that fail-closed check meaningful while allowing
+        # the explicitly isolated test database to be selected afterwards.
+        os.environ["DEEPGRAPH_DATABASE_URL"] = ""
         apply_to_isolated_restore(URL, source_commit=SOURCE_COMMIT)
+        os.environ["DEEPGRAPH_DATABASE_URL"] = URL
 
         from db import database as database
         from meta_harness.compute import (
@@ -149,8 +154,9 @@ class IsolatedComputeRepositoryTests(unittest.TestCase):
             "frontier_packets",
             "research_agendas",
         ):
+            key_column = "id" if table == "research_agendas" else "agenda_id"
             self.db.execute(
-                f"DELETE FROM {table} WHERE agenda_id=?",
+                f"DELETE FROM {table} WHERE {key_column}=?",
                 (self.agenda_id,),
             )
         self.db.commit()

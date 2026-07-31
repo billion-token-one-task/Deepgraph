@@ -110,11 +110,10 @@ class ExperimentSupervisorPlanTests(unittest.TestCase):
             success_criteria=self._success_criteria(),
         )
 
-        self.assertTrue(any("zero-budget open-answer prompt" in action for action in plan["next_actions"]))
-        self.assertTrue(any("_build_cggr_zero_budget_prompt" in action for action in plan["next_actions"]))
+        self.assertTrue(any("failed prompt-shortening intervention" in action for action in plan["next_actions"]))
+        self.assertTrue(any("recorded failure cluster" in action for action in plan["next_actions"]))
         self.assertTrue(any("benchmark-context propagation" in action for action in plan["next_actions"]))
-        self.assertTrue(any("phrase-only" in guardrail for guardrail in plan["guardrails"]))
-        self.assertTrue(any("answer-shape regex" in guardrail for guardrail in plan["guardrails"]))
+        self.assertTrue(any("prompt-shortening intervention" in guardrail for guardrail in plan["guardrails"]))
         self.assertTrue(any("context-propagation" in guardrail for guardrail in plan["guardrails"]))
 
     def test_no_candidate_diff_switches_to_implementation_required(self):
