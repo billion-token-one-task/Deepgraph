@@ -40,3 +40,8 @@ pending and no LLM call occurs.
 `rg`/AST inventory must be regenerated at the candidate commit. Any new
 post-agenda legacy caller is a release blocker unless it is demonstrably
 non-resource-consuming pure formatting with a separate integrity gate.
+
+Current AST inventory: 24 direct calls, comprising 10 open pre-agenda
+ingestion calls and 14 calls in explicitly blocked, non-default-registered or
+no-generic-call-site modules; zero unclassified. Passing this inventory proves
+completeness only. It does not authorize the 10 ingestion calls.

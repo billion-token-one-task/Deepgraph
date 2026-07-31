@@ -15,7 +15,7 @@ accepted.
 | 5 | old backlog excluded | migration leaves scope null; explicit import ledger only | implemented, PostgreSQL pending |
 | 6 | core objects carry correct `agenda_id` | migration/contracts/repositories and all literal legacy mutations are explicitly scoped | implemented, PostgreSQL CI pending |
 | 7 | Frontier Gate rejects obsolete/duplicate | gate, persisted decision, API response and bypass prevention implemented | CI pending |
-| 8 | pilot/GPU/full benchmark require grant | proposal identity, LLM role routes and CPU/local/SSH durable compute admission are grant-scoped | partial; Colab durable runtime and all isolated execution remain |
+| 8 | pilot/GPU/full benchmark require grant | proposal identity, post-agenda LLM role routes and CPU/local/SSH durable compute admission are grant-scoped | partial; 10 pre-agenda ingestion LLM sites need bounded authority, Colab durable runtime and all isolated execution remain |
 | 9 | backend/LLM failures never complete/confirm | fail-closed route/backend contracts; GPU validation failure now marks job failed; operational positive verdict is `supported` | fault CI pending |
 | 10 | harness patch passes three suites | policy and RegressionReport require all three plus reviewer | no suite executed |
 | 11 | candidate cannot modify protected inputs/data | path/environment/namespace policy implemented | isolation CI pending |
@@ -27,7 +27,7 @@ accepted.
 
 ## Static evidence recorded in this session
 
-- 257 Python files parsed by the broad AST pass and 247 by the release static
+- 258 Python files parsed by the broad AST pass and 248 by the release static
   audit at the latest checkpoint;
 - static topic/integrity/migration/secret audit passed at that checkpoint;
 - migration dry plan reported 84 statements, SHA-256
@@ -39,6 +39,9 @@ accepted.
   definite unscoped or dynamic mutation;
 - scientific-state authority audit found two state-bearing SQL literals and
   zero unauthorized mutation locations;
+- direct-LLM audit classified all 24 legacy direct calls with zero
+  unclassified; 10 pre-agenda ingestion calls remain an explicit authority
+  blocker rather than accepted evidence;
 - no database or application was accessed by those checks.
 - agenda example JSON parsed successfully; `deepgraph.toml` was text-reviewed
   but not runtime-parsed because the host Python 3.9 has no TOML parser and

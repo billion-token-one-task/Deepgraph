@@ -17,8 +17,10 @@ acceptance state`). Control-plane hardening checkpoint:
 `2cccc7a6d293f5063425958fa771f368afdf7077`
 (`feat: harden meta-harness control plane`). CPU admission checkpoint:
 `4d059cd8ab425e7806b095ce2daaa1697d390272`
-(`feat: unify CPU compute admission`). None has been pushed or accepted as a
-release.
+(`feat: unify CPU compute admission`). Legacy LLM boundary checkpoint:
+`f66cafead3f6b1046122d2e5df7637a300cca2f3`
+(`refactor: block ungranted legacy LLM paths`). None has been pushed or
+accepted as a release.
 
 ### Lineage and why this candidate exists
 
@@ -111,6 +113,8 @@ GitHub origin/master@6048a95
 - Minimal operator-authenticated meta-harness API and count-only status view.
 - AST-only agenda mutation scope audit that is a release blocker while any
   definite unscoped legacy UPDATE/DELETE remains.
+- AST-only direct-LLM caller inventory that fails on any unclassified new
+  `call_llm`/`call_llm_json` site.
 - Non-sensitive `deepgraph.toml` policy for agendas, portfolio, grants, LLM
   roles, compute backends, evidence, harness evolution, failures and traces.
 - Static source audit, isolated PostgreSQL test skeleton, scientific-integrity
@@ -142,6 +146,8 @@ GitHub origin/master@6048a95
 - Legacy pre-identity Tier-1 LLM discovery and the global unscoped LLM insight
   rank endpoint are disabled; agenda-scoped problem-first proposal and
   portfolio admission are their supported replacement.
+- Forge codebase selection and scaffold generation no longer retain an
+  ungranted direct-LLM or silent deterministic fallback path.
 - Validation reports operational `supported` instead of directly creating
   `confirmed`; positive problem, knowledge, manuscript and meta-learning paths
   require a persisted supported scientific decision.
@@ -196,7 +202,7 @@ The example plugin is non-production and disabled unless explicitly selected.
 
 Allowed static checks currently report:
 
-- 257 Python files parsed by the broad AST pass and 247 by the release static
+- 258 Python files parsed by the broad AST pass and 248 by the release static
   audit at the latest working-tree checkpoint;
 - no finding from the topic/integrity/migration/secret static audit;
 - SQL AST audit: 798 literal calls, 795 statically countable, no definite
@@ -210,6 +216,9 @@ Allowed static checks currently report:
   definite unscoped or dynamic mutations.
 - scientific-state authority audit finds two state-bearing SQL literals and
   zero unauthorized UPDATE/INSERT locations.
+- direct-LLM audit classifies all 24 remaining legacy calls: 10 pre-agenda
+  ingestion calls remain an open budget-boundary item; 14 are in blocked,
+  non-registered or no-call-site legacy modules; zero are unclassified.
 
 Not run: pytest, application imports/startup, PostgreSQL migration, production
 backup startup, provider/backend calls, CPU/GPU/SSH/Colab work, candidate
@@ -219,8 +228,9 @@ remains an isolated CI item.
 
 ### Known incomplete integration
 
-- Remaining direct LLM callers must still be exhaustively classified as
-  pre-agenda ingestion, example-only, migrated or blocked.
+- The 10 classified pre-agenda direct LLM callers must receive a granted
+  bounded-ingestion path or remain disabled; the inventory is exhaustive and
+  fails on new unclassified sites.
 - The legacy GPU worker scheduler still contains transport-specific internals;
   CPU/local/SSH admission and durable settlement are bridged, while Colab
   durable queue/worker wiring remains incomplete.
