@@ -35,6 +35,8 @@ deliberately not claimed as working:
   run against isolated PostgreSQL;
 - calibration reports have no real OutcomeRecord sample;
 - minimal API registration is statically reviewed but never served;
+- legacy Web 410 and agenda-scoped read behavior has test material but was not
+  exercised;
 - production rollback rehearsal has not occurred;
 - single-operator/deployment-quiescence control was not established, so no
   remote mutation was attempted.

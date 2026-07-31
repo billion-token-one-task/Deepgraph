@@ -385,6 +385,12 @@ artifacts named in its evidence column may promote it to `[x]`.
 - [ ] **P8-12** TOML runtime parse under pinned application Python is pending;
   host Python 3.9 has no TOML parser.
 - [-] **P8-13** Complete legacy UI merge is excluded.
+- [x] **P8-14** All non-meta-harness legacy API POSTs fail closed with 410;
+  the dashboard can no longer edit `.env` or directly start pipeline,
+  verification, forge, validation, GPU scheduler or manuscript work.
+- [x] **P8-15** Retained agenda-owned legacy reads require a positive
+  `agenda_id` and scope joins/children across insights, runs, claims,
+  artifacts, manuscripts, bundles and previews.
 
 ## X. Explicitly excluded from first release
 
@@ -403,10 +409,10 @@ artifacts named in its evidence column may promote it to `[x]`.
 - [x] **V-02** 258 Python files passed the broad AST parse and 248 files passed
   the release static audit at the latest checkpoint.
 - [x] **V-03** Side-effect-free SQL AST audit found no definite mismatch:
-  798 literal calls, 795 statically countable, and 112 dynamic calls explicitly
+  796 literal calls, 793 statically countable, and 112 dynamic calls explicitly
   left for review/CI.
 - [x] **V-04** `git diff --check` passed.
-- [x] **V-04A** Agenda mutation scope audit passes: 139 scoped literal
+- [x] **V-04A** Agenda mutation scope audit passes: 138 scoped literal
   UPDATE/DELETE statements, zero definite unscoped or dynamic mutations.
 - [x] **V-04B** Scientific-state authority audit passes: two state-bearing SQL
   literals, zero unauthorized mutation locations.
@@ -434,7 +440,7 @@ artifacts named in its evidence column may promote it to `[x]`.
   integration documentation `ee96fba`, control-plane hardening `2cccc7a`,
   checkpoint documentation `a148a11`, CPU admission `4d059cd`, and legacy LLM
   blocking `f66cafe`, plus compute registry enforcement `8f59a65`; none was
-  pushed.
+  pushed. Legacy Web boundary hardening is `954b858`; it also remains local.
 - [ ] **V-14** No push until explicit approval and quiescence check.
 - [ ] **V-15** Final candidate commit hash must replace working-tree/intermediate
   hashes in all acceptance artifacts.
