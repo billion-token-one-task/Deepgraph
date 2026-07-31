@@ -21,8 +21,10 @@ acceptance state`). Control-plane hardening checkpoint:
 `f66cafead3f6b1046122d2e5df7637a300cca2f3`
 (`refactor: block ungranted legacy LLM paths`). Compute registry checkpoint:
 `8f59a659df04229abf4d759e4d354e3899aac410`
-(`fix: enforce configured compute registry`). None has been pushed or accepted
-as a release.
+(`fix: enforce configured compute registry`). Legacy Web boundary checkpoint:
+`954b858418c4258d2b3c521c6fad39259e47bb8a`
+(`fix: close legacy web control bypasses`). None has been pushed or accepted as
+a release.
 
 ### Lineage and why this candidate exists
 
@@ -148,6 +150,11 @@ GitHub origin/master@6048a95
 - Runtime compute construction now honors the configured enabled registry and
   SSH reference/artifact settings. Disabled, unknown and not-yet-wired Colab
   backends fail closed instead of being silently activated.
+- Legacy Web POST/control surfaces (including runtime `.env` edits, direct
+  forge/validation, scheduler start/stop and manuscript generation) return
+  410; authenticated meta-harness v1 routes are the only mutation API.
+- Retained legacy insight/experiment/manuscript/bundle/paper-preview reads
+  require a positive agenda query and use agenda-matched joins.
 - Legacy pre-identity Tier-1 LLM discovery and the global unscoped LLM insight
   rank endpoint are disabled; agenda-scoped problem-first proposal and
   portfolio admission are their supported replacement.
@@ -210,14 +217,14 @@ Allowed static checks currently report:
 - 258 Python files parsed by the broad AST pass and 248 by the release static
   audit at the latest working-tree checkpoint;
 - no finding from the topic/integrity/migration/secret static audit;
-- SQL AST audit: 798 literal calls, 795 statically countable, no definite
+- SQL AST audit: 796 literal calls, 793 statically countable, no definite
   mismatch, and 112 dynamic calls left for review/CI;
 - additive migration plan: 84 statements, 24,742 bytes, SHA-256
   `f0fcc7680ad211774d53d40179c34cf01044537d009407e5d58e6a74c7c862a2`,
   no destructive token and no database access;
 - `git diff --check` passed;
 - agenda example JSON parsed.
-- agenda mutation scope audit passes: 139 scoped literal mutations, zero
+- agenda mutation scope audit passes: 138 scoped literal mutations, zero
   definite unscoped or dynamic mutations.
 - scientific-state authority audit finds two state-bearing SQL literals and
   zero unauthorized UPDATE/INSERT locations.

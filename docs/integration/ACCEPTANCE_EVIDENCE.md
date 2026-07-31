@@ -22,7 +22,7 @@ accepted.
 | 12 | restart resumes without duplicate | durable claim-before-submit, live-job reuse, unknown-outcome quarantine and per-agenda startup reconciliation exist | isolated crash evidence missing |
 | 13 | predictions calibrate against outcomes | trusted assembler, non-success usage settlement, prediction errors and Brier/MAE/RMSE report implemented | no real outcomes/runtime evidence |
 | 14 | negative/zero/no-metric/compile failure cannot promote | scientific contract, manuscript gate and fixtures implemented | CI pending |
-| 15 | minimum Web/API/statistics compatible | count-only status and operator-authenticated mutation API added | runtime/API CI pending |
+| 15 | minimum Web/API/statistics compatible | count-only status and operator-authenticated mutation API added; legacy control POSTs return 410 and agenda-owned reads require scope | runtime/API CI pending |
 | 16 | `7d0b42a` rollback rehearsed | immutable ref and runbook recorded | not rehearsed |
 
 ## Static evidence recorded in this session
@@ -33,9 +33,9 @@ accepted.
 - migration dry plan reported 84 statements, SHA-256
   `f0fcc7680ad211774d53d40179c34cf01044537d009407e5d58e6a74c7c862a2`,
   and no destructive token;
-- SQL AST audit found no definite placeholder mismatch across 795 countable
+- SQL AST audit found no definite placeholder mismatch across 793 countable
   literal calls; 112 dynamic calls remain review/CI scope;
-- agenda mutation audit found 139 explicitly scoped literal mutations and no
+- agenda mutation audit found 138 explicitly scoped literal mutations and no
   definite unscoped or dynamic mutation;
 - scientific-state authority audit found two state-bearing SQL literals and
   zero unauthorized mutation locations;

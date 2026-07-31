@@ -22,6 +22,9 @@
 - Compute registry enforcement is locally committed as `8f59a65`: only
   explicitly enabled CPU/active legacy GPU adapters are registered; unknown,
   disabled and unwired Colab submissions fail closed.
+- Legacy Web control bypass removal is locally committed as `954b858`.
+  Non-meta-harness POSTs now return 410, `.env` editing code was removed, and
+  retained agenda-owned reads require explicit scope.
 - Safety recheck at 07:36 UTC: load `0.25, 0.31, 0.29`; root disk 53% used
   with about 95 GB free; `/tmp` 27% used.
 - Archive sources were reverified as custom local refs
@@ -100,7 +103,7 @@ Phase 3–8 integration remains incomplete; see [UNVERIFIED.md](UNVERIFIED.md).
   SHA-256
   `f0fcc7680ad211774d53d40179c34cf01044537d009407e5d58e6a74c7c862a2`,
   no destructive token, no database access.
-- SQL AST audit: 798 literal calls, 795 statically countable, no definite
+- SQL AST audit: 796 literal calls, 793 statically countable, no definite
   placeholder mismatch; 112 dynamic calls remain explicit review/CI scope.
 - `git diff --check`: passed.
 - Agenda example JSON parsed.
