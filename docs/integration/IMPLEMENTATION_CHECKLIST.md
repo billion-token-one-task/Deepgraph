@@ -494,8 +494,10 @@ artifacts named in its evidence column may promote it to `[x]`.
   `f2f6ea96d27673f077966b4bd2f278717393b0d9`.
 - [ ] **V-14** No push until explicit approval and quiescence check.
 - [x] **V-15** Frozen source candidate is
-  `6851a991154906f11d8cfc247d22a5d5caa0a834`; evidence records its immutable
-  candidate tree hash. Documentation is a separate local evidence commit.
+  `6851a991154906f11d8cfc247d22a5d5caa0a834`; verification commit is
+  `d3650fe0a2270eb265ef9dc40041b3ccab537efd` with tracked-content tree
+  `c9a2efac23e30abda6c9ab87242d76ecfa66d6679272404fbf27402d86db6114`.
+  Documentation/evidence remains local and unpushed.
 - [x] **V-16** Exact `7d0b42a` rollback worktree was clean and isolated
   temp-SQLite startup passed; production rollback was not run.
 - [x] **V-17** `main` and `web.app` imported and an isolated temp-SQLite startup

@@ -12,6 +12,10 @@ Status: **development branch; rejected for master; not deployed**.
 Final isolated acceptance record: source candidate frozen at
 `6851a991154906f11d8cfc247d22a5d5caa0a834` with candidate tree
 `b1c1e8ebfbc0607cc39bb617dad9d56fd949d214122a37dd70541bd634d9feab`.
+Post-fix verification commit is
+`d3650fe0a2270eb265ef9dc40041b3ccab537efd` (Git tree
+`7e3183cd039cb7bace420355a6aad6b0a67f1358`, tracked-content SHA-256
+`c9a2efac23e30abda6c9ab87242d76ecfa66d6679272404fbf27402d86db6114`).
 Static audit, the 71-test pure policy lane and real bubblewrap evaluator
 lanes passed. PostgreSQL restore/migration/restart, adapted legacy
 compatibility, hardware/provider canaries and reviewer approval remain open;
