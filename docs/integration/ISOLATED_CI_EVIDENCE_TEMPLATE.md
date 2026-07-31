@@ -41,7 +41,11 @@ lane_1_static:
 
 lane_2_policy:
   status: passed (71 passed)
-  test_report_sha256: 78a9fb6e0724ec1267056778537914642069d95d03d68eb599bfc7e73e33b4d7
+  test_report_sha256: 76c9e6d391f2e6d62b21e29a49b6fb56125a043adaf660d5fd9d391f55cd2669
+  validation_loop_fault_status: passed (22 passed, 0 failed)
+  validation_loop_fault_report_sha256: 8c7f1fdad2f6e5c3a60fb237d75de6e9f9d84e96af3022b6b274f4b843168075
+  synthetic_fault_status: passed (60 passed, 0 failed)
+  synthetic_fault_report_sha256: d41e3e25974b8dd8b9343e3b0b81cfe6a0a75088aac7017823f410a055d30f97
 
 lane_3_postgresql:
   migration_first_status: blocked_not_run_no_disposable_postgresql
@@ -65,10 +69,13 @@ lane_4_evaluator:
   protected_write_negative_test: true (result 1b65ec3b98c5dec4acfd447c8c8a08bbad9f19d1de6a9c48f2f4f0c539d1d4b0)
   network_negative_test: true (probe blocked)
   unisolated_fallback_negative_test: true (refused missing bwrap)
+  post_fix_real_rerun_status: blocked_host_bwrap_netlink_route
+  post_fix_real_rerun_report_sha256: 63230055746e4949ab7337f70f94786b77edc77f87883eb2e56a0a487cf1ae0c
+  post_fix_candidate_tree_before_after: b1c1e8ebfbc0607cc39bb617dad9d56fd949d214122a37dd70541bd634d9feab
 
 lane_5_fault_canary:
-  synthetic_provider_status: passed targeted router/cooldown tests; aggregate report has 5 stale validation failures
-  synthetic_backend_status: passed 53 targeted backend/app/fault tests; PostgreSQL backend recovery unverified
+  synthetic_provider_status: passed targeted router/cooldown tests; synthetic aggregate 60/60
+  synthetic_backend_status: passed targeted backend/app/fault tests; PostgreSQL backend recovery unverified
   duplicate_submission_count: 0 observed in mocked/durable queue tests; PostgreSQL unverified
   unknown_usage_quarantine_status: implemented and mock-tested; PostgreSQL unverified
   approved_cpu_canary_status: not_run_no_approved_canary
@@ -82,6 +89,12 @@ review:
   master_replacement_approved: false
 ```
 
+The adapted legacy lane is intentionally retained as a separate audit lane:
+39 passed / 30 failed. See
+[LEGACY_TEST_CLASSIFICATION.md](LEGACY_TEST_CLASSIFICATION.md) for the
+test-by-test rejected/obsolete or new-contract classification. No compatibility
+shim restores grantless, unscoped, password-bearing or unlimited behavior.
+
 Every `false`, empty field or missing hash remains a blocker. A code-defined
 test or runbook is not evidence that its corresponding field passed.
 
@@ -90,7 +103,9 @@ test or runbook is not evidence that its corresponding field passed.
 The block above records the immutable source candidate and the disposable
 evaluator evidence collected on 2026-07-31. The real bubblewrap held-in,
 held-out and canary evaluator lanes passed, including the protected-write and
-missing-isolation-binary negative checks. The PostgreSQL lane could not run:
+missing-isolation-binary negative checks. The post-fix real evaluator rerun was
+blocked by the host bwrap network namespace restriction; its candidate tree
+hash remained unchanged. The PostgreSQL lane could not run:
 this host had `psql` but no server, `initdb`/`pg_ctl`, or usable Docker daemon.
 The CPU/GPU/Colab canary lanes and reviewer approval were not authorized or
 available. Consequently `all_16_gates_accepted` and

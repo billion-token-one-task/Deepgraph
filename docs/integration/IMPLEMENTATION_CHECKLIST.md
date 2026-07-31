@@ -380,11 +380,15 @@ artifacts named in its evidence column may promote it to `[x]`.
   alone cannot approve.
 - [x] **P7-13** Harness repository persists agenda-scoped lineage/evaluation
   records.
-- [~] **P7-14** Candidate isolation tests now cover a hash-pinned bubblewrap
+- [~] **P7-14** Candidate isolation tests cover a hash-pinned bubblewrap
   command with read-only candidate/evaluator/suite mounts, cleared environment,
-  unshared network, isolated output and before/after candidate tree hashes;
-  tests are written but not run.
-- [ ] **P7-15** No actual candidate worktree/evaluator/canary has run.
+  unshared network, isolated output and before/after candidate tree hashes.
+  The prior real fixture lane passed; the post-fix rerun was blocked by the
+  host bwrap `NETLINK_ROUTE` restriction, while mocked and no-fallback
+  negatives passed.
+- [~] **P7-15** An earlier disposable candidate fixture ran held-in, held-out
+  and canary; the post-fix real rerun is host-blocked, so no fresh evaluator
+  acceptance is claimed.
 - [~] **P7-16** Detached HMAC approval envelopes bind reviewer, key ID,
   purpose, subject and issuance time, with secret material referenced only by
   environment variable. External reviewer identity/key issuance and rotation
@@ -454,17 +458,22 @@ artifacts named in its evidence column may promote it to `[x]`.
 - [x] **V-05** Agenda example JSON parsed.
 - [x] **V-06** Migration dry-plan recorded statement count/checksum/no
   destructive token.
-- [~] **V-07** Pure policy lane passed 71 tests. Targeted synthetic backend
-  tests passed 53; the broader fault collection remains 55 passed/5 stale
-  validation failures, and adapted legacy tests remain 39 passed/30 failed.
+- [~] **V-07** Pure policy lane passed 71 tests. Refreshed synthetic fault
+  lane passed 60 (validation-loop fairness/manifest subset 22/22) after
+  fail-closed guard repairs. Adapted legacy remains 39 passed/30 failed; each
+  failure is classified in
+  [LEGACY_TEST_CLASSIFICATION.md](LEGACY_TEST_CLASSIFICATION.md) as obsolete
+  or requiring a new scoped/granted fixture. PostgreSQL runtime remains open.
 - [ ] **V-08** Disposable PostgreSQL twice-run/count-preservation test is
   written but could not run: no local server or usable Docker daemon.
 - [~] **V-08A** Durable compute restart/unknown-submission/artifact-finalization
   tests are written and guarded; PostgreSQL execution skipped.
 - [~] **V-08B** Content-addressed evidence audit/decision transition
   tests are written and guarded; PostgreSQL execution skipped.
-- [x] **V-09** Real bubblewrap held-in/held-out/canary evaluator lanes passed;
-  protected-write, network and missing-bwrap fallback negative tests passed.
+- [~] **V-09** Prior real bubblewrap held-in/held-out/canary evaluator lanes
+  passed and protected-write/network/missing-bwrap negatives passed. The
+  post-fix rerun preserved the fixture tree hash but was blocked by host
+  bwrap network namespace permissions.
 - [x] **V-10** Migration, CI, canary, rollback and configuration runbooks exist.
 - [x] **V-11** Master acceptance matrix states **REJECTED — not eligible**;
   PostgreSQL, adapted legacy, hardware canary and reviewer gates remain open.

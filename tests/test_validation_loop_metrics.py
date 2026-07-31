@@ -414,7 +414,9 @@ class ValidationMetricParsingTests(unittest.TestCase):
                         "require_statistical_significance": False,
                     },
                 },
-                verdict="confirmed",
+                # Operational benchmark completion uses ``supported``; the
+                # scientific ``confirmed`` state is a separate authority.
+                verdict="supported",
                 validation_summary_path=workdir / "validation_summary.json",
             )
 

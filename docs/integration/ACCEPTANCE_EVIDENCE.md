@@ -17,12 +17,12 @@ accepted. Record that evidence using
 | 6 | core objects carry correct `agenda_id` | migration/contracts/repositories and all literal legacy mutations are explicitly scoped | implemented, PostgreSQL CI pending |
 | 7 | Frontier Gate rejects obsolete/duplicate | gate, persisted decision, API response and bypass prevention implemented | CI pending |
 | 8 | pilot/GPU/full benchmark require grant | proposal/ingestion/post-agenda LLM roles and CPU/local/SSH/Colab durable admission are grant-scoped; PostgreSQL legacy GPU queue requires the compute identity | policy/static passed; PostgreSQL runtime pending |
-| 9 | backend/LLM failures never complete/confirm | fail-closed route/backend contracts; synthetic targeted backend/router tests passed; aggregate validation-fault report has 5 stale failures | open |
-| 10 | harness patch passes three suites | 71 pure policy tests passed; real held-in/held-out/canary bubblewrap evaluator passed; adapted legacy lane was 39 passed / 30 failed | rejected / legacy compatibility open |
-| 11 | candidate cannot modify protected inputs/data | real bubblewrap held-in/held-out/canary plus protected-write, network and no-fallback negatives passed | accepted in isolated evaluator lane |
+| 9 | backend/LLM failures never complete/confirm | fail-closed route/backend contracts; refreshed synthetic fault lane is 60 passed; PostgreSQL/provider execution remains pending | policy/fault passed; PostgreSQL pending |
+| 10 | harness patch passes three suites | 71 pure policy tests; validation-loop fairness/manifest lane is 22 passed; real held-in/held-out/canary bubblewrap evaluator passed; adapted legacy lane is 39 passed / 30 failed and individually classified as obsolete/new-contract mismatches | rejected / legacy classification recorded |
+| 11 | candidate cannot modify protected inputs/data | prior real bubblewrap held-in/held-out/canary lane passed; post-fix rerun preserved candidate tree hash but bwrap failed to create its isolated network (`NETLINK_ROUTE ... Operation not permitted`); mocked contract and no-fallback negative passed | prior lane accepted; fresh rerun blocked by host |
 | 12 | restart resumes without duplicate | durable compute/Colab/ingestion claims, safe bind recovery, unknown-outcome quarantine and reconciliation-before-auto-research startup exist | PostgreSQL restart/fault evidence missing |
 | 13 | predictions calibrate against outcomes | trusted assembler, non-success usage settlement, prediction errors and Brier/MAE/RMSE report implemented | no real OutcomeRecord sample |
-| 14 | negative/zero/no-metric/compile failure cannot promote | scientific contract and fixtures passed in policy lane; legacy validation aggregate has stale failures | open |
+| 14 | negative/zero/no-metric/compile failure cannot promote | scientific contract and refreshed validation-loop fairness/manifest lane passed 22/22; PostgreSQL and full legacy runtime remain pending | policy/fault passed; PostgreSQL pending |
 | 15 | minimum Web/API/statistics compatible | count-only status and operator-authenticated mutation API added; temp SQLite app import/startup passed | PostgreSQL/API runtime pending |
 | 16 | `7d0b42a` rollback rehearsed | exact immutable ref checked in detached worktree; temp SQLite rollback startup passed | isolated rehearsal passed; production rollback not run |
 
@@ -49,6 +49,11 @@ accepted. Record that evidence using
 These values must be regenerated at the final candidate commit and included
 with the commit hash; intermediate counts/checksums are not release evidence.
 
+The adapted-legacy failure-by-failure decision is recorded in
+[LEGACY_TEST_CLASSIFICATION.md](LEGACY_TEST_CLASSIFICATION.md). It is not a
+waiver for removed unscoped, grantless, password-bearing or unlimited
+contracts.
+
 Implementation checkpoint for the new durable queues and isolated evaluator:
 `724a3ed51fe4649a720c08fb0c213014eb9d236a`. It is local, unpushed and not an
 acceptance identifier. The ingestion completion-truth follow-up is
@@ -62,19 +67,26 @@ also local and unpushed.
   candidate tree hash before and after real evaluator execution was
   `b1c1e8ebfbc0607cc39bb617dad9d56fd949d214122a37dd70541bd634d9feab`.
 - Pure policy/adapted-entry lane: `71 passed`; report SHA-256
-  `78a9fb6e0724ec1267056778537914642069d95d03d68eb599bfc7e73e33b4d7`.
-- Targeted synthetic backend/provider suite: `53 passed`; a broader fault
-  collection was `55 passed, 5 failed`, with all five failures in stale
-  validation-loop fairness/manifest expectations. The adapted legacy lane was
-  `39 passed, 30 failed`, due removed APIs, required grant arguments and old
-  fallback expectations; it was not weakened to make those tests pass.
+  `76c9e6d391f2e6d62b21e29a49b6fb56125a043adaf660d5fd9d391f55cd2669`.
+- Targeted synthetic fault suite after the validation-loop guard repair:
+  `60 passed` (report SHA-256
+  `d41e3e25974b8dd8b9343e3b0b81cfe6a0a75088aac7017823f410a055d30f97`);
+  the validation-loop subset is `22 passed` (report SHA-256
+  `8c7f1fdad2f6e5c3a60fb237d75de6e9f9d84e96af3022b6b274f4b843168075`).
+  The adapted legacy lane remains `39 passed, 30 failed`; every failure is
+  classified in [LEGACY_TEST_CLASSIFICATION.md](LEGACY_TEST_CLASSIFICATION.md)
+  and no safety contract was weakened.
 - Real bubblewrap evaluator: held-in, held-out and canary all passed with
   evaluator hash `45bddd4cbd5eba5ba6a6377b765debcd4e67fa15fcab879bbb321c752d6c362d`;
   protected-write, network and missing-bwrap fallback negative checks passed.
-- PostgreSQL integration tests were guarded and skipped. No local server,
-  initdb/pg_ctl, or usable Docker daemon was available, so restore, migration
-  twice, count preservation, concurrency, restart and PostgreSQL fault lanes
-  remain unverified.
+- PostgreSQL integration tests were guarded and skipped in separate processes
+  (migration 1 skipped, compute 4 skipped, evidence 1 skipped; report hashes
+  `d8e17839871bd0d3b856105bc4462f330eb464d72898ee3d71a1be24ab3018f7`,
+  `9bd69a10017890a84349f080bd2ffaea2a064772959dce88c1a9b7927bc6f98e`, and
+  `f0578970c449ae746a699b3d622f1e6eca6ed1c223ad6c53898528d57055a27e`). No
+  local server, initdb/pg_ctl, or usable Docker daemon was available, so
+  restore, migration twice, count preservation, concurrency, restart and
+  PostgreSQL fault lanes remain unverified.
 - Actual CPU/GPU/Colab canaries were not run. The Colab CLI was inspected only
   for contract/help availability; no OAuth, provider, production or remote
   credentials were used.

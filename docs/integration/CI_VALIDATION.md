@@ -1,13 +1,16 @@
 # Validation matrix for isolated CI
 
 Final-session record (2026-07-31): static audits passed; the isolated Python
-3.13 policy lane passed 71 tests; a temp-SQLite application startup smoke
-passed; and real bubblewrap held-in/held-out/canary plus protected-write,
-network and missing-bwrap fallback negative tests passed. The PostgreSQL lane
-was blocked because no local server or usable Docker daemon was available.
-Adapted legacy tests were 39 passed/30 failed, and the broader synthetic fault
-collection was 55 passed/5 stale validation failures. No production URL,
-provider credential, deployment, or database was used.
+3.13 policy lane passed 71 tests; the synthetic fault lane passed 60/60,
+including the validation-loop fairness/manifest subset 22/22; and the prior
+real bubblewrap held-in/held-out/canary plus protected-write, network and
+missing-bwrap fallback negative tests passed. A post-fix real evaluator rerun
+preserved the fixture tree hash but was blocked by the host bwrap
+`NETLINK_ROUTE` permission error. The PostgreSQL lane was blocked because no
+local server or usable Docker daemon was available. Adapted legacy tests were
+39 passed/30 failed and are individually classified in
+[LEGACY_TEST_CLASSIFICATION.md](LEGACY_TEST_CLASSIFICATION.md). No production
+URL, provider credential, deployment, or database was used.
 
 Record the isolated run in
 [ISOLATED_CI_EVIDENCE_TEMPLATE.md](ISOLATED_CI_EVIDENCE_TEMPLATE.md). Empty or

@@ -163,6 +163,21 @@ def benchmark_fairness_warnings_from_diff(diff_text: str | None) -> list[str]:
             "method_name.startswith",
         )
     )
+    # Generated method-specific helpers often use a short method slug (for
+    # example ``_cggr_canonicalize_*``) without spelling out ``candidate``.
+    # Treat a slugged canonicalizer applied to the direct answer as candidate
+    # scope; otherwise a scoring-only patch can evade the fairness guard.
+    if (
+        "canonicaliz" in lower
+        and "direct_output" in lower
+        and any(
+            token in lower
+            for token in ("zero_budget", "zero-budget", "answer", "output")
+        )
+    ):
+        candidate_only_signal = True
+    if candidate_only_signal:
+        touches_candidate = True
     if touches_candidate and touches_scoring_surface and candidate_only_signal:
         warnings.append(
             "Code diff appears to add candidate-specific scoring, answer normalization, or postprocessing. "

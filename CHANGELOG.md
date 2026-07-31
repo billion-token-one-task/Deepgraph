@@ -228,6 +228,10 @@ GitHub origin/master@6048a95
   metrics and incomplete benchmarks cannot confirm a claim.
 - SSH metadata stores credential references instead of passwords, strict host
   checking is enabled and implicit remote dependency installation defaults off.
+- Validation-loop fairness now detects method-slugged candidate-only
+  canonicalizers, broad benchmark-context propagation and zero-budget answer
+  shape changes. Operational benchmark manifests require `supported`; the
+  scientific `confirmed` state remains a separate authority.
 
 ### Removed or isolated from the generic runtime
 
@@ -288,11 +292,19 @@ Allowed static checks currently report:
   non-registered or no-call-site modules; zero ingestion calls and zero
   unclassified calls remain.
 
-Not run: pytest, application imports/startup, PostgreSQL migration, production
-backup startup, provider/backend calls, CPU/GPU/SSH/Colab work, candidate
-worktree evaluation, held-in/held-out/canary, restart recovery and rollback
-rehearsal. The host Python 3.9 has no TOML parser, so TOML runtime parsing also
-remains an isolated CI item.
+The isolated Python 3.13 policy lane passed 71 tests. The refreshed synthetic
+fault lane passed 60 tests (validation-loop subset 22/22); report hashes are
+recorded in `docs/integration/ACCEPTANCE_EVIDENCE.md`. The adapted legacy lane
+remains 39 passed/30 failed; all 30 are individually classified in
+`docs/integration/LEGACY_TEST_CLASSIFICATION.md` and no safety contract was
+relaxed. Application startup, PostgreSQL migration/restore, production backup
+startup, provider/backend calls, CPU/GPU/SSH/Colab work, candidate worktree
+evaluation post-fix rerun was blocked by the host bwrap `NETLINK_ROUTE`
+restriction (candidate fixture tree hash remained unchanged), so the earlier
+real evaluator result is not re-used as fresh evidence. Restart recovery and
+reviewer approval remain unverified. The host
+Python 3.9 has no TOML parser, so TOML runtime parsing also remains an
+isolated-CI item.
 
 ### Known incomplete integration
 
@@ -320,5 +332,6 @@ remains an isolated CI item.
 Detailed status:
 [implementation checklist](docs/integration/IMPLEMENTATION_CHECKLIST.md),
 [LLM caller inventory](docs/integration/LLM_CALLER_INVENTORY.md),
+[legacy test classification](docs/integration/LEGACY_TEST_CLASSIFICATION.md),
 [porting ledger](docs/integration/PORTING_LEDGER.md), and
 [master acceptance matrix](docs/integration/ACCEPTANCE_EVIDENCE.md).
