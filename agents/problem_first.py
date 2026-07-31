@@ -860,9 +860,9 @@ def writeback_experiment_result(
 def run_experiment_worker(problem: dict, approach: dict, *, run_id: int | None = None) -> dict:
     """Compatibility wrapper for problem-first callers.
 
-    If an existing experiment run is supplied, delegate to the current validation
-    loop. Otherwise return an inconclusive structured result for schedulers that
-    only want to stage the next approach.
+    Direct execution is no longer a compatibility behavior. A staged approach
+    may return an inconclusive packet, but an existing run must enter through
+    the grant-scoped durable ComputeScheduler path.
     """
     if run_id is None:
         return {
@@ -873,17 +873,10 @@ def run_experiment_worker(problem: dict, approach: dict, *, run_id: int | None =
             "deep_insight_id": None,
             "source_signal_refs": approach.get("source_signal_refs") or {},
         }
-    from agents.validation_loop import run_validation_loop
-
-    result = run_validation_loop(run_id)
-    return {
-        "verdict": result.get("verdict") or result.get("status") or "inconclusive",
-        "conditions": result.get("benchmark_summary") or result,
-        "effect_size": result.get("effect_size") or result.get("effect_pct"),
-        "run_id": run_id,
-        "deep_insight_id": result.get("insight_id"),
-        "source_signal_refs": approach.get("source_signal_refs") or {},
-    }
+    raise PermissionError(
+        "direct problem-first validation is disabled; submit the existing "
+        "run through ComputeScheduler with a valid ResourceGrant"
+    )
 
 
 def problem_first_cycle(
