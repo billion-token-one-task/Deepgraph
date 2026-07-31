@@ -79,15 +79,6 @@ def _api_failure(scope: str, exc: Exception, status: int = 500):
     return jsonify({"status": "error", "scope": scope, "error": message}), status
 
 
-def _mask_secret(value: str | None) -> str:
-    if not value:
-        return ""
-    text = str(value)
-    if len(text) <= 8:
-        return "***"
-    return f"{text[:4]}...{text[-4:]}"
-
-
 def _process_rss_mb() -> float | None:
     try:
         out = subprocess.check_output(
@@ -903,7 +894,6 @@ def api_runtime_config():
                     "protocol": cfg.LLM_PROTOCOL,
                     "rpm": cfg.LLM_RPM,
                     "api_key_configured": bool(cfg.LLM_API_KEY),
-                    "api_key_hint": _mask_secret(cfg.LLM_API_KEY),
                 },
                 "secondary": {
                     "enabled": cfg.LLM_SECONDARY_ENABLED,
@@ -912,7 +902,6 @@ def api_runtime_config():
                     "protocol": cfg.LLM_SECONDARY_PROTOCOL,
                     "rpm": cfg.LLM_SECONDARY_RPM,
                     "api_key_configured": bool(cfg.LLM_SECONDARY_API_KEY),
-                    "api_key_hint": _mask_secret(cfg.LLM_SECONDARY_API_KEY),
                 },
                 "limits": {
                     "max_input_tokens": cfg.LLM_MAX_INPUT_TOKENS,
