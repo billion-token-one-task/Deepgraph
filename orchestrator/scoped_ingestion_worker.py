@@ -59,6 +59,24 @@ def run_one() -> dict:
             results.append(dict(result))
             if result.get("error"):
                 raise RuntimeError(str(result["error"]))
+            persisted = db.fetchone(
+                """
+                SELECT status, processing_stage
+                FROM papers
+                WHERE id=?
+                """,
+                (str(paper_id),),
+            ) or {}
+            if (
+                str(persisted.get("status") or "") != "reasoned"
+                or str(persisted.get("processing_stage") or "") != "reasoned"
+            ):
+                raise RuntimeError(
+                    "paper_not_reasoned:"
+                    f"{paper_id}:"
+                    f"{persisted.get('status') or 'missing'}:"
+                    f"{persisted.get('processing_stage') or 'missing'}"
+                )
         repository.complete(
             int(row["id"]),
             agenda_id=int(row["agenda_id"]),

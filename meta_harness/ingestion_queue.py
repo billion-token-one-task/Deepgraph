@@ -199,6 +199,7 @@ class ScopedIngestionRepository:
                 SELECT sij.*, rg.token_cap, rg.backend_allowlist_json
                 FROM scoped_ingestion_jobs_v1 AS sij
                 JOIN resource_grants AS rg ON rg.id=sij.resource_grant_id
+                JOIN research_agendas AS ra ON ra.id=sij.agenda_id
                 WHERE sij.status IN ('queued', 'retryable')
                   AND sij.attempt_count < sij.max_attempts
                   AND rg.agenda_id=sij.agenda_id
@@ -206,8 +207,10 @@ class ScopedIngestionRepository:
                   AND rg.stage=sij.stage
                   AND rg.status='active'
                   AND rg.expires_at > CURRENT_TIMESTAMP
+                  AND ra.is_active=1
+                  AND ra.status='active'
                 ORDER BY sij.created_at, sij.id
-                LIMIT 1 FOR UPDATE OF sij SKIP LOCKED
+                LIMIT 1 FOR UPDATE OF sij, ra SKIP LOCKED
                 """
             )
             if not row:
