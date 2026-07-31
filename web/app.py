@@ -19,8 +19,7 @@ from db import database as db
 from db import evidence_graph as graph
 from db import opportunity_engine as opp
 from db import taxonomy as tax
-from orchestrator.pipeline import get_events, run_continuous, log_event, get_stats_dict
-from agents.taxonomy_expander import run_expansion
+from orchestrator.pipeline import get_events, log_event, get_stats_dict
 
 app = Flask(__name__,
             template_folder="templates",
@@ -56,8 +55,17 @@ def _manual_api_removed_response():
         {
             "error": "Manual web actions have been removed. This deployment is fixed-flow and read-only from the UI.",
             "mode": "fixed_flow_read_only",
+            "replacement": "/api/meta-harness/v1",
         }
     ), 410
+
+
+def _required_agenda_query_id() -> int | None:
+    try:
+        agenda_id = int(request.args.get("agenda_id", ""))
+    except (TypeError, ValueError):
+        return None
+    return agenda_id if agenda_id > 0 else None
 
 
 def _api_failure(scope: str, exc: Exception, status: int = 500):
@@ -206,73 +214,13 @@ def _gpu_snapshot() -> dict[str, Any]:
 
 
 
-def _read_dotenv_lines(path: Path) -> list[str]:
-    if not path.exists():
-        return []
-    return path.read_text(encoding="utf-8", errors="replace").splitlines()
-
-
-def _format_env_assignment(key: str, value: str) -> str:
-    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
-    return f'{key}="{escaped}"'
-
-
-def _write_dotenv_updates(updates: dict[str, str]) -> list[str]:
-    env_path = cfg.PROJECT_ROOT / ".env"
-    lines = _read_dotenv_lines(env_path)
-    seen: set[str] = set()
-    output: list[str] = []
-
-    for raw in lines:
-        stripped = raw.strip()
-        prefix = "export " if stripped.startswith("export ") else ""
-        body = stripped[7:].strip() if prefix else stripped
-        key = body.partition("=")[0].strip() if "=" in body else ""
-        if key in updates:
-            output.append(prefix + _format_env_assignment(key, updates[key]))
-            seen.add(key)
-        else:
-            output.append(raw)
-
-    missing = [key for key in updates if key not in seen]
-    if missing and output and output[-1].strip():
-        output.append("")
-    for key in missing:
-        output.append(_format_env_assignment(key, updates[key]))
-
-    env_path.write_text("\n".join(output).rstrip() + "\n", encoding="utf-8")
-    return sorted(updates)
-
-
-_MANUAL_EXPERIMENT_POST_PATHS = {
-    "/api/research/launch",
-    "/api/deep_insights/generate",
-    "/api/experiments/forge",
-    "/api/experiments/run_full",
-}
-
-_EDITABLE_RUNTIME_ENV_KEYS = {
-    "DEEPGRAPH_LLM_MODEL",
-    "DEEPGRAPH_LLM_BASE_URL",
-    "DEEPGRAPH_LLM_API_KEY",
-    "DEEPGRAPH_LLM_PROTOCOL",
-    "DEEPGRAPH_LLM_SECONDARY_ENABLED",
-    "DEEPGRAPH_LLM_SECONDARY_MODEL",
-    "DEEPGRAPH_LLM_SECONDARY_BASE_URL",
-    "DEEPGRAPH_LLM_SECONDARY_API_KEY",
-    "DEEPGRAPH_LLM_SECONDARY_PROTOCOL",
-}
-
-
 @app.before_request
 def block_manual_experiment_post_apis():
-    if request.method == "POST" and request.path in _MANUAL_EXPERIMENT_POST_PATHS:
-        return _manual_api_removed_response()
-    if request.method == "POST" and request.path.endswith("/verify"):
-        return _manual_api_removed_response()
-    if request.method == "POST" and request.path.endswith("/research"):
-        return _manual_api_removed_response()
-    if request.method == "POST" and request.path.endswith("/run"):
+    if (
+        request.method == "POST"
+        and request.path.startswith("/api/")
+        and not request.path.startswith("/api/meta-harness/v1/")
+    ):
         return _manual_api_removed_response()
 
 
@@ -352,21 +300,42 @@ def _plan_snapshot(insight: dict) -> dict[str, Any]:
     }
 
 
-def _paper_preview_urls(insight_id: int, assets: list[dict]) -> dict[str, str | None]:
+def _paper_preview_urls(
+    insight_id: int,
+    assets: list[dict],
+    *,
+    agenda_id: int,
+) -> dict[str, str | None]:
     asset_paths = {str(asset.get("path") or "") for asset in assets}
     pdf_path = next((path for path in sorted(asset_paths) if path.endswith("/main.pdf") or path == "current/main.pdf"), None)
     tex_path = next((path for path in sorted(asset_paths) if path.endswith("/main.tex") or path == "current/main.tex"), None)
     return {
-        "index": url_for("paper_preview_index", insight_id=insight_id),
-        "pdf": url_for("paper_preview_pdf", insight_id=insight_id) if pdf_path else None,
-        "tex": url_for("paper_preview_tex", insight_id=insight_id) if tex_path else None,
+        "index": url_for(
+            "paper_preview_index",
+            insight_id=insight_id,
+            agenda_id=agenda_id,
+        ),
+        "pdf": url_for(
+            "paper_preview_pdf",
+            insight_id=insight_id,
+            agenda_id=agenda_id,
+        ) if pdf_path else None,
+        "tex": url_for(
+            "paper_preview_tex",
+            insight_id=insight_id,
+            agenda_id=agenda_id,
+        ) if tex_path else None,
     }
 
 
 def _workspace_payload(insight: dict) -> dict[str, Any]:
     layout = get_idea_workspace(int(insight["id"]), insight=insight, create=True, sync_db=True)
     assets = list_paper_assets(int(insight["id"]), insight=insight)
-    preview_urls = _paper_preview_urls(int(insight["id"]), assets)
+    preview_urls = _paper_preview_urls(
+        int(insight["id"]),
+        assets,
+        agenda_id=int(insight["agenda_id"]),
+    )
     return {
         "workspace_root": str(layout["workspace_root"]),
         "experiment_root": str(layout["experiment_root"]),
@@ -778,7 +747,11 @@ def _automation_snapshot() -> dict:
     }
 
 
-def _load_experiment_groups(*, include_archived: bool = False) -> list[dict]:
+def _load_experiment_groups(
+    *,
+    agenda_id: int,
+    include_archived: bool = False,
+) -> list[dict]:
     insights = db.fetchall(
         """
         SELECT di.*, arj.id AS auto_job_id, arj.status AS auto_status, arj.stage AS auto_stage,
@@ -787,11 +760,20 @@ def _load_experiment_groups(*, include_archived: bool = False) -> list[dict]:
                arj.last_note, arj.last_error, arj.updated_at AS auto_updated_at,
                arj.created_at AS auto_created_at
         FROM deep_insights di
-        LEFT JOIN auto_research_jobs arj ON arj.deep_insight_id = di.id
-        WHERE arj.id IS NOT NULL
-           OR EXISTS (SELECT 1 FROM experiment_runs er WHERE er.deep_insight_id = di.id)
+        LEFT JOIN auto_research_jobs arj
+          ON arj.deep_insight_id = di.id AND arj.agenda_id = di.agenda_id
+        WHERE di.agenda_id=?
+          AND (
+               arj.id IS NOT NULL
+               OR EXISTS (
+                   SELECT 1 FROM experiment_runs er
+                   WHERE er.deep_insight_id = di.id
+                     AND er.agenda_id = di.agenda_id
+               )
+          )
         ORDER BY COALESCE(arj.updated_at, di.updated_at, di.created_at) DESC
-        """
+        """,
+        (agenda_id,),
     )
     if not insights:
         return []
@@ -809,11 +791,13 @@ def _load_experiment_groups(*, include_archived: bool = False) -> list[dict]:
         f"""
         SELECT er.*, di.title AS insight_title, di.tier AS insight_tier
         FROM experiment_runs er
-        JOIN deep_insights di ON di.id = er.deep_insight_id
-        WHERE er.deep_insight_id IN ({placeholders})
+        JOIN deep_insights di
+          ON di.id = er.deep_insight_id AND di.agenda_id = er.agenda_id
+        WHERE er.agenda_id=?
+          AND er.deep_insight_id IN ({placeholders})
         ORDER BY er.created_at DESC, er.id DESC
         """,
-        tuple(insight_ids),
+        (agenda_id, *insight_ids),
     )
     run_ids = [int(row["id"]) for row in run_rows]
     artifact_counts = _artifact_counts_for_runs(run_ids)
@@ -903,26 +887,7 @@ def api_providers():
 def api_runtime_config():
     """Expose model/provider and runtime configuration for the dashboard."""
     if request.method == "POST":
-        try:
-            payload = request.get_json(force=True, silent=True) or {}
-            updates: dict[str, str] = {}
-            for key, value in payload.items():
-                if key not in _EDITABLE_RUNTIME_ENV_KEYS:
-                    continue
-                if value is None:
-                    continue
-                text = str(value).strip()
-                if key.endswith("_API_KEY") and not text:
-                    continue
-                updates[key] = text
-            changed = _write_dotenv_updates(updates) if updates else []
-            return jsonify({
-                "status": "saved",
-                "updated": changed,
-                "restart_required": bool(changed),
-            })
-        except Exception as exc:
-            return _api_failure("runtime_config_save", exc)
+        return _manual_api_removed_response()
 
     try:
         db_info = db.describe_backend()
@@ -998,7 +963,7 @@ def api_runtime_config():
                 "experiment_workdir": str(cfg.EXPERIMENT_WORKDIR),
                 "experiment_disk": experiment_disk,
             },
-            "editable_keys": sorted(_EDITABLE_RUNTIME_ENV_KEYS),
+            "editable_keys": [],
         })
     except Exception as exc:
         return _api_failure("runtime_config", exc)
@@ -1365,41 +1330,13 @@ def api_graph_merge_candidate(candidate_id: int):
 @app.route("/api/graph/merge_candidates/refresh", methods=["POST"])
 def api_graph_merge_candidates_refresh():
     """Refresh heuristic merge candidates."""
-    entity_type = request.json.get("entity_type") if request.is_json else None
-    min_score = request.json.get("min_score", 0.84) if request.is_json else 0.84
-    max_entities_per_type = request.json.get("max_entities_per_type", 500) if request.is_json else 500
-
-    def run_refresh():
-        log_event("merge_candidates_refresh_start", {
-            "entity_type": entity_type,
-            "min_score": min_score,
-            "max_entities_per_type": max_entities_per_type,
-        })
-        stats = graph.refresh_merge_candidates(
-            entity_type=entity_type,
-            min_score=min_score,
-            max_entities_per_type=max_entities_per_type,
-        )
-        log_event("merge_candidates_refresh_done", stats)
-
-    thread = threading.Thread(target=run_refresh, daemon=True)
-    thread.start()
-    return jsonify({"status": "started", "entity_type": entity_type, "min_score": min_score})
+    return _manual_api_removed_response()
 
 
 @app.route("/api/graph/merge_candidates/<int:candidate_id>/decision", methods=["POST"])
 def api_graph_merge_candidate_decision(candidate_id: int):
     """Accept or reject a merge candidate."""
-    decision = request.json.get("decision", "rejected") if request.is_json else "rejected"
-    note = request.json.get("note", "") if request.is_json else ""
-    row = graph.decide_merge_candidate(candidate_id, decision=decision, note=note)
-    if not row:
-        return jsonify({"error": "Candidate not found"}), 404
-    log_event("merge_candidate_decision", {
-        "candidate_id": candidate_id,
-        "decision": decision,
-    })
-    return jsonify(row)
+    return _manual_api_removed_response()
 
 
 # ── Search ─────────────────────────────────────────────────────────
@@ -1533,26 +1470,7 @@ def api_recent_discoveries():
 @app.route("/api/taxonomy/expand", methods=["POST"])
 def api_taxonomy_expand():
     """Manually trigger taxonomy expansion."""
-    min_papers = request.json.get("min_papers", 10) if request.is_json else 10
-
-    def do_expand():
-        log_event("taxonomy_expansion_start", {"min_papers": min_papers})
-        results = run_expansion(min_papers=min_papers)
-        for exp in results:
-            if exp.get("new_children"):
-                log_event("taxonomy_expanded", {
-                    "node_id": exp["node_id"],
-                    "new_children": exp["new_children"],
-                    "papers_reassigned": exp["papers_reassigned"],
-                })
-        log_event("taxonomy_expansion_done", {
-            "nodes_checked": len(results),
-            "nodes_expanded": sum(1 for e in results if e.get("new_children")),
-        })
-
-    thread = threading.Thread(target=do_expand, daemon=True)
-    thread.start()
-    return jsonify({"status": "started", "min_papers": min_papers})
+    return _manual_api_removed_response()
 
 
 # ── Legacy Endpoints (kept for compatibility) ─────────────────────
@@ -1678,47 +1596,13 @@ def api_events():
 @app.route("/api/start", methods=["POST"])
 def api_start():
     """Start the pipeline."""
-    global _pipeline_running
-    max_papers = request.json.get("max_papers", 20) if request.is_json else 20
-
-    with _pipeline_lock:
-        if _pipeline_running:
-            return jsonify({"status": "already_running", "max_papers": max_papers})
-        _pipeline_running = True
-
-    def safe_run(n):
-        global _pipeline_running
-        import traceback as tb
-        try:
-            run_continuous(n)
-        except Exception as e:
-            print(f"[PIPELINE CRASH] {e}", flush=True)
-            print(tb.format_exc(), flush=True)
-            log_event("error", {"step": "pipeline_crash", "error": str(e),
-                                "traceback": tb.format_exc()})
-        finally:
-            with _pipeline_lock:
-                _pipeline_running = False
-
-    thread = threading.Thread(target=safe_run, args=(max_papers,), daemon=True)
-    thread.start()
-    return jsonify({"status": "started", "max_papers": max_papers})
+    return _manual_api_removed_response()
 
 
 @app.route("/api/backfill_graph", methods=["POST"])
 def api_backfill_graph():
     """Backfill graph evidence from existing structured records."""
-    overwrite = request.json.get("overwrite", False) if request.is_json else False
-    limit = request.json.get("limit") if request.is_json else None
-
-    def run_backfill():
-        log_event("backfill_start", {"overwrite": overwrite, "limit": limit})
-        stats = graph.backfill_graph_from_structured_data(limit=limit, overwrite=overwrite)
-        log_event("backfill_done", stats)
-
-    thread = threading.Thread(target=run_backfill, daemon=True)
-    thread.start()
-    return jsonify({"status": "started", "overwrite": overwrite, "limit": limit})
+    return _manual_api_removed_response()
 
 
 # ── EvoScientist Bridge ──────────────────────────────────────────────
@@ -1726,49 +1610,19 @@ def api_backfill_graph():
 @app.route("/api/research/launch", methods=["POST"])
 def api_research_launch():
     """Launch EvoScientist research from a DeepGraph insight."""
-    from agents.research_bridge import launch_evoscientist
-    insight_id = request.json.get("insight_id") if request.is_json else None
-    resource_grant_id = request.json.get("resource_grant_id") if request.is_json else None
-    if not insight_id:
-        return jsonify({"error": "insight_id required"}), 400
-    if not resource_grant_id:
-        return jsonify({"error": "resource_grant_id required"}), 400
-    try:
-        result = launch_evoscientist(int(insight_id))
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    return _manual_api_removed_response()
 
 
 @app.route("/api/research/status")
 def api_research_status():
     """Check status of an EvoScientist research session."""
-    from agents.research_bridge import get_research_status
-    workdir = request.args.get("workdir", "")
-    if not workdir:
-        return jsonify({"error": "workdir required"}), 400
-    return jsonify(get_research_status(workdir))
+    return _manual_api_removed_response()
 
 
 @app.route("/api/research/proposal/<int:insight_id>")
 def api_research_proposal(insight_id):
     """Preview the research proposal that would be sent to EvoScientist."""
-    from agents.research_bridge import gather_context, format_proposal
-    try:
-        ctx = gather_context(insight_id)
-        if not ctx.get("insight"):
-            return jsonify({"error": "Insight not found"}), 404
-        proposal = format_proposal(ctx)
-        return jsonify({
-            "insight_id": insight_id,
-            "title": ctx["insight"]["title"],
-            "paper_count": len(ctx["papers"]),
-            "claim_count": len(ctx["claims"]),
-            "contradiction_count": len(ctx["contradictions"]),
-            "proposal": proposal,
-        })
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    return _manual_api_removed_response()
 
 
 @app.route("/api/insights/rank", methods=["POST"])
@@ -1796,8 +1650,11 @@ def api_deep_insights():
     status = request.args.get("status", "")
     limit = request.args.get("limit", 50, type=int)
 
-    sql = "SELECT * FROM deep_insights WHERE 1=1"
-    params = []
+    agenda_id = _required_agenda_query_id()
+    if agenda_id is None:
+        return jsonify({"error": "positive agenda_id query parameter required"}), 400
+    sql = "SELECT * FROM deep_insights WHERE agenda_id=?"
+    params = [agenda_id]
     if tier:
         sql += " AND tier=?"
         try:
@@ -1825,7 +1682,13 @@ def api_deep_insights():
 @app.route("/api/deep_insights/<int:insight_id>")
 def api_deep_insight_detail(insight_id):
     """Get full detail for one deep insight."""
-    row = db.fetchone("SELECT * FROM deep_insights WHERE id=?", (insight_id,))
+    agenda_id = _required_agenda_query_id()
+    if agenda_id is None:
+        return jsonify({"error": "positive agenda_id query parameter required"}), 400
+    row = db.fetchone(
+        "SELECT * FROM deep_insights WHERE id=? AND agenda_id=?",
+        (insight_id, agenda_id),
+    )
     if not row:
         return jsonify({"error": "Not found"}), 404
     return jsonify(dict(row))
@@ -1839,65 +1702,25 @@ def api_generate_deep_insights():
       tier: "1" | "2" | "both" (default both)
       bulk: true — use DISCOVERY_BULK_* wider signals + expand all Tier2 problems
     """
-    from orchestrator.discovery_scheduler import run_full_discovery
-    tier = request.json.get("tier", "both") if request.is_json else "both"
-    bulk = bool(request.json.get("bulk")) if request.is_json else False
-    try:
-        agenda_id = int(request.json.get("agenda_id")) if request.is_json else 0
-    except (TypeError, ValueError):
-        agenda_id = 0
-    if agenda_id <= 0:
-        return jsonify({"error": "positive agenda_id is required"}), 400
-    if tier == "1":
-        return jsonify(
-            {
-                "error": "legacy_tier1_discovery_disabled",
-                "replacement": (
-                    "agenda-scoped problem-first proposal and portfolio admission"
-                ),
-            }
-        ), 410
-
-    def do_discovery():
-        if tier == "2":
-            from orchestrator.discovery_scheduler import harvest_signals, run_tier2_discovery
-            harvest_signals()
-            run_tier2_discovery(agenda_id=agenda_id, bulk=bulk)
-        else:
-            run_full_discovery(agenda_id=agenda_id, bulk=bulk)
-
-    t = threading.Thread(target=do_discovery, daemon=True)
-    t.start()
-    return jsonify({"status": "started", "agenda_id": agenda_id, "tier": tier, "bulk": bulk})
+    return _manual_api_removed_response()
 
 
 @app.route("/api/deep_insights/<int:insight_id>/verify", methods=["POST"])
 def api_verify_deep_insight(insight_id):
     """Launch novelty verification via EvoScientist."""
-    from agents.novelty_verifier import launch_verification
-    try:
-        result = launch_verification(insight_id)
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    return _manual_api_removed_response()
 
 
 @app.route("/api/deep_insights/<int:insight_id>/verify_status")
 def api_verify_status(insight_id):
     """Check verification status."""
-    from agents.novelty_verifier import check_verification_result
-    return jsonify(check_verification_result(insight_id))
+    return _manual_api_removed_response()
 
 
 @app.route("/api/deep_insights/<int:insight_id>/research", methods=["POST"])
 def api_deep_insight_research(insight_id):
     """Launch full EvoScientist research session."""
-    from agents.novelty_verifier import launch_full_research
-    try:
-        result = launch_full_research(insight_id)
-        return jsonify(result)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    return _manual_api_removed_response()
 
 
 @app.route("/api/deep_insights/signals")
@@ -1959,11 +1782,15 @@ def api_experiments():
     insight_id = request.args.get("insight_id", "", type=str)
     limit = request.args.get("limit", 50, type=int)
 
+    agenda_id = _required_agenda_query_id()
+    if agenda_id is None:
+        return jsonify({"error": "positive agenda_id query parameter required"}), 400
     sql = """SELECT er.*, di.title as insight_title, di.tier as insight_tier
              FROM experiment_runs er
-             JOIN deep_insights di ON er.deep_insight_id = di.id
-             WHERE 1=1"""
-    params = []
+             JOIN deep_insights di
+               ON er.deep_insight_id = di.id AND er.agenda_id = di.agenda_id
+             WHERE er.agenda_id=?"""
+    params = [agenda_id]
     if status:
         sql += " AND er.status=?"
         params.append(status)
@@ -1986,9 +1813,15 @@ def api_experiments():
 @app.route("/api/experiment_groups")
 def api_experiment_groups():
     """List idea-centric experiment groups for the dashboard."""
+    agenda_id = _required_agenda_query_id()
+    if agenda_id is None:
+        return jsonify({"error": "positive agenda_id query parameter required"}), 400
     status = request.args.get("status", "")
     limit = request.args.get("limit", 50, type=int)
-    groups = _load_experiment_groups(include_archived=_include_archived_requested())
+    groups = _load_experiment_groups(
+        agenda_id=agenda_id,
+        include_archived=_include_archived_requested(),
+    )
     if status:
         groups = [
             group
@@ -2001,7 +1834,10 @@ def api_experiment_groups():
 @app.route("/api/experiment_groups/<int:insight_id>")
 def api_experiment_group_detail(insight_id):
     """Get one idea-centric experiment group with run history."""
-    groups = _load_experiment_groups(include_archived=True)
+    agenda_id = _required_agenda_query_id()
+    if agenda_id is None:
+        return jsonify({"error": "positive agenda_id query parameter required"}), 400
+    groups = _load_experiment_groups(agenda_id=agenda_id, include_archived=True)
     for group in groups:
         if int(group["insight"]["id"]) == insight_id:
             return jsonify(group)
@@ -2009,7 +1845,13 @@ def api_experiment_group_detail(insight_id):
 
 
 def _load_paper_preview_context(insight_id: int) -> tuple[dict, dict]:
-    insight = db.fetchone("SELECT * FROM deep_insights WHERE id=?", (insight_id,))
+    agenda_id = _required_agenda_query_id()
+    if agenda_id is None:
+        abort(400)
+    insight = db.fetchone(
+        "SELECT * FROM deep_insights WHERE id=? AND agenda_id=?",
+        (insight_id, agenda_id),
+    )
     if not insight:
         abort(404)
     payload = _workspace_payload(dict(insight))
@@ -2070,18 +1912,22 @@ def _paper_generation_complete(paper: dict[str, Any]) -> bool:
 def api_generated_papers():
     """List DeepGraph-generated manuscripts, not imported arXiv papers."""
     try:
+        agenda_id = _required_agenda_query_id()
+        if agenda_id is None:
+            return jsonify({"error": "positive agenda_id query parameter required"}), 400
         limit = request.args.get("limit", 100, type=int)
         include_archived = _include_archived_requested()
         rows = db.fetchall(
             """
             SELECT *
             FROM deep_insights
+            WHERE agenda_id=?
             ORDER BY
               CASE WHEN submission_status='bundle_ready' THEN 0 ELSE 1 END,
               updated_at DESC
             LIMIT ?
             """,
-            (limit,),
+            (agenda_id, limit),
         )
         papers: list[dict[str, Any]] = []
         for raw in rows:
@@ -2102,7 +1948,11 @@ def api_generated_papers():
             if not has_paper_asset and (insight.get("submission_status") or "not_started") == "not_started":
                 continue
 
-            preview_urls = _paper_preview_urls(insight_id, assets)
+            preview_urls = _paper_preview_urls(
+                insight_id,
+                assets,
+                agenda_id=agenda_id,
+            )
             tex_source = _read_paper_asset_text(insight_id, main_tex, insight)
             manuscript_rows = db.fetchall(
                 """
@@ -2110,11 +1960,12 @@ def api_generated_papers():
                        sb.id AS bundle_id, sb.bundle_format, sb.status AS bundle_status,
                        sb.bundle_path, sb.created_at AS bundle_created_at
                 FROM manuscript_runs mr
-                LEFT JOIN submission_bundles sb ON sb.manuscript_run_id=mr.id
-                WHERE mr.deep_insight_id=?
+                LEFT JOIN submission_bundles sb
+                  ON sb.manuscript_run_id=mr.id AND sb.agenda_id=mr.agenda_id
+                WHERE mr.deep_insight_id=? AND mr.agenda_id=?
                 ORDER BY COALESCE(sb.created_at, mr.updated_at) DESC
                 """,
-                (insight_id,),
+                (insight_id, agenda_id),
             )
             bundle_rows = [
                 {
@@ -2183,7 +2034,13 @@ def paper_preview_index(insight_id):
 
 @app.route("/papers/<int:insight_id>/view/<path:asset>")
 def paper_preview_asset(insight_id, asset):
-    insight = db.fetchone("SELECT * FROM deep_insights WHERE id=?", (insight_id,))
+    agenda_id = _required_agenda_query_id()
+    if agenda_id is None:
+        abort(400)
+    insight = db.fetchone(
+        "SELECT * FROM deep_insights WHERE id=? AND agenda_id=?",
+        (insight_id, agenda_id),
+    )
     if not insight:
         abort(404)
     try:
@@ -2218,20 +2075,27 @@ def paper_preview_tex(insight_id):
 @app.route("/api/experiments/<int:run_id>")
 def api_experiment_detail(run_id):
     """Get full detail for one experiment run including iterations."""
+    agenda_id = _required_agenda_query_id()
+    if agenda_id is None:
+        return jsonify({"error": "positive agenda_id query parameter required"}), 400
     run = db.fetchone(
         """SELECT er.*, di.title as insight_title, di.tier as insight_tier
            FROM experiment_runs er
-           JOIN deep_insights di ON er.deep_insight_id = di.id
-           WHERE er.id=?""", (run_id,))
+           JOIN deep_insights di
+             ON er.deep_insight_id = di.id AND er.agenda_id = di.agenda_id
+           WHERE er.id=? AND er.agenda_id=?""", (run_id, agenda_id))
     if not run:
         return jsonify({"error": "Not found"}), 404
 
     iterations = db.fetchall(
-        """SELECT * FROM experiment_iterations WHERE run_id=?
-           ORDER BY iteration_number""", (run_id,))
+        """SELECT * FROM experiment_iterations
+           WHERE run_id=? AND agenda_id=?
+           ORDER BY iteration_number""", (run_id, agenda_id))
 
     claims = db.fetchall(
-        "SELECT * FROM experimental_claims WHERE run_id=?", (run_id,))
+        "SELECT * FROM experimental_claims WHERE run_id=? AND agenda_id=?",
+        (run_id, agenda_id),
+    )
 
     return jsonify({
         "run": dict(run),
@@ -2243,100 +2107,19 @@ def api_experiment_detail(run_id):
 @app.route("/api/experiments/forge", methods=["POST"])
 def api_forge_experiment():
     """Forge an experiment from a deep insight (scaffold + codebase)."""
-    from agents.experiment_forge import forge_experiment
-    insight_id = request.json.get("insight_id") if request.is_json else None
-    if not insight_id:
-        return jsonify({"error": "insight_id required"}), 400
-
-    def do_forge():
-        log_event("sciforge", {"step": "forge_start", "insight_id": insight_id})
-        result = forge_experiment(
-            int(insight_id),
-            resource_grant_id=int(resource_grant_id),
-        )
-        log_event("sciforge", {"step": "forge_done", **{k: v for k, v in result.items() if k != "codebase"}})
-
-    t = threading.Thread(target=do_forge, daemon=True)
-    t.start()
-    return jsonify({
-        "status": "started",
-        "insight_id": insight_id,
-        "resource_grant_id": resource_grant_id,
-    })
+    return _manual_api_removed_response()
 
 
 @app.route("/api/experiments/<int:run_id>/run", methods=["POST"])
 def api_run_experiment(run_id):
     """Launch the validation loop for a forged experiment."""
-    from agents.validation_loop import run_validation_loop
-    from agents.knowledge_loop import process_completed_run
-
-    run = db.fetchone("SELECT * FROM experiment_runs WHERE id=?", (run_id,))
-    if not run:
-        return jsonify({"error": "Run not found"}), 404
-
-    def do_run():
-        log_event("sciforge", {"step": "loop_start", "run_id": run_id})
-        try:
-            result = run_validation_loop(run_id)
-            log_event("sciforge", {"step": "loop_done", "run_id": run_id,
-                                   "verdict": result.get("verdict", "?")})
-            process_completed_run(run_id)
-            log_event("sciforge", {"step": "knowledge_loop_done", "run_id": run_id})
-        except Exception as e:
-            db.execute(
-                "UPDATE experiment_runs SET status='failed', error_message=? WHERE id=? AND agenda_id=?",
-                (str(e), run_id, int(run["agenda_id"])))
-            db.commit()
-            log_event("error", {"step": "validation_loop", "run_id": run_id, "error": str(e)})
-            print(f"[SCIFORGE] Validation loop failed: {e}\n{traceback.format_exc()}", flush=True)
-
-    t = threading.Thread(target=do_run, daemon=True)
-    t.start()
-    return jsonify({"status": "started", "run_id": run_id})
+    return _manual_api_removed_response()
 
 
 @app.route("/api/experiments/run_full", methods=["POST"])
 def api_run_full_experiment():
     """Full pipeline: forge + validation loop + knowledge loop for a deep insight."""
-    from agents.experiment_forge import forge_experiment
-    from agents.validation_loop import run_validation_loop
-    from agents.knowledge_loop import process_completed_run
-
-    insight_id = request.json.get("insight_id") if request.is_json else None
-    resource_grant_id = request.json.get("resource_grant_id") if request.is_json else None
-    if not insight_id:
-        return jsonify({"error": "insight_id required"}), 400
-    if not resource_grant_id:
-        return jsonify({"error": "resource_grant_id required"}), 400
-
-    def do_full():
-        log_event("sciforge", {"step": "full_start", "insight_id": insight_id})
-        try:
-            forge_result = forge_experiment(
-                int(insight_id),
-                resource_grant_id=int(resource_grant_id),
-            )
-            if "error" in forge_result:
-                log_event("error", {"step": "forge", "error": forge_result["error"]})
-                return
-            run_id = forge_result["run_id"]
-            log_event("sciforge", {"step": "forge_done", "run_id": run_id})
-
-            loop_result = run_validation_loop(run_id)
-            log_event("sciforge", {"step": "loop_done", "run_id": run_id,
-                                   "verdict": loop_result.get("verdict", "?")})
-
-            process_completed_run(run_id)
-            log_event("sciforge", {"step": "full_done", "run_id": run_id,
-                                   "verdict": loop_result.get("verdict", "?")})
-        except Exception as e:
-            log_event("error", {"step": "full_experiment", "insight_id": insight_id, "error": str(e)})
-            print(f"[SCIFORGE] Full experiment failed: {e}\n{traceback.format_exc()}", flush=True)
-
-    t = threading.Thread(target=do_full, daemon=True)
-    t.start()
-    return jsonify({"status": "started", "insight_id": insight_id})
+    return _manual_api_removed_response()
 
 
 @app.route("/api/meta_report")
@@ -2353,74 +2136,68 @@ def api_meta_report():
 
 @app.route("/api/auto_research/status")
 def api_auto_research_status():
-    from orchestrator.auto_research import get_status
-    return jsonify(get_status())
+    return _manual_api_removed_response()
 
 
 @app.route("/api/auto_research/jobs")
 def api_auto_research_jobs():
-    from orchestrator.auto_research import list_jobs
-    limit = request.args.get("limit", 50, type=int)
-    return jsonify(list_jobs(limit=limit))
+    return _manual_api_removed_response()
 
 
 @app.route("/api/auto_research/start", methods=["POST"])
 def api_auto_research_start():
-    from orchestrator.auto_research import start
-    return jsonify(start())
+    return _manual_api_removed_response()
 
 
 @app.route("/api/auto_research/stop", methods=["POST"])
 def api_auto_research_stop():
-    from orchestrator.auto_research import stop
-    return jsonify(stop())
+    return _manual_api_removed_response()
 
 
 @app.route("/api/gpu/status")
 def api_gpu_status():
-    from orchestrator.gpu_scheduler import get_status, start
-
-    start()
-    return jsonify(get_status())
+    return _manual_api_removed_response()
 
 
 @app.route("/api/gpu/jobs")
 def api_gpu_jobs():
-    from orchestrator.gpu_scheduler import list_jobs, start
-
-    limit = request.args.get("limit", 100, type=int)
-    start()
-    return jsonify(list_jobs(limit=limit))
+    return _manual_api_removed_response()
 
 
 @app.route("/api/manuscripts")
 def api_manuscripts():
     from agents.manuscript_pipeline import list_manuscripts
 
+    agenda_id = _required_agenda_query_id()
+    if agenda_id is None:
+        return jsonify({"error": "positive agenda_id query parameter required"}), 400
     limit = request.args.get("limit", 50, type=int)
-    return jsonify(list_manuscripts(limit=limit))
+    return jsonify(list_manuscripts(agenda_id=agenda_id, limit=limit))
 
 
 @app.route("/api/manuscripts/<int:run_id>/bundle", methods=["POST"])
 def api_manuscript_bundle(run_id):
-    from agents.manuscript_pipeline import generate_submission_bundle
-
-    bundle_formats = None
-    if request.is_json and request.json.get("formats"):
-        bundle_formats = request.json.get("formats")
-    result = generate_submission_bundle(run_id, bundle_formats=bundle_formats)
-    status = 200 if "error" not in result else 400
-    return jsonify(result), status
+    return _manual_api_removed_response()
 
 
 @app.route("/api/submission_bundles/<int:bundle_id>")
 def api_submission_bundle(bundle_id):
-    row = db.fetchone("SELECT * FROM submission_bundles WHERE id=?", (bundle_id,))
+    agenda_id = _required_agenda_query_id()
+    if agenda_id is None:
+        return jsonify({"error": "positive agenda_id query parameter required"}), 400
+    row = db.fetchone(
+        "SELECT * FROM submission_bundles WHERE id=? AND agenda_id=?",
+        (bundle_id, agenda_id),
+    )
     if not row:
         return jsonify({"error": "Not found"}), 404
-    manuscript_run = db.fetchone("SELECT * FROM manuscript_runs WHERE id=?", (row["manuscript_run_id"],))
+    manuscript_run = db.fetchone(
+        "SELECT * FROM manuscript_runs WHERE id=? AND agenda_id=?",
+        (row["manuscript_run_id"], agenda_id),
+    )
     assets = db.fetchall(
-        "SELECT * FROM manuscript_assets WHERE manuscript_run_id=? ORDER BY id",
-        (row["manuscript_run_id"],),
+        """SELECT * FROM manuscript_assets
+           WHERE manuscript_run_id=? AND agenda_id=? ORDER BY id""",
+        (row["manuscript_run_id"], agenda_id),
     )
     return jsonify({"bundle": row, "manuscript_run": manuscript_run, "assets": assets})

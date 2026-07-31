@@ -45,6 +45,15 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 410)
         self.assertEqual(payload["mode"], "fixed_flow_read_only")
         self.assertIn("removed", payload["error"].lower())
+        self.assertEqual(payload["replacement"], "/api/meta-harness/v1")
+
+    def test_legacy_compute_get_does_not_start_scheduler(self):
+        response = self.client.get("/api/gpu/status")
+        self.assertEqual(response.status_code, 410)
+
+    def test_agenda_owned_read_requires_explicit_scope(self):
+        response = self.client.get("/api/deep_insights")
+        self.assertEqual(response.status_code, 400)
 
 
 class ExperimentGroupApiTests(unittest.TestCase):
@@ -63,6 +72,21 @@ class ExperimentGroupApiTests(unittest.TestCase):
         database.DATABASE_URL = ""
         database.DB_PATH = self.db_path
         database.init_db()
+        for table in (
+            "deep_insights",
+            "auto_research_jobs",
+            "experiment_runs",
+            "experiment_artifacts",
+            "experimental_claims",
+        ):
+            columns = {
+                row["name"]
+                for row in database.fetchall(f"PRAGMA table_info({table})")
+            }
+            if "agenda_id" not in columns:
+                database.execute(
+                    f"ALTER TABLE {table} ADD COLUMN agenda_id INTEGER"
+                )
         self.workspace_root = Path(self.tmpdir.name) / "ideas"
         self.workspace_patch = mock.patch.object(workspace_layout, "IDEA_WORKSPACE_DIR", self.workspace_root)
         self.workspace_patch.start()
@@ -71,10 +95,12 @@ class ExperimentGroupApiTests(unittest.TestCase):
         database.execute(
             """
             INSERT INTO deep_insights
-            (id, tier, title, submission_status, evidence_plan, experimental_plan)
-            VALUES (?, ?, ?, ?, ?, ?)
+            (id, agenda_id, tier, title, submission_status, evidence_plan,
+             experimental_plan)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
+                1,
                 1,
                 2,
                 "Idea One",
@@ -86,34 +112,39 @@ class ExperimentGroupApiTests(unittest.TestCase):
         database.execute(
             """
             INSERT INTO auto_research_jobs
-            (deep_insight_id, status, stage, last_note)
-            VALUES (?, ?, ?, ?)
+            (agenda_id, deep_insight_id, status, stage, last_note)
+            VALUES (?, ?, ?, ?, ?)
             """,
-            (1, "running_gpu", "gpu_scheduler", "Main run still progressing"),
+            (1, 1, "running_gpu", "gpu_scheduler", "Main run still progressing"),
         )
         database.execute(
             """
             INSERT INTO experiment_runs
-            (id, deep_insight_id, status, hypothesis_verdict, effect_pct, iterations_total, iterations_kept, workdir)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            (id, agenda_id, deep_insight_id, status, hypothesis_verdict,
+             effect_pct, iterations_total, iterations_kept, workdir)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (10, 1, "completed", "confirmed", 12.5, 8, 3, str(self.workspace_root / "legacy_run_10")),
+            (10, 1, 1, "completed", "confirmed", 12.5, 8, 3, str(self.workspace_root / "legacy_run_10")),
         )
         database.execute(
             """
             INSERT INTO experiment_runs
-            (id, deep_insight_id, status, iterations_total, iterations_kept, workdir)
-            VALUES (?, ?, ?, ?, ?, ?)
+            (id, agenda_id, deep_insight_id, status, iterations_total,
+             iterations_kept, workdir)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (11, 1, "testing", 2, 0, str(self.workspace_root / "legacy_run_11")),
+            (11, 1, 1, "testing", 2, 0, str(self.workspace_root / "legacy_run_11")),
         )
         database.execute(
-            "INSERT INTO experiment_artifacts (run_id, artifact_type, path) VALUES (?, ?, ?)",
-            (11, "plot", "/tmp/plot.svg"),
+            """INSERT INTO experiment_artifacts
+               (agenda_id, run_id, artifact_type, path) VALUES (?, ?, ?, ?)""",
+            (1, 11, "plot", "/tmp/plot.svg"),
         )
         database.execute(
-            "INSERT INTO experimental_claims (run_id, deep_insight_id, claim_text, verdict) VALUES (?, ?, ?, ?)",
-            (10, 1, "Improves metric", "confirmed"),
+            """INSERT INTO experimental_claims
+               (agenda_id, run_id, deep_insight_id, claim_text, verdict)
+               VALUES (?, ?, ?, ?, ?)""",
+            (1, 10, 1, "Improves metric", "confirmed"),
         )
         plan_root = self.workspace_root / "idea_1" / "plan"
         paper_root = self.workspace_root / "idea_1" / "paper" / "current"
@@ -138,7 +169,7 @@ class ExperimentGroupApiTests(unittest.TestCase):
         self.tmpdir.cleanup()
 
     def test_api_experiment_groups_returns_idea_centric_cards(self):
-        response = self.client.get("/api/experiment_groups")
+        response = self.client.get("/api/experiment_groups?agenda_id=1")
         payload = response.get_json()
 
         self.assertEqual(response.status_code, 200)
@@ -152,10 +183,11 @@ class ExperimentGroupApiTests(unittest.TestCase):
         self.assertTrue(any(track["key"] == "ablation" and track["enabled"] for track in group["planned_tracks"]))
         self.assertTrue(group["workspace_root"].endswith("idea_1"))
         self.assertIn("latest_status", group["plan_snapshot"])
-        self.assertTrue(group["paper_preview_urls"]["index"].endswith("/papers/1"))
+        self.assertIn("/papers/1", group["paper_preview_urls"]["index"])
+        self.assertIn("agenda_id=1", group["paper_preview_urls"]["index"])
 
     def test_api_experiment_group_detail_includes_run_history_and_artifacts(self):
-        response = self.client.get("/api/experiment_groups/1")
+        response = self.client.get("/api/experiment_groups/1?agenda_id=1")
         payload = response.get_json()
 
         self.assertEqual(response.status_code, 200)
@@ -168,8 +200,8 @@ class ExperimentGroupApiTests(unittest.TestCase):
         self.assertEqual(historical_run["claim_count"], 1)
 
     def test_paper_preview_routes_serve_current_tex(self):
-        index_response = self.client.get("/papers/1")
-        tex_response = self.client.get("/papers/1/tex")
+        index_response = self.client.get("/papers/1?agenda_id=1")
+        tex_response = self.client.get("/papers/1/tex?agenda_id=1")
 
         self.assertEqual(index_response.status_code, 200)
         self.assertIn("Idea 1", index_response.get_data(as_text=True))
