@@ -19,6 +19,9 @@
   registry.
 - The direct-LLM AST inventory reports 24 classified calls, zero unclassified;
   10 pre-agenda ingestion calls remain an explicit release blocker.
+- Compute registry enforcement is locally committed as `8f59a65`: only
+  explicitly enabled CPU/active legacy GPU adapters are registered; unknown,
+  disabled and unwired Colab submissions fail closed.
 - Safety recheck at 07:36 UTC: load `0.25, 0.31, 0.29`; root disk 53% used
   with about 95 GB free; `/tmp` 27% used.
 - Archive sources were reverified as custom local refs

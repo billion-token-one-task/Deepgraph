@@ -257,6 +257,9 @@ artifacts named in its evidence column may promote it to `[x]`.
   certification failure cannot be converted into durable compute success.
 - [ ] **P4-26** Colab CLI execution is not yet backed by a durable
   queue/worker and is not registered in application startup.
+- [x] **P4-27** Runtime scheduler construction honors
+  `compute_backends.enabled`; unknown or disabled backends fail closed and SSH
+  uses configured reference-only settings.
 
 ## P5. Scientific evidence state machine
 
@@ -430,7 +433,8 @@ artifacts named in its evidence column may promote it to `[x]`.
 - [x] **V-13** Local work is split into base implementation `c25e63c`,
   integration documentation `ee96fba`, control-plane hardening `2cccc7a`,
   checkpoint documentation `a148a11`, CPU admission `4d059cd`, and legacy LLM
-  blocking `f66cafe`; none was pushed.
+  blocking `f66cafe`, plus compute registry enforcement `8f59a65`; none was
+  pushed.
 - [ ] **V-14** No push until explicit approval and quiescence check.
 - [ ] **V-15** Final candidate commit hash must replace working-tree/intermediate
   hashes in all acceptance artifacts.
