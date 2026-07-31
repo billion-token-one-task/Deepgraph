@@ -11,6 +11,19 @@ import os
 
 from flask import Blueprint, jsonify, request
 
+from config import (
+    HARNESS_CANDIDATE_ROOT,
+    HARNESS_DATABASE_NAMESPACE_PREFIX,
+    HARNESS_EVALUATOR_ARTIFACT_ROOT,
+    HARNESS_EVALUATOR_ISOLATION_BINARY,
+    HARNESS_EVALUATOR_ROOT,
+    HARNESS_HOLDOUT_ROOT,
+    HARNESS_MAX_CHANGED_LINES,
+    HARNESS_MAX_MODULES,
+    HARNESS_POLICY_VERSION,
+    HARNESS_PRODUCTION_DATABASE_NAMESPACE,
+    HARNESS_PRODUCTION_PATH,
+)
 from agents.agenda_loader import parse_agenda
 from agents.agenda_repository import AgendaRepository
 from agents.direction_intake import parse_direction_payload
@@ -28,6 +41,18 @@ from meta_harness.frontier_source import (
 )
 from meta_harness.portfolio import decide_portfolio
 from meta_harness.repository import MetaHarnessRepository
+from meta_harness.evaluator_runner import (
+    EvaluatorSuiteSpec,
+    IsolatedEvaluatorRunner,
+)
+from meta_harness.harness_evolution import HarnessCandidate, HarnessPolicy
+from meta_harness.harness_repository import HarnessRepository
+from meta_harness.backends.colab_durable import ColabWorkSpec
+from meta_harness.ingestion_queue import (
+    ScopedIngestionRepository,
+    ScopedIngestionRequest,
+)
+from orchestrator.meta_compute_runtime import submit_colab_work
 
 
 blueprint = Blueprint("meta_harness_v1", __name__, url_prefix="/api/meta-harness/v1")
@@ -71,6 +96,8 @@ def status():
             ("active_grants", "resource_grants"),
             ("outcomes", "outcome_records"),
             ("compute_jobs", "compute_jobs_v1"),
+            ("scoped_ingestion_jobs", "scoped_ingestion_jobs_v1"),
+            ("colab_work_requests", "colab_work_requests_v1"),
             ("harness_candidates", "harness_candidates"),
         ):
             where = " WHERE status='active'" if label == "active_grants" else ""
@@ -298,5 +325,169 @@ def record_outcome():
             experiment_run_id=int(payload["experiment_run_id"]),
         )
         return jsonify({"status": "recorded", "outcome_record_id": outcome_id}), 201
+    except Exception as exc:
+        return _error(exc)
+
+
+@blueprint.post("/ingestion/jobs")
+def enqueue_scoped_ingestion():
+    try:
+        _require_operator()
+        payload = _payload()
+        paper_ids = payload.get("paper_ids")
+        if not isinstance(paper_ids, list):
+            raise ValueError("paper_ids must be an array")
+        job_id = ScopedIngestionRepository().enqueue(
+            ScopedIngestionRequest(
+                agenda_id=int(payload["agenda_id"]),
+                idea_id=int(payload["idea_id"]),
+                resource_grant_id=int(payload["resource_grant_id"]),
+                stage=str(payload["stage"]),
+                idempotency_key=str(payload["idempotency_key"]),
+                paper_ids=tuple(str(value) for value in paper_ids),
+                max_attempts=int(payload.get("max_attempts") or 3),
+            )
+        )
+        return jsonify(
+            {"status": "queued", "scoped_ingestion_job_id": job_id}
+        ), 202
+    except Exception as exc:
+        return _error(exc)
+
+
+@blueprint.post("/compute/colab/jobs")
+def enqueue_colab_job():
+    try:
+        _require_operator()
+        payload = _payload()
+        command_tokens = payload.get("command_tokens")
+        artifact_map = payload.get("artifact_map")
+        environment = payload.get("environment") or {}
+        if not isinstance(command_tokens, list):
+            raise ValueError("command_tokens must be an array")
+        if not isinstance(artifact_map, dict):
+            raise ValueError("artifact_map must be an object")
+        if not isinstance(environment, dict):
+            raise ValueError("environment must be an object")
+        job = submit_colab_work(
+            ColabWorkSpec(
+                agenda_id=int(payload["agenda_id"]),
+                idea_id=int(payload["idea_id"]),
+                experiment_run_id=int(payload["experiment_run_id"]),
+                resource_grant_id=int(payload["resource_grant_id"]),
+                stage=str(payload["stage"]),
+                idempotency_key=str(payload["idempotency_key"]),
+                code_dir=str(payload["code_dir"]),
+                command_tokens=tuple(str(value) for value in command_tokens),
+                environment={
+                    str(key): str(value)
+                    for key, value in environment.items()
+                },
+                artifact_map={
+                    str(key): str(value)
+                    for key, value in artifact_map.items()
+                },
+                artifact_output_dir=str(payload["artifact_output_dir"]),
+                timeout_seconds=int(payload["timeout_seconds"]),
+            )
+        )
+        return jsonify(
+            {
+                "status": job.status,
+                "backend_kind": job.backend_kind,
+                "backend_job_id": job.backend_job_id,
+                "idempotency_key": job.idempotency_key,
+            }
+        ), 202
+    except Exception as exc:
+        return _error(exc)
+
+
+@blueprint.post("/harness/candidates/<int:candidate_id>/evaluate")
+def run_isolated_harness_evaluation(candidate_id: int):
+    try:
+        _require_operator()
+        if (
+            not str(HARNESS_PRODUCTION_PATH).strip()
+            or not str(HARNESS_PRODUCTION_DATABASE_NAMESPACE).strip()
+        ):
+            raise PermissionError(
+                "isolated evaluator production boundary is not configured"
+            )
+        payload = _payload()
+        patch_id = int(payload["patch_id"])
+        arguments = payload.get("arguments") or []
+        if not isinstance(arguments, list):
+            raise ValueError("arguments must be an array")
+        row = db.fetchone(
+            """
+            SELECT hc.*, hp.id AS patch_id, hp.patch_hash,
+                   hp.agenda_id AS patch_agenda_id
+            FROM harness_candidates AS hc
+            JOIN harness_patches AS hp ON hp.candidate_id=hc.id
+            WHERE hc.id=? AND hp.id=?
+            """,
+            (candidate_id, patch_id),
+        )
+        if (
+            not row
+            or int(row.get("agenda_id") or 0)
+            != int(row.get("patch_agenda_id") or 0)
+        ):
+            raise ValueError("candidate/patch scope mismatch")
+        policy = HarnessPolicy(
+            version=HARNESS_POLICY_VERSION,
+            max_modules=HARNESS_MAX_MODULES,
+            max_changed_lines=HARNESS_MAX_CHANGED_LINES,
+            candidate_root=str(HARNESS_CANDIDATE_ROOT),
+            namespace_prefix=HARNESS_DATABASE_NAMESPACE_PREFIX,
+        )
+        candidate = HarnessCandidate(
+            agenda_id=int(row["agenda_id"]),
+            candidate_ref=str(row["candidate_ref"]),
+            base_commit=str(row["base_commit"]),
+            worktree_path=str(row["worktree_path"]),
+            database_namespace=str(row["database_namespace"]),
+            artifact_namespace=str(row["artifact_namespace"]),
+        )
+        evaluation = IsolatedEvaluatorRunner(
+            policy=policy,
+            production_path=HARNESS_PRODUCTION_PATH,
+            production_database_namespace=(
+                HARNESS_PRODUCTION_DATABASE_NAMESPACE
+            ),
+            evaluator_root=str(HARNESS_EVALUATOR_ROOT),
+            holdout_root=str(HARNESS_HOLDOUT_ROOT),
+            artifact_root=str(HARNESS_EVALUATOR_ARTIFACT_ROOT),
+            isolation_binary=HARNESS_EVALUATOR_ISOLATION_BINARY,
+        ).run(
+            candidate=candidate,
+            spec=EvaluatorSuiteSpec(
+                suite=str(payload["suite"]),
+                evaluator_root=str(payload["evaluator_root"]),
+                evaluator_entrypoint=str(payload["evaluator_entrypoint"]),
+                evaluator_hash=str(payload["evaluator_hash"]),
+                suite_root=str(payload["suite_root"]),
+                suite_hash=str(payload["suite_hash"]),
+                output_dir=str(payload["output_dir"]),
+                timeout_seconds=int(payload.get("timeout_seconds") or 1800),
+                arguments=tuple(
+                    str(value) for value in arguments
+                ),
+            ),
+        )
+        evaluation_id = HarnessRepository().save_evaluation(
+            evaluation,
+            candidate_id=candidate_id,
+            patch_id=patch_id,
+        )
+        return jsonify(
+            {
+                "status": evaluation.status,
+                "harness_evaluation_run_id": evaluation_id,
+                "evaluator_hash": evaluation.evaluator_hash,
+                "failure_reason": evaluation.failure_reason,
+            }
+        ), (201 if evaluation.status == "passed" else 409)
     except Exception as exc:
         return _error(exc)

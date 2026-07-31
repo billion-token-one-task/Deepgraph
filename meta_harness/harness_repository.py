@@ -196,6 +196,12 @@ class HarnessRepository:
             raise HarnessPersistenceError("EvaluationRun requires agenda_id")
         if evaluation.suite not in {"held_in", "held_out", "canary"}:
             raise HarnessPersistenceError("invalid evaluation suite")
+        if evaluation.status not in {"passed", "failed"}:
+            raise HarnessPersistenceError("invalid evaluation status")
+        if evaluation.status == "failed" and not evaluation.failure_reason:
+            raise HarnessPersistenceError(
+                "failed evaluation requires a failure reason"
+            )
         if not evaluation.evaluator_ref or not evaluation.evaluator_hash:
             raise HarnessPersistenceError("evaluator ref/hash are required")
         if not evaluation.artifact_manifest:

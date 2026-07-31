@@ -34,6 +34,8 @@ SCOPED_TABLES = {
     "resource_grants",
     "outcome_records",
     "compute_jobs_v1",
+    "colab_work_requests_v1",
+    "scoped_ingestion_jobs_v1",
     "harness_candidates",
     "harness_patches",
     "harness_evaluation_runs",

@@ -428,6 +428,7 @@ CREATE TABLE IF NOT EXISTS gpu_jobs (
     assigned_worker TEXT REFERENCES gpu_workers(id),
     artifact_uri TEXT,
     error_message TEXT,
+    meta_harness_idempotency_key TEXT,
     started_at TIMESTAMP,
     completed_at TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP

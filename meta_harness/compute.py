@@ -356,6 +356,13 @@ class ComputeScheduler:
             for kind, backend in sorted(self._backends.items())
         }
 
+    def configured_backend(self, kind: str) -> ComputeBackend:
+        """Return one configured adapter without exposing the registry itself."""
+        backend = self._backends.get(str(kind))
+        if backend is None:
+            raise ComputeBackendError(f"backend is not configured:{kind}")
+        return backend
+
     def submit(
         self,
         request: ComputeSubmission,
