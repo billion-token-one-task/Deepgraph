@@ -249,7 +249,8 @@ artifacts named in its evidence column may promote it to `[x]`.
   restart/crash verification remains pending.
 - [~] **P4-23** Failed/cancelled/timed-out backends must persist measured usage
   before terminal settlement; expired jobs with unknown usage are quarantined
-  as `usage_unknown`. Failure/timeout PostgreSQL CI is pending.
+  as `usage_unknown`. The additive schema CHECK permits that state and an
+  isolated expiry test is written; failure/timeout PostgreSQL CI is pending.
 - [~] **P4-24** CPU validation now claims a durable, agenda/idea/grant-scoped
   compute job before entering the synchronous legacy loop, uses stable
   idempotency on retry and settles measured iteration usage plus grant-required
@@ -422,7 +423,7 @@ artifacts named in its evidence column may promote it to `[x]`.
 - [x] **V-02** 272 Python files passed the broad AST parse and 250 files passed
   the release static audit at the latest checkpoint.
 - [x] **V-03** Side-effect-free SQL AST audit found no definite mismatch:
-  797 literal calls, 794 statically countable, and 114 dynamic calls explicitly
+  799 literal calls, 796 statically countable, and 114 dynamic calls explicitly
   left for review/CI.
 - [x] **V-04** `git diff --check` passed.
 - [x] **V-04A** Agenda mutation scope audit passes: 138 scoped literal
@@ -454,7 +455,8 @@ artifacts named in its evidence column may promote it to `[x]`.
   blocking `f66cafe`, plus compute registry enforcement `8f59a65`; none was
   pushed. Legacy Web boundary hardening is `954b858`; it also remains local.
   Residual execution/secret-hint hardening is `d192a8d`, startup recovery
-  ordering is `692bb62`, and scoped ingestion routing is `a7262a3`.
+  ordering is `692bb62`, scoped ingestion routing is `a7262a3`, and durable
+  unknown-usage schema repair is `bdda49c`.
 - [ ] **V-14** No push until explicit approval and quiescence check.
 - [ ] **V-15** Final candidate commit hash must replace working-tree/intermediate
   hashes in all acceptance artifacts.
