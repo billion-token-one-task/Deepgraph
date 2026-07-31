@@ -4,6 +4,12 @@
 
 - Durable queues and isolated evaluator implementation are locally committed
   as `724a3ed51fe4649a720c08fb0c213014eb9d236a`.
+- Scoped ingestion completion now requires persisted
+  `papers.status/processing_stage='reasoned'`, and agenda-row locking
+  serializes competing claims; the local fix is
+  `b17c7d110532197a7137a217ffa641b50486d295`, with the persisted
+  one-running-job guard in
+  `f2f6ea96d27673f077966b4bd2f278717393b0d9`.
 - Colab requests now persist before compute admission, claim before any
   session, settle named artifacts/measured usage and quarantine lost remote
   control. Configured Colab starts behind scheduler-lock recovery.
@@ -104,8 +110,10 @@ Current decision remains: not eligible to replace master.
   `9d24d29c6a7d1017301ffa9c36ff9b4b3dfae88d`
 - Production/master merge-base: none.
 - Local implementation checkpoint:
-  `724a3ed51fe4649a720c08fb0c213014eb9d236a`
-  (`feat: add durable queues and isolated evaluator`).
+  `f2f6ea96d27673f077966b4bd2f278717393b0d9`
+  (`fix: serialize ingestion work per agenda`), on top of
+  `b17c7d110532197a7137a217ffa641b50486d295` and
+  `724a3ed51fe4649a720c08fb0c213014eb9d236a`.
 - No push or other remote mutation was made.
 
 ## Completed safe slice
@@ -138,7 +146,7 @@ Phase 3–8 integration remains incomplete; see [UNVERIFIED.md](UNVERIFIED.md).
   SHA-256
   `6379d919c951a827017eacf72e1168d52980bb2d515c5f14d44e5121f01b1185`,
   no destructive token, no database access.
-- SQL AST audit: 838 literal calls, 835 statically countable, no definite
+- SQL AST audit: 839 literal calls, 836 statically countable, no definite
   placeholder mismatch; 114 dynamic calls remain explicit review/CI scope.
 - `git diff --check`: passed.
 - Agenda example JSON parsed.
