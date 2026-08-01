@@ -226,3 +226,8 @@ also local and unpushed.
 - Release scope is CPU + SSH A100. Colab is explicitly excluded from this
   candidate; no Colab credential or OAuth material was used. Real LLM provider
   canary/restart remains unverified, so the master decision stays REJECTED.
+- A no-network Codex-shaped mock-provider canary passed the LLM contract:
+  ResourceGrant admission, metered success (12 tokens), auth-failure
+  fail-closed behavior and cooldown persistence were exercised. Report
+  SHA-256 `7e7fb80457bee57d8e6930b0e59401bc08f7e8504c73df313471ce10304e80ad`.
+  This is synthetic contract evidence, not a real provider call.
