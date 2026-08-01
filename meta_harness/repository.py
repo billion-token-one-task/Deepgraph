@@ -940,7 +940,7 @@ class MetaHarnessRepository:
             )
         decision = db.fetchone(
             """
-            SELECT id, verdict, reason_codes_json
+            SELECT id, verdict, evidence_decision_json
             FROM scientific_decision_records
             WHERE agenda_id=? AND experiment_run_id=?
             """,
@@ -1013,6 +1013,10 @@ class MetaHarnessRepository:
                 else None
             ),
         }
+        decision_payload = _load_mapping((decision or {}).get("evidence_decision_json"))
+        decision_reason_codes = _load_list(
+            (decision or {}).get("reason_codes_json")
+        ) or _load_list(decision_payload.get("reason_codes"))
         outcome = OutcomeRecord(
             agenda_id=int(grant["agenda_id"]),
             idea_id=int(grant["idea_id"]),
@@ -1037,9 +1041,7 @@ class MetaHarnessRepository:
                 "scientific_decision_record_id": (
                     int(decision["id"]) if decision else None
                 ),
-                "decision_reason_codes": _load_list(
-                    (decision or {}).get("reason_codes_json")
-                ),
+                "decision_reason_codes": decision_reason_codes,
                 "compute_job_statuses": [
                     str(row.get("status") or "") for row in compute_rows
                 ],

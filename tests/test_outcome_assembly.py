@@ -86,7 +86,7 @@ def test_trusted_outcome_assembly_uses_canonical_supported_decision():
                 {
                     "id": 11,
                     "verdict": "supported",
-                    "reason_codes_json": '["complete_evidence"]',
+                    "evidence_decision_json": '{"reason_codes":["complete_evidence"]}',
                 },
             ],
         ),
