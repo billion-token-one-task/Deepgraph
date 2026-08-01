@@ -487,6 +487,10 @@ class StaticMigrationContractTests(unittest.TestCase):
             "ALTER TABLE IF EXISTS DEEP_INSIGHTS ADD COLUMN IF NOT EXISTS AGENDA_ID",
             upper,
         )
+        self.assertIn(
+            "ALTER TABLE IF EXISTS DEEP_INSIGHTS ADD COLUMN IF NOT EXISTS RESEARCH_PROBLEM_ID",
+            upper,
+        )
         self.assertNotIn("UPDATE DEEP_INSIGHTS SET AGENDA_ID", upper)
 
 
