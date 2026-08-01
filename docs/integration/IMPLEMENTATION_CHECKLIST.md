@@ -467,6 +467,7 @@ artifacts named in its evidence column may promote it to `[x]`.
   and host-key regressions passed 19 tests, and targeted
   fault/validation/queue/runtime lane passed 50; the A100 control-plane canary
   passed CPU/A100 submit-settle, idempotency rejection and failure quarantine;
+  trusted OutcomeRecord assembly and PostgreSQL compute/evidence rerun passed;
   the prior synthetic aggregate
   remains 60 (validation-loop fairness/manifest subset 22/22). Adapted legacy
   remains 39 passed/30 failed; each

@@ -34,6 +34,10 @@ The following items were not proven by this isolated session:
   serving run or production rollback was executed. The exact `7d0b42a`
   detached worktree was clean and its isolated temp-SQLite startup rehearsal
   passed.
+- A disposable CPU+A100 control-plane canary now assembled a trusted
+  OutcomeRecord from persisted usage. This still is not a scientific benchmark
+  or independent reviewer approval; the full API/provider/Colab release lane
+  remains unverified.
 - No push, deployment, production database connection, production worktree
   mutation, remote-ref deletion or master merge occurred.
 

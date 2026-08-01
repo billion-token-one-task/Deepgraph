@@ -119,7 +119,9 @@ lane_5_fault_canary:
   approved_cpu_canary_status: passed_control_plane_cpu_with_short_lived_grant
   approved_gpu_canary_status: passed_control_plane_a100_ssh_with_secret_reference
   control_plane_canary_status: passed (CPU/A100 submit-settle, terminal idempotency rejection, submission_unknown quarantine)
-  control_plane_canary_report_sha256: 45e125a92e7ac4173b9a97a38cccf269065d8c6b82d6b5722dbd6d0cd32bca85
+  control_plane_canary_report_sha256: 526b61cf3c302201a73e8121d8ba159048291571c328c0dac498b14aca0970a9
+  outcome_record_status: passed (trusted persistence assembly; outcome_record_id redacted from repository evidence)
+  compute_evidence_rerun_report_sha256: f45f868d8aa06b206a57b1222c20fe0f56111900750d0ced0adc003a189e65c2
   scientific_gpu_colab_provider_status: not_claimed
 
 review:
@@ -149,7 +151,7 @@ The physical PostgreSQL 18 backup restore now passes count preservation,
 migration idempotency, integrity checks and all three repository integration
 files. The adapted legacy lane remains 39 passed / 30 failed with each failure
 classified as obsolete or requiring a new scoped/granted fixture. Approved
-The control-plane CPU/A100 canary passed using a disposable PostgreSQL agenda,
+The control-plane CPU/A100 canary and trusted OutcomeRecord assembly passed using a disposable PostgreSQL agenda,
 short-lived ResourceGrant, and secret references only. It is not a scientific
 benchmark or Colab/provider canary. Reviewer approval is still unavailable;
 consequently `all_16_gates_accepted` and `master_replacement_approved` remain

@@ -188,3 +188,21 @@ also local and unpushed.
   `6048a9568c79b011074e0dba2662fd473cfab250`; original candidate and all
   protected archive refs are unchanged. No merge, push, deployment, or
   production database connection occurred.
+
+## OutcomeRecord canary regression closure
+
+- A real disposable PostgreSQL canary initially exposed that
+  `assemble_and_record_outcome` selected a nonexistent
+  `scientific_decision_records.reason_codes_json` column. The fix reads the
+  existing `evidence_decision_json` payload and has a regression assertion;
+  commit `2403296`.
+- After the fix, targeted contracts/SSH/OutcomeRecord tests passed 34/34
+  (report SHA-256 `47c795a4ed27612d6cb00515733d404ba17b24df1ca394e6ebb319b6dde5285c`),
+  compute/evidence PostgreSQL integration passed 5/5 (report SHA-256
+  `f45f868d8aa06b206a57b1222c20fe0f56111900750d0ced0adc003a189e65c2`), and
+  CPU+A100 control-plane canary plus trusted OutcomeRecord assembly passed;
+  failure injection remained `submission_unknown` (report SHA-256
+  `526b61cf3c302201a73e8121d8ba159048291571c328c0dac498b14aca0970a9`).
+- The migration integration test was not counted in this rerun because its
+  existing disposable database already had the migration journal; the prior
+  fresh-restore lane remains the authoritative first/second migration proof.
