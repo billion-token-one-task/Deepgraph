@@ -362,3 +362,11 @@ Detailed status:
 [legacy test classification](docs/integration/LEGACY_TEST_CLASSIFICATION.md),
 [porting ledger](docs/integration/PORTING_LEDGER.md), and
 [master acceptance matrix](docs/integration/ACCEPTANCE_EVIDENCE.md).
+## 2026-08-01 — isolated A100 control-plane evidence
+
+- Ran a disposable PostgreSQL CPU/A100 SSH control-plane canary using a
+  short-lived ResourceGrant and secret references only. Durable settlement,
+  terminal idempotency rejection, and `submission_unknown` failure quarantine
+  passed; no production database, deployment, push, or raw credential was
+  used. Full scientific GPU/Colab/provider canaries and reviewer approval remain
+  pending.
