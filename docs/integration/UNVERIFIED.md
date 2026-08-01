@@ -25,6 +25,9 @@ The following items were not proven by this isolated session:
   a hardware canary.
 - The SSH transport reference repair is unit-tested, but no secret was injected
   and no remote target was contacted; external GPU/Colab canary remains open.
+- A target-3 probe with the injected secret reference and strict known-hosts
+  file timed out after 30 seconds. This is recorded as unavailable/unverified,
+  not as a successful canary.
 - No real CPU-canary OutcomeRecord, reviewer identity/signature, production API
   serving run or production rollback was executed. The exact `7d0b42a`
   detached worktree was clean and its isolated temp-SQLite startup rehearsal

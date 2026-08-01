@@ -102,6 +102,11 @@ with the commit hash; intermediate counts/checksums are not release evidence.
   `d015b2f31ef3fe7900d05082b66c5ec8069a2ebe988abc3a1192c3455c86b15d`):
   worker metadata now carries only the configured `env:...` reference and the
   legacy global password variable is ignored by the transport.
+- Strict SSH host-key pinning was extended to the configured known-hosts file;
+  the follow-up transport lane passed 19/19 (report
+  `6968763c69824dd8cc791358f5c9339e0aa99b6ad38f3a1033f997e2995dda8b`). The
+  target-3 read-only `nvidia-smi` probe timed out after 30 seconds, so no GPU
+  canary or remote write is claimed.
 - A fresh disposable detached worktree at evidence commit
   `211124be179f88480477c7eb87f7973c2acf096d` passed the real bubblewrap
   held-in, held-out and canary suites. Its evaluator tree before/after hash was

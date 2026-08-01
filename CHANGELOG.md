@@ -30,6 +30,10 @@ references; the legacy global raw-password variable is ignored. The focused
 SSH/runtime regression lane passed 18/18. No remote GPU was contacted by this
 change.
 
+SSH transport also pins the configured known-hosts file for SSH and SCP. The
+follow-up regression lane passed 19/19. A target-3 read-only `nvidia-smi` probe
+timed out after 30 seconds; no remote write or canary success is claimed.
+
 Final isolated acceptance record: source candidate frozen at
 `6851a991154906f11d8cfc247d22a5d5caa0a834` with candidate tree
 `b1c1e8ebfbc0607cc39bb617dad9d56fd949d214122a37dd70541bd634d9feab`.

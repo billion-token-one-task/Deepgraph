@@ -210,9 +210,25 @@ def _ssh_target(worker: Mapping[str, Any]) -> str:
     return f"{user}@{host}"
 
 
+def _known_hosts_file(worker: Mapping[str, Any] | None) -> str:
+    metadata = _load_metadata(worker)
+    configured = str(
+        metadata.get("known_hosts_file")
+        or os.environ.get("DEEPGRAPH_SSH_KNOWN_HOSTS")
+        or (Path.home() / ".ssh" / "known_hosts")
+    ).strip()
+    return str(Path(configured).expanduser())
+
+
 def _ssh_base_command(worker: Mapping[str, Any]) -> list[str]:
     metadata = _load_metadata(worker)
-    cmd = ["ssh", "-o", "StrictHostKeyChecking=yes"]
+    cmd = [
+        "ssh",
+        "-o",
+        "StrictHostKeyChecking=yes",
+        "-o",
+        f"UserKnownHostsFile={_known_hosts_file(worker)}",
+    ]
     if _ssh_password(worker):
         cmd.extend(["-o", "PubkeyAuthentication=no"])
     port = int(metadata.get("ssh_port") or 22)
@@ -222,7 +238,13 @@ def _ssh_base_command(worker: Mapping[str, Any]) -> list[str]:
 
 def _rsync_ssh_command(worker: Mapping[str, Any]) -> str:
     metadata = _load_metadata(worker)
-    parts = ["ssh", "-o", "StrictHostKeyChecking=yes"]
+    parts = [
+        "ssh",
+        "-o",
+        "StrictHostKeyChecking=yes",
+        "-o",
+        f"UserKnownHostsFile={_known_hosts_file(worker)}",
+    ]
     if _ssh_password(worker):
         parts.extend(["-o", "PubkeyAuthentication=no"])
     parts.extend(["-p", str(int(metadata.get("ssh_port") or 22))])
@@ -299,7 +321,13 @@ def _scp_target(worker: Mapping[str, Any], remote_path: str) -> str:
 
 def _scp(worker: Mapping[str, Any], source: str, dest: str, *, timeout: int | None = None) -> None:
     metadata = _load_metadata(worker)
-    cmd = ["scp", "-o", "StrictHostKeyChecking=no"]
+    cmd = [
+        "scp",
+        "-o",
+        "StrictHostKeyChecking=yes",
+        "-o",
+        f"UserKnownHostsFile={_known_hosts_file(worker)}",
+    ]
     if os.name == "nt":
         # Windows OpenSSH SFTP-mode scp can corrupt larger gzip streams with some
         # remote images. Legacy SCP mode preserves the exact bytes in our smoke tests.
