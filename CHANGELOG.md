@@ -382,3 +382,7 @@ Detailed status:
 - Count-only API status, current-candidate evaluator rerun, and signed reviewer
   approval passed for the CPU + SSH A100 release scope. Colab is explicitly
   excluded; real LLM provider execution/restart remains unverified.
+
+- Added a no-network Codex-shaped mock-provider canary record covering grant
+  admission, usage settlement, auth failure and cooldown; real provider calls
+  remain intentionally unclaimed.

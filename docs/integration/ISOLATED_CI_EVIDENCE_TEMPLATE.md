@@ -123,6 +123,8 @@ lane_5_fault_canary:
   outcome_record_status: passed (trusted persistence assembly; outcome_record_id redacted from repository evidence)
   compute_evidence_rerun_report_sha256: f45f868d8aa06b206a57b1222c20fe0f56111900750d0ced0adc003a189e65c2
   scientific_gpu_colab_provider_status: not_claimed
+  mock_llm_provider_status: passed (no network; grant, usage, auth failure, cooldown)
+  mock_llm_provider_report_sha256: 7e7fb80457bee57d8e6930b0e59401bc08f7e8504c73df313471ce10304e80ad
 
 review:
   reviewer_approval_record_id: isolated_report_2
@@ -154,10 +156,12 @@ passed, including protected-write and missing-isolation-binary negative checks.
 The physical PostgreSQL 18 backup restore now passes count preservation,
 migration idempotency, integrity checks and all three repository integration
 files. The adapted legacy lane remains 39 passed / 30 failed with each failure
-classified as obsolete or requiring a new scoped/granted fixture. Approved
-The control-plane CPU/A100 canary, API status check, trusted OutcomeRecord assembly and signed reviewer approval passed using a disposable PostgreSQL agenda,
-short-lived ResourceGrant, and secret references only. It is not a scientific
-benchmark or Colab/provider canary. Reviewer approval is still unavailable;
-consequently `all_16_gates_accepted` and `master_replacement_approved` remain
-false. Real LLM provider execution/restart remains unverified and is not in
-the CPU + SSH A100 canary evidence.
+classified as obsolete or requiring a new scoped/granted fixture. The
+control-plane CPU/A100 canary, API status check, trusted OutcomeRecord assembly
+and signed reviewer approval passed using a disposable PostgreSQL agenda,
+short-lived ResourceGrant, and secret references only. This is not a scientific
+benchmark or Colab/provider canary. Real LLM provider execution/restart remains
+unverified and is not in the CPU + SSH A100 canary evidence. The mock LLM
+provider lane is synthetic and does not replace real provider execution/restart
+evidence. Consequently `all_16_gates_accepted` and
+`master_replacement_approved` remain false.
