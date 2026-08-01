@@ -23,7 +23,6 @@ from config import (
     EXPERIMENT_REAL_LLM_MODEL,
     GPU_REMOTE_AUTO_PIP_INSTALL,
     GPU_REMOTE_SETUP_TIMEOUT_SECONDS,
-    GPU_REMOTE_SSH_PASSWORD,
 )
 
 
@@ -186,7 +185,20 @@ def benchmark_env_from_workdir(local_workdir: Path) -> dict[str, str]:
 
 
 def _ssh_password(worker: Mapping[str, Any] | None) -> str:
-    return str(GPU_REMOTE_SSH_PASSWORD or "")
+    """Resolve a worker's SSH secret by reference, never by raw metadata.
+
+    The legacy scheduler used to read ``GPU_REMOTE_SSH_PASSWORD`` directly.
+    New workers carry only an ``env:NAME`` reference; the secret value is
+    supplied by the isolated runtime environment and is never persisted in
+    worker metadata or configuration files.
+    """
+    reference = str(_load_metadata(worker).get("credential_ref") or "").strip()
+    if not reference.startswith("env:"):
+        return ""
+    env_name = reference[4:].strip()
+    if not env_name or not env_name.replace("_", "").isalnum():
+        return ""
+    return str(os.environ.get(env_name) or "")
 
 
 def _ssh_target(worker: Mapping[str, Any]) -> str:

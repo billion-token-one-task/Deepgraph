@@ -29,6 +29,7 @@ from config import (
     GPU_REMOTE_SSH_HOST,
     GPU_REMOTE_SSH_PORT,
     GPU_REMOTE_SSH_USER,
+    COMPUTE_SSH_CREDENTIAL_REF,
     GPU_VISIBLE_DEVICES,
 )
 from db import database as db
@@ -550,7 +551,7 @@ def register_default_workers() -> list[dict]:
                 "ssh_host": GPU_REMOTE_SSH_HOST,
                 "ssh_port": GPU_REMOTE_SSH_PORT,
                 "ssh_user": GPU_REMOTE_SSH_USER,
-                "credential_ref": "env:DEEPGRAPH_GPU_REMOTE_SSH_PASSWORD",
+                "credential_ref": COMPUTE_SSH_CREDENTIAL_REF,
                 "remote_base_dir": GPU_REMOTE_BASE_DIR,
                 "python_bin": GPU_REMOTE_PYTHON,
             }

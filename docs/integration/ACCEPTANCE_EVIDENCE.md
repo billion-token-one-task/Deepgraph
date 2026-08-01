@@ -98,6 +98,10 @@ with the commit hash; intermediate counts/checksums are not release evidence.
   `89b3a752b649ae4ebb1143c6b04f42a2c6849a9ac390bf1b83be13aaa7e260a0`),
   targeted fault/validation/queue/runtime 50/50 (report
   `1a02126c00ed3c03a10016decdad8e2dcd73a38317e32f98c535a3ad3187a08b`).
+- SSH GPU transport reference repair passed 18/18 targeted tests (report
+  `d015b2f31ef3fe7900d05082b66c5ec8069a2ebe988abc3a1192c3455c86b15d`):
+  worker metadata now carries only the configured `env:...` reference and the
+  legacy global password variable is ignored by the transport.
 - A fresh disposable detached worktree at evidence commit
   `211124be179f88480477c7eb87f7973c2acf096d` passed the real bubblewrap
   held-in, held-out and canary suites. Its evaluator tree before/after hash was
