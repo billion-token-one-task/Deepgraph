@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "deepgraph"
-version = "0.1.0"
+version = "0.2.0"
 description = "Open scientific opportunity mapping from literature, evidence tables, and plain-language domain briefs."
 readme = "README.md"
 license = "MIT"
