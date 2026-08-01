@@ -30,14 +30,10 @@ The following items were not proven by this isolated session:
 - A target-3 probe with the injected secret reference and strict known-hosts
   file timed out after 30 seconds. This is recorded as unavailable/unverified,
   not as a successful canary.
-- No real CPU-canary OutcomeRecord, reviewer identity/signature, production API
-  serving run or production rollback was executed. The exact `7d0b42a`
-  detached worktree was clean and its isolated temp-SQLite startup rehearsal
-  passed.
-- A disposable CPU+A100 control-plane canary now assembled a trusted
-  OutcomeRecord from persisted usage. This still is not a scientific benchmark
-  or independent reviewer approval; the full API/provider/Colab release lane
-  remains unverified.
+- A disposable CPU+A100 control-plane canary assembled a trusted OutcomeRecord,
+  the count-only API status endpoint returned 200, and reviewer approval was
+  independently verified and persisted. This is not production serving or a
+  scientific benchmark. Real LLM provider execution/restart remains unverified.
 - No push, deployment, production database connection, production worktree
   mutation, remote-ref deletion or master merge occurred.
 

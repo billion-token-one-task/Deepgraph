@@ -376,3 +376,9 @@ Detailed status:
 - Fixed trusted outcome assembly to read the schema's canonical
   `evidence_decision_json`; targeted tests, PostgreSQL compute/evidence lanes,
   and the CPU/A100 canary with persisted OutcomeRecord settlement passed.
+
+## 2026-08-01 — scoped reviewer and API evidence
+
+- Count-only API status, current-candidate evaluator rerun, and signed reviewer
+  approval passed for the CPU + SSH A100 release scope. Colab is explicitly
+  excluded; real LLM provider execution/restart remains unverified.
