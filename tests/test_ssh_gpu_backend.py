@@ -20,6 +20,7 @@ class SshGpuBackendTests(unittest.TestCase):
                 "remote_base_dir": "/remote/deepgraph",
                 "python_bin": "python",
                 "credential_ref": "env:TEST_SSH_CREDENTIAL",
+                "known_hosts_file": "/tmp/test-known-hosts",
             },
         }
 
@@ -32,6 +33,18 @@ class SshGpuBackendTests(unittest.TestCase):
         worker = self._worker()
         with mock.patch.dict(ssh_gpu_backend.os.environ, {"GPU_REMOTE_SSH_PASSWORD": "legacy"}, clear=False):
             self.assertEqual(ssh_gpu_backend._ssh_password(worker), "")
+
+    def test_ssh_and_scp_pin_configured_known_hosts_file(self):
+        worker = self._worker()
+        self.assertIn(
+            "UserKnownHostsFile=/tmp/test-known-hosts",
+            ssh_gpu_backend._ssh_base_command(worker),
+        )
+        with mock.patch.object(ssh_gpu_backend, "_ssh_password", return_value=""):
+            with mock.patch.object(ssh_gpu_backend, "_run_subprocess", return_value=subprocess.CompletedProcess(["scp"], 0, "", "")) as run:
+                ssh_gpu_backend._scp(worker, "source", "dest")
+        self.assertIn("UserKnownHostsFile=/tmp/test-known-hosts", run.call_args.args[0])
+        self.assertIn("StrictHostKeyChecking=yes", run.call_args.args[0])
 
     def test_remote_experiment_omits_shell_timeout_when_uncapped(self):
         worker = self._worker()

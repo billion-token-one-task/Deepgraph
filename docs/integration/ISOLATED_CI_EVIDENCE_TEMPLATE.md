@@ -109,6 +109,9 @@ lane_4_evaluator:
 lane_5_fault_canary:
   ssh_reference_regression_status: passed (18 passed; no remote target contacted)
   ssh_reference_regression_report_sha256: d015b2f31ef3fe7900d05082b66c5ec8069a2ebe988abc3a1192c3455c86b15d
+  ssh_host_key_regression_status: passed (19 passed total)
+  ssh_host_key_regression_report_sha256: 6968763c69824dd8cc791358f5c9339e0aa99b6ad38f3a1033f997e2995dda8b
+  target_3_read_only_probe_status: timed_out_after_30_seconds
   synthetic_provider_status: passed targeted router/cooldown tests; synthetic aggregate 60/60
   synthetic_backend_status: passed targeted backend/app/fault tests; PostgreSQL backend recovery unverified
   duplicate_submission_count: 0 observed in mocked/durable queue tests; PostgreSQL unverified

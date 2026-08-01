@@ -464,7 +464,7 @@ artifacts named in its evidence column may promote it to `[x]`.
 - [x] **V-06** Migration dry-plan recorded statement count/checksum/no
   destructive token.
 - [~] **V-07** Final-candidate pure policy lane passed 71 tests, SSH reference
-  regression passed 18 tests, and targeted
+  and host-key regressions passed 19 tests, and targeted
   fault/validation/queue/runtime lane passed 50; the prior synthetic aggregate
   remains 60 (validation-loop fairness/manifest subset 22/22). Adapted legacy
   remains 39 passed/30 failed; each
