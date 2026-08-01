@@ -170,3 +170,21 @@ also local and unpushed.
   credentials were used.
 - The exact `7d0b42a` detached rollback worktree was clean and its isolated
   temp-SQLite application startup passed. No production rollback was run.
+
+## Final local verification after A100 control-plane evidence
+
+- Candidate HEAD `b7b5fd7c66e19a20f20f1273c9f85e1435ebc1f0`; Git tree
+  `3adeba6bb5d24795d8823c4378f9e61c1edda308`; tracked-content SHA-256
+  `30e6b04629be24d3b7626fce05a45fc6070ebc05f6ff5c5054990aff26eae23c`.
+- Final static/scope/SQL/state/LLM audits passed. Report SHA-256 values:
+  `e091c3d4484b4d59b5ed0af2355f1dcb4d22c9f26ec23abd4358b89f5408927d`,
+  `4038c4265f3d05d1a83dc1a52295e94f5c98ee89c20eb1f92321ae440ade840d`,
+  `d511b016dccd8f62cef3d03bf2057c2919aec491665aea6730b3568524b3df91`,
+  `fbb44b6ad15756f980fd654efb0acf2dc810565367423fa4f917001cf9865b73`,
+  `90da4875b8e4cf2e24c1016fb87dbbe884a04c61a43ec22555918572ea673ad9`.
+  Migration plan SHA-256 remains
+  `1ffe2995d1fb337464f1663056ff9a6a5053ea8a616dda2b04614a02c9a81f6e`.
+- Worktree is clean; `master` and `origin/master` remain
+  `6048a9568c79b011074e0dba2662fd473cfab250`; original candidate and all
+  protected archive refs are unchanged. No merge, push, deployment, or
+  production database connection occurred.
