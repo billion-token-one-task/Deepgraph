@@ -19,8 +19,19 @@ class SshGpuBackendTests(unittest.TestCase):
                 "visible_device": "1",
                 "remote_base_dir": "/remote/deepgraph",
                 "python_bin": "python",
+                "credential_ref": "env:TEST_SSH_CREDENTIAL",
             },
         }
+
+    def test_ssh_secret_is_resolved_from_worker_reference(self):
+        worker = self._worker()
+        with mock.patch.dict(ssh_gpu_backend.os.environ, {"TEST_SSH_CREDENTIAL": "secret"}):
+            self.assertEqual(ssh_gpu_backend._ssh_password(worker), "secret")
+
+    def test_ssh_secret_is_not_read_from_legacy_global_variable(self):
+        worker = self._worker()
+        with mock.patch.dict(ssh_gpu_backend.os.environ, {"GPU_REMOTE_SSH_PASSWORD": "legacy"}, clear=False):
+            self.assertEqual(ssh_gpu_backend._ssh_password(worker), "")
 
     def test_remote_experiment_omits_shell_timeout_when_uncapped(self):
         worker = self._worker()

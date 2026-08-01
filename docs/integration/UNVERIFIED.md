@@ -23,6 +23,8 @@ The following items were not proven by this isolated session:
   has no injected canary/provider/SSH/Colab credential references, and the
   default configuration enables CPU only. The evaluator's canary suite is not
   a hardware canary.
+- The SSH transport reference repair is unit-tested, but no secret was injected
+  and no remote target was contacted; external GPU/Colab canary remains open.
 - No real CPU-canary OutcomeRecord, reviewer identity/signature, production API
   serving run or production rollback was executed. The exact `7d0b42a`
   detached worktree was clean and its isolated temp-SQLite startup rehearsal

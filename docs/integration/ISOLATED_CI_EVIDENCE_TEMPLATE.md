@@ -107,6 +107,8 @@ lane_4_evaluator:
   post_fix_missing_bwrap_fallback_report_sha256: 334df8dd61952b1b911e62d74cd7ecd27fd728dabf7980889c19d3fe200aa698
 
 lane_5_fault_canary:
+  ssh_reference_regression_status: passed (18 passed; no remote target contacted)
+  ssh_reference_regression_report_sha256: d015b2f31ef3fe7900d05082b66c5ec8069a2ebe988abc3a1192c3455c86b15d
   synthetic_provider_status: passed targeted router/cooldown tests; synthetic aggregate 60/60
   synthetic_backend_status: passed targeted backend/app/fault tests; PostgreSQL backend recovery unverified
   duplicate_submission_count: 0 observed in mocked/durable queue tests; PostgreSQL unverified
