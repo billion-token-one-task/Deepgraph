@@ -370,3 +370,9 @@ Detailed status:
   passed; no production database, deployment, push, or raw credential was
   used. Full scientific GPU/Colab/provider canaries and reviewer approval remain
   pending.
+
+## 2026-08-01 — OutcomeRecord PostgreSQL regression closure
+
+- Fixed trusted outcome assembly to read the schema's canonical
+  `evidence_decision_json`; targeted tests, PostgreSQL compute/evidence lanes,
+  and the CPU/A100 canary with persisted OutcomeRecord settlement passed.
