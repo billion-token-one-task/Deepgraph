@@ -193,6 +193,7 @@ CREATE TABLE IF NOT EXISTS benchmark_harness_jobs (
 ALTER TABLE IF EXISTS research_problems ADD COLUMN IF NOT EXISTS agenda_id BIGINT REFERENCES research_agendas(id);
 ALTER TABLE IF EXISTS experimental_evidence_edges ADD COLUMN IF NOT EXISTS agenda_id BIGINT REFERENCES research_agendas(id);
 ALTER TABLE IF EXISTS deep_insights ADD COLUMN IF NOT EXISTS agenda_id BIGINT REFERENCES research_agendas(id);
+ALTER TABLE IF EXISTS deep_insights ADD COLUMN IF NOT EXISTS research_problem_id BIGINT;
 ALTER TABLE IF EXISTS auto_research_jobs ADD COLUMN IF NOT EXISTS agenda_id BIGINT REFERENCES research_agendas(id);
 ALTER TABLE IF EXISTS experiment_runs ADD COLUMN IF NOT EXISTS agenda_id BIGINT REFERENCES research_agendas(id);
 ALTER TABLE IF EXISTS experiment_iterations ADD COLUMN IF NOT EXISTS agenda_id BIGINT REFERENCES research_agendas(id);
