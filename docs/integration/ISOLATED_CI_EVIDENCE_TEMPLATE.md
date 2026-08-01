@@ -82,6 +82,10 @@ lane_3_postgresql:
   physical_integration_report_sha256: 8b2f2ee0fc169e4c0ce96d5256b846a3ac33569e302f7ddc4ab5336518b050cf
 
 lane_4_evaluator:
+  final_candidate_commit: 211124be179f88480477c7eb87f7973c2acf096d
+  final_candidate_tree_before_after: 2efd623d20b7301662c4071220368aa2569520ed6e7a1cb79d1b69955c629206
+  final_candidate_real_rerun_status: passed (held-in, held-out, canary; read-only inputs; unshared network)
+  final_candidate_real_rerun_report_sha256: e011366d03614ef239e889b84b0943d73b20c1734a254ebae5b15d129435074f
   held_in_evaluator_hash: 45bddd4cbd5eba5ba6a6377b765debcd4e67fa15fcab879bbb321c752d6c362d
   held_in_suite_hash: 69c862126118dcc05cfe8fb10ba9fda4feeff8e67db5f3904923040bad389dda
   held_in_manifest_hash: 36f869064a5e928ad14c54be30e5038f2221191d2995a7a33eb43b96e9fb6e21

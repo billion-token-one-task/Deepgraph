@@ -98,6 +98,12 @@ with the commit hash; intermediate counts/checksums are not release evidence.
   `89b3a752b649ae4ebb1143c6b04f42a2c6849a9ac390bf1b83be13aaa7e260a0`),
   targeted fault/validation/queue/runtime 50/50 (report
   `1a02126c00ed3c03a10016decdad8e2dcd73a38317e32f98c535a3ad3187a08b`).
+- A fresh disposable detached worktree at evidence commit
+  `211124be179f88480477c7eb87f7973c2acf096d` passed the real bubblewrap
+  held-in, held-out and canary suites. Its evaluator tree before/after hash was
+  `2efd623d20b7301662c4071220368aa2569520ed6e7a1cb79d1b69955c629206`; all
+  inputs were read-only and the network namespace was unshared. Report SHA-256:
+  `e011366d03614ef239e889b84b0943d73b20c1734a254ebae5b15d129435074f`.
 
 The adapted-legacy failure-by-failure decision is recorded in
 [LEGACY_TEST_CLASSIFICATION.md](LEGACY_TEST_CLASSIFICATION.md). It is not a
