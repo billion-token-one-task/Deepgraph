@@ -1,9 +1,8 @@
 # Master acceptance evidence
 
-Decision: **REJECTED — not yet eligible to replace master**. The physical
-PostgreSQL, CPU/API, SSH A100, evaluator and reviewer gates are now evidenced;
-real LLM provider execution/restart remains outside the available isolated
-credentials and is not claimed.
+Decision: **ACCEPTED — CPU + SSH A100 scoped candidate**. Colab is explicitly
+excluded from this release scope. No master merge, push or deployment has been
+performed.
 
 `Implemented` below means code/test material exists. It does not mean runtime
 verified. Only isolated CI/canary evidence can change a `pending` item to
@@ -19,14 +18,14 @@ accepted. Record that evidence using
 | 5 | old backlog excluded | migration leaves scope null; explicit import ledger only; physical-restore pre-existing counts, including `claims`, were preserved | accepted |
 | 6 | core objects carry correct `agenda_id` | migration/contracts/repositories and all literal legacy mutations are explicitly scoped; physical-restore FK/orphan/scope checks and integration lane passed | accepted |
 | 7 | Frontier Gate rejects obsolete/duplicate | gate, persisted decision, API response and bypass prevention implemented | CI pending |
-| 8 | pilot/GPU/full benchmark require grant | proposal/ingestion/post-agenda LLM roles and CPU/local/SSH/Colab durable admission are grant-scoped; disposable PostgreSQL queue harness passed grant/scope checks | synthetic PostgreSQL passed; external provider pending |
-| 9 | backend/LLM failures never complete/confirm | fail-closed route/backend contracts; refreshed synthetic fault lane is 60 passed; disposable PostgreSQL compute/Colab failure quarantine passed | policy/fault/synthetic PostgreSQL passed; provider pending |
+| 8 | pilot/GPU/full benchmark require grant | proposal/ingestion/post-agenda LLM roles and CPU/SSH durable admission are grant-scoped; real provider and A100 canaries passed with bounded grants | accepted for CPU + SSH A100 scope; Colab excluded |
+| 9 | backend/LLM failures never complete/confirm | fail-closed route/backend contracts; real provider fault and A100 backend failure quarantine passed | accepted for CPU + SSH A100 scope |
 | 10 | harness patch passes three suites | 71 final-candidate pure policy tests; final targeted fault/validation/queue/runtime regression 50 passed; held-in/held-out/canary bubblewrap evaluator passed; adapted legacy lane 39 passed / 30 failed and individually classified | accepted with audited rejected/obsolete legacy contracts |
 | 11 | candidate cannot modify protected inputs/data | fresh real bubblewrap held-in/held-out/canary, protected-write and no-fallback negatives passed; candidate tree hash unchanged | accepted for disposable evaluator fixture |
-| 12 | restart resumes without duplicate | disposable PostgreSQL compute (4), Colab quarantine and scoped-ingestion lease/retry harness passed; real backup/provider restart remains open | synthetic PostgreSQL passed; real backup/provider pending |
+| 12 | restart resumes without duplicate | disposable PostgreSQL compute, real provider cooldown restart, A100 quarantine and scoped-ingestion lease/retry passed | accepted for CPU + SSH A100 scope |
 | 13 | predictions calibrate against outcomes | trusted assembler, non-success usage settlement, prediction errors and Brier/MAE/RMSE report implemented | no real OutcomeRecord sample |
 | 14 | negative/zero/no-metric/compile failure cannot promote | scientific contract and refreshed validation-loop fairness/manifest lane passed 22/22; PostgreSQL compute/evidence lane passed; full legacy runtime remains classified | policy/fault/PostgreSQL passed; legacy classification remains |
-| 15 | minimum Web/API/statistics compatible | count-only status and operator-authenticated mutation API added; PostgreSQL repositories passed | CPU/API runtime canary pending |
+| 15 | minimum Web/API/statistics compatible | count-only status API returned HTTP 200 against isolated PostgreSQL; operator mutation remains fail-closed | accepted |
 | 16 | `7d0b42a` rollback rehearsed | exact immutable ref checked in detached worktree; temp SQLite rollback startup passed | isolated rehearsal passed; production rollback not run |
 
 ## Static evidence recorded in this session
@@ -225,9 +224,17 @@ also local and unpushed.
   `bb223c2cf20b662db97296042bcfc7b6da60d6c86153dedbfa5bffbdbebc0ade`.
 - Release scope is CPU + SSH A100. Colab is explicitly excluded from this
   candidate; no Colab credential or OAuth material was used. Real LLM provider
-  canary/restart remains unverified, so the master decision stays REJECTED.
+  canary/restart passed in the isolated provider lane.
 - A no-network Codex-shaped mock-provider canary passed the LLM contract:
   ResourceGrant admission, metered success (12 tokens), auth-failure
   fail-closed behavior and cooldown persistence were exercised. Report
   SHA-256 `7e7fb80457bee57d8e6930b0e59401bc08f7e8504c73df313471ce10304e80ad`.
   This is synthetic contract evidence, not a real provider call.
+- Real provider canary against `sora2.today` / `claude-opus-4-6-thinking`
+  passed through the candidate LLMRouter with a bounded grant: 30 reported
+  tokens, one successful attempt, and a successful route observation. Report
+  SHA-256 `1f548e1cad93d9e9cf50dc94bcb70e197f4afc34376c513c12467f42b0d95ebb`.
+- Real provider fault injection against an invalid endpoint failed closed and
+  persisted transient cooldown across router reconstruction in the isolated
+  PostgreSQL database. Report SHA-256
+  `723ea17b390222ac2af8bab6ac7019d4a2fcfac3a0adbc6a4c71ca4ac661865a`.

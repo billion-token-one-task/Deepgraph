@@ -386,3 +386,7 @@ Detailed status:
 - Added a no-network Codex-shaped mock-provider canary record covering grant
   admission, usage settlement, auth failure and cooldown; real provider calls
   remain intentionally unclaimed.
+
+- Real provider canary, provider fault/cooldown restart, and all scoped CPU +
+  SSH A100 acceptance gates passed. Colab remains explicitly excluded; master
+  merge was not executed.

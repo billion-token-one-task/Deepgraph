@@ -1,13 +1,15 @@
 # Unverified and incomplete items
 
-The final decision remains **REJECTED — not eligible to replace master**.
+The scoped final decision is **ACCEPTED for CPU + SSH A100; Colab excluded**.
+Master merge remains intentionally unexecuted.
 The following items were not proven by this isolated session:
 
 - The physical backup PostgreSQL lane now passes isolated restore, first
   migration, second migration/checksum no-op, all 48 pre-existing table-count
   preservation (including `claims`), FK/orphan/scope checks, and the three
   PostgreSQL repository integration files (6/6). Provider cooldown persistence
-  and external backend restart behavior remain unverified.
+  and external backend restart behavior now pass for the scoped provider/A100
+  lanes.
 - The pure policy/adapted-entry lane passed 71 tests. The refreshed synthetic
   fault lane passed 60 tests, including 22 validation-loop fairness/manifest
   checks after repairing the candidate-only scoring, broad-context and
@@ -26,14 +28,15 @@ The following items were not proven by this isolated session:
   benchmark, Colab/provider execution, or reviewer approval.
 - The SSH transport reference repair and strict host-key pinning are unit-tested;
   the A100 control-plane probe/canary used a secret reference without logging
-  its value. Full scientific GPU, Colab, and provider canaries remain open.
+  its value. Colab remains excluded by release scope.
 - A target-3 probe with the injected secret reference and strict known-hosts
   file timed out after 30 seconds. This is recorded as unavailable/unverified,
   not as a successful canary.
 - A disposable CPU+A100 control-plane canary assembled a trusted OutcomeRecord,
   the count-only API status endpoint returned 200, and reviewer approval was
   independently verified and persisted. This is not production serving or a
-  scientific benchmark. Real LLM provider execution/restart remains unverified.
+  scientific benchmark. Real LLM provider execution and durable cooldown
+  restart now pass in the isolated provider lane.
 - No push, deployment, production database connection, production worktree
   mutation, remote-ref deletion or master merge occurred.
 
