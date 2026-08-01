@@ -131,12 +131,13 @@ lane_5_fault_canary:
   mock_llm_provider_report_sha256: 7e7fb80457bee57d8e6930b0e59401bc08f7e8504c73df313471ce10304e80ad
 
 review:
-  reviewer_approval_record_id: isolated_report_2
-  reviewer_signature_hash: 5350eeaba85c5deb34c45690b3ac07a84c1e970134e21b09adb9da73e950a795
+  reviewer_approval_record_id: isolated_report_3
+  reviewer_signature_hash: 2a3b13b1a832d3433c9b7e87e5c32513a500850a989213a5c2a87aa0d2431a20
   reviewer_id: service@diwenbao.co
   reviewer_key_id: aws-reviewer
   reviewer_purpose: harness_upgrade
-  reviewer_subject: agenda/candidate/patch-bound (recorded in isolated report)
+  reviewer_subject: agenda/candidate/patch-bound (recorded in isolated report 3)
+  final_documentation_evaluator_report_sha256: 4120292d940112a1f51001bf7c0719e2a309c6a73295e28a92aec87d06bc2315
   rollback_rehearsal_status: passed_isolated_7d0b42a_temp-startup
   all_16_gates_accepted: true (CPU + SSH A100 scoped release; Colab excluded)
   master_replacement_approved: true (merge not executed)

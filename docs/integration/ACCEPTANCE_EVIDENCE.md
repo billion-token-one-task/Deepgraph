@@ -238,3 +238,17 @@ also local and unpushed.
   persisted transient cooldown across router reconstruction in the isolated
   PostgreSQL database. Report SHA-256
   `723ea17b390222ac2af8bab6ac7019d4a2fcfac3a0adbc6a4c71ca4ac661865a`.
+
+## v0.2.0 documentation freeze
+
+- Package version is `0.2.0`; README and CHANGELOG now contain the concise
+  CPU + SSH A100 quickstart and innovation summary.
+- Final candidate evaluator rerun after the documentation/version update
+  passed all three suites with unchanged evaluator candidate tree
+  `92919fadb146099c1f4795be138ec612c05ecd3c257d50fa563b0f74ad52d687`;
+  report SHA-256 `4120292d940112a1f51001bf7c0719e2a309c6a73295e28a92aec87d06bc2315`.
+- Final reviewer approval for this candidate was verified in isolation with
+  reviewer `service@diwenbao.co`, report id `3`, and signature hash
+  `2a3b13b1a832d3433c9b7e87e5c32513a500850a989213a5c2a87aa0d2431a20`.
+  Public approval record SHA-256:
+  `25e924202f5caba9e2250e2e6bed72f8af661608131952175215381212c5e41b`.
