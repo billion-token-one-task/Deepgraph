@@ -111,6 +111,43 @@ python3.12 main.py
 
 Then open `http://localhost:8080`.
 
+## Meta-harness v1 (0.2.0)
+
+This release adds a scoped research-control plane for reproducible autonomous
+experiments. The important change is that every costly action now requires a
+short-lived `ResourceGrant` tied to an Agenda and idea; measured usage and
+artifacts settle the grant before an outcome is recorded.
+
+Key innovations:
+
+- Agenda-scoped Frontier/Decision/Grant/Outcome contracts with hard token/GPU
+  caps and fail-closed legacy paths.
+- Durable PostgreSQL claims and idempotency for CPU and SSH GPU jobs, including
+  restart recovery and truthful unknown-submission quarantine.
+- Role-separated, metered LLM routing with durable provider cooldowns.
+- Hash-pinned bubblewrap held-in/held-out/canary evaluation plus signed review
+  approval; Colab is implemented but excluded from the 0.2.0 release scope.
+
+### CPU + SSH A100 quickstart
+
+1. Run the normal setup above and apply the add-only PostgreSQL migration to a
+   disposable database.
+2. Configure only secret references; never put keys or passwords in TOML:
+
+   ```bash
+   export DEEPGRAPH_COMPUTE_SSH_TARGET_REF=env:DEEPGRAPH_SSH_TARGET
+   export DEEPGRAPH_COMPUTE_SSH_CREDENTIAL_REF=env:DEEPGRAPH_SSH_CREDENTIAL
+   export DEEPGRAPH_META_HARNESS_OPERATOR_TOKEN='replace-with-a-short-lived-token'
+   ```
+
+3. Create an Agenda and short-lived `ResourceGrant`, then submit work through
+   the scoped API or scheduler. The scheduler refuses missing grants,
+   unlimited budgets, unscoped backlog and unknown backend outcomes.
+
+See [docs/integration/CONFIGURATION.md](docs/integration/CONFIGURATION.md) and
+[docs/integration/ACCEPTANCE_EVIDENCE.md](docs/integration/ACCEPTANCE_EVIDENCE.md)
+for the complete contract and the accepted CPU + SSH A100 scope.
+
 ## Configuration
 
 Default configuration lives in `deepgraph.toml`. Runtime environment variables
