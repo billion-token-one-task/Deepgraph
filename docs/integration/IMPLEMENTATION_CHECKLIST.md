@@ -463,16 +463,19 @@ artifacts named in its evidence column may promote it to `[x]`.
 - [x] **V-05** Agenda example JSON parsed.
 - [x] **V-06** Migration dry-plan recorded statement count/checksum/no
   destructive token.
-- [~] **V-07** Pure policy lane passed 71 tests. Refreshed synthetic fault
-  lane passed 60 (validation-loop fairness/manifest subset 22/22) after
-  fail-closed guard repairs. Adapted legacy remains 39 passed/30 failed; each
+- [~] **V-07** Final-candidate pure policy lane passed 71 tests and targeted
+  fault/validation/queue/runtime lane passed 50; the prior synthetic aggregate
+  remains 60 (validation-loop fairness/manifest subset 22/22). Adapted legacy
+  remains 39 passed/30 failed; each
   failure is classified in
   [LEGACY_TEST_CLASSIFICATION.md](LEGACY_TEST_CLASSIFICATION.md) as obsolete
   or requiring a new scoped/granted fixture. Synthetic PostgreSQL runtime and
   queue/recovery checks passed; real backup/provider lanes remain open.
-- [~] **V-08** Disposable PostgreSQL twice-run, synthetic count-preservation,
-  orphan/scope and queue/recovery tests passed. A real production backup restore
-  remains required.
+- [x] **V-08** Physical backup was restored only into disposable PostgreSQL 18
+  instances with private pgvector 0.8.1; migration first/second ran
+  `applied`/`already_applied`, all 48 pre-existing counts including `claims`
+  were preserved, integrity checks were clean, and real PostgreSQL integration
+  tests passed 6/6.
 - [~] **V-08A** Durable compute restart/unknown-submission/artifact-finalization
   tests passed in the disposable PostgreSQL lane (4 passed).
 - [~] **V-08B** Content-addressed evidence audit/decision transition passed in
@@ -481,8 +484,9 @@ artifacts named in its evidence column may promote it to `[x]`.
   protected-write/network/missing-bwrap negatives passed with unchanged tree
   hashes.
 - [x] **V-10** Migration, CI, canary, rollback and configuration runbooks exist.
-- [x] **V-11** Master acceptance matrix states **REJECTED — not eligible**;
-  PostgreSQL, adapted legacy, hardware canary and reviewer gates remain open.
+- [x] **V-11** Master acceptance matrix states **REJECTED — not yet eligible**;
+  physical PostgreSQL and legacy-audit gates are closed, while hardware/provider
+  canary and reviewer gates remain open.
 - [x] **V-12** Root changelog distinguishes added, changed, isolated, excluded
   and unverified work.
 - [x] **V-13** Local work is split into base implementation `c25e63c`,
@@ -499,10 +503,11 @@ artifacts named in its evidence column may promote it to `[x]`.
   `b17c7d110532197a7137a217ffa641b50486d295` and
   `f2f6ea96d27673f077966b4bd2f278717393b0d9`.
 - [ ] **V-14** No push until explicit approval and quiescence check.
-- [x] **V-15** Frozen source candidate is
-  `6851a991154906f11d8cfc247d22a5d5caa0a834`; verification commit is
-  `d33a9f5fbb1bb912f6edff2f87b749d38ec19d25` with tracked-content tree
-  `18a5a677ee13ed81d550710c5c390ae3e3b3c23c0991036af465237f164abe2f`.
+- [x] **V-15** Frozen source candidate remains
+  `6851a991154906f11d8cfc247d22a5d5caa0a834`; final code verification commit
+  is `a18dc4968b38290d40603c8909b17a888b57157c` with Git tree
+  `593663a7e36e769d28cfd14828b8b8ee92bbbd75` and tracked-content tree
+  `d12d6882aafda2780ba93563ced0b88780f346b7312306f382748b5d8128fcd9`.
   Documentation/evidence remains local and unpushed.
 - [x] **V-16** Exact `7d0b42a` rollback worktree was clean and isolated
   temp-SQLite startup passed; production rollback was not run.

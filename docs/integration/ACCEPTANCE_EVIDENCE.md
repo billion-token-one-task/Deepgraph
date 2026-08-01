@@ -1,6 +1,8 @@
 # Master acceptance evidence
 
-Decision: **REJECTED — not eligible to replace master**.
+Decision: **REJECTED — not yet eligible to replace master**. The physical
+PostgreSQL gate is complete; authorized runtime canaries and independently
+verifiable reviewer approval remain mandatory blockers.
 
 `Implemented` below means code/test material exists. It does not mean runtime
 verified. Only isolated CI/canary evidence can change a `pending` item to
@@ -10,20 +12,20 @@ accepted. Record that evidence using
 | # | Gate | Current evidence | Status |
 |---|---|---|---|
 | 1 | fixed results and caveat weakening removed | symbols removed; generic topic scan, integrity fixtures and 71-test policy lane passed | accepted in isolated policy lane |
-| 2 | production backup starts; add-only repeatable migration | synthetic disposable schema restore passed; first migration `applied`, second `already_applied`; real production-backup restore not supplied | pending real backup restore |
-| 3 | tests cannot touch production DB | test entry forcibly clears production DB URL; static audit and isolation test passed | accepted for unit/adapted entry; PostgreSQL enforcement pending |
+| 2 | production backup starts; add-only repeatable migration | isolated physical backup restore with PostgreSQL 18 + pgvector 0.8.1; first migration `applied`, second `already_applied`, checksum no-op | accepted |
+| 3 | tests cannot touch production DB | test entry forcibly clears production DB URL; static audit/isolation test and socket-only isolated PostgreSQL lane passed | accepted |
 | 4 | generation/consumption only inside agenda | selector/orchestrator/problem/idea/core queues require `agenda_id`; 154-mutation scope audit and disposable cross-agenda/orphan checks are clean | static/policy/synthetic PostgreSQL passed |
-| 5 | old backlog excluded | migration leaves scope null; explicit import ledger only; synthetic restore preserved unscoped backlog | synthetic PostgreSQL passed; real backup pending |
-| 6 | core objects carry correct `agenda_id` | migration/contracts/repositories and all literal legacy mutations are explicitly scoped; disposable FK/scope checks passed | static/synthetic PostgreSQL passed |
+| 5 | old backlog excluded | migration leaves scope null; explicit import ledger only; physical-restore pre-existing counts, including `claims`, were preserved | accepted |
+| 6 | core objects carry correct `agenda_id` | migration/contracts/repositories and all literal legacy mutations are explicitly scoped; physical-restore FK/orphan/scope checks and integration lane passed | accepted |
 | 7 | Frontier Gate rejects obsolete/duplicate | gate, persisted decision, API response and bypass prevention implemented | CI pending |
 | 8 | pilot/GPU/full benchmark require grant | proposal/ingestion/post-agenda LLM roles and CPU/local/SSH/Colab durable admission are grant-scoped; disposable PostgreSQL queue harness passed grant/scope checks | synthetic PostgreSQL passed; external provider pending |
 | 9 | backend/LLM failures never complete/confirm | fail-closed route/backend contracts; refreshed synthetic fault lane is 60 passed; disposable PostgreSQL compute/Colab failure quarantine passed | policy/fault/synthetic PostgreSQL passed; provider pending |
-| 10 | harness patch passes three suites | 71 pure policy tests; validation-loop fairness/manifest lane 22 passed; real held-in/held-out/canary bubblewrap evaluator passed; adapted legacy lane 39 passed / 30 failed and individually classified | rejected / legacy classification recorded |
+| 10 | harness patch passes three suites | 71 final-candidate pure policy tests; final targeted fault/validation/queue/runtime regression 50 passed; held-in/held-out/canary bubblewrap evaluator passed; adapted legacy lane 39 passed / 30 failed and individually classified | accepted with audited rejected/obsolete legacy contracts |
 | 11 | candidate cannot modify protected inputs/data | fresh real bubblewrap held-in/held-out/canary, protected-write and no-fallback negatives passed; candidate tree hash unchanged | accepted for disposable evaluator fixture |
 | 12 | restart resumes without duplicate | disposable PostgreSQL compute (4), Colab quarantine and scoped-ingestion lease/retry harness passed; real backup/provider restart remains open | synthetic PostgreSQL passed; real backup/provider pending |
 | 13 | predictions calibrate against outcomes | trusted assembler, non-success usage settlement, prediction errors and Brier/MAE/RMSE report implemented | no real OutcomeRecord sample |
 | 14 | negative/zero/no-metric/compile failure cannot promote | scientific contract and refreshed validation-loop fairness/manifest lane passed 22/22; PostgreSQL compute/evidence lane passed; full legacy runtime remains classified | policy/fault/PostgreSQL passed; legacy classification remains |
-| 15 | minimum Web/API/statistics compatible | count-only status and operator-authenticated mutation API added; temp SQLite app import/startup passed | PostgreSQL/API runtime pending |
+| 15 | minimum Web/API/statistics compatible | count-only status and operator-authenticated mutation API added; PostgreSQL repositories passed | CPU/API runtime canary pending |
 | 16 | `7d0b42a` rollback rehearsed | exact immutable ref checked in detached worktree; temp SQLite rollback startup passed | isolated rehearsal passed; production rollback not run |
 
 ## Static evidence recorded in this session
@@ -60,6 +62,42 @@ accepted. Record that evidence using
 
 These values must be regenerated at the final candidate commit and included
 with the commit hash; intermediate counts/checksums are not release evidence.
+
+## Final-candidate revalidation after physical-schema repair
+
+- Candidate code commit: `a18dc4968b38290d40603c8909b17a888b57157c`; Git
+  tree `593663a7e36e769d28cfd14828b8b8ee92bbbd75`, tracked-content SHA-256
+  `d12d6882aafda2780ba93563ced0b88780f346b7312306f382748b5d8128fcd9`.
+  The change is the add-only compatibility repair for a missing
+  `deep_insights.research_problem_id` column before its existing index.
+- Static/scope/SQL/state/LLM audits passed without application or database
+  access. Report SHA-256 values: static
+  `91c9dcc5af43b4b439191175a4dc6024fdb32e542de6e3a0d98d88416e8d564c`, scope
+  `0f8de09da9f5d057f1c3141eb84a47ff1863a7a908623e9358e6123ed3491e7f`, SQL
+  `9cd62926be4148686f91dca409e6c6d2d8a8d2723b92844eec9a0dd2c2dabbd8`, state
+  `ab02a1636e736faa8fba8ec8aa00e3df8d0204857e5b74c4907557839d84acc5`, LLM
+  `7ea25bcbf45728afb0c11edaf092dd32ecb28da53a045c2b6ce0b95ad751e5e4`.
+- Migration dry-plan: 91 statements, 27,823 bytes, SHA-256
+  `5ead56c64fc977b01c6ad29abe61f8a6da3c15995e414cdc752b45ef1bdfc912`, no
+  destructive token; report SHA-256
+  `1ffe2995d1fb337464f1663056ff9a6a5053ea8a616dda2b04614a02c9a81f6e`.
+- Physical backup was restored only to two unique local, Unix-socket-only
+  PostgreSQL 18 disposable instances. The private pgvector 0.8.1 extension
+  was used only by those instances. First migration was `applied`, second was
+  `already_applied`; all 48 pre-existing table counts (including `claims=10270`)
+  were unchanged; FK/orphan/scope integrity failures were zero. Relevant
+  report hashes: first `efca3d6e23e77210a90a293b66a4f4cb24775632042732f4100aa5f52ebdff8c`,
+  second `7abe42b953f114b8e29c89ffb80ad20e1af4459c6e095e9ba6f70cd27b47a071`,
+  counts `f6f127488f312c9e91eaa59d19c89107b250ee6a51df35afa1c6936a6631144f`,
+  integrity `ef06fef9b8bd896cfbd11f76d2fdafac1f0258cacb8f8a2707d21ab2e1b733e7`.
+- `tests/integration/test_meta_harness_postgres.py`,
+  `test_compute_repository_postgres.py`, and `test_evidence_repository_postgres.py`
+  passed 6/6 against the independent physical restore; report SHA-256
+  `8b2f2ee0fc169e4c0ce96d5256b846a3ac33569e302f7ddc4ab5336518b050cf`.
+- Final-candidate isolated regressions: policy 71/71 (report
+  `89b3a752b649ae4ebb1143c6b04f42a2c6849a9ac390bf1b83be13aaa7e260a0`),
+  targeted fault/validation/queue/runtime 50/50 (report
+  `1a02126c00ed3c03a10016decdad8e2dcd73a38317e32f98c535a3ad3187a08b`).
 
 The adapted-legacy failure-by-failure decision is recorded in
 [LEGACY_TEST_CLASSIFICATION.md](LEGACY_TEST_CLASSIFICATION.md). It is not a

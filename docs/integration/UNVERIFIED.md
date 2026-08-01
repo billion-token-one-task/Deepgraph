@@ -3,13 +3,11 @@
 The final decision remains **REJECTED — not eligible to replace master**.
 The following items were not proven by this isolated session:
 
-- A disposable PostgreSQL lane now passes restore-from-schema setup, first
-  migration, second migration/checksum no-op, synthetic pre-existing count
-  preservation, foreign-key/orphan/scope checks, multi-agenda reservation,
-  durable compute restart recovery, Colab queue restart quarantine, and scoped
-  ingestion lease/checkpoint/retry exhaustion. This was a synthetic schema
-  restore because no production backup dump was supplied; real backup-row
-  preservation and provider cooldown persistence remain unverified.
+- The physical backup PostgreSQL lane now passes isolated restore, first
+  migration, second migration/checksum no-op, all 48 pre-existing table-count
+  preservation (including `claims`), FK/orphan/scope checks, and the three
+  PostgreSQL repository integration files (6/6). Provider cooldown persistence
+  and external backend restart behavior remain unverified.
 - The pure policy/adapted-entry lane passed 71 tests. The refreshed synthetic
   fault lane passed 60 tests, including 22 validation-loop fairness/manifest
   checks after repairing the candidate-only scoring, broad-context and
@@ -22,10 +20,11 @@ The following items were not proven by this isolated session:
   post-fix rerun preserved the candidate tree hash before/after. This proves
   evaluator isolation for the disposable fixture, not production database or
   backend execution.
-- No approved CPU, GPU/Colab, SSH or provider canary ran. The Colab CLI was
-  inspected only for help/contract availability; no OAuth or remote secret was
-  used. The evaluator's canary suite is not a hardware canary.
-- No real OutcomeRecord sample, reviewer identity/signature, production API
+- No approved CPU, GPU/Colab, SSH or provider canary ran. The current process
+  has no injected canary/provider/SSH/Colab credential references, and the
+  default configuration enables CPU only. The evaluator's canary suite is not
+  a hardware canary.
+- No real CPU-canary OutcomeRecord, reviewer identity/signature, production API
   serving run or production rollback was executed. The exact `7d0b42a`
   detached worktree was clean and its isolated temp-SQLite startup rehearsal
   passed.

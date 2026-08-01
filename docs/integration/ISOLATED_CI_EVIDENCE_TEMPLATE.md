@@ -5,8 +5,8 @@ Do not commit database URLs, credentials, OAuth material, raw reviewer
 signatures or business-row contents.
 
 ```text
-candidate_commit: d33a9f5fbb1bb912f6edff2f87b749d38ec19d25
-candidate_tree: 18a5a677ee13ed81d550710c5c390ae3e3b3c23c0991036af465237f164abe2f
+candidate_commit: a18dc4968b38290d40603c8909b17a888b57157c
+candidate_tree: d12d6882aafda2780ba93563ced0b88780f346b7312306f382748b5d8128fcd9
 source_candidate_commit: 6851a991154906f11d8cfc247d22a5d5caa0a834
 source_candidate_tree_fixture: b1c1e8ebfbc0607cc39bb617dad9d56fd949d214122a37dd70541bd634d9feab
 source_archive_refs:
@@ -26,15 +26,15 @@ isolation:
   network_disabled_in_evaluator: true
   candidate_tree_before: b1c1e8ebfbc0607cc39bb617dad9d56fd949d214122a37dd70541bd634d9feab
   candidate_tree_after: b1c1e8ebfbc0607cc39bb617dad9d56fd949d214122a37dd70541bd634d9feab
-  verification_git_tree: 607a1fb701357aad77c7003743093f51ab867ce2
+  verification_git_tree: 593663a7e36e769d28cfd14828b8b8ee92bbbd75
 
 lane_1_static:
   status: passed
-  static_report_sha256: e091c3d4484b4d59b5ed0af2355f1dcb4d22c9f26ec23abd4358b89f5408927d
-  scope_report_sha256: 4038c4265f3d05d1a83dc1a52295e94f5c98ee89c20eb1f92321ae440ade840d
-  sql_report_sha256: 286c3c35345b3c3dbaa2b653adb89cb7a3e8416547904a7d39cdaf2142fd9ca7
-  state_authority_report_sha256: fbb44b6ad15756f980fd654efb0acf2dc810565367423fa4f917001cf9865b73
-  llm_report_sha256: 90da4875b8e4cf2e24c1016fb87dbbe884a04c61a43ec22555918572ea673ad9
+  static_report_sha256: 91c9dcc5af43b4b439191175a4dc6024fdb32e542de6e3a0d98d88416e8d564c
+  scope_report_sha256: 0f8de09da9f5d057f1c3141eb84a47ff1863a7a908623e9358e6123ed3491e7f
+  sql_report_sha256: 9cd62926be4148686f91dca409e6c6d2d8a8d2723b92844eec9a0dd2c2dabbd8
+  state_authority_report_sha256: ab02a1636e736faa8fba8ec8aa00e3df8d0204857e5b74c4907557839d84acc5
+  llm_report_sha256: 7ea25bcbf45728afb0c11edaf092dd32ecb28da53a045c2b6ce0b95ad751e5e4
   broad_python_ast_count: 260
   release_python_ast_count: 260
   scoped_mutation_count: 154
@@ -42,14 +42,14 @@ lane_1_static:
   sql_literal_count: 839
   sql_countable_count: 836
   sql_dynamic_review_count: 114
-  migration_statement_count: 90
-  migration_bytes: 27734
-  migration_sha256: 3b73e0647c5edfb13f82efbba79081b29f19734a4504a4327e4eabdbf06241f0
+  migration_statement_count: 91
+  migration_bytes: 27823
+  migration_sha256: 5ead56c64fc977b01c6ad29abe61f8a6da3c15995e414cdc752b45ef1bdfc912
   migration_destructive_tokens: []
 
 lane_2_policy:
   status: passed (71 passed)
-  test_report_sha256: f03d5c20230a5e3b048f0e203f77466578a094309110b6001e044cc34f1c068b
+  test_report_sha256: 89b3a752b649ae4ebb1143c6b04f42a2c6849a9ac390bf1b83be13aaa7e260a0
   validation_loop_fault_status: passed (22 passed, 0 failed)
   validation_loop_fault_report_sha256: 34ecfb71ad791822cf59270e77c6244dd92b671d0b3e0098c093d7c512e86cde
   synthetic_fault_status: passed (60 passed, 0 failed)
@@ -69,6 +69,17 @@ lane_3_postgresql:
   queue_report_sha256: 587d554dae9e9f724fec3011be4f16ed3525b70a2c47ff34998d180c243b4e68
   sql_fk_scope_status: passed (zero orphan/cross-scope rows)
   sql_fk_scope_report_sha256: 12a71f92fe192ef98295f5ec941eecfc6dd00ed2f2e8c13fe46ce2f834d32496
+  physical_backup_restore_status: passed (PostgreSQL 18, private pgvector 0.8.1, socket-only disposable instances)
+  physical_migration_first_status: applied
+  physical_migration_second_status: already_applied (checksum no-op)
+  physical_preexisting_count_status: passed (48 tables, including claims=10270)
+  physical_fk_orphan_scope_status: passed (zero integrity failures)
+  physical_repository_integration_status: passed (6 passed)
+  physical_first_report_sha256: efca3d6e23e77210a90a293b66a4f4cb24775632042732f4100aa5f52ebdff8c
+  physical_second_report_sha256: 7abe42b953f114b8e29c89ffb80ad20e1af4459c6e095e9ba6f70cd27b47a071
+  physical_counts_report_sha256: f6f127488f312c9e91eaa59d19c89107b250ee6a51df35afa1c6936a6631144f
+  physical_integrity_report_sha256: ef06fef9b8bd896cfbd11f76d2fdafac1f0258cacb8f8a2707d21ab2e1b733e7
+  physical_integration_report_sha256: 8b2f2ee0fc169e4c0ce96d5256b846a3ac33569e302f7ddc4ab5336518b050cf
 
 lane_4_evaluator:
   held_in_evaluator_hash: 45bddd4cbd5eba5ba6a6377b765debcd4e67fa15fcab879bbb321c752d6c362d
@@ -119,13 +130,13 @@ test or runbook is not evidence that its corresponding field passed.
 ## Recorded final-session result
 
 The block above records the immutable source candidate and the disposable
-evidence collected on 2026-07-31. The real bubblewrap held-in, held-out and
-canary evaluator lanes passed, including protected-write and
-missing-isolation-binary negative checks, with an unchanged candidate tree.
-The PostgreSQL lane passed against a local disposable synthetic schema restore;
-no production dump was supplied, so real backup-row preservation remains open.
-The adapted legacy lane remains 39 passed / 30 failed with each failure
+evidence collected on 2026-07-31, followed by its final-code physical-backup
+revalidation. The real bubblewrap held-in, held-out and canary evaluator lanes
+passed, including protected-write and missing-isolation-binary negative checks.
+The physical PostgreSQL 18 backup restore now passes count preservation,
+migration idempotency, integrity checks and all three repository integration
+files. The adapted legacy lane remains 39 passed / 30 failed with each failure
 classified as obsolete or requiring a new scoped/granted fixture. Approved
-CPU/GPU/Colab hardware canaries and reviewer approval were not authorized or
-available. Consequently `all_16_gates_accepted` and
-`master_replacement_approved` remain false.
+CPU/GPU/Colab hardware canaries and reviewer approval are still unavailable;
+consequently `all_16_gates_accepted` and `master_replacement_approved` remain
+false.

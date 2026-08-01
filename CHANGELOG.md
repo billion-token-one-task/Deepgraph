@@ -7,7 +7,21 @@ tag/deployment record.
 
 ## [Unreleased] — meta-harness-v1 integration candidate — 2026-07-31
 
-Status: **development branch; rejected for master; not deployed**.
+Status: **development branch; rejected for master pending authorized runtime
+canaries and reviewer approval; not deployed**.
+
+Latest final-code verification is
+`a18dc4968b38290d40603c8909b17a888b57157c` (`fix: support migration on
+physical backup schema`). It adds only the compatibility column required by an
+existing `deep_insights` index on the isolated physical backup schema, plus a
+static regression assertion. The physical PostgreSQL 18 backup was restored
+only into disposable local Unix-socket instances using a private pgvector 0.8.1
+build: migration first/second were `applied`/`already_applied`, all 48 existing
+table counts including `claims` were preserved, FK/orphan/scope integrity was
+clean, and the three PostgreSQL integration files passed 6/6. Final static
+audits, 71 policy tests and 50 targeted fault/validation/queue/runtime tests
+also passed. No production database, provider credential, remote backend, push
+or deployment was used.
 
 Final isolated acceptance record: source candidate frozen at
 `6851a991154906f11d8cfc247d22a5d5caa0a834` with candidate tree
