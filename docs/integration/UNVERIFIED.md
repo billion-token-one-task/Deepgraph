@@ -15,11 +15,10 @@ The following items were not proven by this isolated session:
   failures; each is classified as obsolete or requiring a new scoped/granted
   fixture in [LEGACY_TEST_CLASSIFICATION.md](LEGACY_TEST_CLASSIFICATION.md).
   These contracts were not weakened to satisfy old tests.
-- Real bubblewrap held-in, held-out and canary evaluator runs passed, as did
-  protected-write, network and missing-isolation-binary negative tests. The
-  post-fix rerun preserved the candidate tree hash before/after. This proves
-  evaluator isolation for the disposable fixture, not production database or
-  backend execution.
+- Real bubblewrap held-in, held-out and canary evaluator runs passed again in a
+  detached final-evidence worktree, as did the earlier protected-write, network
+  and missing-isolation-binary negative tests. This proves evaluator isolation
+  for a disposable fixture, not production database or backend execution.
 - No approved CPU, GPU/Colab, SSH or provider canary ran. The current process
   has no injected canary/provider/SSH/Colab credential references, and the
   default configuration enables CPU only. The evaluator's canary suite is not

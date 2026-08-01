@@ -20,8 +20,10 @@ build: migration first/second were `applied`/`already_applied`, all 48 existing
 table counts including `claims` were preserved, FK/orphan/scope integrity was
 clean, and the three PostgreSQL integration files passed 6/6. Final static
 audits, 71 policy tests and 50 targeted fault/validation/queue/runtime tests
-also passed. No production database, provider credential, remote backend, push
-or deployment was used.
+also passed. The final detached candidate worktree also passed real bubblewrap
+held-in/held-out/canary evaluation with read-only inputs, unshared network and
+unchanged before/after tree hash. No production database, provider credential,
+remote backend, push or deployment was used.
 
 Final isolated acceptance record: source candidate frozen at
 `6851a991154906f11d8cfc247d22a5d5caa0a834` with candidate tree
