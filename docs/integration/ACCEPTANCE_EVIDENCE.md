@@ -1,8 +1,9 @@
 # Master acceptance evidence
 
 Decision: **REJECTED — not yet eligible to replace master**. The physical
-PostgreSQL gate is complete; authorized runtime canaries and independently
-verifiable reviewer approval remain mandatory blockers.
+PostgreSQL, CPU/API, SSH A100, evaluator and reviewer gates are now evidenced;
+real LLM provider execution/restart remains outside the available isolated
+credentials and is not claimed.
 
 `Implemented` below means code/test material exists. It does not mean runtime
 verified. Only isolated CI/canary evidence can change a `pending` item to
@@ -206,3 +207,22 @@ also local and unpushed.
 - The migration integration test was not counted in this rerun because its
   existing disposable database already had the migration journal; the prior
   fresh-restore lane remains the authoritative first/second migration proof.
+
+## Final scoped runtime and approval evidence
+
+- Count-only API status canary against the disposable PostgreSQL restore
+  returned HTTP 200 with `schema_version=meta-harness-v1`; report SHA-256
+  `142d5c976e04ff55b7d070f35602f55a5a22ccf77868fe5be92cc7d00e2b7f97`.
+- Current candidate detached bubblewrap evaluator rerun passed held-in,
+  held-out and canary with unchanged candidate tree
+  `37907595927841fed4007c3b7c5f476792287c66b94887f793808d6580d1505e`;
+  report SHA-256 `e0ff0290cb187a63c6c1c6e6269d1789858fad41cde843744e97e16303d84e54`.
+- Reviewer approval was independently verified and persisted in the isolated
+  database for reviewer `service@diwenbao.co`, purpose `harness_upgrade`,
+  key id `aws-reviewer`, subject bound to agenda/candidate/patch, and signature
+  hash `5350eeaba85c5deb34c45690b3ac07a84c1e970134e21b09adb9da73e950a795`.
+  Approval evidence JSON SHA-256:
+  `bb223c2cf20b662db97296042bcfc7b6da60d6c86153dedbfa5bffbdbebc0ade`.
+- Release scope is CPU + SSH A100. Colab is explicitly excluded from this
+  candidate; no Colab credential or OAuth material was used. Real LLM provider
+  canary/restart remains unverified, so the master decision stays REJECTED.

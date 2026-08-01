@@ -116,7 +116,7 @@ lane_5_fault_canary:
   synthetic_backend_status: passed targeted backend/app/fault tests; PostgreSQL backend recovery unverified
   duplicate_submission_count: 0 observed in mocked/durable queue tests; PostgreSQL unverified
   unknown_usage_quarantine_status: implemented and mock-tested; PostgreSQL unverified
-  approved_cpu_canary_status: passed_control_plane_cpu_with_short_lived_grant
+  approved_cpu_canary_status: passed_control_plane_cpu_and_api_with_short_lived_grant
   approved_gpu_canary_status: passed_control_plane_a100_ssh_with_secret_reference
   control_plane_canary_status: passed (CPU/A100 submit-settle, terminal idempotency rejection, submission_unknown quarantine)
   control_plane_canary_report_sha256: 526b61cf3c302201a73e8121d8ba159048291571c328c0dac498b14aca0970a9
@@ -125,8 +125,12 @@ lane_5_fault_canary:
   scientific_gpu_colab_provider_status: not_claimed
 
 review:
-  reviewer_approval_record_id: none
-  reviewer_signature_hash: none
+  reviewer_approval_record_id: isolated_report_2
+  reviewer_signature_hash: 5350eeaba85c5deb34c45690b3ac07a84c1e970134e21b09adb9da73e950a795
+  reviewer_id: service@diwenbao.co
+  reviewer_key_id: aws-reviewer
+  reviewer_purpose: harness_upgrade
+  reviewer_subject: agenda/candidate/patch-bound (recorded in isolated report)
   rollback_rehearsal_status: passed_isolated_7d0b42a_temp-startup
   all_16_gates_accepted: false
   master_replacement_approved: false
@@ -151,8 +155,9 @@ The physical PostgreSQL 18 backup restore now passes count preservation,
 migration idempotency, integrity checks and all three repository integration
 files. The adapted legacy lane remains 39 passed / 30 failed with each failure
 classified as obsolete or requiring a new scoped/granted fixture. Approved
-The control-plane CPU/A100 canary and trusted OutcomeRecord assembly passed using a disposable PostgreSQL agenda,
+The control-plane CPU/A100 canary, API status check, trusted OutcomeRecord assembly and signed reviewer approval passed using a disposable PostgreSQL agenda,
 short-lived ResourceGrant, and secret references only. It is not a scientific
 benchmark or Colab/provider canary. Reviewer approval is still unavailable;
 consequently `all_16_gates_accepted` and `master_replacement_approved` remain
-false.
+false. Real LLM provider execution/restart remains unverified and is not in
+the CPU + SSH A100 canary evidence.

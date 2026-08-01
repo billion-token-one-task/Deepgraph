@@ -489,8 +489,8 @@ artifacts named in its evidence column may promote it to `[x]`.
   hashes.
 - [x] **V-10** Migration, CI, canary, rollback and configuration runbooks exist.
 - [x] **V-11** Master acceptance matrix states **REJECTED — not yet eligible**;
-  physical PostgreSQL and legacy-audit gates are closed, while hardware/provider
-  canary and reviewer gates remain open.
+  physical PostgreSQL, CPU/API, SSH A100, evaluator and reviewer gates are
+  evidenced; real LLM provider execution/restart remains open.
 - [x] **V-12** Root changelog distinguishes added, changed, isolated, excluded
   and unverified work.
 - [x] **V-13** Local work is split into base implementation `c25e63c`,
