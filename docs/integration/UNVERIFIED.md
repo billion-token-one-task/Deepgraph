@@ -19,12 +19,14 @@ The following items were not proven by this isolated session:
   detached final-evidence worktree, as did the earlier protected-write, network
   and missing-isolation-binary negative tests. This proves evaluator isolation
   for a disposable fixture, not production database or backend execution.
-- No approved CPU, GPU/Colab, SSH or provider canary ran. The current process
-  has no injected canary/provider/SSH/Colab credential references, and the
-  default configuration enables CPU only. The evaluator's canary suite is not
-  a hardware canary.
-- The SSH transport reference repair is unit-tested, but no secret was injected
-  and no remote target was contacted; external GPU/Colab canary remains open.
+- A disposable control-plane canary did run with CPU and the authorized A100
+  target-1 SSH secret reference. It passed durable submit/settle,
+  idempotency rejection, and submission-failure quarantine; evidence SHA-256
+  is recorded in `ACCEPTANCE_EVIDENCE.md`. This does not prove a scientific
+  benchmark, Colab/provider execution, or reviewer approval.
+- The SSH transport reference repair and strict host-key pinning are unit-tested;
+  the A100 control-plane probe/canary used a secret reference without logging
+  its value. Full scientific GPU, Colab, and provider canaries remain open.
 - A target-3 probe with the injected secret reference and strict known-hosts
   file timed out after 30 seconds. This is recorded as unavailable/unverified,
   not as a successful canary.

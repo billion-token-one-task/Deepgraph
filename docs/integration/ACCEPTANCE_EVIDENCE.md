@@ -107,6 +107,15 @@ with the commit hash; intermediate counts/checksums are not release evidence.
   `6968763c69824dd8cc791358f5c9339e0aa99b6ad38f3a1033f997e2995dda8b`). The
   target-3 read-only `nvidia-smi` probe timed out after 30 seconds, so no GPU
   canary or remote write is claimed.
+- A disposable PostgreSQL control-plane canary using the authorized A100
+  target-1 secret reference passed CPU submit/settle, A100 SSH submit/settle,
+  terminal idempotency rejection, and injected submission failure quarantine
+  (`submission_unknown`). The canary created and removed a short-lived agenda
+  and ResourceGrant; no raw secret, host, remote output, or production URL was
+  logged. Evidence JSON SHA-256:
+  `45e125a92e7ac4173b9a97a38cccf269065d8c6b82d6b5722dbd6d0cd32bca85`.
+  This is control-plane evidence only; it does not claim a scientific GPU
+  experiment, Colab execution, or reviewer approval.
 - A fresh disposable detached worktree at evidence commit
   `211124be179f88480477c7eb87f7973c2acf096d` passed the real bubblewrap
   held-in, held-out and canary suites. Its evaluator tree before/after hash was
