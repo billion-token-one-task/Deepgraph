@@ -17,13 +17,13 @@ accepted. Record that evidence using
 | 4 | generation/consumption only inside agenda | selector/orchestrator/problem/idea/core queues require `agenda_id`; 154-mutation scope audit and disposable cross-agenda/orphan checks are clean | static/policy/synthetic PostgreSQL passed |
 | 5 | old backlog excluded | migration leaves scope null; explicit import ledger only; physical-restore pre-existing counts, including `claims`, were preserved | accepted |
 | 6 | core objects carry correct `agenda_id` | migration/contracts/repositories and all literal legacy mutations are explicitly scoped; physical-restore FK/orphan/scope checks and integration lane passed | accepted |
-| 7 | Frontier Gate rejects obsolete/duplicate | gate, persisted decision, API response and bypass prevention implemented | CI pending |
+| 7 | Frontier Gate rejects obsolete/duplicate | gate, persisted decision, API response and bypass prevention passed policy, PostgreSQL evidence and isolated API lanes | accepted |
 | 8 | pilot/GPU/full benchmark require grant | proposal/ingestion/post-agenda LLM roles and CPU/SSH durable admission are grant-scoped; real provider and A100 canaries passed with bounded grants | accepted for CPU + SSH A100 scope; Colab excluded |
 | 9 | backend/LLM failures never complete/confirm | fail-closed route/backend contracts; real provider fault and A100 backend failure quarantine passed | accepted for CPU + SSH A100 scope |
 | 10 | harness patch passes three suites | 71 final-candidate pure policy tests; final targeted fault/validation/queue/runtime regression 50 passed; held-in/held-out/canary bubblewrap evaluator passed; adapted legacy lane 39 passed / 30 failed and individually classified | accepted with audited rejected/obsolete legacy contracts |
 | 11 | candidate cannot modify protected inputs/data | fresh real bubblewrap held-in/held-out/canary, protected-write and no-fallback negatives passed; candidate tree hash unchanged | accepted for disposable evaluator fixture |
 | 12 | restart resumes without duplicate | disposable PostgreSQL compute, real provider cooldown restart, A100 quarantine and scoped-ingestion lease/retry passed | accepted for CPU + SSH A100 scope |
-| 13 | predictions calibrate against outcomes | trusted assembler, non-success usage settlement, prediction errors and Brier/MAE/RMSE report implemented | no real OutcomeRecord sample |
+| 13 | predictions calibrate against outcomes | trusted assembler persisted a canary-derived OutcomeRecord; non-success usage settlement and calibration metrics remain content-addressed | accepted for CPU + SSH A100 scoped canary |
 | 14 | negative/zero/no-metric/compile failure cannot promote | scientific contract and refreshed validation-loop fairness/manifest lane passed 22/22; PostgreSQL compute/evidence lane passed; full legacy runtime remains classified | policy/fault/PostgreSQL passed; legacy classification remains |
 | 15 | minimum Web/API/statistics compatible | count-only status API returned HTTP 200 against isolated PostgreSQL; operator mutation remains fail-closed | accepted |
 | 16 | `7d0b42a` rollback rehearsed | exact immutable ref checked in detached worktree; temp SQLite rollback startup passed | isolated rehearsal passed; production rollback not run |
@@ -135,7 +135,10 @@ acceptance identifier. The ingestion completion-truth follow-up is
 serialization guard `f2f6ea96d27673f077966b4bd2f278717393b0d9`; both are
 also local and unpushed.
 
-## Runtime evidence recorded in this session
+## Historical 2026-07-31 runtime checkpoint
+
+This subsection preserves the earlier rejected checkpoint. It is superseded by
+the scoped final verification and provider/A100 evidence recorded below.
 
 - Frozen source candidate: `6851a991154906f11d8cfc247d22a5d5caa0a834`; the
   candidate tree hash before and after real evaluator execution was
@@ -165,7 +168,7 @@ also local and unpushed.
   SQL checks `12a71f92fe192ef98295f5ec941eecfc6dd00ed2f2e8c13fe46ce2f834d32496`.
   This was not a production backup restore; no production dump or provider
   cooldown restart evidence was supplied.
-- Actual CPU/GPU/Colab canaries were not run. The Colab CLI was inspected only
+- At that earlier checkpoint, actual CPU/GPU/Colab canaries had not run. The Colab CLI was inspected only
   for contract/help availability; no OAuth, provider, production or remote
   credentials were used.
 - The exact `7d0b42a` detached rollback worktree was clean and its isolated
