@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased — 2026-08-02 local PostgreSQL cutover
+
+- Added a one-time, fail-closed live-local migration path. It accepts only
+  `127.0.0.1:5433/deepgraph` and requires an explicit environment opt-in,
+  separate confirmation, inactive web service, and a verified custom backup
+  directly under `/home/ec2-user`.
+- Upgraded the original local `deepgraph` schema with `0001_meta_harness_v1`.
+  The first invocation applied it and the second verified checksum no-op; all
+  58 pre-existing table counts, 114 FKs, orphan checks and `claims=28700` were
+  preserved.
+- Restored the service from the temporary local restore to original local
+  `deepgraph`, retained both the database and `.env` rollback artifacts, and
+  verified systemd, localhost HTTP and public HTTPS health. No remote database
+  was contacted and no Git URL/credential was recorded.
+
 ## 0.2.0 — meta-harness-v1 (accepted scoped release)
 
 Release scope: CPU + SSH A100. Colab is implemented but explicitly excluded

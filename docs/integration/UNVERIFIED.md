@@ -43,3 +43,14 @@ The following items were not proven by this isolated session:
 Evidence that is available is recorded in
 [ACCEPTANCE_EVIDENCE.md](ACCEPTANCE_EVIDENCE.md) and the filled
 [ISOLATED_CI_EVIDENCE_TEMPLATE.md](ISOLATED_CI_EVIDENCE_TEMPLATE.md).
+
+## 2026-08-02 local original-database closure
+
+The prior uncertainty about applying `0001_meta_harness_v1` to the original
+local `deepgraph` database is closed: a verified custom backup, an explicit
+live-local guard, first/second migration results, 58-table count preservation,
+FK/orphan/scope audit, fresh-restore PostgreSQL integration tests, and service
+HTTP health are recorded in [ACCEPTANCE_EVIDENCE.md](ACCEPTANCE_EVIDENCE.md).
+This does not change the remaining boundaries above: no remote production
+database was contacted, no remote deployment/push/master merge occurred, and
+Colab and the separately listed external-runtime items remain unverified.

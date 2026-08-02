@@ -255,3 +255,123 @@ the scoped final verification and provider/A100 evidence recorded below.
   `2a3b13b1a832d3433c9b7e87e5c32513a500850a989213a5c2a87aa0d2431a20`.
   Public approval record SHA-256:
   `25e924202f5caba9e2250e2e6bed72f8af661608131952175215381212c5e41b`.
+
+## 2026-08-02 original local database cutover
+
+This is a local runtime cutover, distinct from the historical isolated
+evidence above. Only `127.0.0.1:5433/deepgraph` was accessed; no remote
+production database was contacted. `deepgraph-web.service` and its automatic
+health/self-heal timers were stopped before the backup/migration window and
+restored after health verification.
+
+- Candidate migration source commit: `aed152a43a2912eed1934787fcd7111615861497`.
+  Migration `0001_meta_harness_v1.sql` was 29,393 bytes / 103 statements,
+  checksum `533f5a5791132cf82eeb05ff78455155349049cbbe9ca9f976b78cfc483cbb9c`,
+  with `destructive_tokens=[]`. It contains the legacy key indexes, all nine
+  signal `content_hash` additions, and the PostgreSQL placeholder repair is in
+  `db/database.py`.
+- Complete custom backup:
+  `/home/ec2-user/deepgraph-pre-meta-harness-v1-20260802T1812Z.dump`
+  (722,672,225 bytes, mode `0600`, SHA-256
+  `5681dc302ae0e4fd073faccc0e63e0e88419703a6bd9cc7364ce1b7ea5efe3d2`).
+  `pg_restore --list` succeeded with 525 archive entries and 58 `TABLE DATA`
+  entries.
+- The guarded live-local runner required
+  `DEEPGRAPH_ALLOW_LIVE_LOCAL_MIGRATION=1`, exact
+  `127.0.0.1:5433/deepgraph`, an inactive service, an existing backup directly
+  under `/home/ec2-user`, its recorded SHA-256, and the distinct confirmation
+  phrase. First run: `applied`; identical second run: `already_applied` /
+  checksum no-op. The journal contains exactly one matching row with the source
+  commit and checksum above.
+- All 58 pre-existing public table counts were unchanged. Post-migration there
+  are 83 public tables: the 58 pre-existing counts below plus 24 zero-row
+  additive tables and `deepgraph_schema_migrations=1`.
+
+```text
+table                              pre       post
+agenda_evidence_gates                0          0
+agenda_reviews                       0          0
+agenda_revision_plans                0          0
+agenda_selections                    0          0
+agenda_token_ledger                159        159
+auto_research_jobs                  96         96
+claim_method_gaps                 1827       1827
+claims                           28700      28700
+contradiction_clusters              6          6
+contradictions                     43         43
+deep_insights                      96         96
+discovery_track_record              5          5
+entity_merge_candidates             0          0
+entity_resolutions             248441     248441
+experiment_artifacts             4466       4466
+experiment_iterations            2857       2857
+experiment_runs                   111        111
+experimental_claims                86         86
+experimental_evidence_edges         0          0
+gaps                                0          0
+gpu_jobs                           99         99
+gpu_workers                         7          7
+graph_entities                 248441     248441
+graph_relations               735913     735913
+harvester_runs                   9765       9765
+hidden_variable_bridges      7359417    7359417
+insight_events                 11717      11717
+insights                       11936      11936
+manuscript_assets                 69         69
+manuscript_runs                   4          4
+manuscript_venue_selections       0          0
+matrix_gaps                       0          0
+mechanism_mismatches             33         33
+methods                       34085      34085
+negative_space_gaps            4655       4655
+node_entity_overlap             100        100
+node_graph_summaries           4958       4958
+node_opportunities            25652      25652
+node_summaries                3513       3513
+paper_entity_mentions       767830     767830
+paper_insights                6600       6600
+paper_research_facets            0          0
+paper_stage_checkpoints      54926      54926
+paper_taxonomy               32252      32252
+papers                       21151      21151
+pattern_matches                 80         80
+patterns                      3229       3229
+performance_plateaus           770        770
+pipeline_event_consumers         3          3
+pipeline_events             118179     118179
+protocol_artifacts           5351       5351
+research_agendas                4          4
+research_problems               0          0
+result_taxonomy            810708     810708
+results                    156194     156194
+stats                           0          0
+submission_bundles              6          6
+taxonomy_nodes               5051       5051
+```
+
+- Integrity audit: 114 foreign keys, zero unvalidated FKs, zero orphans, and
+  zero count mismatches. Scope audit found no new legacy assignment:
+  `deep_insights=96/63 non-null agenda_id`, `auto_research_jobs=96/0`,
+  `experiment_runs=111/0`, `experiment_iterations=2857/0`,
+  `experimental_claims=86/0`, `experiment_artifacts=4466/0`,
+  `gpu_jobs=99/0`, `manuscript_runs=4/0`, `manuscript_assets=69/0`, and
+  `submission_bundles=6/0`; `agenda_token_ledger=159/159` was retained.
+  `claims` remained `28,700`.
+- A fresh local-only restore database
+  `deepgraph_meta_harness_test_20260802` was created from the verified backup
+  and retained (not reused or deleted). PostgreSQL integration results:
+  meta-harness `1 passed`, compute repository `4 passed`, evidence repository
+  `1 passed`.
+- Service configuration was atomically switched back to the original local
+  database. Rollback artifacts retained: the custom dump above and
+  `/home/billion-token/Deepgraph/.env.rollback-pre-original-cutover-20260802T1830Z`
+  (temporary-restore configuration, mode `0600`, SHA-256
+  `55e6635456e6aae1a55c5e4a3bf22d66db058bdc15659d92374df0097f03b9df`).
+  No service code was replaced, so the code rollback target remains the
+  untouched pre-cutover service working tree.
+- Final health after restoring the timers: `systemctl` active,
+  `http://127.0.0.1:8080/` HTTP 200,
+  `https://deepgraph.joulebeat.com/` HTTP 200, and zero startup traceback/error
+  lines. The initial health delay was the expected creation of
+  `idx_hidden_variable_bridges_signal_role` over 7,359,417 rows; it completed
+  before the successful probes.
