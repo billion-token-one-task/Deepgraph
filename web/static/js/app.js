@@ -24,10 +24,8 @@ let allOpportunities = [];
 let taxonomyFlat    = [];        // flat list for Evidence dropdown
 let searchTimer     = null;
 let statsTimer      = null;
-let providerTimer   = null;
 let papersLoaded    = false;
 let oppsLoaded      = false;
-let providersLoaded = false;
 let sidebarCollapsed = false;
 
 // ── Helpers ──────────────────────────────────────────────────────────
@@ -268,8 +266,7 @@ function switchTab(tab) {
 function onTabActivated(tab) {
     switch (tab) {
         case 'overview':
-            if (!providersLoaded) loadProviders();
-            startProviderRefresh();
+            loadRecentlyDiscovered();
             break;
         case 'office':
             loadProcessingPapers();
@@ -314,7 +311,6 @@ async function refreshStats() {
         el('hdrPapers').textContent  = fmt(s.papers_processed || 0);
         el('hdrResults').textContent = fmt(s.results_total || 0);
         el('hdrInsights').textContent = fmt(s.insights_total || 0);
-        el('hdrTokens').textContent  = fmt(s.tokens_consumed || 0);
 
         // Overview stat cards
         el('statPapers').textContent        = fmt(s.papers_processed || 0);
@@ -322,7 +318,6 @@ async function refreshStats() {
         el('statTaxonomy').textContent = fmt(s.taxonomy_nodes_total || 0);
         el('statContradictions').textContent = fmt(s.contradictions_total || 0);
         el('statInsights').textContent      = fmt(s.insights_total || 0);
-        el('statTokens').textContent        = fmt(s.tokens_consumed || 0);
         el('statExperiments').textContent   = fmt(s.experiment_runs_total || 0);
         el('statDeepDiscoveries').textContent = fmt(s.deep_insights_total || 0);
         el('statCompletePapers').textContent = fmt(s.submission_bundles_total || 0);
@@ -3182,24 +3177,12 @@ function renderMetaReport(meta) {
     body.innerHTML = html;
 }
 
-// ── Overview Config ───────────────────────────────────────────────────────
+// ── Retired public runtime panel ───────────────────────────────────────────
+// The operator console is intentionally not shipped in the public dashboard.
+// Keep this no-op for old callers while the dashboard is rolling out.
 
 async function loadProviders() {
-    providersLoaded = true;
-    try {
-        const [providers, runtime] = await Promise.all([
-            api('/api/providers'),
-            api('/api/runtime-config')
-        ]);
-        renderRuntimeConfig(runtime);
-        renderProviders(providers);
-    } catch (e) {
-        console.error('Config load error:', e);
-        const panel = el('runtimeConfigPanel');
-        if (panel) panel.innerHTML = '<p class="empty-msg">Failed to load configuration.</p>';
-        const providersPanel = el('providersList');
-        if (providersPanel) providersPanel.innerHTML = '<p class="empty-msg">Failed to load provider data.</p>';
-    }
+    return undefined;
 }
 
 function runtimeValue(value, suffix = '') {
@@ -3480,10 +3463,7 @@ function renderProviderCards(providers) {
 }
 
 function startProviderRefresh() {
-    if (providerTimer) clearInterval(providerTimer);
-    providerTimer = setInterval(() => {
-        if (activeTab === 'overview') loadProviders();
-    }, 10000);
+    return undefined;
 }
 
 // ── Search ───────────────────────────────────────────────────────────
@@ -3848,10 +3828,14 @@ function init() {
 
     // Initial data loads
     refreshStats();
-    loadProviders();
-    startProviderRefresh();
+    loadRecentlyDiscovered();
     loadProcessingPapers();
     startSSE();
+
+    const openDiscoveries = el('btnOpenDiscoveries');
+    if (openDiscoveries) {
+        openDiscoveries.addEventListener('click', () => switchTab('discoveries'));
+    }
 
     // Stats refresh every 15s
     statsTimer = setInterval(refreshStats, 15000);

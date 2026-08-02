@@ -56,10 +56,6 @@
                 <span class="topbar-stat-val" id="hdrInsights">0</span>
                 <span class="topbar-stat-lbl">Insights</span>
             </div>
-            <div class="topbar-stat">
-                <span class="topbar-stat-val" id="hdrTokens">0</span>
-                <span class="topbar-stat-lbl">Tokens</span>
-            </div>
         </div>
         <div class="topbar-right">
             <div class="search-container">
@@ -104,8 +100,7 @@
 
             <div class="sidebar-footer">
                 <div class="pipeline-controls" style="font-size:0.72rem;color:var(--text-dim);line-height:1.5;">
-                    Fixed-flow mode:
-                    pipeline, discovery, validation, and manuscript generation run automatically.
+                    Research work runs only through approved agendas and scoped grants.
                 </div>
             </div>
         </nav>
@@ -116,6 +111,22 @@
             <!-- ── Overview Tab ─────────────────────────────────── -->
             <section class="tab-panel active" id="tab-overview">
                 <div class="tab-scroll">
+                    <div class="card overview-results-card">
+                        <div class="card-header">
+                            <div>
+                                <h3>Research outcomes</h3>
+                                <p class="overview-results-note">Confirmed findings, open questions, and promising directions appear here first.</p>
+                            </div>
+                            <button class="btn-link" id="btnOpenDiscoveries">Browse ideas</button>
+                        </div>
+                        <div class="recently-grid" id="recentlyGrid">
+                            <p class="empty-msg">No published research outcomes yet.</p>
+                        </div>
+                    </div>
+
+                    <details class="overview-details">
+                        <summary>Research portfolio and process</summary>
+                        <p class="overview-details-note">Aggregate counts and in-progress work are available here when you need context.</p>
                     <!-- Stat cards -->
                     <div class="stat-grid" id="overviewStats">
                         <div class="stat-card">
@@ -153,13 +164,6 @@
                             <div class="stat-number" id="statInsights">0</div>
                             <div class="stat-label">Insights</div>
                         </div>
-                        <div class="stat-card">
-                            <div class="stat-icon stat-icon-purple">
-                                <svg width="22" height="22" viewBox="0 0 20 20" fill="none"><path d="M3 14l4-4 3 3 7-7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                            </div>
-                            <div class="stat-number" id="statTokens">0</div>
-                            <div class="stat-label">Tokens</div>
-                        </div>
                         <div class="stat-card" title="实验运行总数">
                             <div class="stat-icon stat-icon-green">
                                 <svg width="22" height="22" viewBox="0 0 20 20" fill="none"><path d="M10 2v6M7 5l3 3 3-3M4 10h12v7H4z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M7 13h6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
@@ -182,16 +186,7 @@
                             <div class="stat-label">Submission Bundles</div>
                         </div>
                     </div>
-
-                    <!-- Runtime config -->
-                    <div class="card overview-config-card" id="overviewConfig">
-                        <div class="card-header">
-                            <h3>Model & Config</h3>
-                            <span class="badge badge-dim" id="providerRefresh">Auto-refresh 10s</span>
-                        </div>
-                        <div id="runtimeConfigPanel"></div>
-                        <div class="providers-grid" id="providersList"></div>
-                    </div>
+                    </details>
 
                 </div>
             </section>
