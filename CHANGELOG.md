@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Enforce Agenda-configured per-grant GPU-hour caps in addition to aggregate
+  GPU-hour budgets and concurrency limits.
+- Add bounded, read-only legacy-claim triage for creating a new, explicitly
+  scoped self-improving-harness research problem without importing or mutating
+  legacy claims or backlog.
+
 ## Unreleased — 2026-08-02 local PostgreSQL cutover
 
 - Added a one-time, fail-closed live-local migration path. It accepts only
