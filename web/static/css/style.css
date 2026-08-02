@@ -692,6 +692,33 @@ header#topBar {
     padding: 0 14px 14px;
 }
 
+.advanced-nav {
+    margin: 8px 10px 0;
+    color: var(--text-dim);
+    font-size: 0.78rem;
+}
+.advanced-nav summary {
+    cursor: pointer;
+    padding: 8px 10px;
+    border-radius: 7px;
+    list-style-position: inside;
+}
+.advanced-nav summary:hover { background: var(--bg-card-hover); }
+.advanced-nav-item {
+    display: block;
+    width: 100%;
+    border: 0;
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    padding: 8px 10px 8px 22px;
+    text-align: left;
+    font: inherit;
+}
+.advanced-nav-item:hover, .advanced-nav-item.active {
+    color: var(--accent);
+}
+
 .recently-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
