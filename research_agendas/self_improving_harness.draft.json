@@ -1,0 +1,40 @@
+{
+  "version": "v1",
+  "name": "self-improving-harness",
+  "description": "Search the joint design space of context management, workflow control, tool and subagent orchestration, memory, permissions, and evaluation for a self-improving LLM harness. Mine verifier-grounded failures, propose narrow and diverse code-level harness edits, and accept an edit only when it resolves the measured weakness without regression on held-in and held-out evaluation.",
+  "focus": [
+    "self-improving harness",
+    "context engineering",
+    "agent workflow",
+    "tool orchestration",
+    "agent memory",
+    "permission design",
+    "harness evaluation",
+    "recursive optimization"
+  ],
+  "prefer": {
+    "search_surfaces": [
+      "context-management logic",
+      "workflow and control flow",
+      "tool and subagent coordination",
+      "memory and permission boundaries",
+      "verifier-grounded evaluation"
+    ],
+    "acceptance_rule": "preserve passing behavior and require non-regression on held-in and held-out evaluation"
+  },
+  "required_output": {
+    "goal": "verified_evidence"
+  },
+  "submitter": "project-operator",
+  "token_budget": 50000,
+  "gpu_hours_budget": 2.0,
+  "max_concurrency": 1,
+  "backend_allowlist": [
+    "cpu",
+    "llm",
+    "ssh_gpu"
+  ],
+  "backlog_policy": "explicit_import_only",
+  "status": "paused_manual",
+  "is_active": false
+}

@@ -74,11 +74,11 @@
             <div class="nav-items">
                 <button class="nav-item active" data-tab="overview">
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><rect x="2" y="2" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5"/><rect x="11" y="2" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5"/><rect x="2" y="11" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5"/><rect x="11" y="11" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5"/></svg>
-                    <span>Overview</span>
+                    <span>Research</span>
                 </button>
                 <button class="nav-item" data-tab="explore">
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="7.5" stroke="currentColor" stroke-width="1.5"/><circle cx="10" cy="10" r="3" stroke="currentColor" stroke-width="1.5"/><path d="M10 2.5V5M10 15v2.5M2.5 10H5M15 10h2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-                    <span>Explore Map</span>
+                    <span>Research Map</span>
                 </button>
                 <button class="nav-item" data-tab="evidence">
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="6" cy="5" r="1" fill="currentColor"/><circle cx="10" cy="10" r="1" fill="currentColor"/><circle cx="14" cy="15" r="1" fill="currentColor"/></svg>
@@ -90,12 +90,12 @@
                 </button>
                 <button class="nav-item" data-tab="discoveries">
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M10 1L12.5 6.5 18.5 7.5 14 11.5 15 17.5 10 14.5 5 17.5 6 11.5 1.5 7.5 7.5 6.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
-                    <span>Paper Ideas</span>
+                    <span>Ideas</span>
                 </button>
-                <button class="nav-item" data-tab="office">
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><rect x="3" y="5" width="14" height="11" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M6 9h3M11 9h3M6 12h2M12 12h2M10 5V3M7 16v2M13 16v2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-                    <span>Agent Office</span>
-                </button>
+                <details class="advanced-nav">
+                    <summary>More</summary>
+                    <button class="advanced-nav-item" data-tab="office" type="button">Activity</button>
+                </details>
             </div>
 
             <div class="sidebar-footer">
@@ -246,9 +246,9 @@
                         </div>
                         <div class="evidence-controls">
                             <label>Select taxonomy node:</label>
-                            <select id="evidenceNodeSelect" class="select-input">
-                                <option value="">-- Select a leaf node --</option>
-                            </select>
+                            <input id="evidenceNodeSelect" class="select-input" list="evidenceNodeOptions"
+                                   autocomplete="off" placeholder="Search a research area…">
+                            <datalist id="evidenceNodeOptions"></datalist>
                             <span class="evidence-hint" id="evidenceHint">Select a leaf node to view the evidence matrix.</span>
                         </div>
                         <div id="evidenceMatrixContainer" class="matrix-wrap"></div>

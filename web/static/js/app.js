@@ -250,7 +250,7 @@ function switchTab(tab) {
     activeTab = tab;
 
     // Update nav items
-    $$('.nav-item').forEach(btn => {
+    $$('.nav-item, .advanced-nav-item').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.tab === tab);
     });
 
@@ -2122,11 +2122,19 @@ async function loadTaxonomyDropdown() {
     if (taxonomyFlat.length > 0) return; // already loaded
     try {
         taxonomyFlat = await api('/api/taxonomy');
-        const sel = el('evidenceNodeSelect');
-        sel.innerHTML = '<option value="">-- Select a leaf node --</option>';
+        // A full <select> with thousands of options forces expensive layout on
+        // tab activation.  The old interface used a typeahead datalist, which
+        // keeps Evidence responsive while preserving the complete taxonomy.
+        const options = el('evidenceNodeOptions');
+        if (!options) return;
+        const fragment = document.createDocumentFragment();
         for (const n of taxonomyFlat) {
-            sel.innerHTML += `<option value="${esc(n.id)}">${esc(n.id)} \u2014 ${esc(n.name)}</option>`;
+            const option = document.createElement('option');
+            option.value = String(n.id);
+            option.label = `${n.id} \u2014 ${n.name}`;
+            fragment.appendChild(option);
         }
+        options.replaceChildren(fragment);
     } catch (e) {
         console.error('Taxonomy dropdown error:', e);
     }
@@ -2184,6 +2192,15 @@ function renderMatrix(container, matrix) {
     const metrics = Object.keys(metricCounts).sort((a, b) => metricCounts[b] - metricCounts[a]);
     const defaultMetric = metrics[0] || '';
 
+    // Keep the public page interactive for unusually broad research areas.
+    // The complete matrix remains in the API response; this is only a bounded
+    // DOM preview, preventing tens of thousands of cells from freezing a tab.
+    const MAX_RENDERED_CELLS = 1600;
+    const visibleMethods = matrix.methods.slice(0, Math.min(matrix.methods.length, 40));
+    const visibleDatasetCount = Math.max(1, Math.floor(MAX_RENDERED_CELLS / Math.max(visibleMethods.length, 1)));
+    const visibleDatasets = matrix.datasets.slice(0, visibleDatasetCount);
+    const isTruncated = visibleMethods.length < matrix.methods.length || visibleDatasets.length < matrix.datasets.length;
+
     let html = '<div class="matrix-controls">';
     html += '<label>Metric:</label>';
     html += '<select class="matrix-metric-select" onchange="window._dg.updateMatrixMetric(this)">';
@@ -2192,19 +2209,20 @@ function renderMatrix(container, matrix) {
     }
     html += '</select>';
     html += `<span class="matrix-info">${matrix.methods.length} methods x ${matrix.datasets.length} datasets</span>`;
+    if (isTruncated) html += `<span class="matrix-info">Showing first ${visibleMethods.length} x ${visibleDatasets.length} cells</span>`;
     html += '</div>';
 
     html += '<div class="matrix-scroll"><table class="matrix-table">';
     html += '<thead><tr><th class="method-header">Method \\ Dataset</th>';
-    for (const ds of matrix.datasets) {
+    for (const ds of visibleDatasets) {
         html += `<th class="dataset-header" title="${esc(ds)}">${esc(trunc(ds, 16))}</th>`;
     }
     html += '</tr></thead><tbody>';
 
-    for (const method of matrix.methods) {
+    for (const method of visibleMethods) {
         html += '<tr>';
         html += `<td class="method-cell" title="${esc(method)}">${esc(trunc(method, 22))}</td>`;
-        for (const ds of matrix.datasets) {
+        for (const ds of visibleDatasets) {
             const key = `${method}|||${ds}|||${defaultMetric}`;
             const cell = matrix.cells[key];
             if (cell) {
@@ -2221,6 +2239,8 @@ function renderMatrix(container, matrix) {
 
     container.innerHTML = html;
     container._matrixData = matrix;
+    container._visibleMethods = visibleMethods;
+    container._visibleDatasets = visibleDatasets;
 }
 
 function updateMatrixMetric(selectEl) {
@@ -2232,10 +2252,10 @@ function updateMatrixMetric(selectEl) {
     const rows = container.querySelectorAll('tbody tr');
 
     rows.forEach((row, mi) => {
-        const method = matrix.methods[mi];
+        const method = container._visibleMethods?.[mi] || matrix.methods[mi];
         const cells = row.querySelectorAll('td.matrix-cell');
         cells.forEach((td, di) => {
-            const ds = matrix.datasets[di];
+            const ds = container._visibleDatasets?.[di] || matrix.datasets[di];
             const key = `${method}|||${ds}|||${metric}`;
             const cell = matrix.cells[key];
             if (cell) {
@@ -3795,7 +3815,7 @@ window._dg = {
 
 function init() {
     // Nav items
-    $$('.nav-item').forEach(btn => {
+    $$('.nav-item, .advanced-nav-item').forEach(btn => {
         btn.addEventListener('click', () => switchTab(btn.dataset.tab));
     });
 
