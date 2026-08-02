@@ -111,42 +111,120 @@ python3.12 main.py
 
 Then open `http://localhost:8080`.
 
-## Meta-harness v1 (0.2.0)
+## What's new in 0.2.0: meta-harness v1
 
-This release adds a scoped research-control plane for reproducible autonomous
-experiments. The important change is that every costly action now requires a
-short-lived `ResourceGrant` tied to an Agenda and idea; measured usage and
-artifacts settle the grant before an outcome is recorded.
+DeepGraph 0.2.0 adds a research control plane around the existing discovery
+engine. Earlier releases could generate ideas and launch experiments, but the
+scope, budget, retry state and scientific authority of those actions were not
+represented by one durable contract. Meta-harness v1 makes that contract
+explicit and auditable.
 
-Key innovations:
+### The problems this release solves
 
-- Agenda-scoped Frontier/Decision/Grant/Outcome contracts with hard token/GPU
-  caps and fail-closed legacy paths.
-- Durable PostgreSQL claims and idempotency for CPU and SSH GPU jobs, including
-  restart recovery and truthful unknown-submission quarantine.
-- Role-separated, metered LLM routing with durable provider cooldowns.
-- Hash-pinned bubblewrap held-in/held-out/canary evaluation plus signed review
-  approval; Colab is implemented but excluded from the 0.2.0 release scope.
+| Previous risk | 0.2.0 behavior |
+|---|---|
+| Work could be selected from a global historical backlog | Every selection, idea, run and outcome belongs to one `ResearchAgenda`; old backlog is excluded unless explicitly imported. |
+| LLM or compute work could start without one hard budget boundary | Every costly action requires a short-lived `ResourceGrant` with token, GPU-hour, concurrency, backend and expiry limits. |
+| A restart could make remote submission status ambiguous or duplicate work | PostgreSQL-backed claims and idempotency recover known jobs; uncertain submissions are quarantined for manual reconciliation. |
+| Operational success could be mistaken for scientific confirmation | Evidence advances through a monotonic state machine; missing metrics, failed runs and weak evidence cannot promote a claim. |
+| A candidate could influence its own acceptance inputs | Bubblewrap runs hash-pinned held-in, held-out and canary suites with read-only inputs, no network and before/after tree checks. |
+| Backend and reviewer credentials could leak into persisted configuration | SSH, LLM and reviewer configuration stores secret references; signed approval is bound to the exact candidate and patch. |
 
-### CPU + SSH A100 quickstart
+The resulting lifecycle is:
 
-1. Run the normal setup above and apply the add-only PostgreSQL migration to a
-   disposable database.
-2. Configure only secret references; never put keys or passwords in TOML:
+```text
+Research direction
+  → ResearchAgenda (scope + hard budget)
+  → FrontierPacket (current evidence and prior art)
+  → IdeaDecisionPacket (promote / kill / park / revisit)
+  → ResourceGrant (bounded authorization)
+  → CPU or SSH A100 execution
+  → measured usage + certified artifacts
+  → OutcomeRecord
+  → evidence audit + independent reviewer approval
+```
+
+### Accepted release scope
+
+| Capability | 0.2.0 status |
+|---|---|
+| CPU execution | Accepted |
+| SSH A100 execution | Accepted for the durable control-plane/backend path |
+| PostgreSQL migration and restart recovery | Accepted against an isolated physical backup restore |
+| Role-separated LLM routing and cooldown recovery | Accepted |
+| Held-in/held-out/canary evaluator and reviewer approval | Accepted |
+| Colab execution | Excluded and disabled for this release; planned as a separately accepted version |
+| Production deployment | Not performed by release acceptance |
+
+The SSH A100 acceptance proves bounded submission, settlement, failure
+quarantine and artifact/usage handling. It does not claim that a particular
+scientific benchmark or model result has been reproduced.
+
+### First-time setup
+
+Start with the normal Python setup in [Quick Start](#quick-start). Meta-harness
+v1 additionally requires PostgreSQL; CPU is the safe default backend.
+
+1. Create the base DeepGraph schema in a non-production PostgreSQL database.
+   Before upgrading an existing database, rehearse the add-only migration on a
+   disposable restore by following
+   [MIGRATION_RUNBOOK.md](docs/integration/MIGRATION_RUNBOOK.md). Never test a
+   migration against the production URL.
+
+2. Review the migration plan, then apply it only to the approved database:
 
    ```bash
-   export DEEPGRAPH_COMPUTE_SSH_TARGET_REF=env:DEEPGRAPH_SSH_TARGET
-   export DEEPGRAPH_COMPUTE_SSH_CREDENTIAL_REF=env:DEEPGRAPH_SSH_CREDENTIAL
-   export DEEPGRAPH_META_HARNESS_OPERATOR_TOKEN='replace-with-a-short-lived-token'
+   python3.12 scripts/meta_harness_migration.py
+
+   # Inject DEEPGRAPH_MIGRATION_DATABASE_URL from a secret store first.
+   python3.12 scripts/meta_harness_migration.py \
+     --apply \
+     --confirm-isolated-restore I_UNDERSTAND_THIS_WRITES_AN_ISOLATED_RESTORE \
+     --source-commit "$(git rev-parse HEAD)"
    ```
 
-3. Create an Agenda and short-lived `ResourceGrant`, then submit work through
-   the scoped API or scheduler. The scheduler refuses missing grants,
-   unlimited budgets, unscoped backlog and unknown backend outcomes.
+3. Start with CPU and a short-lived operator token supplied by your secret
+   manager:
 
-See [docs/integration/CONFIGURATION.md](docs/integration/CONFIGURATION.md) and
-[docs/integration/ACCEPTANCE_EVIDENCE.md](docs/integration/ACCEPTANCE_EVIDENCE.md)
-for the complete contract and the accepted CPU + SSH A100 scope.
+   ```bash
+   export DEEPGRAPH_COMPUTE_BACKENDS=cpu
+   export DEEPGRAPH_META_HARNESS_OPERATOR_TOKEN='<secret-store-injected>'
+   python3.12 main.py
+   ```
+
+4. Confirm that the control plane can read its schema. This endpoint returns
+   counts only, never business rows:
+
+   ```bash
+   curl http://localhost:8080/api/meta-harness/v1/status
+   ```
+
+5. To enable the accepted SSH GPU backend, keep the secret value outside the
+   repository and configure only references plus pinned host identity:
+
+   ```bash
+   export DEEPGRAPH_COMPUTE_BACKENDS=cpu,ssh_gpu
+   export DEEPGRAPH_GPU_MODE=ssh
+   export DEEPGRAPH_GPU_REMOTE_SSH_HOST='<approved-host>'
+   export DEEPGRAPH_GPU_REMOTE_SSH_USER='<approved-user>'
+   export DEEPGRAPH_COMPUTE_SSH_TARGET_REF=env:DEEPGRAPH_SSH_TARGET
+   export DEEPGRAPH_COMPUTE_SSH_CREDENTIAL_REF=env:DEEPGRAPH_SSH_CREDENTIAL
+   export DEEPGRAPH_SSH_KNOWN_HOSTS='<reviewed-known-hosts-file>'
+   ```
+
+   `DEEPGRAPH_SSH_TARGET` and `DEEPGRAPH_SSH_CREDENTIAL` must be injected by
+   the runtime secret store. Do not put their values in TOML, Git, logs or API
+   payloads.
+
+6. Use the operator-authenticated API to create an Agenda, evaluate the
+   frontier, issue a short-lived grant and submit work. Mutations require the
+   `X-DeepGraph-Operator-Token` header. Missing scope, expired grants,
+   unlimited budgets and unknown backend outcomes fail closed.
+
+For policy fields and secret-reference configuration, see
+[CONFIGURATION.md](docs/integration/CONFIGURATION.md). For the exact evidence
+behind the accepted CPU + SSH A100 scope, see
+[ACCEPTANCE_EVIDENCE.md](docs/integration/ACCEPTANCE_EVIDENCE.md).
 
 ## Configuration
 
