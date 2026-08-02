@@ -54,6 +54,30 @@ def _load_list(value: Any) -> list[Any]:
     return parsed if isinstance(parsed, list) else []
 
 
+def _agenda_per_grant_gpu_cap(agenda: dict[str, Any]) -> float | None:
+    """Return an optional Agenda-level per-grant GPU cap.
+
+    The aggregate ledger protects the total budget, but an agenda may also
+    constrain the size of any one GPU reservation.  Malformed explicit policy
+    is rejected rather than silently weakening that constraint.
+    """
+    prefer = _load_mapping(agenda.get("prefer_json"))
+    policy = _load_mapping(prefer.get("gpu_policy"))
+    if "max_gpu_hours_per_grant" not in policy:
+        return None
+    try:
+        cap = float(policy["max_gpu_hours_per_grant"])
+    except (TypeError, ValueError) as exc:
+        raise MetaHarnessPersistenceError(
+            "agenda per-grant GPU-hour cap must be numeric"
+        ) from exc
+    if cap < 0:
+        raise MetaHarnessPersistenceError(
+            "agenda per-grant GPU-hour cap cannot be negative"
+        )
+    return cap
+
+
 def _canonical_hash(value: str) -> str:
     text = str(value or "").strip().lower()
     return text.removeprefix("sha256:")
@@ -644,6 +668,14 @@ class MetaHarnessRepository:
             ):
                 raise MetaHarnessPersistenceError(
                     "agenda max_concurrency would be exceeded"
+                )
+            per_grant_gpu_cap = _agenda_per_grant_gpu_cap(agenda)
+            if (
+                per_grant_gpu_cap is not None
+                and grant.max_gpu_hours > per_grant_gpu_cap
+            ):
+                raise MetaHarnessPersistenceError(
+                    "ResourceGrant exceeds Agenda per-grant GPU-hour cap"
                 )
             token_budget = int(agenda.get("token_budget") or 0)
             token_total = (

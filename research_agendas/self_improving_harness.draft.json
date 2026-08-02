@@ -20,21 +20,25 @@
       "memory and permission boundaries",
       "verifier-grounded evaluation"
     ],
-    "acceptance_rule": "preserve passing behavior and require non-regression on held-in and held-out evaluation"
+    "acceptance_rule": "preserve passing behavior and require non-regression on held-in and held-out evaluation",
+    "gpu_policy": {
+      "max_parallel_gpu_grants": 4,
+      "max_gpu_hours_per_grant": 8.0
+    }
   },
   "required_output": {
     "goal": "verified_evidence"
   },
   "submitter": "project-operator",
   "token_budget": 50000,
-  "gpu_hours_budget": 2.0,
-  "max_concurrency": 1,
+  "gpu_hours_budget": 32.0,
+  "max_concurrency": 4,
   "backend_allowlist": [
     "cpu",
     "llm",
     "ssh_gpu"
   ],
   "backlog_policy": "explicit_import_only",
-  "status": "paused_manual",
-  "is_active": false
+  "status": "active",
+  "is_active": true
 }

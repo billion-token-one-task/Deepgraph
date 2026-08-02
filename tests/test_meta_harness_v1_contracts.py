@@ -31,6 +31,7 @@ from meta_harness.frontier_builder import (
 )
 from meta_harness.candidate_workspace import CandidateSandbox
 from meta_harness.grants import GrantDeniedError, ResourceRequest, authorize
+from meta_harness.repository import MetaHarnessPersistenceError, MetaHarnessRepository
 from meta_harness.harness_evolution import (
     EvaluationRun,
     HarnessCandidate,
@@ -238,6 +239,28 @@ class ResourceGrantAndEvidenceTests(unittest.TestCase):
                 self._grant(),
                 ResourceRequest(12, 41, "pilot", "local_gpu", gpu_hours=0.1),
             )
+
+    def test_repository_rejects_gpu_grant_above_agenda_per_grant_cap(self):
+        agenda = {
+            "id": 11,
+            "status": "active",
+            "max_concurrency": 4,
+            "prefer_json": '{"gpu_policy":{"max_gpu_hours_per_grant":8}}',
+        }
+        decision = {"agenda_id": 11, "idea_id": 41, "decision": "promote"}
+        with mock.patch(
+            "meta_harness.repository.db._use_pg", return_value=False
+        ), mock.patch(
+            "meta_harness.repository.db.fetchone",
+            side_effect=[agenda, decision, None, {"count": 0}],
+        ), mock.patch("meta_harness.repository.db.rollback"):
+            grant = self._grant()
+            grant.max_gpu_hours = 8.01
+            with self.assertRaisesRegex(
+                MetaHarnessPersistenceError,
+                "per-grant GPU-hour cap",
+            ):
+                MetaHarnessRepository().issue_grant(grant)
 
     def test_pilot_cannot_become_full_benchmark(self):
         with self.assertRaises(EvidenceTransitionError):
