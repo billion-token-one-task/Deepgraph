@@ -426,9 +426,10 @@ def _ensure_problem_first_schema() -> None:
             },
         )
         if _table_exists(table):
+            placeholder = "%s" if _use_pg() else "?"
             _execute_startup_statement(
                 get_conn(),
-                f"UPDATE {table} SET signal_role=? WHERE signal_role IS NULL OR signal_role=''",
+                f"UPDATE {table} SET signal_role={placeholder} WHERE signal_role IS NULL OR signal_role=''",
                 (role,),
                 best_effort_if_locked=_use_pg(),
             )
