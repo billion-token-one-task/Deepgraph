@@ -1,6 +1,6 @@
 # meta-harness-v1 detailed implementation checklist
 
-Last reviewed: 2026-07-31 UTC
+Last reviewed: 2026-08-02 UTC
 
 This is the authoritative, fine-grained checklist for the controlled B
 integration. It complements the semantic [PORTING_LEDGER.md](PORTING_LEDGER.md)
@@ -16,6 +16,10 @@ Status legend:
 
 An item marked `[~]` is not release evidence. Only the isolated CI/canary
 artifacts named in its evidence column may promote it to `[x]`.
+
+The original S-series checkpoint below is historical 2026-07-31 evidence. The
+explicit, local-only 2026-08-02 database cutover is recorded separately at the
+end of this checklist so it does not rewrite that prior audit record.
 
 ## S. Production safety and authority
 
@@ -525,3 +529,33 @@ artifacts named in its evidence column may promote it to `[x]`.
 
 Current decision: **ACCEPTED for CPU + SSH A100**. The local master fast-forward
 merge is intentionally not executed in this session.
+
+## 2026-08-02 local original-database cutover
+
+- [x] **S-13** Recorded the service configuration without exposing its URL,
+  password, or tokens; confirmed the current temporary local database and the
+  original `127.0.0.1:5433/deepgraph` rollback source.
+- [x] **S-14** Stopped `deepgraph-web.service` and its health/self-heal timers;
+  the service was inactive and the original/temporary databases had zero
+  non-audit connections before backup.
+- [x] **S-15** Created a complete custom `pg_dump` under `/home/ec2-user`,
+  verified it with `pg_restore --list`, and recorded SHA-256
+  `5681dc302ae0e4fd073faccc0e63e0e88419703a6bd9cc7364ce1b7ea5efe3d2`.
+- [x] **V-18** The separate one-time live-local runner requires exact loopback
+  host/port/database, `DEEPGRAPH_ALLOW_LIVE_LOCAL_MIGRATION=1`, inactive
+  service, explicit confirmation, and a verified backup. Unit coverage passed.
+- [x] **V-19** Original local migration first/second results are
+  `applied`/`already_applied`; the migration journal has one matching checksum
+  row. All 58 pre-existing table counts were preserved, 114 FK checks and the
+  orphan audit were clean, and `claims=28700` was unchanged.
+- [x] **V-20** A fresh retained local restore passed the required PostgreSQL
+  integration tests: meta-harness 1, compute repository 4, evidence repository
+  1 passed.
+- [x] **S-16** Service `.env` was atomically returned to original local
+  `deepgraph`; the temporary configuration rollback file and database dump are
+  retained. No URL or credential was written to Git.
+- [x] **S-17** Service, public HTTPS, and local HTTP all returned healthy after
+  the expected large signal-role index initialization: systemd active,
+  localhost:8080 HTTP 200, public HTTPS HTTP 200, and no startup traceback.
+- [x] **S-18** No database/table/ref/remote branch was deleted, no force-push
+  or master merge occurred, and no remote production database was connected.

@@ -109,6 +109,39 @@ That case writes and removes synthetic scoped records. It verifies
 stage-specific grants, content-addressed raw/claim/benchmark/evaluator/holdout
 inputs, the M1/M4 decision contract, and reviewer-gated manuscript permission.
 
+## One-time live-local migration
+
+This exception is only for an operator-approved original database on the same
+host. It is not a general production migration mechanism. The runner refuses
+all targets except `127.0.0.1:5433/deepgraph`, and it fails closed unless all
+of the following are true:
+
+- `DEEPGRAPH_ALLOW_LIVE_LOCAL_MIGRATION=1` is set for this invocation;
+- `deepgraph-web.service` is `inactive`;
+- a complete custom-format `pg_dump` exists directly under `/home/ec2-user`;
+- the operator supplies the already-recorded SHA256 that matches that file;
+- the candidate commit and the distinct live-local confirmation are supplied.
+
+Do not source an `.env` file into an interactive shell. Inject its database URL
+from the protected service configuration and retain only its redacted endpoint
+metadata in the change evidence.
+
+```bash
+DEEPGRAPH_ALLOW_LIVE_LOCAL_MIGRATION=1 \
+DEEPGRAPH_MIGRATION_DATABASE_URL='postgresql://...@127.0.0.1:5433/deepgraph' \
+python3 scripts/meta_harness_migration.py \
+  --apply-live-local \
+  --confirm-live-local-deepgraph I_UNDERSTAND_THIS_WRITES_LIVE_LOCAL_DEEPGRAPH \
+  --source-commit '<40-character-candidate-commit>' \
+  --backup-file /home/ec2-user/deepgraph-pre-meta-harness-<timestamp>.dump \
+  --backup-sha256 '<recorded-64-character-sha256>'
+```
+
+Record the first result as `applied`, run the identical command a second time,
+and record `already_applied` with the same migration checksum. The runner does
+not contain `DROP`, `TRUNCATE`, or `DELETE` SQL and the single migration journal
+row is written in the same transaction as the additive schema changes.
+
 ## Failure handling
 
 On a failed first apply, keep the logs and discard the restore. Do not repair
