@@ -1381,6 +1381,21 @@ async function loadRecentlyDiscovered() {
     }
 }
 
+async function loadOverviewResearchMap() {
+    const graph = el('overviewGraphSvg');
+    if (!graph || graph.dataset.loaded === 'true') return;
+    graph.dataset.loaded = 'true';
+    try {
+        const data = await api(`/api/taxonomy/${encodeURIComponent(ROOT_NODE)}`);
+        renderRadialGraph('overviewGraphSvg', data.node, (data.children || []).slice(0, 8), 330, true);
+    } catch (e) {
+        graph.dataset.loaded = '';
+        const card = el('overviewMapCard');
+        if (card) card.style.display = 'none';
+        console.error('Overview research map error:', e);
+    }
+}
+
 function renderRecentlyDiscovered(data, insights) {
     const grid = el('recentlyGrid');
     if (!grid) return;
@@ -3849,6 +3864,7 @@ function init() {
     // Initial data loads
     refreshStats();
     loadRecentlyDiscovered();
+    loadOverviewResearchMap();
     loadProcessingPapers();
     startSSE();
 
@@ -3856,6 +3872,8 @@ function init() {
     if (openDiscoveries) {
         openDiscoveries.addEventListener('click', () => switchTab('discoveries'));
     }
+    const openMap = el('btnJumpExplore');
+    if (openMap) openMap.addEventListener('click', () => switchTab('explore'));
 
     // Stats refresh every 15s
     statsTimer = setInterval(refreshStats, 15000);
