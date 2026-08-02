@@ -494,7 +494,27 @@ class StaticMigrationContractTests(unittest.TestCase):
         self.assertIn("IDX_RESEARCH_AGENDAS_ID_UNIQUE", upper)
         self.assertIn("IDX_DEEP_INSIGHTS_ID_UNIQUE", upper)
         self.assertIn("IDX_EXPERIMENT_RUNS_ID_UNIQUE", upper)
+        for table in (
+            "NODE_ENTITY_OVERLAP",
+            "PATTERN_MATCHES",
+            "CONTRADICTION_CLUSTERS",
+            "PERFORMANCE_PLATEAUS",
+            "MECHANISM_MISMATCHES",
+            "PROTOCOL_ARTIFACTS",
+            "NEGATIVE_SPACE_GAPS",
+            "HIDDEN_VARIABLE_BRIDGES",
+            "CLAIM_METHOD_GAPS",
+        ):
+            self.assertIn(
+                f"ALTER TABLE IF EXISTS {table} ADD COLUMN IF NOT EXISTS CONTENT_HASH",
+                upper,
+            )
         self.assertNotIn("UPDATE DEEP_INSIGHTS SET AGENDA_ID", upper)
+
+    def test_postgres_signal_role_update_uses_native_placeholder(self):
+        root = Path(__file__).resolve().parents[1]
+        source = (root / "db/database.py").read_text(encoding="utf-8")
+        self.assertIn('placeholder = "%s" if _use_pg() else "?"', source)
 
 
 if __name__ == "__main__":

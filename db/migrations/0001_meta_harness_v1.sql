@@ -218,6 +218,19 @@ ALTER TABLE IF EXISTS benchmark_harness_jobs ADD COLUMN IF NOT EXISTS agenda_id 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_experiment_runs_id_unique
     ON experiment_runs(id);
 
+-- The application schema creates indexes on these legacy signal tables during
+-- startup. Physical backups from older releases may lack the hash column;
+-- add it before startup schema/index reconciliation runs.
+ALTER TABLE IF EXISTS node_entity_overlap ADD COLUMN IF NOT EXISTS content_hash TEXT;
+ALTER TABLE IF EXISTS pattern_matches ADD COLUMN IF NOT EXISTS content_hash TEXT;
+ALTER TABLE IF EXISTS contradiction_clusters ADD COLUMN IF NOT EXISTS content_hash TEXT;
+ALTER TABLE IF EXISTS performance_plateaus ADD COLUMN IF NOT EXISTS content_hash TEXT;
+ALTER TABLE IF EXISTS mechanism_mismatches ADD COLUMN IF NOT EXISTS content_hash TEXT;
+ALTER TABLE IF EXISTS protocol_artifacts ADD COLUMN IF NOT EXISTS content_hash TEXT;
+ALTER TABLE IF EXISTS negative_space_gaps ADD COLUMN IF NOT EXISTS content_hash TEXT;
+ALTER TABLE IF EXISTS hidden_variable_bridges ADD COLUMN IF NOT EXISTS content_hash TEXT;
+ALTER TABLE IF EXISTS claim_method_gaps ADD COLUMN IF NOT EXISTS content_hash TEXT;
+
 CREATE INDEX IF NOT EXISTS idx_research_problems_agenda ON research_problems(agenda_id, status, id);
 CREATE INDEX IF NOT EXISTS idx_experimental_evidence_edges_agenda
     ON experimental_evidence_edges(agenda_id, run_id, id);
