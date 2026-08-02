@@ -660,6 +660,38 @@ header#topBar {
 
 /* ── Recently Discovered Grid ─────────────────────────────────────── */
 
+.overview-results-card {
+    border-color: rgba(61, 139, 94, 0.28);
+    background: linear-gradient(135deg, rgba(61, 139, 94, 0.07), var(--bg-card) 42%);
+}
+.overview-results-note {
+    margin: 4px 0 0;
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+}
+.overview-details {
+    margin-top: 14px;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg-card);
+}
+.overview-details summary {
+    cursor: pointer;
+    padding: 14px 16px;
+    color: var(--text-primary);
+    font-weight: 600;
+    list-style-position: inside;
+}
+.overview-details-note {
+    margin: 0 16px 12px;
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+}
+.overview-details .stat-grid {
+    padding: 0 14px 14px;
+}
+
 .recently-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));

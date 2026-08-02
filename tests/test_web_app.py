@@ -36,7 +36,11 @@ class WebAppTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("database", payload)
         self.assertIn("backend", payload["database"])
-        self.assertIn("target", payload["database"])
+        self.assertNotIn("target", payload["database"])
+
+    def test_runtime_and_provider_topology_are_not_public(self):
+        self.assertEqual(self.client.get("/api/runtime-config").status_code, 404)
+        self.assertEqual(self.client.get("/api/providers").status_code, 404)
 
     def test_manual_post_api_returns_gone_in_fixed_flow_mode(self):
         response = self.client.post("/api/experiments/run_full", json={"insight_id": 1})

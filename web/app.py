@@ -2,7 +2,6 @@
 import json
 import importlib.util
 import os
-import platform
 import re
 import shutil
 import subprocess
@@ -856,7 +855,9 @@ def api_meta():
         "subtitle": APP_SUBTITLE,
         "root_node_id": ROOT_NODE_ID,
         "profile": PROFILE,
-        "database": backend,
+        # This endpoint is public.  The database target can contain a host,
+        # database name, or local path, none of which belongs in a browser.
+        "database": {"backend": backend.get("backend", "unknown")},
     })
 
 
@@ -869,93 +870,14 @@ def api_stats():
 
 @app.route("/api/providers")
 def api_providers():
-    """Get LLM provider stats (round-robin load balancing)."""
-    from agents.llm_client import get_provider_stats
-    return jsonify(get_provider_stats())
+    """Provider topology and usage are intentionally not public."""
+    abort(404)
 
 
 @app.route("/api/runtime-config", methods=["GET", "POST"])
 def api_runtime_config():
-    """Expose model/provider and runtime configuration for the dashboard."""
-    if request.method == "POST":
-        return _manual_api_removed_response()
-
-    try:
-        db_info = db.describe_backend()
-        workspace_disk = _disk_snapshot(cfg.WORKSPACE_DIR)
-        experiment_disk = _disk_snapshot(cfg.EXPERIMENT_WORKDIR)
-        cpu_info = _cpu_snapshot()
-        gpu_info = _gpu_snapshot()
-        return jsonify({
-            "llm": {
-                "primary": {
-                    "model": cfg.LLM_MODEL,
-                    "base_url": cfg.LLM_BASE_URL,
-                    "protocol": cfg.LLM_PROTOCOL,
-                    "rpm": cfg.LLM_RPM,
-                    "api_key_configured": bool(cfg.LLM_API_KEY),
-                },
-                "secondary": {
-                    "enabled": cfg.LLM_SECONDARY_ENABLED,
-                    "model": cfg.LLM_SECONDARY_MODEL,
-                    "base_url": cfg.LLM_SECONDARY_BASE_URL,
-                    "protocol": cfg.LLM_SECONDARY_PROTOCOL,
-                    "rpm": cfg.LLM_SECONDARY_RPM,
-                    "api_key_configured": bool(cfg.LLM_SECONDARY_API_KEY),
-                },
-                "limits": {
-                    "max_input_tokens": cfg.LLM_MAX_INPUT_TOKENS,
-                    "max_output_tokens": cfg.LLM_MAX_OUTPUT_TOKENS,
-                    "request_timeout_seconds": cfg.LLM_REQUEST_TIMEOUT_SECONDS,
-                    "connect_timeout_seconds": cfg.LLM_CONNECT_TIMEOUT_SECONDS,
-                },
-                "extra_providers_configured": bool(str(cfg.LLM_EXTRA_PROVIDERS_JSON or "").strip()),
-            },
-            "runtime": {
-                "app_name": cfg.APP_NAME,
-                "profile": cfg.PROFILE,
-                "root_node_id": cfg.ROOT_NODE_ID,
-                "pid": os.getpid(),
-                "python": cfg.RUNTIME_PYTHON,
-                "platform": platform.platform(),
-                "cpu_count": os.cpu_count(),
-                "cpu": cpu_info,
-                "process_rss_mb": _process_rss_mb(),
-                "total_memory_mb": _total_memory_mb(),
-                "database": db_info,
-                "workspace_dir": str(cfg.WORKSPACE_DIR),
-                "workspace_disk": workspace_disk,
-            },
-            "experiment": {
-                "auto_pipeline_enabled": cfg.AUTO_PIPELINE_ENABLED,
-                "auto_research_enabled": cfg.AUTO_RESEARCH_ENABLED,
-                "pipeline_concurrency": cfg.PIPELINE_CONCURRENCY,
-                "require_real_benchmark": cfg.EXPERIMENT_REQUIRE_REAL_BENCHMARK,
-                "allow_synthetic_fallback": cfg.EXPERIMENT_ALLOW_SYNTHETIC_FALLBACK,
-                "real_llm_model": cfg.EXPERIMENT_REAL_LLM_MODEL,
-                "benchmark_dataset": cfg.EXPERIMENT_REAL_BENCHMARK_DATASET,
-                "benchmark_dataset_config": cfg.EXPERIMENT_REAL_BENCHMARK_DATASET_CONFIG,
-                "real_benchmark_max_examples": cfg.EXPERIMENT_REAL_BENCHMARK_MAX_EXAMPLES,
-                "real_benchmark_seeds": cfg.EXPERIMENT_REAL_BENCHMARK_SEEDS,
-                "full_benchmark_min_examples": cfg.EXPERIMENT_FULL_BENCHMARK_MIN_EXAMPLES,
-                "full_benchmark_min_datasets": cfg.EXPERIMENT_FULL_BENCHMARK_MIN_DATASETS,
-                "full_benchmark_min_models": cfg.EXPERIMENT_FULL_BENCHMARK_MIN_MODELS,
-                "full_benchmark_min_baselines": cfg.EXPERIMENT_FULL_BENCHMARK_MIN_BASELINES,
-                "full_benchmark_require_significance": cfg.EXPERIMENT_FULL_BENCHMARK_REQUIRE_SIGNIFICANCE,
-                "full_benchmark_require_strongest_win": cfg.EXPERIMENT_FULL_BENCHMARK_REQUIRE_STRONGEST_WIN,
-                "gpu_mode": cfg.GPU_MODE,
-                "gpu_worker_slots": cfg.GPU_WORKER_SLOTS,
-                "gpu_visible_devices": cfg.GPU_VISIBLE_DEVICES,
-                "gpu_default_model": cfg.GPU_DEFAULT_MODEL,
-                "gpu_default_vram_gb": cfg.GPU_DEFAULT_VRAM_GB,
-                "gpu_snapshot": gpu_info,
-                "experiment_workdir": str(cfg.EXPERIMENT_WORKDIR),
-                "experiment_disk": experiment_disk,
-            },
-            "editable_keys": [],
-        })
-    except Exception as exc:
-        return _api_failure("runtime_config", exc)
+    """Runtime configuration is an operator concern, never a public API."""
+    abort(404)
 
 
 def _office_clip(value: Any, limit: int = 110) -> str:
