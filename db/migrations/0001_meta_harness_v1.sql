@@ -31,6 +31,15 @@ CREATE TABLE IF NOT EXISTS research_agendas (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Older physical backups may contain this table without a primary/unique key.
+-- Add a compatible unique index before any new foreign key references it.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_research_agendas_id_unique
+    ON research_agendas(id);
+
+-- The legacy deep_insights table may likewise lack a declared primary key.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_deep_insights_id_unique
+    ON deep_insights(id);
+
 -- Existing production agendas may have NULL/zero budgets. Do not activate them
 -- until an operator assigns a positive hard cap.
 ALTER TABLE research_agendas ADD COLUMN IF NOT EXISTS token_reserved BIGINT NOT NULL DEFAULT 0;
@@ -204,6 +213,10 @@ ALTER TABLE IF EXISTS manuscript_runs ADD COLUMN IF NOT EXISTS agenda_id BIGINT 
 ALTER TABLE IF EXISTS manuscript_assets ADD COLUMN IF NOT EXISTS agenda_id BIGINT REFERENCES research_agendas(id);
 ALTER TABLE IF EXISTS submission_bundles ADD COLUMN IF NOT EXISTS agenda_id BIGINT REFERENCES research_agendas(id);
 ALTER TABLE IF EXISTS benchmark_harness_jobs ADD COLUMN IF NOT EXISTS agenda_id BIGINT REFERENCES research_agendas(id);
+
+-- Preserve foreign-key compatibility with legacy experiment-run tables.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_experiment_runs_id_unique
+    ON experiment_runs(id);
 
 CREATE INDEX IF NOT EXISTS idx_research_problems_agenda ON research_problems(agenda_id, status, id);
 CREATE INDEX IF NOT EXISTS idx_experimental_evidence_edges_agenda
