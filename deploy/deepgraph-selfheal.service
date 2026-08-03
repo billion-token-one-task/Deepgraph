@@ -1,0 +1,17 @@
+[Unit]
+Description=DeepGraph self-heal watchdog (restarts the web service only on proven failure)
+After=deepgraph-web.service deepgraph-postgres.service
+Documentation=file:/home/billion-token/Deepgraph/docs/runbooks/SELFHEAL.md
+
+[Service]
+Type=oneshot
+# The watchdog is source-owned. Deploy scripts/deepgraph_selfheal.py to the
+# path below through the deployment manifest; do not edit it in place.
+ExecStart=/usr/local/bin/deepgraph-selfheal.py
+# Signal collection is read-only apart from the systemd restart it may issue.
+Environment=DEEPGRAPH_SELFHEAL_ENV_FILE=/home/billion-token/Deepgraph/.env
+Environment=DEEPGRAPH_SELFHEAL_STATE_DIR=/var/lib/deepgraph-selfheal
+Environment=DEEPGRAPH_SELFHEAL_LOG=/var/log/deepgraph-selfheal.log
+Environment=DEEPGRAPH_SELFHEAL_WEB_LOG=/home/billion-token/Deepgraph/logs/web-systemd.log
+Environment=DEEPGRAPH_SELFHEAL_HEALTH_URL=http://127.0.0.1:8080/api/meta
+TimeoutStartSec=180
