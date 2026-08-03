@@ -1,0 +1,89 @@
+{
+  "manifest_key": "frontend_2026-08-04",
+  "description": "Frontend merge v1 (master 38432a1): stats-cache perf fix, vendored D3/marked, provenance API + two-register badges, process timeline, selection rationale, EN/ZH i18n, direction submission form, response leak scrubbing. No schema change (needs only migration 0001, already applied). Deploy in the same restart window as recovery batch 3-application; one deepgraph-web restart covers both. Note: web/* targets will be flagged runtime_locally_modified because the 2026-08-02 root-cp deploy dirtied the runtime tree; the frontend discovery report verified those runtime files byte-identical to master a6973b8, which is exactly this batch's base - the operator diff should confirm the same before overwrite.",
+  "target_host": "deepgraph runtime host",
+  "runtime_root": "/home/billion-token/Deepgraph",
+  "backup_root": "/home/ec2-user/deepgraph-rollback",
+  "environment_keys": [
+    "DEEPGRAPH_META_HARNESS_OPERATOR_TOKEN"
+  ],
+  "batches": [
+    {
+      "batch": "4-frontend",
+      "authorization": "required-before-deploy",
+      "purpose": "Frontend/provenance application files. All owned billion-token (also reclaims the root-owned copies from the 2026-08-02 deploy).",
+      "restart_required": ["deepgraph-web.service"],
+      "systemd_reload_required": false,
+      "health_check": "curl -fsS http://127.0.0.1:8080/api/v1/agendas >/dev/null && curl -fsS http://127.0.0.1:8080/ >/dev/null && ! curl -s http://127.0.0.1:8080/api/automation | grep -q '/home/'",
+      "acceptance": "Within 60s of restart: / returns 200; /api/stats serves warming then real numbers (cache prewarmed); /api/v1/agendas 200; Process tab, EN/ZH switch and core stat row render; no /home/ paths or log_tail in any API response; browser console clean.",
+      "files": [
+        {
+          "source": "web/app.py",
+          "target": "{runtime_root}/web/app.py",
+          "owner": "billion-token:billion-token",
+          "mode": "0644"
+        },
+        {
+          "source": "web/provenance_routes.py",
+          "target": "{runtime_root}/web/provenance_routes.py",
+          "owner": "billion-token:billion-token",
+          "mode": "0644"
+        },
+        {
+          "source": "web/stats_cache.py",
+          "target": "{runtime_root}/web/stats_cache.py",
+          "owner": "billion-token:billion-token",
+          "mode": "0644"
+        },
+        {
+          "source": "web/templates/index.html",
+          "target": "{runtime_root}/web/templates/index.html",
+          "owner": "billion-token:billion-token",
+          "mode": "0644"
+        },
+        {
+          "source": "web/static/js/app.js",
+          "target": "{runtime_root}/web/static/js/app.js",
+          "owner": "billion-token:billion-token",
+          "mode": "0644"
+        },
+        {
+          "source": "web/static/js/i18n.js",
+          "target": "{runtime_root}/web/static/js/i18n.js",
+          "owner": "billion-token:billion-token",
+          "mode": "0644"
+        },
+        {
+          "source": "web/static/css/style.css",
+          "target": "{runtime_root}/web/static/css/style.css",
+          "owner": "billion-token:billion-token",
+          "mode": "0644"
+        },
+        {
+          "source": "web/static/vendor/d3/d3.v7.min.js",
+          "target": "{runtime_root}/web/static/vendor/d3/d3.v7.min.js",
+          "owner": "billion-token:billion-token",
+          "mode": "0644"
+        },
+        {
+          "source": "web/static/vendor/marked/marked.min.js",
+          "target": "{runtime_root}/web/static/vendor/marked/marked.min.js",
+          "owner": "billion-token:billion-token",
+          "mode": "0644"
+        },
+        {
+          "source": "main.py",
+          "target": "{runtime_root}/main.py",
+          "owner": "billion-token:billion-token",
+          "mode": "0644"
+        },
+        {
+          "source": "orchestrator/pipeline.py",
+          "target": "{runtime_root}/orchestrator/pipeline.py",
+          "owner": "billion-token:billion-token",
+          "mode": "0644"
+        }
+      ]
+    }
+  ]
+}
