@@ -7,8 +7,11 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;0,6..72,700;1,6..72,400&family=Source+Sans+3:wght@400;500;600;700&family=Source+Code+Pro:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <script src="https://d3js.org/d3.v7.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <!-- Vendored locally (like MathJax): CDN scripts in <head> were
+         render-blocking and unreachable/slow from some networks. -->
+    <script defer src="/static/vendor/d3/d3.v7.min.js"></script>
+    <script defer src="/static/vendor/marked/marked.min.js"></script>
+    <script defer src="/static/js/i18n.js?v=20260803-merge1"></script>
     <script>
         window.MathJax = {
             tex: {
@@ -30,7 +33,7 @@
         };
     </script>
     <script defer src="/static/vendor/mathjax/tex-svg.js"></script>
-    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/style.css?v=20260803-merge1">
 </head>
 <body data-root-node="{{ root_node_id }}" data-profile="{{ profile }}">
 
@@ -41,26 +44,34 @@
                 <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M2 4h14M2 9h14M2 14h14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
             </button>
             <span class="app-name">DeepGraph</span>
-            <span class="live-badge" id="liveBadge">IDLE</span>
+            <span class="live-badge" id="liveBadge" data-i18n="app.live.idle">IDLE</span>
         </div>
         <div class="topbar-stats" id="topbarStats">
             <div class="topbar-stat">
                 <span class="topbar-stat-val" id="hdrPapers">0</span>
-                <span class="topbar-stat-lbl">Reasoned Papers</span>
+                <span class="topbar-stat-lbl" data-i18n="topbar.papers">Reasoned Papers</span>
             </div>
             <div class="topbar-stat">
                 <span class="topbar-stat-val" id="hdrResults">0</span>
-                <span class="topbar-stat-lbl">Results</span>
+                <span class="topbar-stat-lbl" data-i18n="topbar.results">Results</span>
             </div>
             <div class="topbar-stat">
                 <span class="topbar-stat-val" id="hdrInsights">0</span>
-                <span class="topbar-stat-lbl">Insights</span>
+                <span class="topbar-stat-lbl" data-i18n="topbar.insights">Insights</span>
+            </div>
+            <div class="topbar-stat" title="LLM tokens spent reading and reasoning over source papers">
+                <span class="topbar-stat-val" id="hdrTokens">0</span>
+                <span class="topbar-stat-lbl" data-i18n="topbar.tokens">Analysis Tokens</span>
             </div>
         </div>
         <div class="topbar-right">
+            <div class="lang-switch">
+                <button type="button" class="lang-btn" data-lang="en" data-i18n="lang.en">EN</button>
+                <button type="button" class="lang-btn" data-lang="zh" data-i18n="lang.zh">ZH</button>
+            </div>
             <div class="search-container">
                 <svg class="search-icon" width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="6.5" cy="6.5" r="5" stroke="currentColor" stroke-width="1.5"/><path d="M10.5 10.5L14.5 14.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-                <input type="text" id="searchInput" class="search-input" placeholder="Search papers, methods, insights..." autocomplete="off">
+                <input type="text" id="searchInput" class="search-input" placeholder="Search papers, methods, insights..." data-i18n-placeholder="topbar.search.placeholder" autocomplete="off">
                 <div id="searchResults" class="search-results"></div>
             </div>
         </div>
@@ -74,33 +85,38 @@
             <div class="nav-items">
                 <button class="nav-item active" data-tab="overview">
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><rect x="2" y="2" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5"/><rect x="11" y="2" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5"/><rect x="2" y="11" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5"/><rect x="11" y="11" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5"/></svg>
-                    <span>Research</span>
+                    <span data-i18n="nav.research">Research</span>
                 </button>
                 <button class="nav-item" data-tab="explore">
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="7.5" stroke="currentColor" stroke-width="1.5"/><circle cx="10" cy="10" r="3" stroke="currentColor" stroke-width="1.5"/><path d="M10 2.5V5M10 15v2.5M2.5 10H5M15 10h2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-                    <span>Research Map</span>
+                    <span data-i18n="nav.map">Research Map</span>
                 </button>
                 <button class="nav-item" data-tab="evidence">
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="6" cy="5" r="1" fill="currentColor"/><circle cx="10" cy="10" r="1" fill="currentColor"/><circle cx="14" cy="15" r="1" fill="currentColor"/></svg>
-                    <span>Evidence</span>
+                    <span data-i18n="nav.evidence">Evidence</span>
                 </button>
                 <button class="nav-item" data-tab="papers">
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M4 3h8l4 4v10a1 1 0 01-1 1H4a1 1 0 01-1-1V4a1 1 0 011-1z" stroke="currentColor" stroke-width="1.5"/><path d="M12 3v4h4" stroke="currentColor" stroke-width="1.5"/><path d="M6 10h8M6 13h5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-                    <span>Manuscripts</span>
+                    <span data-i18n="nav.manuscripts">Manuscripts</span>
                 </button>
                 <button class="nav-item" data-tab="discoveries">
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M10 1L12.5 6.5 18.5 7.5 14 11.5 15 17.5 10 14.5 5 17.5 6 11.5 1.5 7.5 7.5 6.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
-                    <span>Ideas</span>
+                    <span data-i18n="nav.ideas">Ideas</span>
+                </button>
+                <button class="nav-item" data-tab="experiments">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M4 10h3l2-5 3 10 2-5h2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><circle cx="10" cy="10" r="8" stroke="currentColor" stroke-width="1.5"/></svg>
+                    <span data-i18n="nav.process">Process</span>
                 </button>
                 <details class="advanced-nav">
-                    <summary>More</summary>
-                    <button class="advanced-nav-item" data-tab="office" type="button">Activity</button>
+                    <summary data-i18n="nav.more">More</summary>
+                    <button class="advanced-nav-item" data-tab="office" type="button" data-i18n="nav.activity">Activity</button>
+                    <button class="advanced-nav-item" id="btnProposeDirection" type="button" data-i18n="nav.propose">Propose direction</button>
                 </details>
             </div>
 
             <div class="sidebar-footer">
                 <div class="pipeline-controls" style="font-size:0.72rem;color:var(--text-dim);line-height:1.5;">
-                    Research work runs only through approved agendas and scoped grants.
+                    <span data-i18n="footer.scoped">Research work runs only through approved agendas and scoped grants.</span>
                 </div>
             </div>
         </nav>
@@ -111,90 +127,109 @@
             <!-- ── Overview Tab ─────────────────────────────────── -->
             <section class="tab-panel active" id="tab-overview">
                 <div class="tab-scroll">
+                    <!-- Core global metrics: always visible, unambiguous
+                         operational counts only (no scientific claims). -->
+                    <div class="stat-grid core-stat-grid" id="coreStats">
+                        <div class="stat-card" title="Source papers the pipeline has read and reasoned over">
+                            <div class="stat-icon stat-icon-blue">
+                                <svg width="22" height="22" viewBox="0 0 20 20" fill="none"><path d="M4 3h8l4 4v10a1 1 0 01-1 1H4a1 1 0 01-1-1V4a1 1 0 011-1z" stroke="currentColor" stroke-width="1.5"/><path d="M12 3v4h4" stroke="currentColor" stroke-width="1.5"/></svg>
+                            </div>
+                            <div class="stat-number" id="statPapers">0</div>
+                            <div class="stat-label" data-i18n="stat.papersAnalyzed">Source Papers Analyzed</div>
+                        </div>
+                        <div class="stat-card" title="Machine-generated paper ideas across all tiers; a count of proposals, not of validated findings">
+                            <div class="stat-icon stat-icon-gold">
+                                <svg width="22" height="22" viewBox="0 0 20 20" fill="none"><path d="M10 1L12.5 6.5 18.5 7.5 14 11.5 15 17.5 10 14.5 5 17.5 6 11.5 1.5 7.5 7.5 6.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+                            </div>
+                            <div class="stat-number" id="statDeepDiscoveries">0</div>
+                            <div class="stat-label" data-i18n="stat.paperIdeas">Paper Ideas Generated</div>
+                        </div>
+                        <div class="stat-card" title="Experiment executions started; completion is operational and does not by itself confirm any hypothesis">
+                            <div class="stat-icon stat-icon-green">
+                                <svg width="22" height="22" viewBox="0 0 20 20" fill="none"><path d="M10 2v6M7 5l3 3 3-3M4 10h12v7H4z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M7 13h6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                            </div>
+                            <div class="stat-number" id="statExperiments">0</div>
+                            <div class="stat-label" data-i18n="stat.experimentRuns">Experiment Runs</div>
+                        </div>
+                        <div class="stat-card" title="LLM tokens spent reading and reasoning over source papers">
+                            <div class="stat-icon stat-icon-purple">
+                                <svg width="22" height="22" viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="7.5" stroke="currentColor" stroke-width="1.5"/><path d="M10 5.5v4.5l3 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                            </div>
+                            <div class="stat-number" id="statTokens">0</div>
+                            <div class="stat-label" data-i18n="stat.analysisTokens">Analysis Tokens</div>
+                        </div>
+                    </div>
+
                     <div class="card overview-results-card">
                         <div class="card-header">
                             <div>
-                                <h3>Research outcomes</h3>
-                                <p class="overview-results-note">Confirmed findings, open questions, and promising directions appear here first.</p>
+                                <h3 data-i18n="overview.outcomes">Research outcomes</h3>
+                                <p class="overview-results-note" data-i18n="overview.outcomesNote">Confirmed findings, open questions, and promising directions appear here first.</p>
                             </div>
-                            <button class="btn-link" id="btnOpenDiscoveries">Browse ideas</button>
+                            <button class="btn-link" id="btnOpenDiscoveries" data-i18n="overview.browseIdeas">Browse ideas</button>
                         </div>
                         <div class="recently-grid" id="recentlyGrid">
-                            <p class="empty-msg">No published research outcomes yet.</p>
+                            <p class="empty-msg" data-i18n="overview.noOutcomes">No published research outcomes yet.</p>
                         </div>
                     </div>
 
                     <div class="card card-graph-preview" id="overviewMapCard">
                         <div class="card-header">
                             <div>
-                                <h3>Research map</h3>
-                                <p class="overview-results-note">Explore the active research landscape and its evidence-bearing areas.</p>
+                                <h3 data-i18n="overview.map">Research map</h3>
+                                <p class="overview-results-note" data-i18n="overview.mapNote">Explore the active research landscape and its evidence-bearing areas.</p>
                             </div>
-                            <button class="btn-link" id="btnJumpExplore">Open map</button>
+                            <button class="btn-link" id="btnJumpExplore" data-i18n="overview.openMap">Open map</button>
                         </div>
                         <svg id="overviewGraphSvg" width="100%" height="330" aria-label="Research map preview"></svg>
                     </div>
 
                     <details class="overview-details">
-                        <summary>Research portfolio and process</summary>
-                        <p class="overview-details-note">Aggregate counts and in-progress work are available here when you need context.</p>
+                        <summary data-i18n="overview.portfolio">Research portfolio and process</summary>
+                        <p class="overview-details-note" data-i18n="overview.portfolioNote">Aggregate counts and in-progress work are available here when you need context.</p>
                     <!-- Stat cards -->
                     <div class="stat-grid" id="overviewStats">
-                        <div class="stat-card">
-                            <div class="stat-icon stat-icon-blue">
-                                <svg width="22" height="22" viewBox="0 0 20 20" fill="none"><path d="M4 3h8l4 4v10a1 1 0 01-1 1H4a1 1 0 01-1-1V4a1 1 0 011-1z" stroke="currentColor" stroke-width="1.5"/><path d="M12 3v4h4" stroke="currentColor" stroke-width="1.5"/></svg>
-                            </div>
-                            <div class="stat-number" id="statPapers">0</div>
-                            <div class="stat-label">Reasoned Papers</div>
-                        </div>
                         <div class="stat-card">
                             <div class="stat-icon stat-icon-cyan">
                                 <svg width="22" height="22" viewBox="0 0 20 20" fill="none"><path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
                             </div>
                             <div class="stat-number" id="statResults">0</div>
-                            <div class="stat-label">Results</div>
+                            <div class="stat-label" data-i18n="stat.results">Results</div>
                         </div>
                         <div class="stat-card">
                             <div class="stat-icon stat-icon-gold">
                                 <svg width="22" height="22" viewBox="0 0 20 20" fill="none"><path d="M10 2l2.5 5 5.5.8-4 3.9.9 5.3-4.9-2.6L5.1 17l.9-5.3-4-3.9 5.5-.8L10 2z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
                             </div>
                             <div class="stat-number" id="statTaxonomy">0</div>
-                            <div class="stat-label">Taxonomy Nodes</div>
+                            <div class="stat-label" data-i18n="stat.taxonomyNodes">Taxonomy Nodes</div>
                         </div>
                         <div class="stat-card">
                             <div class="stat-icon stat-icon-red">
                                 <svg width="22" height="22" viewBox="0 0 20 20" fill="none"><path d="M10 3L2 17h16L10 3z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M10 8v4M10 14v1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
                             </div>
                             <div class="stat-number" id="statContradictions">0</div>
-                            <div class="stat-label">Contradictions</div>
+                            <div class="stat-label" data-i18n="stat.contradictions">Contradictions</div>
                         </div>
                         <div class="stat-card">
                             <div class="stat-icon stat-icon-purple">
                                 <svg width="22" height="22" viewBox="0 0 20 20" fill="none"><path d="M10 2C5.6 2 2 5.6 2 10s3.6 8 8 8 8-3.6 8-8-3.6-8-8-8zm0 3a1.5 1.5 0 110 3 1.5 1.5 0 010-3zm2 9H8v-1h1v-3H8v-1h3v4h1v1z" fill="currentColor"/></svg>
                             </div>
                             <div class="stat-number" id="statInsights">0</div>
-                            <div class="stat-label">Insights</div>
+                            <div class="stat-label" data-i18n="stat.insights">Insights</div>
                         </div>
-                        <div class="stat-card" title="实验运行总数">
-                            <div class="stat-icon stat-icon-green">
-                                <svg width="22" height="22" viewBox="0 0 20 20" fill="none"><path d="M10 2v6M7 5l3 3 3-3M4 10h12v7H4z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M7 13h6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                        <div class="stat-card" title="LLM tokens metered against research agendas (kept separate from analysis tokens; the two ledgers are not summed)">
+                            <div class="stat-icon stat-icon-cyan">
+                                <svg width="22" height="22" viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="7.5" stroke="currentColor" stroke-width="1.5"/><path d="M6.5 10h7M10 6.5v7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
                             </div>
-                            <div class="stat-number" id="statExperiments">0</div>
-                            <div class="stat-label">Validation Runs</div>
+                            <div class="stat-number" id="statAgendaTokens">0</div>
+                            <div class="stat-label" data-i18n="stat.agendaTokens">Agenda Tokens</div>
                         </div>
-                        <div class="stat-card" title="深度发现条目数（含各 Tier）">
-                            <div class="stat-icon stat-icon-gold">
-                                <svg width="22" height="22" viewBox="0 0 20 20" fill="none"><path d="M10 1L12.5 6.5 18.5 7.5 14 11.5 15 17.5 10 14.5 5 17.5 6 11.5 1.5 7.5 7.5 6.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
-                            </div>
-                            <div class="stat-number" id="statDeepDiscoveries">0</div>
-                            <div class="stat-label">Deep Discoveries</div>
-                        </div>
-                        <div class="stat-card" title="完整论文产出：已打包的投稿包数量">
+                        <div class="stat-card" title="Bundled submission packages produced">
                             <div class="stat-icon stat-icon-blue">
                                 <svg width="22" height="22" viewBox="0 0 20 20" fill="none"><path d="M4 3h8l4 4v10a1 1 0 01-1 1H4a1 1 0 01-1-1V4a1 1 0 011-1z" stroke="currentColor" stroke-width="1.5"/><path d="M12 3v4h4M7 10l2 2 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
                             </div>
                             <div class="stat-number" id="statCompletePapers">0</div>
-                            <div class="stat-label">Submission Bundles</div>
+                            <div class="stat-label" data-i18n="stat.submissionBundles">Submission Bundles</div>
                         </div>
                     </div>
                     </details>
@@ -208,15 +243,15 @@
                     <div class="card card-compact" id="officeProcessing">
                         <div class="card-header office-card-header">
                             <div>
-                                <h3>Agent Office</h3>
-                                <div class="office-subtitle">Live pixel workspace for DeepGraph departments and sub-agents.</div>
+                                <h3 data-i18n="office.title">Agent Office</h3>
+                                <div class="office-subtitle" data-i18n="office.subtitle">Live pixel workspace for DeepGraph departments and sub-agents.</div>
                             </div>
-                            <span class="badge badge-dim" id="processingCount">office idle</span>
+                            <span class="badge badge-dim" id="processingCount" data-i18n="office.idle">office idle</span>
                         </div>
                         <div class="processing-list" id="processingList">
                             <div class="agent-office-loading">
                                 <div class="pixel-loader" aria-hidden="true"><span></span><span></span><span></span></div>
-                                <span>Mapping DeepGraph departments...</span>
+                                <span data-i18n="office.mapping">Mapping DeepGraph departments...</span>
                             </div>
                         </div>
                     </div>
@@ -229,19 +264,19 @@
                     <div class="breadcrumb" id="breadcrumb"></div>
                     <div class="card explore-graph-card">
                         <div class="card-header">
-                            <h3 id="exploreTitle">Research Area Explorer</h3>
+                            <h3 id="exploreTitle" data-i18n="explore.title">Research Area Explorer</h3>
                         </div>
                         <svg id="exploreGraphSvg" width="100%" height="600"></svg>
                     </div>
                     <div class="card" id="exploreSummaryCard" style="display:none;">
                         <div class="card-header">
-                            <h3 id="exploreSummaryTitle">Node Summary</h3>
+                            <h3 id="exploreSummaryTitle" data-i18n="explore.summary">Node Summary</h3>
                         </div>
                         <div id="exploreSummaryBody"></div>
                     </div>
                     <div class="card" id="exploreChildrenCard" style="display:none;">
                         <div class="card-header">
-                            <h3 id="exploreChildrenTitle">Sub-areas</h3>
+                            <h3 id="exploreChildrenTitle" data-i18n="explore.children">Sub-areas</h3>
                         </div>
                         <div id="exploreChildrenBody"></div>
                     </div>
@@ -253,20 +288,20 @@
                 <div class="tab-scroll">
                     <div class="card">
                         <div class="card-header">
-                            <h3>Method x Dataset Matrix</h3>
+                            <h3 data-i18n="evidence.title">Method x Dataset Matrix</h3>
                         </div>
                         <div class="evidence-controls">
-                            <label>Select taxonomy node:</label>
+                            <label data-i18n="evidence.select">Select taxonomy node:</label>
                             <input id="evidenceNodeSelect" class="select-input" list="evidenceNodeOptions"
                                    autocomplete="off" placeholder="Search a research area…">
                             <datalist id="evidenceNodeOptions"></datalist>
-                            <span class="evidence-hint" id="evidenceHint">Select a leaf node to view the evidence matrix.</span>
+                            <span class="evidence-hint" id="evidenceHint" data-i18n="evidence.hint">Select a leaf node to view the evidence matrix.</span>
                         </div>
                         <div id="evidenceMatrixContainer" class="matrix-wrap"></div>
                     </div>
                     <div class="card" id="evidenceGapsCard" style="display:none;">
                         <div class="card-header">
-                            <h3 id="evidenceGapsTitle">Matrix Gaps</h3>
+                            <h3 id="evidenceGapsTitle" data-i18n="evidence.gaps">Matrix Gaps</h3>
                         </div>
                         <div id="evidenceGapsBody"></div>
                     </div>
@@ -279,32 +314,32 @@
                     <div class="card paper-library-card">
                         <div class="card-header paper-library-header">
                             <div>
-                                <h3>Manuscript Library</h3>
-                                <div class="paper-library-subtitle">Notebook-style reading desk for DeepGraph-generated manuscripts.</div>
+                                <h3 data-i18n="papers.title">Manuscript Library</h3>
+                                <div class="paper-library-subtitle" data-i18n="papers.subtitle">Notebook-style reading desk for DeepGraph-generated manuscripts.</div>
                             </div>
                             <div class="papers-controls">
-                                <input type="text" id="papersSearch" class="search-input-sm" placeholder="Filter manuscripts...">
+                                <input type="text" id="papersSearch" class="search-input-sm" data-i18n-placeholder="papers.filter" placeholder="Filter manuscripts...">
                                 <select id="papersStatus" class="select-input-sm">
-                                    <option value="">All statuses</option>
-                                    <option value="bundle_ready">Bundle ready</option>
-                                    <option value="drafting">Drafting</option>
-                                    <option value="failed">Failed</option>
-                                    <option value="not_started">Not started</option>
+                                    <option value="" data-i18n="papers.allStatuses">All statuses</option>
+                                    <option value="bundle_ready" data-i18n="papers.bundleReady">Bundle ready</option>
+                                    <option value="drafting" data-i18n="papers.drafting">Drafting</option>
+                                    <option value="failed" data-i18n="papers.failed">Failed</option>
+                                    <option value="not_started" data-i18n="papers.notStarted">Not started</option>
                                 </select>
                             </div>
                         </div>
                         <div class="paper-library-shell">
                             <aside class="paper-notes-pane">
                                 <div class="paper-notes-heading">
-                                    <span>Manuscripts</span>
+                                    <span data-i18n="papers.listHeading">Manuscripts</span>
                                     <span id="papersCountBadge">0 manuscripts</span>
                                 </div>
                                 <div class="papers-list" id="papersList"></div>
                             </aside>
                             <article class="paper-reader-pane" id="paperDetail">
                                 <div class="paper-reader-empty">
-                                    <div class="paper-reader-empty-title">Select a manuscript</div>
-                                    <p>Choose a generated manuscript from the notebook list to open a submission-style reading page.</p>
+                                    <div class="paper-reader-empty-title" data-i18n="papers.selectOne">Select a manuscript</div>
+                                    <p data-i18n="papers.selectHint">Choose a generated manuscript from the notebook list to open a submission-style reading page.</p>
                                 </div>
                             </article>
                         </div>
@@ -317,59 +352,68 @@
                 <div class="tab-scroll">
                     <div class="card">
                         <div class="card-header">
-                            <h3>Generated Paper Ideas</h3>
+                            <h3 data-i18n="ideas.title">Generated Paper Ideas</h3>
                             <div class="opp-controls">
                                 <select id="discoveryTierFilter" class="select-input-sm">
-                                    <option value="">All Tiers</option>
-                                    <option value="1">Tier 1: Paradigm</option>
-                                    <option value="2">Tier 2: Paper Ideas</option>
+                                    <option value="" data-i18n="ideas.allTiers">All Tiers</option>
+                                    <option value="1" data-i18n="ideas.tier1">Tier 1: Paradigm</option>
+                                    <option value="2" data-i18n="ideas.tier2">Tier 2: Paper Ideas</option>
                                 </select>
                             </div>
                         </div>
                         <div id="discoveriesList" class="insights-list">
-                            <p class="empty-msg">No deep discoveries yet. Discovery runs in fixed automatic mode.</p>
+                            <p class="empty-msg" data-i18n="ideas.empty">No deep discoveries yet. Discovery runs in fixed automatic mode.</p>
                         </div>
                     </div>
                 </div>
             </section>
 
-            <!-- ── Experiments Tab (SciForge) ──────────────────── -->
+            <!-- ── Process Tab: timeline, rationale, experiments ── -->
             <section class="tab-panel" id="tab-experiments">
                 <div class="tab-scroll">
                     <div class="card">
                         <div class="card-header">
-                            <h3>Automation Services</h3>
-                            <span class="badge badge-dim">Read-only automatic mode</span>
+                            <h3 data-i18n="process.timeline">Process Timeline</h3>
+                            <span class="badge badge-dim" id="timelineAgendaBadge" data-i18n="process.noScope">no agenda scope</span>
+                        </div>
+                        <p class="overview-results-note" style="padding:0 16px;">
+                            Chronological record for the active agenda: signals, candidate decisions,
+                            resource authorizations, jobs, evidence-ladder transitions, and verdicts.
+                            Failures and refused gate transitions are shown alongside successes.
+                        </p>
+                        <div id="processTimeline" class="insights-list">
+                            <p class="empty-msg" data-i18n="process.timelineEmpty">No process events recorded yet.</p>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header">
+                            <h3 data-i18n="process.rationale">Selection Rationale</h3>
+                            <span class="badge badge-dim" data-i18n="process.rationaleBadge">why work was chosen</span>
+                        </div>
+                        <div id="selectionRationale" class="insights-list">
+                            <p class="empty-msg" data-i18n="process.rationaleEmpty">No selection records yet.</p>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <div class="card-header">
+                            <h3 data-i18n="process.services">Automation Services</h3>
+                            <span class="badge badge-dim" data-i18n="process.readOnly">Read-only automatic mode</span>
                         </div>
                         <div class="service-grid" id="automationServicesGrid"></div>
                         <div class="current-work-grid" id="currentWorkGrid"></div>
                     </div>
                     <div class="card">
                         <div class="card-header">
-                            <h3>Auto Research</h3>
-                            <div class="opp-controls" style="font-size:0.72rem;color:var(--text-dim);">
-                                Fixed automatic mode
-                            </div>
-                        </div>
-                        <div id="autoResearchStatus" style="margin-bottom:12px;color:var(--text-secondary);font-size:0.8rem;">
-                            Auto Research status unavailable.
-                        </div>
-                        <div id="autoResearchList" class="insights-list">
-                            <p class="empty-msg">No auto research jobs yet.</p>
-                        </div>
-                    </div>
-                    <div class="card">
-                        <div class="card-header">
-                            <h3>Idea Experiments</h3>
+                            <h3 data-i18n="process.ideaExperiments">Idea Experiments</h3>
                             <div class="opp-controls">
                                 <select id="experimentStatusFilter" class="select-input-sm">
-                                    <option value="">All</option>
-                                    <option value="pending">Pending</option>
-                                    <option value="scaffolding">Scaffolding</option>
-                                    <option value="reproducing">Reproducing</option>
-                                    <option value="testing">Testing</option>
-                                    <option value="completed">Completed</option>
-                                    <option value="failed">Failed</option>
+                                    <option value="" data-i18n="process.filter.all">All</option>
+                                    <option value="pending" data-i18n="process.filter.pending">Pending</option>
+                                    <option value="scaffolding" data-i18n="process.filter.scaffolding">Scaffolding</option>
+                                    <option value="reproducing" data-i18n="process.filter.reproducing">Reproducing</option>
+                                    <option value="testing" data-i18n="process.filter.testing">Testing</option>
+                                    <option value="completed" data-i18n="process.filter.completed">Completed</option>
+                                    <option value="failed" data-i18n="process.filter.failed">Failed</option>
                                 </select>
                             </div>
                         </div>
@@ -379,7 +423,7 @@
                     </div>
                     <div class="card" id="metaReportCard" style="display:none;">
                         <div class="card-header">
-                            <h3>Meta-Learning Report</h3>
+                            <h3 data-i18n="process.metaReport">Meta-Learning Report</h3>
                         </div>
                         <div id="metaReportBody"></div>
                     </div>
@@ -394,6 +438,6 @@
     <!-- Tooltip (shared) -->
     <div class="tooltip" id="tooltip"></div>
 
-    <script src="/static/js/app.js?v=20260612-manuscript-sort3"></script>
+    <script src="/static/js/app.js?v=20260803-merge1"></script>
 </body>
 </html>

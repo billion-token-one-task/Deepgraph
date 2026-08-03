@@ -8,6 +8,7 @@ import subprocess
 import threading
 import time
 import traceback
+import uuid
 from pathlib import Path
 from typing import Any
 from flask import Flask, Response, abort, jsonify, render_template, request, send_file, url_for
@@ -24,8 +25,27 @@ app = Flask(__name__,
             template_folder="templates",
             static_folder="static")
 from web.meta_harness_routes import blueprint as meta_harness_blueprint
+from web.provenance_routes import blueprint as provenance_blueprint
+from web.provenance_routes import _scrub_text as _scrub_path_text
+from web.stats_cache import StatsCache
 
 app.register_blueprint(meta_harness_blueprint)
+app.register_blueprint(provenance_blueprint)
+
+# In-process TTL cache for the heavy /api/stats query (issue #34). The lambda
+# resolves get_stats_dict at call time so it stays patchable in tests; the
+# cache is lazy — constructing it here does NOT run the heavy query at import.
+STATS_CACHE_TTL_SECONDS = 30.0
+_stats_cache = StatsCache(lambda: get_stats_dict(), ttl=STATS_CACHE_TTL_SECONDS)
+
+
+def prewarm_stats_cache():
+    """Warm the stats cache once and start its background refresher. Call from
+    server startup (in a thread) so the first browser paint is served from a
+    warm cache, not a cold ~30-COUNT(*) query, and stays fresh thereafter."""
+    _stats_cache.prewarm()
+    _stats_cache.start_background_refresh()
+
 
 _pipeline_running = False
 _pipeline_lock = threading.Lock()
@@ -47,6 +67,44 @@ def _json_load(value: Any, default: Any) -> Any:
         return json.loads(value)
     except (TypeError, json.JSONDecodeError):
         return default
+
+
+# Keys that may carry server filesystem locations or raw log content. They are
+# stripped from every JSON response before it leaves the process: content
+# hashes and status fields prove progress to the outside; filesystem layout and
+# raw logs stay on the server.
+_PRIVATE_RESPONSE_KEYS = frozenset({
+    "workdir", "research_workdir", "evoscientist_workdir", "experiment_workdir",
+    "workspace_root", "experiment_root", "plan_root", "paper_root",
+    "bundle_path", "binary_path", "worktree_path", "code_dir",
+    "artifact_output_dir", "log_tail", "log_error",
+})
+
+
+def _scrub_private(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _scrub_private(item)
+            for key, item in value.items()
+            if key not in _PRIVATE_RESPONSE_KEYS
+        }
+    if isinstance(value, list):
+        return [_scrub_private(item) for item in value]
+    if isinstance(value, str):
+        # Free-text fields (error messages, notes, event payloads) can embed
+        # absolute server paths; redact them in values, not only in keys.
+        return _scrub_path_text(value)
+    return value
+
+
+@app.after_request
+def _scrub_json_response(response):
+    if response.direct_passthrough or response.mimetype != "application/json":
+        return response
+    payload = response.get_json(silent=True)
+    if isinstance(payload, (dict, list)):
+        response.set_data(json.dumps(_scrub_private(payload), ensure_ascii=False))
+    return response
 
 
 def _manual_api_removed_response():
@@ -72,10 +130,21 @@ def _api_failure(scope: str, exc: Exception, status: int = 500):
         db.rollback()
     except Exception:
         pass
+    # Exception text can carry query fragments, schema names, or filesystem
+    # paths; it goes to the server log under a correlation id, never to the
+    # browser.
+    correlation_id = uuid.uuid4().hex[:12]
     message = str(exc)
-    log_event("error", {"step": scope, "error": message})
-    print(f"[API] {scope} failed: {message}\n{traceback.format_exc()}", flush=True)
-    return jsonify({"status": "error", "scope": scope, "error": message}), status
+    log_event("error", {"step": scope, "error": message, "correlation_id": correlation_id})
+    print(f"[API] {scope} failed [{correlation_id}]: {message}\n{traceback.format_exc()}", flush=True)
+    return jsonify(
+        {
+            "status": "error",
+            "scope": scope,
+            "error": "internal error; see server log",
+            "correlation_id": correlation_id,
+        }
+    ), status
 
 
 def _process_rss_mb() -> float | None:
@@ -319,7 +388,9 @@ def _paper_preview_urls(
 
 
 def _workspace_payload(insight: dict) -> dict[str, Any]:
-    layout = get_idea_workspace(int(insight["id"]), insight=insight, create=True, sync_db=True)
+    # Ensure the workspace exists and is synced; absolute workspace paths stay
+    # server-internal — the browser gets asset names and preview URLs only.
+    get_idea_workspace(int(insight["id"]), insight=insight, create=True, sync_db=True)
     assets = list_paper_assets(int(insight["id"]), insight=insight)
     preview_urls = _paper_preview_urls(
         int(insight["id"]),
@@ -327,10 +398,6 @@ def _workspace_payload(insight: dict) -> dict[str, Any]:
         agenda_id=int(insight["agenda_id"]),
     )
     return {
-        "workspace_root": str(layout["workspace_root"]),
-        "experiment_root": str(layout["experiment_root"]),
-        "plan_root": str(layout["plan_root"]),
-        "paper_root": str(layout["paper_root"]),
         "canonical_run_id": insight.get("canonical_run_id"),
         "plan_snapshot": _plan_snapshot(insight),
         "paper_assets": assets,
@@ -530,10 +597,12 @@ def _recent_evoscientist_sessions(limit: int = 5) -> list[dict]:
     sessions = []
     for row in rows:
         item = dict(row)
-        workdir = item.get("research_workdir")
+        # Server paths and raw log content never leave the process; the
+        # session summary carries booleans and ages only.
+        workdir = item.pop("research_workdir", None)
         if workdir:
             wd = Path(str(workdir))
-            session: dict[str, Any] = {"workdir": str(wd), "exists": wd.exists()}
+            session: dict[str, Any] = {"exists": wd.exists()}
             if wd.exists():
                 final_report = wd / "final_report.md"
                 proposal = wd / "research_proposal.md"
@@ -542,15 +611,9 @@ def _recent_evoscientist_sessions(limit: int = 5) -> list[dict]:
                 session["proposal_ready"] = proposal.is_file()
                 if log_path.is_file():
                     try:
-                        mtime = log_path.stat().st_mtime
-                        session["log_age_seconds"] = round(time.time() - mtime, 2)
-                        with log_path.open("rb") as fh:
-                            fh.seek(0, 2)
-                            size = fh.tell()
-                            fh.seek(max(0, size - 2000))
-                            session["log_tail"] = fh.read().decode("utf-8", errors="replace")
-                    except OSError as exc:
-                        session["log_error"] = str(exc)
+                        session["log_age_seconds"] = round(time.time() - log_path.stat().st_mtime, 2)
+                    except OSError:
+                        session["log_age_seconds"] = None
             item["session"] = session
         sessions.append(item)
     return sessions
@@ -693,7 +756,7 @@ def _automation_snapshot() -> dict:
         }
 
     def evoscientist_status():
-        from agents.evosci_requirements import evosci_binary_path, evosci_installed
+        from agents.evosci_requirements import evosci_installed
 
         sessions = _recent_evoscientist_sessions(limit=5)
         active = [
@@ -702,7 +765,6 @@ def _automation_snapshot() -> dict:
         ]
         return {
             "available": evosci_installed(),
-            "binary_path": str(evosci_binary_path()),
             "active_count": len(active),
             "recent_sessions": sessions,
         }
@@ -865,7 +927,16 @@ def api_meta():
 
 @app.route("/api/stats")
 def api_stats():
-    return jsonify(get_stats_dict())
+    # Serve from the in-process TTL cache; the heavy COUNT(*) query never runs
+    # in this request thread (issue #34). Stale entries trigger a background
+    # refresh inside the cache.
+    stats = _stats_cache.get()
+    if stats is None:
+        # Cold start before the startup warm-up completes: return a "warming"
+        # marker rather than blocking the request thread on the heavy query or
+        # fabricating numbers.
+        return jsonify({"warming": True})
+    return jsonify(stats)
 
 
 @app.route("/api/providers")
@@ -1494,7 +1565,10 @@ def api_events():
         while True:
             events = get_events(last_seq)
             for e in events:
-                yield f"data: {json.dumps(e, ensure_ascii=False, default=str)}\n\n"
+                # Event payloads carry free text (including error messages);
+                # redact server paths before the line goes on the wire.
+                line = _scrub_path_text(json.dumps(e, ensure_ascii=False, default=str))
+                yield f"data: {line}\n\n"
                 last_seq = e["seq"] + 1
             time.sleep(2)  # slower polling = less browser load
 
