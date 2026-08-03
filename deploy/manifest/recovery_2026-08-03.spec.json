@@ -1,0 +1,89 @@
+{
+  "manifest_key": "recovery_2026-08-03",
+  "description": "Bounded recovery deployment: fail-safe self-heal, topic gate, Frontier bootstrap authority, backend capability truth.",
+  "target_host": "deepgraph runtime host",
+  "runtime_root": "/home/billion-token/Deepgraph",
+  "backup_root": "/home/ec2-user/deepgraph-rollback",
+  "batches": [
+    {
+      "batch": "1-selfheal",
+      "authorization": "required-before-deploy",
+      "purpose": "Stop false-positive restarts of a deliberately paused system.",
+      "restart_required": [],
+      "systemd_reload_required": true,
+      "health_check": "sudo /usr/local/bin/deepgraph-selfheal.py --dry-run --json",
+      "acceptance": "70 minutes (7 timer ticks) with no restart and only hold_* reason codes",
+      "files": [
+        {
+          "source": "scripts/deepgraph_selfheal.py",
+          "target": "/usr/local/bin/deepgraph-selfheal.py",
+          "owner": "root:root",
+          "mode": "0755",
+          "replaces": "/usr/local/bin/deepgraph-selfheal.sh"
+        },
+        {
+          "source": "deploy/deepgraph-selfheal.service",
+          "target": "/etc/systemd/system/deepgraph-selfheal.service",
+          "owner": "root:root",
+          "mode": "0644"
+        },
+        {
+          "source": "deploy/deepgraph-selfheal.timer",
+          "target": "/etc/systemd/system/deepgraph-selfheal.timer",
+          "owner": "root:root",
+          "mode": "0644"
+        }
+      ]
+    },
+    {
+      "batch": "2-schema",
+      "authorization": "required-before-deploy",
+      "purpose": "Additive tables/columns for the topic gate and the Frontier bootstrap authority.",
+      "restart_required": [],
+      "systemd_reload_required": false,
+      "health_check": "python3 scripts/meta_harness_migration.py --migration-key 0002_topic_gate_and_frontier_authority",
+      "acceptance": "plan reports destructive_tokens=[]; applied against an isolated restore first",
+      "files": [
+        {
+          "source": "db/migrations/0002_topic_gate_and_frontier_authority.sql",
+          "target": "applied-via-scripts/meta_harness_migration.py",
+          "owner": "n/a",
+          "mode": "n/a",
+          "kind": "migration"
+        }
+      ]
+    },
+    {
+      "batch": "3-application",
+      "authorization": "required-before-deploy",
+      "purpose": "Topic gate, Frontier bootstrap authority, backend capability truth, grant ceilings.",
+      "restart_required": ["deepgraph-web.service"],
+      "systemd_reload_required": false,
+      "health_check": "curl -fsS https://deepgraph.joulebeat.com/api/meta-harness/v1/status",
+      "acceptance": "status endpoint returns 200 and counts; backend audit reports cpu enabled, ssh_gpu unknown",
+      "files": [
+        {"source": "agents/topic_gate.py", "target": "{runtime_root}/agents/topic_gate.py", "owner": "billion-token:billion-token", "mode": "0644"},
+        {"source": "agents/agenda_selector.py", "target": "{runtime_root}/agents/agenda_selector.py", "owner": "billion-token:billion-token", "mode": "0644"},
+        {"source": "meta_harness/topic_gate_admission.py", "target": "{runtime_root}/meta_harness/topic_gate_admission.py", "owner": "billion-token:billion-token", "mode": "0644"},
+        {"source": "meta_harness/frontier_authority.py", "target": "{runtime_root}/meta_harness/frontier_authority.py", "owner": "billion-token:billion-token", "mode": "0644"},
+        {"source": "meta_harness/frontier_bootstrap.py", "target": "{runtime_root}/meta_harness/frontier_bootstrap.py", "owner": "billion-token:billion-token", "mode": "0644"},
+        {"source": "meta_harness/frontier_source.py", "target": "{runtime_root}/meta_harness/frontier_source.py", "owner": "billion-token:billion-token", "mode": "0644"},
+        {"source": "meta_harness/backend_capability.py", "target": "{runtime_root}/meta_harness/backend_capability.py", "owner": "billion-token:billion-token", "mode": "0644"},
+        {"source": "meta_harness/repository.py", "target": "{runtime_root}/meta_harness/repository.py", "owner": "billion-token:billion-token", "mode": "0644"},
+        {"source": "contracts/meta_harness.py", "target": "{runtime_root}/contracts/meta_harness.py", "owner": "billion-token:billion-token", "mode": "0644"},
+        {"source": "orchestrator/meta_compute_runtime.py", "target": "{runtime_root}/orchestrator/meta_compute_runtime.py", "owner": "billion-token:billion-token", "mode": "0644"},
+        {"source": "orchestrator/selfheal_policy.py", "target": "{runtime_root}/orchestrator/selfheal_policy.py", "owner": "billion-token:billion-token", "mode": "0644"},
+        {"source": "web/meta_harness_routes.py", "target": "{runtime_root}/web/meta_harness_routes.py", "owner": "billion-token:billion-token", "mode": "0644"},
+        {"source": "config.py", "target": "{runtime_root}/config.py", "owner": "billion-token:billion-token", "mode": "0644"}
+      ]
+    }
+  ],
+  "environment_keys": [
+    "DEEPGRAPH_TOPIC_GATE_MAX_CONFIDENCE",
+    "DEEPGRAPH_TOPIC_GATE_SURPRISE_BITS",
+    "DEEPGRAPH_TOPIC_GATE_MIN_EXPECTED_BITS",
+    "DEEPGRAPH_TOPIC_GATE_MAX_PILOT_TOKENS",
+    "DEEPGRAPH_COMPUTE_VERIFIED_BACKENDS",
+    "DEEPGRAPH_SELFHEAL_HEALTH_URL"
+  ]
+}

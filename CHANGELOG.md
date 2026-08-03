@@ -1,5 +1,38 @@
 # Changelog
 
+## Unreleased — 2026-08-03 bounded-autonomy recovery
+
+See `docs/runbooks/RECOVERY_2026-08-03.md` for the full record.
+
+- Replaced the untracked self-heal watchdog with a source-owned, unit-tested
+  policy (`orchestrator/selfheal_policy.py`, `scripts/deepgraph_selfheal.py`)
+  that never restarts because research output is absent while autonomy is
+  disabled, no work is admitted, or an Agenda is waiting on Frontier, portfolio,
+  grant, reviewer, budget, or provider authority. Restart now requires a
+  repeatedly failing health probe or a genuine stall with work admitted; every
+  decision emits an operator-safe reason code and unknown signals do nothing.
+- Ported the three-question topic gate and surprise-driven stage ladder from
+  `9d24d29` onto the current contracts, without an LLM inside the gate and
+  without an enable/disable switch: a candidate with no recorded prediction is
+  parked, not silently passed. The gate is re-run at decision persistence, so
+  legacy backlog and direct auto-research routes cannot buy resources around it.
+- Added `FrontierEvaluationAuthority`: a single-use, agenda- and
+  problem-scoped, token- and TTL-capped authority that can produce only a
+  Frontier assessment. It resolves the Frontier bootstrap deadlock without
+  weakening ResourceGrant rules, is independent of the proposer route, keeps an
+  append-only usage ledger, and fails closed on provider, scope, expiry,
+  malformed-output, and missing-evidence paths.
+- Made compute backend capability explicit: a configured-but-unverified backend
+  is `unknown` and is refused for scheduling; Colab without its account manifest
+  and local GPU on a GPU-less host are `disabled`; the legacy
+  `DEEPGRAPH_GPU_BACKEND` field is reported as a conflict and enables nothing.
+- Hardened GPU grants: the 8-hour per-grant ceiling now applies even when an
+  Agenda declares no policy (an Agenda may only tighten it), and grants must
+  carry a short, unexpired TTL.
+- Added additive migration `0002_topic_gate_and_frontier_authority`, a
+  read-only production delta inventory, and a file-level deployment manifest
+  with SHA256, owner/mode, health checks, and rollback artifacts.
+
 ## Unreleased
 
 - Enforce Agenda-configured per-grant GPU-hour caps in addition to aggregate
