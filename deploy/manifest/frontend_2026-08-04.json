@@ -1,0 +1,178 @@
+{
+  "backup_root": "/home/ec2-user/deepgraph-rollback",
+  "batches": [
+    {
+      "acceptance": "Within 60s of restart: / returns 200; /api/stats serves warming then real numbers (cache prewarmed); /api/v1/agendas 200; Process tab, EN/ZH switch and core stat row render; no /home/ paths or log_tail in any API response; browser console clean.",
+      "authorization": "required-before-deploy",
+      "batch": "4-frontend",
+      "files": [
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/frontend_2026-08-04/app.py.bak",
+          "kind": "file",
+          "mode": "0644",
+          "owner": "billion-token:billion-token",
+          "replaces": null,
+          "runtime_locally_modified": true,
+          "source": "web/app.py",
+          "source_bytes": 83822,
+          "source_sha256": "16bed12ce9e29eaa1d6a5b18b2952fe5096db9432f0f781b34b6ed80a594cd42",
+          "target": "/home/billion-token/Deepgraph/web/app.py"
+        },
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/frontend_2026-08-04/provenance_routes.py.bak",
+          "kind": "file",
+          "mode": "0644",
+          "owner": "billion-token:billion-token",
+          "replaces": null,
+          "runtime_locally_modified": false,
+          "source": "web/provenance_routes.py",
+          "source_bytes": 16545,
+          "source_sha256": "23f47ad2515d372463d40557d57e578058ffaf1567411713f7f3e4eb5482cf94",
+          "target": "/home/billion-token/Deepgraph/web/provenance_routes.py"
+        },
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/frontend_2026-08-04/stats_cache.py.bak",
+          "kind": "file",
+          "mode": "0644",
+          "owner": "billion-token:billion-token",
+          "replaces": null,
+          "runtime_locally_modified": false,
+          "source": "web/stats_cache.py",
+          "source_bytes": 3507,
+          "source_sha256": "47866021f5f92eebc34aa513f5d8d0dbe64789b0a42049823eaf58c4c257e84b",
+          "target": "/home/billion-token/Deepgraph/web/stats_cache.py"
+        },
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/frontend_2026-08-04/index.html.bak",
+          "kind": "file",
+          "mode": "0644",
+          "owner": "billion-token:billion-token",
+          "replaces": null,
+          "runtime_locally_modified": true,
+          "source": "web/templates/index.html",
+          "source_bytes": 30812,
+          "source_sha256": "6ee7582010aabcac13a266c950705367696e30a4d33331bf8d3e20e982ccf612",
+          "target": "/home/billion-token/Deepgraph/web/templates/index.html"
+        },
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/frontend_2026-08-04/app.js.bak",
+          "kind": "file",
+          "mode": "0644",
+          "owner": "billion-token:billion-token",
+          "replaces": null,
+          "runtime_locally_modified": true,
+          "source": "web/static/js/app.js",
+          "source_bytes": 195632,
+          "source_sha256": "2da41906e8128a387121a31e9ae252d45eae33cfc07e047d316536ac5356033a",
+          "target": "/home/billion-token/Deepgraph/web/static/js/app.js"
+        },
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/frontend_2026-08-04/i18n.js.bak",
+          "kind": "file",
+          "mode": "0644",
+          "owner": "billion-token:billion-token",
+          "replaces": null,
+          "runtime_locally_modified": false,
+          "source": "web/static/js/i18n.js",
+          "source_bytes": 14690,
+          "source_sha256": "ef74d2eef8f2e8747c1d0872bc976fb22df4b0bed67f6db84c89d34b0a3217ce",
+          "target": "/home/billion-token/Deepgraph/web/static/js/i18n.js"
+        },
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/frontend_2026-08-04/style.css.bak",
+          "kind": "file",
+          "mode": "0644",
+          "owner": "billion-token:billion-token",
+          "replaces": null,
+          "runtime_locally_modified": true,
+          "source": "web/static/css/style.css",
+          "source_bytes": 67308,
+          "source_sha256": "696807f657871d97822f4702d4c9cedb7666a1752a279de7a19063bc293b12a9",
+          "target": "/home/billion-token/Deepgraph/web/static/css/style.css"
+        },
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/frontend_2026-08-04/d3.v7.min.js.bak",
+          "kind": "file",
+          "mode": "0644",
+          "owner": "billion-token:billion-token",
+          "replaces": null,
+          "runtime_locally_modified": false,
+          "source": "web/static/vendor/d3/d3.v7.min.js",
+          "source_bytes": 279706,
+          "source_sha256": "f2094bbf6141b359722c4fe454eb6c4b0f0e42cc10cc7af921fc158fceb86539",
+          "target": "/home/billion-token/Deepgraph/web/static/vendor/d3/d3.v7.min.js"
+        },
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/frontend_2026-08-04/marked.min.js.bak",
+          "kind": "file",
+          "mode": "0644",
+          "owner": "billion-token:billion-token",
+          "replaces": null,
+          "runtime_locally_modified": false,
+          "source": "web/static/vendor/marked/marked.min.js",
+          "source_bytes": 39903,
+          "source_sha256": "3e7e7d7feb3e5d58cb6c804f68ab5c24cc7e5eb6270fd6e5cbb9124739217d0c",
+          "target": "/home/billion-token/Deepgraph/web/static/vendor/marked/marked.min.js"
+        },
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/frontend_2026-08-04/main.py.bak",
+          "kind": "file",
+          "mode": "0644",
+          "owner": "billion-token:billion-token",
+          "replaces": null,
+          "runtime_locally_modified": true,
+          "source": "main.py",
+          "source_bytes": 7577,
+          "source_sha256": "a3943cd2fc4d44544a5b52cedab0d6a1fe5e6935e30fec1820be98218d6389e0",
+          "target": "/home/billion-token/Deepgraph/main.py"
+        },
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/frontend_2026-08-04/pipeline.py.bak",
+          "kind": "file",
+          "mode": "0644",
+          "owner": "billion-token:billion-token",
+          "replaces": null,
+          "runtime_locally_modified": true,
+          "source": "orchestrator/pipeline.py",
+          "source_bytes": 44440,
+          "source_sha256": "667b1e57569d6392ae2202b2d3f13514f346c5555d4613cd0bb083301bf9b252",
+          "target": "/home/billion-token/Deepgraph/orchestrator/pipeline.py"
+        }
+      ],
+      "health_check": "curl -fsS http://127.0.0.1:8080/api/v1/agendas >/dev/null && curl -fsS http://127.0.0.1:8080/ >/dev/null && ! curl -s http://127.0.0.1:8080/api/automation | grep -q '/home/'",
+      "purpose": "Frontend/provenance application files. All owned billion-token (also reclaims the root-owned copies from the 2026-08-02 deploy).",
+      "restart_required": [
+        "deepgraph-web.service"
+      ],
+      "systemd_reload_required": false
+    }
+  ],
+  "description": "Frontend merge v1 (master 38432a1): stats-cache perf fix, vendored D3/marked, provenance API + two-register badges, process timeline, selection rationale, EN/ZH i18n, direction submission form, response leak scrubbing. No schema change (needs only migration 0001, already applied). Deploy in the same restart window as recovery batch 3-application; one deepgraph-web restart covers both. Note: web/* targets will be flagged runtime_locally_modified because the 2026-08-02 root-cp deploy dirtied the runtime tree; the frontend discovery report verified those runtime files byte-identical to master a6973b8, which is exactly this batch's base - the operator diff should confirm the same before overwrite.",
+  "environment_keys": [
+    "DEEPGRAPH_META_HARNESS_OPERATOR_TOKEN"
+  ],
+  "file_contents_read_from_production": false,
+  "manifest_key": "frontend_2026-08-04",
+  "operator_diff_required": [
+    "main.py",
+    "orchestrator/pipeline.py",
+    "web/app.py",
+    "web/static/css/style.css",
+    "web/static/js/app.js",
+    "web/templates/index.html"
+  ],
+  "production_tree_modified_by_this_command": false,
+  "rollback": {
+    "order": "reverse batch order",
+    "steps": [
+      "systemctl stop deepgraph-selfheal.timer",
+      "restore each backup_artifact over its target and verify SHA256",
+      "systemctl daemon-reload",
+      "systemctl restart deepgraph-web.service if batch 3 was applied",
+      "schema batch 2 is additive: leave the tables in place, they are unused by the previous code"
+    ]
+  },
+  "runtime_root": "/home/billion-token/Deepgraph",
+  "source_commit": "38432a1c6122c24d11e377ae6cce54e85ef66ef2",
+  "source_worktree_clean": false
+}
