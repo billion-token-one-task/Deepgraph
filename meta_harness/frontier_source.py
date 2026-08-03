@@ -189,6 +189,53 @@ class EvidenceGraphFrontierSource:
             (agenda_id, research_problem_id),
         )
 
+    def evidence_briefing(
+        self,
+        *,
+        agenda_id: int,
+        research_problem_id: int,
+    ) -> dict[str, Any]:
+        """Read-only view of the evidence an evaluator is allowed to see.
+
+        Exactly the explicitly linked rows: the agenda-scoped problem, its
+        linked papers, their benchmark results and the recorded negative
+        evidence. Nothing is inferred, retrieved from the open web, or borrowed
+        from another agenda, and the returned ``query_ref`` content-addresses
+        the snapshot so the resulting packet stays independently verifiable.
+        """
+        if int(agenda_id) <= 0 or int(research_problem_id) <= 0:
+            raise FrontierBuildError("frontier scope ids must be positive")
+        problem = self._problem(
+            agenda_id=int(agenda_id),
+            research_problem_id=int(research_problem_id),
+        )
+        paper_ids = [
+            str(value).strip()
+            for value in _json_list(problem.get("paper_ids"))
+            if str(value).strip()
+        ]
+        paper_rows = self._papers(paper_ids)
+        briefing = {
+            "agenda_id": int(agenda_id),
+            "research_problem_id": int(research_problem_id),
+            "problem_statement": str(problem.get("problem_statement") or ""),
+            "problem_status": str(problem.get("status") or ""),
+            "ruled_out_approaches": _json_list(problem.get("ruled_out_approaches")),
+            "papers": [_paper_ref(row) for row in paper_rows],
+            "benchmarks": [dict(row) for row in self._benchmark_rows(paper_ids)],
+            "negative_evidence": [
+                dict(row)
+                for row in self._negative_rows(
+                    agenda_id=int(agenda_id),
+                    research_problem_id=int(research_problem_id),
+                )
+            ],
+        }
+        briefing["query_ref"] = "deepgraph:evidence-graph:sha256:" + _canonical_hash(
+            briefing
+        )
+        return briefing
+
     def build(
         self,
         *,

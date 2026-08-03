@@ -295,6 +295,46 @@ AGENDA_DEFAULT_BACKEND_ALLOWLIST = _split_csv(
     or _toml_get("agenda.default_backend_allowlist", ["cpu", "llm"])
 )
 
+# Topic gate (agents/topic_gate.py): three questions before any compute, then
+# let surprise buy the next lane. These are thresholds only. There is
+# deliberately no enable/disable switch: admission runs the gate on every
+# promote/revisit decision, because a kill switch is a silent bypass.
+TOPIC_GATE_MAX_CONFIDENCE = _env_float(
+    "DEEPGRAPH_TOPIC_GATE_MAX_CONFIDENCE",
+    0.90,
+    "topic_gate.max_confidence",
+)
+TOPIC_GATE_SURPRISE_BITS = _env_float(
+    "DEEPGRAPH_TOPIC_GATE_SURPRISE_BITS",
+    1.0,
+    "topic_gate.surprise_bits",
+)
+TOPIC_GATE_MIN_EXPECTED_BITS = _env_float(
+    "DEEPGRAPH_TOPIC_GATE_MIN_EXPECTED_BITS",
+    0.25,
+    "topic_gate.min_expected_bits",
+)
+TOPIC_GATE_MIN_STATEMENT_CHARS = _env_int(
+    "DEEPGRAPH_TOPIC_GATE_MIN_STATEMENT_CHARS",
+    40,
+    "topic_gate.min_statement_chars",
+)
+TOPIC_GATE_MAX_PILOT_TOKENS = _env_int(
+    "DEEPGRAPH_TOPIC_GATE_MAX_PILOT_TOKENS",
+    20_000,
+    "topic_gate.max_pilot_tokens",
+)
+TOPIC_GATE_MAX_PILOT_GPU_HOURS = _env_float(
+    "DEEPGRAPH_TOPIC_GATE_MAX_PILOT_GPU_HOURS",
+    0.0,
+    "topic_gate.max_pilot_gpu_hours",
+)
+TOPIC_GATE_MAX_PILOT_WALL_HOURS = _env_float(
+    "DEEPGRAPH_TOPIC_GATE_MAX_PILOT_WALL_HOURS",
+    24.0,
+    "topic_gate.max_pilot_wall_hours",
+)
+
 # meta-harness-v1 policy is non-sensitive configuration. Provider, SSH, and
 # Colab credential material is never read from TOML; route/backend entries hold
 # environment or secret-manager references only.
@@ -312,6 +352,13 @@ LLM_ROUTE_FAILURE_POLICY = _env_str(
 COMPUTE_BACKENDS_ENABLED = _split_csv(
     os.getenv("DEEPGRAPH_COMPUTE_BACKENDS")
     or _toml_get("compute_backends.enabled", ["cpu"])
+)
+# A backend is only schedulable after an operator records a real canary here.
+# Listing a backend in COMPUTE_BACKENDS_ENABLED alone makes it "unknown", not
+# usable: see meta_harness/backend_capability.py.
+COMPUTE_VERIFIED_BACKENDS = _split_csv(
+    os.getenv("DEEPGRAPH_COMPUTE_VERIFIED_BACKENDS")
+    or _toml_get("compute_backends.verified", ["cpu"])
 )
 COMPUTE_ARTIFACT_ROOT = Path(
     _env_str(

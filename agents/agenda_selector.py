@@ -2,6 +2,13 @@
 
 This selector produces a feature-backed selection only. It cannot allocate
 tokens, GPUs, or a ComputeBackend.
+
+Ranking runs the topic gate first (zero compute): a candidate that cannot
+answer the three questions, is duplicate/obsolete, is not falsifiable, or has
+no decisive low-cost experiment is rejected here with auditable reason codes
+rather than being ranked. Surviving candidates are then ordered with their
+expected information as a feature, so surprise -- not how paradigm-breaking a
+title sounds -- drives what gets looked at first.
 """
 
 from __future__ import annotations
@@ -11,6 +18,7 @@ from typing import Any
 
 from agents.agenda_relevance import agenda_scope_terms, candidate_scope_text, insight_in_scope
 from agents.agenda_repository import AgendaRepository
+from agents.topic_gate import TopicGatePolicy, screen_candidate
 from contracts.agenda import AgendaSelection, ResearchAgenda
 
 
@@ -29,9 +37,14 @@ def _json_obj(value: Any) -> dict[str, Any]:
 def score_candidate(
     candidate: dict[str, Any],
     agenda: ResearchAgenda,
+    *,
+    topic_gate_policy: TopicGatePolicy | None = None,
 ) -> tuple[float, dict[str, Any], list[str]]:
     if not insight_in_scope(candidate, agenda):
         return float("-inf"), {"scope": 0.0}, ["agenda_scope_mismatch"]
+    gate = screen_candidate(candidate, agenda, policy=topic_gate_policy)
+    if not gate.passed:
+        return float("-inf"), {"topic_gate": gate.to_dict()}, list(gate.reason_codes)
     text = candidate_scope_text(candidate)
     terms = agenda_scope_terms(agenda)
     term_hits = [term for term in terms if term in text]
@@ -55,6 +68,12 @@ def score_candidate(
     if experimentability in {"easy", "medium"}:
         score += 0.15
         breakdown["feedback_speed"] = 0.15
+    # Expected information, not perceived boldness. One bit of expected
+    # surprise is worth as much as a full scope match.
+    information_feature = min(1.0, gate.expected_bits) * 0.45
+    score += information_feature
+    breakdown["expected_information"] = information_feature
+    breakdown["topic_gate"] = gate.to_dict()
     rejected: list[str] = []
     for phrase in list((agenda.reject or {}).get("keywords") or []):
         if str(phrase).lower() in text:
@@ -69,6 +88,7 @@ def select_next(
     *,
     repository: AgendaRepository | None = None,
     limit: int = 100,
+    topic_gate_policy: TopicGatePolicy | None = None,
 ) -> AgendaSelection | None:
     repo = repository or AgendaRepository()
     agenda = repo.get(agenda_id)
@@ -76,7 +96,11 @@ def select_next(
         return None
     ranked: list[tuple[float, dict[str, Any], dict[str, Any], list[str]]] = []
     for candidate in repo.candidates(agenda_id, limit=limit):
-        score, breakdown, blockers = score_candidate(candidate, agenda)
+        score, breakdown, blockers = score_candidate(
+            candidate,
+            agenda,
+            topic_gate_policy=topic_gate_policy,
+        )
         ranked.append((score, candidate, breakdown, blockers))
     ranked.sort(key=lambda item: (-item[0], int(item[1].get("id") or 0)))
     accepted = next((item for item in ranked if item[0] != float("-inf")), None)
@@ -96,7 +120,7 @@ def select_next(
         agenda_id=agenda_id,
         selected_insight_id=int(candidate["id"]),
         score=score,
-        rationale="agenda_scope_and_feature_score",
+        rationale="topic_gate_passed_and_agenda_scope_feature_score",
         rejected_candidates=rejected,
         scoring_breakdown=breakdown,
     )

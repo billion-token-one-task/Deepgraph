@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from contracts.meta_harness import (
@@ -24,6 +24,7 @@ from meta_harness.reviewer_approval import (
     ReviewerApprovalVerifier,
     scientific_manuscript_subject,
 )
+from meta_harness import topic_gate_admission
 
 
 class MetaHarnessPersistenceError(RuntimeError):
@@ -54,17 +55,25 @@ def _load_list(value: Any) -> list[Any]:
     return parsed if isinstance(parsed, list) else []
 
 
-def _agenda_per_grant_gpu_cap(agenda: dict[str, Any]) -> float | None:
-    """Return an optional Agenda-level per-grant GPU cap.
+# System-wide ceilings. An Agenda may only tighten these, never widen them.
+SYSTEM_MAX_GPU_HOURS_PER_GRANT = 8.0
+SYSTEM_MAX_GPU_GRANT_TTL_HOURS = 24
+SYSTEM_MAX_GRANT_TTL_HOURS = 72
 
-    The aggregate ledger protects the total budget, but an agenda may also
-    constrain the size of any one GPU reservation.  Malformed explicit policy
-    is rejected rather than silently weakening that constraint.
+
+def _agenda_per_grant_gpu_cap(agenda: dict[str, Any]) -> float:
+    """Return the effective per-grant GPU cap.
+
+    The aggregate ledger protects the total budget, but one grant must also be
+    bounded on its own. An Agenda that declares no policy gets the system
+    ceiling rather than an unlimited grant; a declared policy only applies when
+    it is stricter. Malformed explicit policy is rejected rather than silently
+    weakening the constraint.
     """
     prefer = _load_mapping(agenda.get("prefer_json"))
     policy = _load_mapping(prefer.get("gpu_policy"))
     if "max_gpu_hours_per_grant" not in policy:
-        return None
+        return SYSTEM_MAX_GPU_HOURS_PER_GRANT
     try:
         cap = float(policy["max_gpu_hours_per_grant"])
     except (TypeError, ValueError) as exc:
@@ -75,7 +84,26 @@ def _agenda_per_grant_gpu_cap(agenda: dict[str, Any]) -> float | None:
         raise MetaHarnessPersistenceError(
             "agenda per-grant GPU-hour cap cannot be negative"
         )
-    return cap
+    return min(cap, SYSTEM_MAX_GPU_HOURS_PER_GRANT)
+
+
+def _require_short_ttl(grant: ResourceGrant, *, now: datetime | None = None) -> None:
+    """A grant is a short-lived authority, not a standing permission."""
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    expires = datetime.fromisoformat(
+        str(grant.expires_at).replace("Z", "+00:00")
+    ).astimezone(timezone.utc)
+    if expires <= current:
+        raise MetaHarnessPersistenceError("ResourceGrant is already expired")
+    ceiling = (
+        SYSTEM_MAX_GPU_GRANT_TTL_HOURS
+        if grant.max_gpu_hours > 0
+        else SYSTEM_MAX_GRANT_TTL_HOURS
+    )
+    if (expires - current) > timedelta(hours=ceiling):
+        raise MetaHarnessPersistenceError(
+            f"ResourceGrant TTL exceeds the {ceiling}-hour ceiling"
+        )
 
 
 def _canonical_hash(value: str) -> str:
@@ -586,6 +614,19 @@ class MetaHarnessRepository:
             raise MetaHarnessPersistenceError(
                 "portfolio decision cannot bypass a rejected Frontier Gate"
             )
+        if packet.decision in {"promote", "revisit"}:
+            # Only decisions that can buy resources are gated. Killing or
+            # parking a candidate is exactly what a failed gate should produce,
+            # so those stay recordable with their reasons.
+            gate = topic_gate_admission.evaluate(
+                agenda_id=packet.agenda_id,
+                idea_id=packet.idea_id,
+            )
+            if not gate.passed:
+                raise MetaHarnessPersistenceError(
+                    "topic gate blocked this candidate:"
+                    + ",".join(gate.reason_codes)
+                )
         packet_id = db.insert_returning_id(
             """
             INSERT INTO idea_decision_packets
@@ -670,13 +711,11 @@ class MetaHarnessRepository:
                     "agenda max_concurrency would be exceeded"
                 )
             per_grant_gpu_cap = _agenda_per_grant_gpu_cap(agenda)
-            if (
-                per_grant_gpu_cap is not None
-                and grant.max_gpu_hours > per_grant_gpu_cap
-            ):
+            if grant.max_gpu_hours > per_grant_gpu_cap:
                 raise MetaHarnessPersistenceError(
                     "ResourceGrant exceeds Agenda per-grant GPU-hour cap"
                 )
+            _require_short_ttl(grant)
             token_budget = int(agenda.get("token_budget") or 0)
             token_total = (
                 int(agenda.get("token_spent") or 0)
