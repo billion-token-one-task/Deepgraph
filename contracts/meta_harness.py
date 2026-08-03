@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from contracts.base import (
@@ -126,6 +126,94 @@ class FrontierPacket(ContractRecord):
         require_non_empty("provider", self.provider)
         require_non_empty("model", self.model)
         require_non_empty("prompt_version", self.prompt_version)
+
+
+@dataclass
+class FrontierEvaluationAuthority(ContractRecord):
+    """A narrowly scoped authority to produce exactly one Frontier assessment.
+
+    This is deliberately *not* a ResourceGrant and cannot become one. A
+    ResourceGrant requires a portfolio decision, which requires a Frontier
+    packet, which requires an evaluator -- the bootstrap deadlock. This record
+    breaks it without weakening the grant rules: it binds to one active Agenda
+    and one persisted research problem, carries a hard token ceiling and a
+    short TTL, may only run the evaluator role, and can produce nothing except
+    a Frontier assessment.
+
+    It can never authorize GPU, an experiment, a proposal, a legacy import, or
+    any write to another Agenda.
+    """
+
+    agenda_id: int = 0
+    research_problem_id: int = 0
+    token_cap: int = 0
+    issued_at: str = ""
+    expires_at: str = ""
+    idempotency_key: str = ""
+    provider: str = ""
+    model: str = ""
+    model_family: str = ""
+    prompt_version: str = ""
+    evaluator: str = ""
+    issued_by: str = ""
+    issue_reason: str = ""
+    status: str = "active"
+    authority_id: int | None = None
+    reservation_id: int | None = None
+
+    # Hard ceilings that configuration may lower but never raise.
+    MAX_TOKEN_CAP = 20_000
+    MAX_TTL_MINUTES = 120
+
+    def validate(self) -> None:
+        super().validate()
+        self.agenda_id = _positive_id("agenda_id", self.agenda_id)
+        self.research_problem_id = _positive_id(
+            "research_problem_id", self.research_problem_id
+        )
+        self.token_cap = int(self.token_cap)
+        if self.token_cap <= 0:
+            raise ContractValidationError(
+                "FrontierEvaluationAuthority requires a positive token cap"
+            )
+        if self.token_cap > self.MAX_TOKEN_CAP:
+            raise ContractValidationError(
+                "FrontierEvaluationAuthority token cap exceeds the hard ceiling"
+            )
+        issued = _utc(self.issued_at, "issued_at")
+        expires = _utc(self.expires_at, "expires_at")
+        if expires <= issued:
+            raise ContractValidationError("authority TTL must be positive")
+        if (expires - issued) > timedelta(minutes=self.MAX_TTL_MINUTES):
+            raise ContractValidationError(
+                "FrontierEvaluationAuthority TTL exceeds the hard ceiling"
+            )
+        for name in (
+            "idempotency_key",
+            "provider",
+            "model",
+            "model_family",
+            "prompt_version",
+            "evaluator",
+            "issued_by",
+            "issue_reason",
+        ):
+            require_non_empty(name, getattr(self, name))
+        if self.status not in GRANT_STATES:
+            raise ContractValidationError("invalid authority status")
+
+    @property
+    def backend_allowlist(self) -> tuple[str, ...]:
+        """Fixed. An authority is LLM-only and can never reach a backend."""
+        return ("llm",)
+
+    @property
+    def max_gpu_hours(self) -> float:
+        return 0.0
+
+    @property
+    def allowed_operations(self) -> tuple[str, ...]:
+        return ("frontier_assessment",)
 
 
 @dataclass

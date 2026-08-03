@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import hmac
 import unittest
 from unittest import mock
@@ -113,12 +114,39 @@ class AgendaContractTests(unittest.TestCase):
                 )
 
             def candidates(self, agenda_id, *, limit):
+                # The topic gate runs before ranking, so a candidate now has to
+                # carry its recorded three-question answers to be selectable.
                 return [
                     {
                         "id": 7,
                         "agenda_id": agenda_id,
                         "title": "robustness benchmark",
+                        "problem_statement": (
+                            "Does the robustness benchmark separate noise "
+                            "sensitivity from capacity at equal parameters?"
+                        ),
                         "resource_class": "cpu",
+                        "topic_gate_json": json.dumps(
+                            {
+                                "prediction": {
+                                    "predicted_outcome": "separation holds",
+                                    "confidence": 0.6,
+                                    "action_if_confirmed": "run the full suite",
+                                    "action_if_refuted": "redesign the benchmark",
+                                    "already_published": "no",
+                                },
+                                "minimum_falsification_experiment": {
+                                    "metric": "robustness gap",
+                                    "baseline": "equal-parameter dense model",
+                                    "decisive_comparison": "3 seeds, gap > 2 points",
+                                    "estimated_cost": {
+                                        "tokens": 8000,
+                                        "gpu_hours": 0,
+                                        "wall_hours": 2,
+                                    },
+                                },
+                            }
+                        ),
                     }
                 ]
 

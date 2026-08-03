@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hmac
 import os
+from datetime import datetime, timedelta, timezone
 
 from flask import Blueprint, jsonify, request
 
@@ -28,6 +29,7 @@ from agents.agenda_loader import parse_agenda
 from agents.agenda_repository import AgendaRepository
 from agents.direction_intake import parse_direction_payload
 from contracts.meta_harness import (
+    FrontierEvaluationAuthority,
     FrontierPacket,
     IdeaDecisionPacket,
     ResourceGrant,
@@ -35,6 +37,8 @@ from contracts.meta_harness import (
 from db import database as db
 from meta_harness.evidence_state import EvidenceTransitionContext
 from meta_harness.frontier import evaluate_frontier
+from meta_harness.frontier_authority import FrontierAuthorityRepository
+from meta_harness.frontier_bootstrap import run_bootstrap_evaluation
 from meta_harness.frontier_source import (
     EvidenceGraphFrontierSource,
     FrontierAssessment,
@@ -223,6 +227,80 @@ def save_frontier_from_evidence_graph():
                 "coverage": packet.coverage,
             }
         ), (201 if gate.allowed else 409)
+    except Exception as exc:
+        return _error(exc)
+
+
+@blueprint.post("/frontier/authority")
+def issue_frontier_authority():
+    """Issue one bounded, single-use Frontier-evaluator bootstrap authority.
+
+    This is the operator's explicit act. It is not a ResourceGrant: it cannot
+    reach GPU, an experiment, a proposal, or a second agenda.
+    """
+    try:
+        _require_operator()
+        payload = _payload()
+        issued_at = datetime.now(timezone.utc)
+        ttl_minutes = int(payload.get("ttl_minutes") or 30)
+        authority = FrontierEvaluationAuthority(
+            agenda_id=int(payload["agenda_id"]),
+            research_problem_id=int(payload["research_problem_id"]),
+            token_cap=int(payload["token_cap"]),
+            issued_at=issued_at.isoformat(),
+            expires_at=(issued_at + timedelta(minutes=ttl_minutes)).isoformat(),
+            idempotency_key=str(payload["idempotency_key"]),
+            provider=str(payload["provider"]),
+            model=str(payload["model"]),
+            model_family=str(payload["model_family"]),
+            prompt_version=str(payload["prompt_version"]),
+            evaluator=str(payload["evaluator"]),
+            issued_by=str(payload["issued_by"]),
+            issue_reason=str(payload["issue_reason"]),
+        )
+        authority_id = FrontierAuthorityRepository().issue(authority)
+        return jsonify(
+            {
+                "frontier_evaluation_authority_id": authority_id,
+                "expires_at": authority.expires_at,
+                "token_cap": authority.token_cap,
+                "backend_allowlist": list(authority.backend_allowlist),
+                "allowed_operations": list(authority.allowed_operations),
+            }
+        ), 201
+    except Exception as exc:
+        return _error(exc)
+
+
+@blueprint.post("/frontier/bootstrap")
+def run_frontier_bootstrap():
+    """Run the one authorized evaluation and persist its Frontier packet."""
+    try:
+        _require_operator()
+        payload = _payload()
+        result = run_bootstrap_evaluation(
+            authority_id=int(payload["frontier_evaluation_authority_id"]),
+            agenda_id=int(payload["agenda_id"]),
+            research_problem_id=int(payload["research_problem_id"]),
+            proposer_provider=payload.get("proposer_provider"),
+            proposer_model_family=payload.get("proposer_model_family"),
+        )
+        return jsonify(result), (200 if result.get("gate_allowed") else 202)
+    except Exception as exc:
+        return _error(exc)
+
+
+@blueprint.get("/frontier/authority/<int:authority_id>/audit")
+def frontier_authority_audit(authority_id: int):
+    """Independently verifiable record of one bootstrap. No secrets."""
+    try:
+        _require_operator()
+        agenda_id = int(request.args.get("agenda_id") or 0)
+        return jsonify(
+            FrontierAuthorityRepository().audit_record(
+                authority_id, agenda_id=agenda_id
+            )
+        )
     except Exception as exc:
         return _error(exc)
 

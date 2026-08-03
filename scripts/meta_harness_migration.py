@@ -19,8 +19,24 @@ from urllib.parse import urlsplit
 
 
 ROOT = Path(__file__).resolve().parents[1]
-MIGRATION = ROOT / "db" / "migrations" / "0001_meta_harness_v1.sql"
-MIGRATION_KEY = "0001_meta_harness_v1"
+MIGRATIONS_DIR = ROOT / "db" / "migrations"
+# Ordered. A later migration is only additive on top of its predecessors.
+MIGRATION_KEYS = (
+    "0001_meta_harness_v1",
+    "0002_topic_gate_and_frontier_authority",
+)
+MIGRATION_KEY = MIGRATION_KEYS[0]
+MIGRATION = MIGRATIONS_DIR / f"{MIGRATION_KEY}.sql"
+
+
+def migration_path(migration_key: str) -> Path:
+    """Resolve one reviewed migration file by key. Unknown keys fail closed."""
+    if migration_key not in MIGRATION_KEYS:
+        raise SystemExit(f"unknown migration key:{migration_key}")
+    path = MIGRATIONS_DIR / f"{migration_key}.sql"
+    if not path.is_file():
+        raise SystemExit(f"migration file is missing:{path}")
+    return path
 ACK = "I_UNDERSTAND_THIS_WRITES_AN_ISOLATED_RESTORE"
 LIVE_LOCAL_ACK = "I_UNDERSTAND_THIS_WRITES_LIVE_LOCAL_DEEPGRAPH"
 ISOLATED_NAME_MARKERS = ("test", "ci", "canary", "sandbox", "staging", "restore", "shadow")
@@ -45,15 +61,16 @@ def _statements(sql: str) -> list[str]:
     return [statement.strip() for statement in "\n".join(lines).split(";") if statement.strip()]
 
 
-def migration_plan() -> dict:
-    sql = MIGRATION.read_text(encoding="utf-8")
+def migration_plan(migration_key: str = MIGRATION_KEY) -> dict:
+    path = migration_path(migration_key)
+    sql = path.read_text(encoding="utf-8")
     executable_sql = ";\n".join(_statements(sql))
     destructive = sorted(
         set(match.group(0) for match in DESTRUCTIVE_SQL.finditer(executable_sql))
     )
     return {
-        "migration": str(MIGRATION),
-        "migration_key": MIGRATION_KEY,
+        "migration": str(path),
+        "migration_key": migration_key,
         "sha256": hashlib.sha256(sql.encode("utf-8")).hexdigest(),
         "bytes": len(sql.encode("utf-8")),
         "statement_count": len(_statements(sql)),
@@ -134,9 +151,14 @@ def _verified_backup(backup_file: str, backup_sha256: str) -> dict[str, str]:
     return {"backup_file": str(backup_path), "backup_sha256": actual}
 
 
-def apply_to_isolated_restore(url: str, *, source_commit: str) -> dict:
+def apply_to_isolated_restore(
+    url: str,
+    *,
+    source_commit: str,
+    migration_key: str = MIGRATION_KEY,
+) -> dict:
     _validate_isolated_url(url)
-    plan = migration_plan()
+    plan = migration_plan(migration_key)
     if plan["destructive_tokens"]:
         raise SystemExit(
             "refusing migration with destructive SQL: "
@@ -146,7 +168,7 @@ def apply_to_isolated_restore(url: str, *, source_commit: str) -> dict:
         import psycopg
     except ImportError as exc:
         raise SystemExit("psycopg is required in the isolated CI environment") from exc
-    sql = MIGRATION.read_text(encoding="utf-8")
+    sql = migration_path(migration_key).read_text(encoding="utf-8")
     with psycopg.connect(url, autocommit=False) as conn:
         with conn.cursor() as cur:
             cur.execute("SET LOCAL lock_timeout = '5s'")
@@ -173,7 +195,7 @@ def apply_to_isolated_restore(url: str, *, source_commit: str) -> dict:
                 FROM deepgraph_schema_migrations
                 WHERE migration_key=%s
                 """,
-                (MIGRATION_KEY,),
+                (migration_key,),
             )
             existing = cur.fetchone()
             if existing:
@@ -189,7 +211,7 @@ def apply_to_isolated_restore(url: str, *, source_commit: str) -> dict:
                     (migration_key, source_commit, checksum_sha256)
                 VALUES (%s, %s, %s)
                 """,
-                (MIGRATION_KEY, source_commit, plan["sha256"]),
+                (migration_key, source_commit, plan["sha256"]),
             )
         conn.commit()
     return {**plan, "status": "applied", "database_accessed": True}
@@ -201,6 +223,7 @@ def apply_to_live_local(
     source_commit: str,
     backup_file: str,
     backup_sha256: str,
+    migration_key: str = MIGRATION_KEY,
 ) -> dict:
     """Apply once to the explicitly-authorized local ``deepgraph`` database.
 
@@ -216,7 +239,7 @@ def apply_to_live_local(
     _validate_live_local_url(url)
     backup = _verified_backup(backup_file, backup_sha256)
     _require_service_stopped()
-    plan = migration_plan()
+    plan = migration_plan(migration_key)
     if plan["destructive_tokens"]:
         raise SystemExit(
             "refusing migration with destructive SQL: "
@@ -226,7 +249,7 @@ def apply_to_live_local(
         import psycopg
     except ImportError as exc:
         raise SystemExit("psycopg is required for the live-local migration") from exc
-    sql = MIGRATION.read_text(encoding="utf-8")
+    sql = migration_path(migration_key).read_text(encoding="utf-8")
     with psycopg.connect(url, autocommit=False) as conn:
         with conn.cursor() as cur:
             cur.execute("SET LOCAL lock_timeout = '5s'")
@@ -253,7 +276,7 @@ def apply_to_live_local(
                 FROM deepgraph_schema_migrations
                 WHERE migration_key=%s
                 """,
-                (MIGRATION_KEY,),
+                (migration_key,),
             )
             existing = cur.fetchone()
             if existing:
@@ -275,7 +298,7 @@ def apply_to_live_local(
                     (migration_key, source_commit, checksum_sha256)
                 VALUES (%s, %s, %s)
                 """,
-                (MIGRATION_KEY, source_commit, plan["sha256"]),
+                (migration_key, source_commit, plan["sha256"]),
             )
         conn.commit()
     return {
@@ -301,9 +324,15 @@ def main() -> int:
     parser.add_argument("--source-commit")
     parser.add_argument("--backup-file")
     parser.add_argument("--backup-sha256")
+    parser.add_argument(
+        "--migration-key",
+        default=MIGRATION_KEY,
+        choices=list(MIGRATION_KEYS),
+        help="which reviewed migration to plan or apply",
+    )
     args = parser.parse_args()
     if not args.apply and not args.apply_live_local:
-        print(migration_plan())
+        print(migration_plan(args.migration_key))
         return 0
     if not args.source_commit or not re.fullmatch(r"[0-9a-f]{40}", args.source_commit):
         parser.error("--source-commit must be the 40-character candidate commit hash")
@@ -323,12 +352,17 @@ def main() -> int:
             source_commit=args.source_commit,
             backup_file=args.backup_file,
             backup_sha256=args.backup_sha256,
+            migration_key=args.migration_key,
         )
         print(result)
         return 0
     if args.confirm_isolated_restore != ACK:
         parser.error(f"--confirm-isolated-restore must equal {ACK}")
-    result = apply_to_isolated_restore(url, source_commit=args.source_commit)
+    result = apply_to_isolated_restore(
+        url,
+        source_commit=args.source_commit,
+        migration_key=args.migration_key,
+    )
     print(result)
     return 0
 

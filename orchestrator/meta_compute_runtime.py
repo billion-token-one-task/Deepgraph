@@ -39,6 +39,12 @@ from meta_harness.compute import (
     SSHGPUConfig,
     UsageAccounting,
 )
+from meta_harness.backend_capability import (
+    BackendCapabilityError,
+    STATE_ENABLED,
+    reports_from_config,
+    require_schedulable,
+)
 from meta_harness.compute_repository import ComputeJobRepository
 from meta_harness.backends.colab_durable import (
     ColabWorkRepository,
@@ -602,7 +608,17 @@ def _enabled_backend_kinds() -> set[str]:
 
 
 def build_scheduler() -> ComputeScheduler:
-    enabled = _enabled_backend_kinds()
+    """Build only backends whose capability is proven. No silent fallback.
+
+    A backend that is configured but unverified is ``unknown``; it is left out
+    of the scheduler entirely so that ordinary work can never land on it. A
+    canary reaches it through a separately authorized path, not through here.
+    """
+    enabled = {
+        kind
+        for kind in _enabled_backend_kinds()
+        if reports_from_config()[kind].state == STATE_ENABLED
+    }
     backends = []
     if "cpu" in enabled:
         backends.append(CPUBackend(LegacyCPUValidationTransport()))
@@ -691,6 +707,10 @@ def submit_experiment_run(
         raise ComputeBackendError(
             f"requested compute backend is disabled:{backend_kind}"
         )
+    try:
+        require_schedulable(backend_kind, reports_from_config())
+    except BackendCapabilityError as exc:
+        raise ComputeBackendError(str(exc)) from exc
     request = ComputeSubmission(
         agenda_id=int(agenda_id),
         idea_id=int(idea_id),

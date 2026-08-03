@@ -115,21 +115,22 @@ def audit() -> dict:
                     }
                 )
 
-    migration = ROOT / "db" / "migrations" / "0001_meta_harness_v1.sql"
-    migration_text = migration.read_text(encoding="utf-8")
-    destructive = sorted(
-        {match.group(0).upper() for match in DESTRUCTIVE_SQL.finditer(
-            _strip_sql_comments(migration_text)
-        )}
-    )
-    if destructive:
-        findings.append(
-            {
-                "check": "additive_migration",
-                "path": _relative(migration),
-                "detail": destructive,
-            }
+    migrations = sorted((ROOT / "db" / "migrations").glob("*.sql"))
+    for migration in migrations:
+        migration_text = migration.read_text(encoding="utf-8")
+        destructive = sorted(
+            {match.group(0).upper() for match in DESTRUCTIVE_SQL.finditer(
+                _strip_sql_comments(migration_text)
+            )}
         )
+        if destructive:
+            findings.append(
+                {
+                    "check": "additive_migration",
+                    "path": _relative(migration),
+                    "detail": destructive,
+                }
+            )
 
     for path in (
         ROOT / "deepgraph.toml",
@@ -151,6 +152,7 @@ def audit() -> dict:
     return {
         "status": "passed" if not findings else "failed",
         "python_files_ast_parsed": len(python_files),
+        "migrations_audited": len(migrations),
         "migration_sha256_checked": True,
         "database_accessed": False,
         "application_imported": False,
