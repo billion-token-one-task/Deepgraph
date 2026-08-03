@@ -27,6 +27,9 @@ let statsTimer      = null;
 let papersLoaded    = false;
 let oppsLoaded      = false;
 let sidebarCollapsed = false;
+let currentAgendaId = null;      // active research agenda scope for API calls
+let agendaList      = [];        // /api/v1/agendas payload
+let evidenceStateMap = null;     // /api/v1/evidence_states for currentAgendaId
 
 // ── Helpers ──────────────────────────────────────────────────────────
 
@@ -36,6 +39,16 @@ function fmt(n) {
     if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
     if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
     return String(n);
+}
+
+// i18n bridge: translate via window.t (from i18n.js) with an English
+// fallback for keys the dictionary does not carry.
+function tr(key, fallback) {
+    if (window.t) {
+        const v = window.t(key);
+        if (v !== key) return v;
+    }
+    return fallback;
 }
 
 function esc(str) {
@@ -56,10 +69,36 @@ function $(sel) { return document.querySelector(sel); }
 function $$(sel) { return document.querySelectorAll(sel); }
 function el(id) { return document.getElementById(id); }
 
+// Endpoints that the server scopes to one research agenda. The active agenda
+// id is appended automatically once initAgendaScope() has resolved it.
+const AGENDA_SCOPED_PATHS = [
+    '/api/deep_insights', '/api/generated_papers', '/api/experiment_groups',
+    '/api/experiments', '/api/manuscripts', '/api/submission_bundles',
+    '/api/meta_report', '/api/v1/evidence_states',
+];
+
+function withAgendaScope(path) {
+    if (currentAgendaId == null) return path;
+    if (path.includes('agenda_id=')) return path;
+    if (!AGENDA_SCOPED_PATHS.some(p => path.startsWith(p))) return path;
+    return path + (path.includes('?') ? '&' : '?') + 'agenda_id=' + currentAgendaId;
+}
+
 async function api(path, opts) {
-    const r = await fetch(path, opts);
+    const r = await fetch(withAgendaScope(path), opts);
     if (!r.ok) throw new Error(`API ${path} returned ${r.status}`);
     return r.json();
+}
+
+async function initAgendaScope() {
+    try {
+        const data = await api('/api/v1/agendas');
+        agendaList = data.agendas || [];
+        const active = agendaList.find(a => a.is_active) || agendaList[0];
+        if (active) currentAgendaId = active.id;
+    } catch (e) {
+        console.error('Agenda scope unavailable:', e);
+    }
 }
 
 function mathJaxConfig() {
@@ -305,21 +344,29 @@ function toggleSidebar() {
 async function refreshStats() {
     try {
         const s = await api('/api/stats');
+        // Cold-start marker from the server-side stats cache: keep whatever is
+        // on screen instead of overwriting real numbers with zeros.
+        if (s && s.warming) return;
         statsCache = s;
 
         // Top bar
         el('hdrPapers').textContent  = fmt(s.papers_processed || 0);
         el('hdrResults').textContent = fmt(s.results_total || 0);
         el('hdrInsights').textContent = fmt(s.insights_total || 0);
+        el('hdrTokens').textContent  = fmt(s.tokens_consumed || 0);
 
-        // Overview stat cards
+        // Core stat row (always visible)
         el('statPapers').textContent        = fmt(s.papers_processed || 0);
+        el('statDeepDiscoveries').textContent = fmt(s.deep_insights_total || 0);
+        el('statExperiments').textContent   = fmt(s.experiment_runs_total || 0);
+        el('statTokens').textContent        = fmt(s.tokens_consumed || 0);
+
+        // Detail stat cards (collapsed section)
         el('statResults').textContent       = fmt(s.results_total || 0);
         el('statTaxonomy').textContent = fmt(s.taxonomy_nodes_total || 0);
         el('statContradictions').textContent = fmt(s.contradictions_total || 0);
         el('statInsights').textContent      = fmt(s.insights_total || 0);
-        el('statExperiments').textContent   = fmt(s.experiment_runs_total || 0);
-        el('statDeepDiscoveries').textContent = fmt(s.deep_insights_total || 0);
+        el('statAgendaTokens').textContent  = fmt(s.agenda_tokens_total || 0);
         el('statCompletePapers').textContent = fmt(s.submission_bundles_total || 0);
     } catch (e) {
         console.error('Stats error:', e);
@@ -2425,7 +2472,6 @@ async function renderPaperDetail(pid) {
                 <div class="paper-arxiv-meta">
                     <span>${esc(paper.id)}</span>
                     ${paper.updated_at ? `<span>updated ${esc(paper.updated_at)}</span>` : ''}
-                    ${paper.paper_root ? `<span>${esc(paper.paper_root)}</span>` : ''}
                     ${nodes.map(c => `<span>${esc(c)}</span>`).join('')}
                 </div>
                 <div class="paper-actions">
@@ -2588,14 +2634,19 @@ function renderOpportunities() {
 
 async function loadDiscoveriesTab() {
     const tierFilter = el('discoveryTierFilter')?.value || '';
+    const list = el('discoveriesList');
+    if (currentAgendaId == null) {
+        if (list) list.innerHTML = `<p class="empty-msg">${esc(tr('ideas.emptyNoAgenda', 'No research agenda is registered yet, so there is no scope to list ideas from.'))}</p>`;
+        return;
+    }
     try {
+        await loadEvidenceStates();
         let url = '/api/deep_insights?limit=50';
         if (tierFilter) url += `&tier=${tierFilter}`;
         const insights = await api(url);
         renderDiscoveries(insights);
     } catch (e) {
-        const list = el('discoveriesList');
-        if (list) list.innerHTML = '<p class="empty-msg">No ready discoveries yet. Automatic discovery is still filtering candidates.</p>';
+        if (list) list.innerHTML = `<p class="empty-msg">${esc(tr('ideas.emptyFiltering', 'No ready discoveries yet. Automatic discovery is still filtering candidates.'))}</p>`;
     }
 }
 
@@ -2738,6 +2789,7 @@ function renderDiscoveries(discoveries) {
                 ${scoreBadge}
             </div>
             <div class="insight-title">${esc(d.title)}</div>
+            <div style="margin:4px 0 8px;">${scientificBadge(ideaEvidenceEntry(d.id))}</div>
             ${bodyHtml}
             ${d.evidence_summary ? `<div class="insight-evidence"><span class="insight-label">Evidence:</span> ${esc(trunc(d.evidence_summary, 250))}</div>` : ''}
             ${sourcesHtml}
@@ -2752,25 +2804,159 @@ function renderDiscoveries(discoveries) {
 
 async function loadExperimentsTab() {
     const statusFilter = el('experimentStatusFilter')?.value || '';
+    const badge = el('timelineAgendaBadge');
+    if (badge) {
+        const active = agendaList.find(a => a.id === currentAgendaId);
+        badge.textContent = active ? `agenda #${active.id}: ${trunc(active.name, 40)}` : 'no agenda scope';
+    }
     try {
         const automation = await api('/api/automation');
         renderAutomationOverview(automation);
-        renderAutoResearchStatus(automation.auto_research);
-
-        const autoJobs = await api('/api/auto_research/jobs?limit=30');
-        renderAutoResearchJobs(autoJobs);
-
-        let url = '/api/experiment_groups?limit=50';
-        if (statusFilter) url += `&status=${statusFilter}`;
-        const groups = await api(url);
-        renderExperimentGroupsV2(groups);
-
-        const meta = await api('/api/meta_report');
-        renderMetaReport(meta);
     } catch (e) {
-        const list = el('experimentsList');
-        if (list) list.innerHTML = `<p class="empty-msg">Automation status failed to load: ${esc(e.message)}</p>`;
+        console.error('Automation snapshot failed:', e);
     }
+    if (currentAgendaId != null) {
+        try {
+            await loadEvidenceStates();
+            const timeline = await api(`/api/v1/agendas/${currentAgendaId}/timeline?limit=120`);
+            renderProcessTimeline(timeline.events || []);
+        } catch (e) {
+            const tl = el('processTimeline');
+            if (tl) tl.innerHTML = '<p class="empty-msg">Timeline unavailable. The provenance API may not be deployed yet.</p>';
+        }
+        try {
+            const selection = await api(`/api/v1/agendas/${currentAgendaId}/selection`);
+            renderSelectionRationale(selection);
+        } catch (e) {
+            const sr = el('selectionRationale');
+            if (sr) sr.innerHTML = '<p class="empty-msg">Selection records unavailable.</p>';
+        }
+        try {
+            let url = '/api/experiment_groups?limit=50';
+            if (statusFilter) url += `&status=${statusFilter}`;
+            const groups = await api(url);
+            renderExperimentGroupsV2(groups);
+        } catch (e) {
+            const list = el('experimentsList');
+            if (list) list.innerHTML = `<p class="empty-msg">Experiment history failed to load: ${esc(e.message)}</p>`;
+        }
+        try {
+            const meta = await api('/api/meta_report');
+            renderMetaReport(meta);
+        } catch (e) {
+            console.error('Meta report failed:', e);
+        }
+    } else {
+        const tl = el('processTimeline');
+        if (tl) tl.innerHTML = `<p class="empty-msg">${esc(tr('process.timelineNoAgenda', 'No research agenda is registered yet, so there is no process to show.'))}</p>`;
+        const list = el('experimentsList');
+        if (list) list.innerHTML = `<p class="empty-msg">${esc(tr('ideas.emptyNoAgenda', 'No research agenda is registered yet.'))}</p>`;
+    }
+}
+
+// ── Process timeline rendering ───────────────────────────────────────
+
+const TIMELINE_KIND_META = {
+    signal:             { key: 'tl.signal',        label: 'SIGNALS',       color: '#2e86ab' },
+    candidate_decision: { key: 'tl.candidate',     label: 'CANDIDATE',     color: '#a8842a' },
+    authorization:      { key: 'tl.authorization', label: 'AUTHORIZATION', color: '#7a5ea8' },
+    job:                { key: 'tl.run',           label: 'RUN',           color: '#4a7c9b' },
+    evidence:           { key: 'tl.evidence',      label: 'EVIDENCE',      color: '#2e86ab' },
+    decision:           { key: 'tl.decision',      label: 'DECISION',      color: '#3d8b5e' },
+    outcome:            { key: 'tl.outcome',       label: 'OUTCOME',       color: '#3d8b5e' },
+};
+
+function timelineEventText(ev) {
+    switch (ev.kind) {
+        case 'signal':
+            return `Frontier packet for problem #${ev.research_problem_id ?? '?'} — gate ${ev.gate_allowed ? 'allowed' : 'refused'}`
+                + ((ev.gate_reason_codes || []).length ? ` [${ev.gate_reason_codes.map(esc).join(', ')}]` : '');
+        case 'candidate_decision':
+            return `Idea #${ev.idea_id ?? '?'} ${esc(ev.decision || 'decided')}`
+                + ((ev.reason_codes || []).length ? ` [${ev.reason_codes.map(esc).join(', ')}]` : '');
+        case 'authorization':
+            return `Grant for idea #${ev.idea_id ?? '?'} — stage ${esc(ev.stage || '?')}, cap ${fmt(ev.token_cap || 0)} tokens`
+                + (ev.max_gpu_hours ? `, ${ev.max_gpu_hours} GPU-h` : '') + ` (${esc(ev.status || 'issued')})`;
+        case 'job':
+            return `Job #${ev.job_id ?? '?'} [${esc(ev.backend_kind || '?')}/${esc(ev.stage || '?')}] ${esc(ev.status || '')}`
+                + (ev.failure_reason ? ` — ${esc(trunc(ev.failure_reason, 160))}` : '');
+        case 'evidence': {
+            const blockers = (ev.context && ev.context.blockers) || [];
+            return `Run #${ev.run_id ?? '?'}: ${esc(ev.from_state || '?')} -> ${esc(ev.to_state || '?')}`
+                + (blockers.length ? ` — blockers: ${blockers.map(esc).join(', ')}` : '');
+        }
+        case 'decision':
+            return `Run #${ev.run_id ?? '?'} scientifically decided: ${esc(ev.verdict || 'inconclusive')}`
+                + (ev.verdict_hash ? ` (hash ${esc(String(ev.verdict_hash).slice(0, 18))}...)` : '');
+        case 'outcome':
+            return `Idea #${ev.idea_id ?? '?'} outcome: ${esc(ev.execution_result || '?')}`
+                + (ev.effect != null && ev.baseline != null ? `, effect ${ev.effect} vs baseline ${ev.baseline}` : '')
+                + (ev.verdict ? `, verdict ${esc(ev.verdict)}` : '');
+        default:
+            return esc(JSON.stringify(ev));
+    }
+}
+
+function renderProcessTimeline(events) {
+    const container = el('processTimeline');
+    if (!container) return;
+    if (!events.length) {
+        container.innerHTML = `<p class="empty-msg">${esc(tr('process.timelineEmptyDetail', 'No process events recorded for this agenda yet. Events appear once signals, grants, or experiment runs exist.'))}</p>`;
+        return;
+    }
+    container.innerHTML = `<div class="timeline-list">` + events.map(ev => {
+        const kindMeta = TIMELINE_KIND_META[ev.kind] || { label: (ev.kind || '?').toUpperCase(), color: '#888' };
+        const meta = { ...kindMeta, label: kindMeta.key ? tr(kindMeta.key, kindMeta.label) : kindMeta.label };
+        const failed = (ev.kind === 'job' && /fail|timed_out|cancel/.test(ev.status || ''))
+            || (ev.kind === 'signal' && !ev.gate_allowed)
+            || (ev.kind === 'candidate_decision' && /reject|refuse/.test(ev.decision || ''));
+        return `<div class="timeline-row${failed ? ' timeline-row-failed' : ''}">
+            <span class="timeline-when">${esc(trunc(ev.at || '', 16))}</span>
+            <span class="timeline-kind" style="color:${meta.color};border-color:${meta.color};">${meta.label}</span>
+            <span class="timeline-text">${timelineEventText(ev)}</span>
+        </div>`;
+    }).join('') + `</div>`;
+}
+
+// ── Selection rationale rendering ────────────────────────────────────
+
+function renderSelectionRationale(data) {
+    const container = el('selectionRationale');
+    if (!container) return;
+    const selections = (data && data.selections) || [];
+    const decisions = (data && data.decisions) || [];
+    if (!selections.length && !decisions.length) {
+        container.innerHTML = `<p class="empty-msg">${esc(tr('process.rationaleEmptyDetail', 'No selection records for this agenda yet. Rationale appears once the selector has admitted or rejected candidates.'))}</p>`;
+        return;
+    }
+    let html = '';
+    for (const sel of selections.slice(0, 5)) {
+        const rejected = (sel.rejected_candidates || []).slice(0, 6).map(rc => {
+            const title = typeof rc === 'string' ? rc : (rc.title || `insight #${rc.insight_id ?? rc.id ?? '?'}`);
+            const why = typeof rc === 'object' ? (rc.reason || rc.why || (rc.reasons || []).join('; ') || '') : '';
+            const score = typeof rc === 'object' && rc.score != null ? ` (score ${rc.score})` : '';
+            return `<li><b>REJECTED</b> ${esc(trunc(title, 90))}${score}${why ? ` — ${esc(trunc(why, 140))}` : ''}</li>`;
+        }).join('');
+        html += `<div class="insight-card" style="border-left:3px solid #3d8b5e;">
+            <div class="insight-header">
+                <span class="insight-type" style="color:#3d8b5e;font-weight:700;">SELECTED insight #${sel.selected_insight_id ?? '?'}</span>
+                ${sel.score != null ? `<span class="insight-scores">score ${sel.score}</span>` : ''}
+                <span style="color:var(--text-dim);font-size:0.68rem;">${esc(trunc(sel.created_at || '', 16))}</span>
+            </div>
+            ${sel.rationale ? `<div class="insight-hypothesis"><span class="insight-label">Why:</span> ${esc(trunc(sel.rationale, 400))}</div>` : ''}
+            ${rejected ? `<div class="insight-evidence"><span class="insight-label">Not chosen:</span><ul style="margin:4px 0;padding-left:18px;">${rejected}</ul></div>` : ''}
+        </div>`;
+    }
+    if (decisions.length) {
+        const rows = decisions.slice(0, 12).map(d =>
+            `<div class="timeline-row${/reject|refuse/.test(d.decision || '') ? ' timeline-row-failed' : ''}">
+                <span class="timeline-when">${esc(trunc(d.decided_at || '', 16))}</span>
+                <span class="timeline-kind">${esc((d.decision || '?').toUpperCase())}</span>
+                <span class="timeline-text">idea #${d.idea_id ?? '?'}${(d.reason_codes || []).length ? ` [${d.reason_codes.map(esc).join(', ')}]` : ''}</span>
+            </div>`).join('');
+        html += `<div class="timeline-list" style="margin-top:8px;">${rows}</div>`;
+    }
+    container.innerHTML = html;
 }
 
 function serviceState(name, ok, active) {
@@ -2856,25 +3042,6 @@ function workLane(title, items, metaFn, titleFn) {
     return `<div class="work-lane"><div class="work-lane-title">${esc(title)}</div>${body}</div>`;
 }
 
-function renderAutoResearchStatus(status) {
-    const box = el('autoResearchStatus');
-    if (!box) return;
-    if (!status) {
-        box.textContent = 'Auto Research status unavailable.';
-        return;
-    }
-    const running = status.running ? 'RUNNING' : 'STOPPED';
-    const evo = status.evoscientist_available ? 'EvoScientist ready' : 'EvoScientist missing';
-    box.innerHTML = `
-        <strong>${running}</strong>
-        <span style="margin-left:10px;">Interval: ${status.interval_seconds || '?'}s</span>
-        <span style="margin-left:10px;">${esc(evo)}</span>
-        <span style="margin-left:10px;">Jobs: ${status.total || 0}</span>
-        <span style="margin-left:10px;">Completed: ${status.completed || 0}</span>
-        <span style="margin-left:10px;">Blocked: ${status.blocked || 0}</span>
-    `;
-}
-
 function friendlyAutomationStage(status, stage) {
     const key = String(stage || status || '').toLowerCase();
     if (key.includes('verification')) return 'Checking novelty';
@@ -2887,54 +3054,6 @@ function friendlyAutomationStage(status, stage) {
     if (key.includes('failed')) return 'Failed';
     if (key.includes('complete')) return 'Complete';
     return stage || status || 'Queued';
-}
-
-function renderAutoResearchJobs(jobs) {
-    const list = el('autoResearchList');
-    if (!list) return;
-    if (!jobs || !jobs.length) {
-        list.innerHTML = '<p class="empty-msg">No auto research jobs yet.</p>';
-        return;
-    }
-
-    const colors = {
-        queued: '#9a9088',
-        verifying: '#2e86ab',
-        researching: '#7a5ea8',
-        eligible: '#a8842a',
-        running_experiment: '#c4704b',
-        completed: '#3d8b5e',
-        blocked: '#8b5e3c',
-        failed: '#c4453a',
-    };
-
-    list.innerHTML = jobs.map(j => {
-        const color = colors[j.status] || '#888';
-        const cpu = j.cpu_eligible == null
-            ? 'CPU unchecked'
-            : (j.cpu_eligible ? 'CPU OK' : 'CPU blocked');
-        const exp = j.experiment_status
-            ? `<span class="insight-scores">Experiment: ${esc(j.experiment_status)}</span>`
-            : '';
-        const verdict = j.hypothesis_verdict
-            ? `<span class="insight-scores">Verdict: ${esc(j.hypothesis_verdict)}</span>`
-            : '';
-        const friendly = friendlyAutomationStage(j.status, j.stage);
-        return `<div class="insight-card" style="border-left: 3px solid ${color};">
-            <div class="insight-header">
-                <span class="insight-type" style="color:${color};font-weight:700;">${esc(friendly).toUpperCase()}</span>
-                <span class="insight-scores">${esc(cpu)}</span>
-                ${exp}
-                ${verdict}
-            </div>
-            <div class="insight-title">${esc(j.title || 'Deep Insight')}</div>
-            <div class="insight-impact"><span class="insight-label">Internal stage:</span> ${esc(j.stage || '')}</div>
-            ${j.novelty_status ? `<div class="insight-impact"><span class="insight-label">Novelty:</span> ${esc(j.novelty_status)}</div>` : ''}
-            ${j.cpu_reason ? `<div class="insight-evidence"><span class="insight-label">CPU Check:</span> ${esc(j.cpu_reason)}</div>` : ''}
-            ${j.last_note ? `<div class="insight-experiment"><span class="insight-label">Latest:</span> ${esc(trunc(j.last_note, 220))}</div>` : ''}
-            ${j.last_error ? `<div class="insight-impact" style="color:#c4453a;"><span class="insight-label">Error:</span> ${esc(trunc(j.last_error, 220))}</div>` : ''}
-        </div>`;
-    }).join('');
 }
 
 function renderExperiments(runs) {
@@ -3003,6 +3122,60 @@ function verdictColor(verdict) {
     }[verdict] || '#888';
 }
 
+// ── Two-register status badges ───────────────────────────────────────
+// Operational status (did the job run?) and scientific status (what does the
+// evidence ladder say?) are rendered as two separate badges and never merged:
+// an operationally "completed" run stays scientifically "not assessed" until
+// it has actually climbed the ladder.
+
+const SCI_STATE_LABELS = {
+    planned: 'PLANNED',
+    sanity_passed: 'SANITY PASSED',
+    full_benchmark_complete: 'BENCHMARK DONE',
+    evidence_audited: 'AUDITED',
+    scientifically_decided: 'DECIDED',
+    manuscript_allowed: 'MANUSCRIPT ALLOWED',
+};
+
+function operationalBadge(status) {
+    const label = status || 'unknown';
+    return `<span class="reg-badge reg-op" style="border-color:${experimentStatusColor(label)};color:${experimentStatusColor(label)};" title="${esc(tr('badge.run.tip', 'Operational status: whether the job ran; it makes no scientific claim'))}">${esc(tr('badge.run', 'RUN'))}: ${esc(label)}</span>`;
+}
+
+function scientificBadge(entry) {
+    if (!entry || !entry.state) {
+        return `<span class="reg-badge reg-sci reg-sci-none" title="${esc(tr('badge.notAssessed.tip', 'No evidence-ladder progress recorded; completion of a job is not a finding'))}">${esc(tr('badge.evidence', 'EVIDENCE'))}: ${esc(tr('badge.notAssessed', 'not assessed'))}</span>`;
+    }
+    if (entry.state === 'scientifically_decided' || entry.state === 'manuscript_allowed') {
+        const verdict = entry.verdict || 'inconclusive';
+        const cls = verdict === 'supported' ? 'reg-sci-supported'
+            : verdict === 'refuted' ? 'reg-sci-refuted' : 'reg-sci-inconclusive';
+        return `<span class="reg-badge reg-sci ${cls}" title="${esc(tr('badge.decided.tip', 'Scientific verdict recorded by the audited decision gate'))}">${esc(tr('badge.decided', 'DECIDED'))}: ${esc(tr('verdict.' + verdict, verdict))}</span>`;
+    }
+    const label = tr('sci.' + entry.state, SCI_STATE_LABELS[entry.state] || entry.state);
+    return `<span class="reg-badge reg-sci reg-sci-progress" title="${esc(tr('badge.progress.tip', 'Position on the evidence ladder; not yet a scientific decision'))}">${esc(tr('badge.evidence', 'EVIDENCE'))}: ${esc(label)}</span>`;
+}
+
+async function loadEvidenceStates() {
+    if (currentAgendaId == null) { evidenceStateMap = null; return null; }
+    try {
+        evidenceStateMap = await api('/api/v1/evidence_states');
+    } catch (e) {
+        evidenceStateMap = null;
+    }
+    return evidenceStateMap;
+}
+
+function ideaEvidenceEntry(insightId) {
+    if (!evidenceStateMap || !evidenceStateMap.ideas) return null;
+    return evidenceStateMap.ideas[String(insightId)] || null;
+}
+
+function runEvidenceEntry(runId) {
+    if (!evidenceStateMap || !evidenceStateMap.runs) return null;
+    return evidenceStateMap.runs[String(runId)] || null;
+}
+
 function renderTrackChips(tracks) {
     return (tracks || []).map(track => {
         const color = track.enabled ? '#3d8b5e' : '#9a9088';
@@ -3032,9 +3205,8 @@ function renderExperimentGroupsV2(groups) {
         const auto = group.auto_job || {};
         const currentRun = group.canonical_run || group.latest_run || null;
         const color = experimentStatusColor((currentRun || {}).status || auto.status);
-        const verdict = currentRun && currentRun.hypothesis_verdict
-            ? `<span style="color:${verdictColor(currentRun.hypothesis_verdict)};font-weight:700;text-transform:uppercase;">${esc(currentRun.hypothesis_verdict)}</span>`
-            : '';
+        const sciEntry = (currentRun && runEvidenceEntry(currentRun.id)) || ideaEvidenceEntry(insight.id);
+        const badgeRow = `${operationalBadge((currentRun || {}).status || auto.status || 'not_started')}${scientificBadge(sciEntry)}`;
         const effect = currentRun && currentRun.effect_pct != null
             ? `${currentRun.effect_pct >= 0 ? '+' : ''}${currentRun.effect_pct.toFixed(2)}%`
             : '';
@@ -3056,11 +3228,11 @@ function renderExperimentGroupsV2(groups) {
             <div class="insight-header">
                 <span class="insight-type" style="color:${color};font-weight:700;">IDEA #${insight.id}</span>
                 <span class="insight-scores">${esc(currentRunLabel)}</span>
-                ${verdict}
                 ${effect ? `<span class="insight-scores">Effect: ${effect}</span>` : ''}
                 <span style="color:var(--text-dim);font-size:0.68rem;">Tier ${insight.tier || '?'}</span>
             </div>
             <div class="insight-title">${esc(insight.title || 'Deep Insight')}</div>
+            <div style="margin:4px 0 8px;">${badgeRow}</div>
             <div class="insight-impact"><span class="insight-label">Current work:</span> ${esc(progress)}</div>
             ${latest.stage ? `<div class="insight-experiment"><span class="insight-label">Latest file status:</span> ${esc(latest.stage)} / ${esc(latest.status || '')}</div>` : ''}
             ${latest.error ? `<div class="insight-impact" style="color:#c4453a;"><span class="insight-label">Latest error:</span> ${esc(trunc(latest.error, 180))}</div>` : ''}
@@ -3070,11 +3242,6 @@ function renderExperimentGroupsV2(groups) {
                 <span>Runs: ${group.run_count || 0}</span>
                 <span>Latest run: ${esc((group.latest_run || {}).status || 'none')}</span>
                 <span>Bundle: ${esc(insight.submission_status || 'not_started')}</span>
-            </div>
-            <div style="display:flex;gap:16px;margin:6px 0;font-size:0.75rem;color:var(--text-secondary);flex-wrap:wrap;">
-                <span>Experiment: ${esc(group.experiment_root || '-')}</span>
-                <span>Plan: ${esc(group.plan_root || '-')}</span>
-                <span>Paper: ${esc(group.paper_root || '-')}</span>
             </div>
             <div class="chip-row" style="margin:8px 0;">${renderTrackChips(group.planned_tracks)}</div>
             ${auto.last_note ? `<div class="insight-experiment"><span class="insight-label">Latest:</span> ${esc(trunc(auto.last_note, 220))}</div>` : ''}
@@ -3127,11 +3294,6 @@ function renderExperimentGroups(groups) {
                 <span>历史 runs: ${group.run_count || 0}</span>
                 <span>最新状态: ${esc((group.latest_run || {}).status || 'none')}</span>
                 <span>Bundle: ${esc(insight.submission_status || 'not_started')}</span>
-            </div>
-            <div style="display:flex;gap:16px;margin:6px 0;font-size:0.75rem;color:var(--text-secondary);flex-wrap:wrap;">
-                <span>实验区: ${esc(group.experiment_root || '-')}</span>
-                <span>方案区: ${esc(group.plan_root || '-')}</span>
-                <span>论文区: ${esc(group.paper_root || '-')}</span>
             </div>
             <div class="chip-row" style="margin:8px 0;">${renderTrackChips(group.planned_tracks)}</div>
             ${auto.last_note ? `<div class="insight-experiment"><span class="insight-label">Latest:</span> ${esc(trunc(auto.last_note, 220))}</div>` : ''}
@@ -3321,7 +3483,6 @@ function renderRuntimeConfig(config) {
                         ${renderRuntimeMetric('Experiment Model', runtimeValue(experiment.real_llm_model))}
                         ${renderRuntimeMetric('Synthetic Fallback', runtimeBool(experiment.allow_synthetic_fallback))}
                     </div>
-                    <div class="runtime-path">${esc(experiment.experiment_workdir || '')}</div>
                 </div>
                 <div class="runtime-card">
                     <div class="runtime-card-title">CPU / Memory</div>
@@ -3651,7 +3812,6 @@ window._dg = {
                 <h4>Idea Progress</h4>
                 <p>Auto Research: ${esc(auto.status || 'not_started')} ${auto.stage ? `/ ${esc(auto.stage)}` : ''}</p>
                 <p>Submission: ${esc(insight.submission_status || 'not_started')} | Run count: ${runs.length}</p>
-                <p>Workspace: ${esc(data.workspace_root || '-')}</p>
                 <div class="chip-row" style="margin:8px 0 14px;">${renderTrackChips(data.planned_tracks)}</div>
                 ${renderManuscriptBlockers(plan.manuscript_blockers || {}, 8)}
                 ${auto.last_note ? `<p><b>Latest:</b> ${esc(auto.last_note)}</p>` : ''}
@@ -3659,17 +3819,14 @@ window._dg = {
                 <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px;margin:16px 0;">
                     <div style="background:var(--bg-elevated);padding:12px;border-radius:10px;">
                         <h4 style="margin-top:0;">实验区</h4>
-                        <p><b>实验根目录:</b> ${esc(data.experiment_root || '-')}</p>
                         <p><b>Canonical Run:</b> ${esc(data.canonical_run_id || canonical?.id || '-')}</p>
                     </div>
                     <div style="background:var(--bg-elevated);padding:12px;border-radius:10px;">
                         <h4 style="margin-top:0;">实验方案区</h4>
-                        <p><b>方案根目录:</b> ${esc(data.plan_root || '-')}</p>
                         ${jsonPreview(plan.latest_status, '暂无 latest_status.json')}
                     </div>
                     <div style="background:var(--bg-elevated);padding:12px;border-radius:10px;">
                         <h4 style="margin-top:0;">论文区</h4>
-                        <p><b>论文根目录:</b> ${esc(data.paper_root || '-')}</p>
                         <div class="insight-actions" style="margin:8px 0;">
                             ${paperUrls.index ? `<button class="btn-preview" onclick="window.open('${esc(paperUrls.index)}','_blank')">打开论文页</button>` : ''}
                             ${paperUrls.pdf ? `<button class="btn-preview" onclick="window.open('${esc(paperUrls.pdf)}','_blank')">打开 PDF</button>` : ''}
@@ -3828,6 +3985,106 @@ window._dg = {
 
 // ── Init ─────────────────────────────────────────────────────────────
 
+// ── Direction submission (operator-authorized) ───────────────────────
+// Submitting a direction creates a proposal record via the token-gated
+// meta-harness API. It does not start any run: compute is only authorized
+// later through explicit ResourceGrants.
+
+function openDirectionModal() {
+    const existing = document.querySelector('.direction-modal');
+    if (existing) { existing.remove(); }
+    const modal = document.createElement('div');
+    modal.className = 'proposal-modal direction-modal';
+    const field = 'width:100%;background:var(--bg-elevated);color:inherit;border:1px solid var(--border);border-radius:6px;padding:7px 9px;font-size:0.82rem;';
+    modal.innerHTML = `<div class="proposal-overlay" onclick="this.parentElement.remove()"></div>
+        <div class="proposal-content" style="max-height:85vh;max-width:640px;">
+            <div class="proposal-header">
+                <h3>Propose a research direction</h3>
+                <button class="btn-close" onclick="this.closest('.proposal-modal').remove()">×</button>
+            </div>
+            <div class="proposal-body" style="display:flex;flex-direction:column;gap:10px;">
+                <label style="font-size:0.8rem;">Question or direction *
+                    <textarea id="dirText" style="${field}min-height:80px;margin-top:4px;" placeholder="What should be investigated, and against what would success be measured?"></textarea>
+                </label>
+                <label style="font-size:0.8rem;">Contact / submitter *
+                    <input id="dirContact" style="${field}margin-top:4px;" placeholder="name or handle">
+                </label>
+                <label style="font-size:0.8rem;">Keywords (comma-separated, optional)
+                    <input id="dirKeywords" style="${field}margin-top:4px;" placeholder="e.g. latent-communication, probing">
+                </label>
+                <div style="display:flex;gap:10px;flex-wrap:wrap;">
+                    <label style="font-size:0.8rem;flex:1;">Goal
+                        <select id="dirGoal" style="${field}margin-top:4px;">
+                            <option value="experiment_plan">experiment_plan</option>
+                            <option value="idea_only">idea_only</option>
+                            <option value="verified_evidence">verified_evidence</option>
+                        </select>
+                    </label>
+                    <label style="font-size:0.8rem;flex:1;">Token budget (hard cap, optional)
+                        <input id="dirBudget" type="number" min="1" style="${field}margin-top:4px;" placeholder="server default">
+                    </label>
+                </div>
+                <label style="font-size:0.8rem;">Operator token *
+                    <input id="dirToken" type="password" style="${field}margin-top:4px;" autocomplete="off" placeholder="X-DeepGraph-Operator-Token">
+                    <span style="font-size:0.7rem;color:var(--text-dim);">Submission requires operator authorization. The token is sent once with this request and is not stored.</span>
+                </label>
+                <div style="font-size:0.72rem;color:var(--text-dim);line-height:1.5;">
+                    Submitting registers a scoped agenda proposal. No experiment starts from this form:
+                    compute is authorized separately through resource grants, and results only become
+                    claims after the evidence ladder and review.
+                </div>
+                <div id="dirResult" style="font-size:0.78rem;"></div>
+                <div style="display:flex;gap:8px;justify-content:flex-end;">
+                    <button class="btn-preview" onclick="this.closest('.proposal-modal').remove()">Cancel</button>
+                    <button class="btn-preview" id="dirSubmitBtn" style="border-color:#3d8b5e;color:#3d8b5e;">Submit direction</button>
+                </div>
+            </div>
+        </div>`;
+    document.body.appendChild(modal);
+    el('dirSubmitBtn').addEventListener('click', submitDirection);
+}
+
+async function submitDirection() {
+    const resultBox = el('dirResult');
+    const direction = (el('dirText').value || '').trim();
+    const contact = (el('dirContact').value || '').trim();
+    const token = (el('dirToken').value || '').trim();
+    const keywords = (el('dirKeywords').value || '').split(',').map(s => s.trim()).filter(Boolean);
+    const goal = el('dirGoal').value;
+    const budgetRaw = el('dirBudget').value;
+    if (!direction || !contact || !token) {
+        resultBox.innerHTML = '<span style="color:#c4453a;">Direction, contact, and operator token are required.</span>';
+        return;
+    }
+    const agenda = { direction, contact, goal };
+    if (keywords.length) agenda.keywords = keywords;
+    if (budgetRaw) agenda.token_budget = parseInt(budgetRaw, 10);
+    const btn = el('dirSubmitBtn');
+    btn.disabled = true;
+    resultBox.textContent = 'Submitting...';
+    try {
+        const r = await fetch('/api/meta-harness/v1/agendas', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-DeepGraph-Operator-Token': token,
+            },
+            body: JSON.stringify({ confirmed: true, agenda }),
+        });
+        const payload = await r.json().catch(() => ({}));
+        if (r.ok && payload.agenda_id) {
+            resultBox.innerHTML = `<span style="color:#3d8b5e;">Registered as agenda #${payload.agenda_id} (token budget ${fmt(payload.token_budget || 0)}). It now awaits the normal selection and grant process.</span>`;
+            initAgendaScope();
+        } else {
+            resultBox.innerHTML = `<span style="color:#c4453a;">Rejected: ${esc(payload.error || `HTTP ${r.status}`)}</span>`;
+        }
+    } catch (e) {
+        resultBox.innerHTML = `<span style="color:#c4453a;">Request failed: ${esc(e.message)}</span>`;
+    } finally {
+        btn.disabled = false;
+    }
+}
+
 function init() {
     // Nav items
     $$('.nav-item, .advanced-nav-item').forEach(btn => {
@@ -3861,12 +4118,25 @@ function init() {
     // Search
     initSearch();
 
-    // Initial data loads
-    refreshStats();
-    loadRecentlyDiscovered();
-    loadOverviewResearchMap();
-    loadProcessingPapers();
-    startSSE();
+    // Propose-direction form (operator token required at submit time)
+    const propose = el('btnProposeDirection');
+    if (propose) propose.addEventListener('click', openDirectionModal);
+
+    // Re-render dynamic content (badges, timeline) when the language changes;
+    // static chrome is re-applied by i18n.js itself.
+    document.addEventListener('deepgraph:languagechange', () => {
+        onTabActivated(activeTab);
+    });
+
+    // Initial data loads. Agenda scope resolves first so that scoped
+    // endpoints get their agenda_id; the unscoped loads run regardless.
+    initAgendaScope().finally(() => {
+        refreshStats();
+        loadRecentlyDiscovered();
+        loadOverviewResearchMap();
+        loadProcessingPapers();
+        startSSE();
+    });
 
     const openDiscoveries = el('btnOpenDiscoveries');
     if (openDiscoveries) {

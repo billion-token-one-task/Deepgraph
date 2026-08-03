@@ -2,6 +2,7 @@
 """DeepGraph - Hierarchical ML Research Knowledge Engine."""
 import os
 import sys
+import threading
 from pathlib import Path
 
 # Add project root to path
@@ -200,6 +201,13 @@ def main():
             print("Starting Auto Research worker...", flush=True)
             start_auto_research()
             print("Auto Research worker ready.", flush=True)
+
+        # Warm the /api/stats cache in the background so the first browser paint
+        # is served from a warm cache instead of a cold ~30-COUNT(*) query
+        # (issue #34).
+        from web.app import prewarm_stats_cache
+        print("Prewarming stats cache in background...", flush=True)
+        threading.Thread(target=prewarm_stats_cache, daemon=True).start()
 
         # Start web server
         _serve_http()

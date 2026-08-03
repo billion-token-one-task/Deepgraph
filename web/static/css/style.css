@@ -452,6 +452,141 @@ header#topBar {
     gap: 12px;
 }
 
+/* Two-register status badges: operational vs scientific, never merged */
+.reg-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 0.66rem;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    border: 1px solid var(--border);
+    vertical-align: middle;
+    margin-right: 6px;
+    white-space: nowrap;
+}
+
+.reg-op {
+    background: transparent;
+}
+
+.reg-sci-none {
+    color: var(--text-dim);
+    border-color: var(--border);
+    background: transparent;
+}
+
+.reg-sci-progress {
+    color: #2e86ab;
+    border-color: #2e86ab;
+}
+
+.reg-sci-supported {
+    color: #3d8b5e;
+    border-color: #3d8b5e;
+}
+
+.reg-sci-refuted {
+    color: #7a5ea8;
+    border-color: #7a5ea8;
+}
+
+.reg-sci-inconclusive {
+    color: #a8842a;
+    border-color: #a8842a;
+}
+
+/* Language switcher (ported from the pre-upgrade frontend) */
+.lang-switch {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg-base, transparent);
+    margin-right: 10px;
+}
+
+.lang-btn {
+    min-width: 30px;
+    height: 26px;
+    border: none;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-dim);
+    font-size: 0.7rem;
+    font-weight: 700;
+    cursor: pointer;
+}
+
+.lang-btn.active {
+    background: var(--accent-dim, rgba(46, 134, 171, 0.18));
+    color: var(--accent, #2e86ab);
+}
+
+/* Process timeline */
+.timeline-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 8px 16px 14px;
+}
+
+.timeline-row {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 4px 6px;
+    border-radius: 6px;
+    font-size: 0.78rem;
+    line-height: 1.45;
+}
+
+.timeline-row:hover {
+    background: var(--bg-elevated, rgba(128, 128, 128, 0.08));
+}
+
+.timeline-row-failed {
+    background: rgba(196, 69, 58, 0.07);
+}
+
+.timeline-when {
+    flex: 0 0 auto;
+    color: var(--text-dim);
+    font-family: "Source Code Pro", monospace;
+    font-size: 0.7rem;
+    white-space: nowrap;
+}
+
+.timeline-kind {
+    flex: 0 0 auto;
+    font-size: 0.62rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1px 7px;
+    white-space: nowrap;
+}
+
+.timeline-text {
+    color: var(--text-secondary);
+    overflow-wrap: anywhere;
+}
+
+/* Always-visible core metrics row on the overview */
+.core-stat-grid {
+    grid-template-columns: repeat(4, 1fr);
+    margin-bottom: 14px;
+}
+
+@media (max-width: 900px) {
+    .core-stat-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+}
+
 .stat-card {
     background: var(--bg-card);
     border: 1px solid var(--border);
