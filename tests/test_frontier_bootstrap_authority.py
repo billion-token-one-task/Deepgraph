@@ -489,5 +489,76 @@ class AuthorityPersistenceTests(unittest.TestCase):
             )
 
 
+class ReservationLifecycleTests(unittest.TestCase):
+    """An unused authority must give its reserved tokens back."""
+
+    def test_expiry_releases_the_agenda_reservation(self):
+        from meta_harness.frontier_authority import FrontierAuthorityRepository
+
+        releases = []
+        agenda_repository = mock.Mock()
+        agenda_repository.release.side_effect = lambda rid, *, reason: releases.append(
+            (rid, reason)
+        )
+        with mock.patch(
+            "meta_harness.frontier_authority.db.fetchall",
+            return_value=[{"id": 31, "reservation_id": 91}],
+        ), mock.patch(
+            "agents.agenda_repository.AgendaRepository", return_value=agenda_repository
+        ), mock.patch("meta_harness.frontier_authority.db.execute"), mock.patch(
+            "meta_harness.frontier_authority.db.commit"
+        ):
+            expired = FrontierAuthorityRepository().expire_stale(agenda_id=5)
+
+        self.assertEqual(expired, 1)
+        self.assertEqual(releases, [(91, "frontier_authority_expired_unused")])
+
+    def test_nothing_to_expire_touches_no_ledger(self):
+        from meta_harness.frontier_authority import FrontierAuthorityRepository
+
+        with mock.patch(
+            "meta_harness.frontier_authority.db.fetchall", return_value=[]
+        ), mock.patch("meta_harness.frontier_authority.db.execute") as execute:
+            self.assertEqual(
+                FrontierAuthorityRepository().expire_stale(agenda_id=5), 0
+            )
+        execute.assert_not_called()
+
+    def test_revoking_an_unused_authority_releases_its_reservation(self):
+        from meta_harness.frontier_authority import FrontierAuthorityRepository
+
+        agenda_repository = mock.Mock()
+        with mock.patch(
+            "meta_harness.frontier_authority.db.fetchone",
+            side_effect=[{"count": 0}, {"id": 31, "reservation_id": 91}],
+        ), mock.patch(
+            "agents.agenda_repository.AgendaRepository", return_value=agenda_repository
+        ), mock.patch("meta_harness.frontier_authority.db.execute"), mock.patch(
+            "meta_harness.frontier_authority.db.commit"
+        ):
+            self.assertTrue(
+                FrontierAuthorityRepository().revoke_unused(
+                    31, agenda_id=5, reason="no independent evaluator route"
+                )
+            )
+        self.assertEqual(agenda_repository.release.call_count, 1)
+
+    def test_an_authority_that_spent_tokens_cannot_be_revoked_as_unused(self):
+        from meta_harness.frontier_authority import (
+            FrontierAuthorityPersistenceError,
+            FrontierAuthorityRepository,
+        )
+
+        with mock.patch(
+            "meta_harness.frontier_authority.db.fetchone", return_value={"count": 2}
+        ):
+            with self.assertRaisesRegex(
+                FrontierAuthorityPersistenceError, "already recorded usage"
+            ):
+                FrontierAuthorityRepository().revoke_unused(
+                    31, agenda_id=5, reason="changed my mind"
+                )
+
+
 if __name__ == "__main__":
     unittest.main()
