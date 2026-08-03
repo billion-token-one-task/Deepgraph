@@ -330,29 +330,112 @@ class FrontierAuthorityRepository:
             raise
 
     def expire_stale(self, *, agenda_id: int) -> int:
-        """Mark timed-out authorities expired. Scoped, never global."""
+        """Expire timed-out authorities and give their budget back.
+
+        Marking an authority expired without releasing its agenda reservation
+        would strand tokens: the Agenda would count them as reserved forever
+        and eventually refuse work it can afford. Expiry is a withdrawal of
+        authority, so the reservation is released, never settled as usage.
+
+        Returns the number of authorities expired by this call. Scoped to one
+        Agenda; there is deliberately no global sweep.
+        """
+        stale = db.fetchall(
+            """
+            SELECT id, reservation_id FROM frontier_evaluation_authorities
+            WHERE agenda_id=? AND status='active'
+              AND expires_at <= CURRENT_TIMESTAMP
+            """,
+            (int(agenda_id),),
+        )
+        if not stale:
+            return 0
+
+        from agents.agenda_repository import AgendaRepository
+
+        repository = AgendaRepository()
+        expired = 0
+        for row in stale:
+            reservation_id = int(row.get("reservation_id") or 0)
+            if reservation_id > 0:
+                repository.release(
+                    reservation_id,
+                    reason="frontier_authority_expired_unused",
+                )
+            try:
+                db.execute(
+                    """
+                    UPDATE frontier_evaluation_authorities
+                    SET status='expired', closed_at=CURRENT_TIMESTAMP
+                    WHERE id=? AND agenda_id=? AND status='active'
+                    """,
+                    (int(row["id"]), int(agenda_id)),
+                )
+                db.commit()
+                expired += 1
+            except Exception:
+                db.rollback()
+                raise
+        return expired
+
+    def revoke_unused(
+        self,
+        authority_id: int,
+        *,
+        agenda_id: int,
+        reason: str,
+    ) -> bool:
+        """Hand back an authority that was issued but never used.
+
+        The operator path for "I issued this and then decided not to run it":
+        it releases the reservation and closes the authority, and it refuses to
+        touch one that already recorded usage.
+        """
+        if not str(reason).strip():
+            raise FrontierAuthorityPersistenceError("revocation reason is required")
+        used = db.fetchone(
+            """
+            SELECT COUNT(*) AS count FROM frontier_authority_usage
+            WHERE authority_id=? AND agenda_id=?
+            """,
+            (int(authority_id), int(agenda_id)),
+        )
+        if int((used or {}).get("count") or 0) > 0:
+            raise FrontierAuthorityPersistenceError(
+                "authority already recorded usage; it cannot be revoked as unused"
+            )
+        row = db.fetchone(
+            """
+            SELECT id, reservation_id FROM frontier_evaluation_authorities
+            WHERE id=? AND agenda_id=? AND status='active'
+            """,
+            (int(authority_id), int(agenda_id)),
+        )
+        if not row:
+            return False
+
+        from agents.agenda_repository import AgendaRepository
+
+        reservation_id = int(row.get("reservation_id") or 0)
+        if reservation_id > 0:
+            AgendaRepository().release(
+                reservation_id,
+                reason=f"frontier_authority_revoked:{reason}"[:200],
+            )
         try:
             db.execute(
                 """
                 UPDATE frontier_evaluation_authorities
-                SET status='expired', closed_at=CURRENT_TIMESTAMP
-                WHERE agenda_id=? AND status='active'
-                  AND expires_at <= CURRENT_TIMESTAMP
+                SET status='revoked', closed_at=CURRENT_TIMESTAMP
+                WHERE id=? AND agenda_id=? AND status='active'
                 """,
-                (int(agenda_id),),
+                (int(authority_id), int(agenda_id)),
             )
             db.commit()
         except Exception:
             db.rollback()
             raise
-        row = db.fetchone(
-            """
-            SELECT COUNT(*) AS count FROM frontier_evaluation_authorities
-            WHERE agenda_id=? AND status='expired'
-            """,
-            (int(agenda_id),),
-        )
-        return int((row or {}).get("count") or 0)
+        return True
 
     def audit_record(self, authority_id: int, *, agenda_id: int) -> dict:
         """Everything a reviewer needs to verify one bootstrap, no secrets."""
