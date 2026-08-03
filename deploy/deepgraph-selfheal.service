@@ -9,6 +9,8 @@ Type=oneshot
 # path below through the deployment manifest; do not edit it in place.
 ExecStart=/usr/local/bin/deepgraph-selfheal.py
 # Signal collection is read-only apart from the systemd restart it may issue.
+# Where orchestrator/selfheal_policy.py is deployed (see the manifest).
+Environment=DEEPGRAPH_SELFHEAL_LIB=/usr/local/lib/deepgraph
 Environment=DEEPGRAPH_SELFHEAL_ENV_FILE=/home/billion-token/Deepgraph/.env
 Environment=DEEPGRAPH_SELFHEAL_STATE_DIR=/var/lib/deepgraph-selfheal
 Environment=DEEPGRAPH_SELFHEAL_LOG=/var/log/deepgraph-selfheal.log

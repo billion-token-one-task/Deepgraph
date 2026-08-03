@@ -1032,4 +1032,13 @@ def get_stats_dict() -> dict:
     except Exception:
         base["matrix_gaps_total"] = 0
     base["taxonomy_nodes_total"] = db.fetchone("SELECT COUNT(*) as c FROM taxonomy_nodes")["c"]
+    try:
+        # LLM tokens metered against research agendas (meta-harness v1 ledger).
+        # Kept separate from tokens_consumed (paper-analysis tokens): the two
+        # ledgers may overlap, so they are never summed into one number.
+        base["agenda_tokens_total"] = db.fetchone(
+            "SELECT COALESCE(SUM(tokens),0) as c FROM agenda_token_ledger"
+        )["c"]
+    except Exception:
+        base["agenda_tokens_total"] = 0
     return base

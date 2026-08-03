@@ -185,7 +185,9 @@ class ExperimentGroupApiTests(unittest.TestCase):
         self.assertEqual(group["latest_run"]["id"], 11)
         self.assertEqual(group["auto_job"]["stage"], "gpu_scheduler")
         self.assertTrue(any(track["key"] == "ablation" and track["enabled"] for track in group["planned_tracks"]))
-        self.assertTrue(group["workspace_root"].endswith("idea_1"))
+        # Server filesystem layout must never reach the browser.
+        for private_key in ("workspace_root", "experiment_root", "plan_root", "paper_root"):
+            self.assertNotIn(private_key, group)
         self.assertIn("latest_status", group["plan_snapshot"])
         self.assertIn("/papers/1", group["paper_preview_urls"]["index"])
         self.assertIn("agenda_id=1", group["paper_preview_urls"]["index"])
