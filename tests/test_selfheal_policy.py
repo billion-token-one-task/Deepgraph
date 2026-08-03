@@ -330,6 +330,24 @@ class RunnerSignalParsingTests(unittest.TestCase):
         self.assertFalse(signals.awaiting_authority)
         self.assertEqual(decide(signals).action, ACTION_HOLD)
 
+    def test_library_root_resolution_prefers_an_explicit_deployment_path(self):
+        import os
+        import tempfile
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory(prefix="selfheal-lib-") as directory:
+            module = os.path.join(directory, "orchestrator", "selfheal_policy.py")
+            os.makedirs(os.path.dirname(module))
+            open(module, "w").close()
+
+            with patch.dict(os.environ, {"DEEPGRAPH_SELFHEAL_LIB": directory}):
+                self.assertEqual(self.runner._resolve_library_root(), directory)
+
+            # An env pointing at a directory without the module falls through to
+            # the next candidate instead of poisoning sys.path.
+            with patch.dict(os.environ, {"DEEPGRAPH_SELFHEAL_LIB": "/nonexistent"}):
+                self.assertNotEqual(self.runner._resolve_library_root(), "/nonexistent")
+
 
 if __name__ == "__main__":
     unittest.main()
