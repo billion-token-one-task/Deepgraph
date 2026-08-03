@@ -36,7 +36,30 @@ from dataclasses import asdict
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+def _resolve_library_root() -> str:
+    """Find the directory holding ``orchestrator/selfheal_policy.py``.
+
+    The runner is deployed to /usr/local/bin, where the repository layout no
+    longer applies, so the policy module's location is explicit rather than
+    inferred from ``__file__``. Candidates are tried in order and the first one
+    that actually contains the module wins; nothing is added to ``sys.path``
+    speculatively.
+    """
+    candidates = [
+        os.environ.get("DEEPGRAPH_SELFHEAL_LIB", ""),
+        "/usr/local/lib/deepgraph",
+        str(Path(__file__).resolve().parents[1]),
+    ]
+    for candidate in candidates:
+        if candidate and (Path(candidate) / "orchestrator" / "selfheal_policy.py").is_file():
+            return candidate
+    raise SystemExit(
+        "selfheal policy module not found; set DEEPGRAPH_SELFHEAL_LIB to the "
+        "directory containing orchestrator/selfheal_policy.py"
+    )
+
+
+sys.path.insert(0, _resolve_library_root())
 
 from orchestrator.selfheal_policy import (  # noqa: E402
     HEALTH_FAILED,
