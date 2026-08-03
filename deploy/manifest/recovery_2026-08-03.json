@@ -14,9 +14,33 @@
           "replaces": "/usr/local/bin/deepgraph-selfheal.sh",
           "runtime_locally_modified": false,
           "source": "scripts/deepgraph_selfheal.py",
-          "source_bytes": 14311,
-          "source_sha256": "d32c5f304e1539351ef5cb81879fc5047da21df2fb873bc20929853496118c39",
+          "source_bytes": 15232,
+          "source_sha256": "d0b994567410986fea3f4b3ece892525e0f413a80509626f5f342466b980ce3f",
           "target": "/usr/local/bin/deepgraph-selfheal.py"
+        },
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/recovery_2026-08-03/selfheal_policy.py.bak",
+          "kind": "file",
+          "mode": "0644",
+          "owner": "root:root",
+          "replaces": null,
+          "runtime_locally_modified": false,
+          "source": "orchestrator/selfheal_policy.py",
+          "source_bytes": 10437,
+          "source_sha256": "c8238aaa760c4acfa85b6d2443246bff5f70db38aee46886daa04dbc92ef7107",
+          "target": "/usr/local/lib/deepgraph/orchestrator/selfheal_policy.py"
+        },
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/recovery_2026-08-03/__init__.py.bak",
+          "kind": "file",
+          "mode": "0644",
+          "owner": "root:root",
+          "replaces": null,
+          "runtime_locally_modified": false,
+          "source": "orchestrator/__init__.py",
+          "source_bytes": 0,
+          "source_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "target": "/usr/local/lib/deepgraph/orchestrator/__init__.py"
         },
         {
           "backup_artifact": "/home/ec2-user/deepgraph-rollback/recovery_2026-08-03/deepgraph-selfheal.service.bak",
@@ -26,8 +50,8 @@
           "replaces": null,
           "runtime_locally_modified": false,
           "source": "deploy/deepgraph-selfheal.service",
-          "source_bytes": 918,
-          "source_sha256": "74ca87dab9c9bc838578924bddb1ea438c1c40aa1e73e78d8423f7e37b395a01",
+          "source_bytes": 1050,
+          "source_sha256": "4039906e3e445d2e2ebfb032358d195227f118146186d07134f2be6572a75b21",
           "target": "/etc/systemd/system/deepgraph-selfheal.service"
         },
         {
@@ -273,6 +297,6 @@
     ]
   },
   "runtime_root": "/home/billion-token/Deepgraph",
-  "source_commit": "59fb2ca20807f474f8df33bf60d5785eee7cc365",
-  "source_worktree_clean": true
+  "source_commit": "029993733917bd2d5eb1def92f9033b4353d8bb6",
+  "source_worktree_clean": false
 }
