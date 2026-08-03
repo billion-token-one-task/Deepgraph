@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the DeepGraph self-heal watchdog every 10 minutes
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=10min
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
