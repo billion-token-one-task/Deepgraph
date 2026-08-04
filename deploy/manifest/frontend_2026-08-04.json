@@ -24,10 +24,10 @@
           "mode": "0644",
           "owner": "billion-token:billion-token",
           "replaces": null,
-          "runtime_locally_modified": false,
+          "runtime_locally_modified": true,
           "source": "web/provenance_routes.py",
-          "source_bytes": 16545,
-          "source_sha256": "23f47ad2515d372463d40557d57e578058ffaf1567411713f7f3e4eb5482cf94",
+          "source_bytes": 17307,
+          "source_sha256": "4abf21261487faba0a59d5cecf29a35aefd9a3aa1f6237d0a0492217616c072d",
           "target": "/home/billion-token/Deepgraph/web/provenance_routes.py"
         },
         {
@@ -50,8 +50,8 @@
           "replaces": null,
           "runtime_locally_modified": true,
           "source": "web/templates/index.html",
-          "source_bytes": 31783,
-          "source_sha256": "50f9cfb7146a79362ae773d5b8698e071a110df0fe10e19a298a5fe82125b82a",
+          "source_bytes": 31986,
+          "source_sha256": "8c7e8278f1e037e5b0146a67d7ad95a1cd7fdb257bb32b7542a8f9ca156e6856",
           "target": "/home/billion-token/Deepgraph/web/templates/index.html"
         },
         {
@@ -62,8 +62,8 @@
           "replaces": null,
           "runtime_locally_modified": true,
           "source": "web/static/js/app.js",
-          "source_bytes": 196120,
-          "source_sha256": "f4edc786d54ab833db334aaa9ddb383b59cf605d81efc59c046b68f1436f35d0",
+          "source_bytes": 197916,
+          "source_sha256": "770da30565e069a4ecdcc1e18fef9fd42e18cceb5f4918bb199db95ff3f1f5eb",
           "target": "/home/billion-token/Deepgraph/web/static/js/app.js"
         },
         {
@@ -72,10 +72,10 @@
           "mode": "0644",
           "owner": "billion-token:billion-token",
           "replaces": null,
-          "runtime_locally_modified": false,
+          "runtime_locally_modified": true,
           "source": "web/static/js/i18n.js",
-          "source_bytes": 14789,
-          "source_sha256": "60c6704070c69bd5f5aa54ebe5df212cdc2ae42ecd00373371cfb8610388f8d7",
+          "source_bytes": 14984,
+          "source_sha256": "0257ef4cb9b4e233c5f0abb543cdb19836b27cf113be8a04d40725ae6dae371c",
           "target": "/home/billion-token/Deepgraph/web/static/js/i18n.js"
         },
         {
@@ -86,8 +86,8 @@
           "replaces": null,
           "runtime_locally_modified": true,
           "source": "web/static/css/style.css",
-          "source_bytes": 67415,
-          "source_sha256": "85354f208df165f5212c2001ac8daf676ea10896bf4b955571979449a811f4cb",
+          "source_bytes": 67861,
+          "source_sha256": "cccbd04f2f8af08ef00fb0749873a365c630d0ac287666d991e27074157add0a",
           "target": "/home/billion-token/Deepgraph/web/static/css/style.css"
         },
         {
@@ -96,7 +96,7 @@
           "mode": "0644",
           "owner": "billion-token:billion-token",
           "replaces": null,
-          "runtime_locally_modified": false,
+          "runtime_locally_modified": true,
           "source": "web/static/vendor/d3/d3.v7.min.js",
           "source_bytes": 279706,
           "source_sha256": "f2094bbf6141b359722c4fe454eb6c4b0f0e42cc10cc7af921fc158fceb86539",
@@ -108,7 +108,7 @@
           "mode": "0644",
           "owner": "billion-token:billion-token",
           "replaces": null,
-          "runtime_locally_modified": false,
+          "runtime_locally_modified": true,
           "source": "web/static/vendor/marked/marked.min.js",
           "source_bytes": 39903,
           "source_sha256": "3e7e7d7feb3e5d58cb6c804f68ab5c24cc7e5eb6270fd6e5cbb9124739217d0c",
@@ -134,8 +134,8 @@
           "replaces": null,
           "runtime_locally_modified": true,
           "source": "orchestrator/pipeline.py",
-          "source_bytes": 45320,
-          "source_sha256": "f4b1ae7a6397a467b5fa33777e10e857ee427c55ac7a196d096f8891198e4370",
+          "source_bytes": 46122,
+          "source_sha256": "9cbeab2ba7db106c172ffb81f2e6bebb08bd4c932c9b8914b161299d2c371f9f",
           "target": "/home/billion-token/Deepgraph/orchestrator/pipeline.py"
         }
       ],
@@ -157,8 +157,12 @@
     "main.py",
     "orchestrator/pipeline.py",
     "web/app.py",
+    "web/provenance_routes.py",
     "web/static/css/style.css",
     "web/static/js/app.js",
+    "web/static/js/i18n.js",
+    "web/static/vendor/d3/d3.v7.min.js",
+    "web/static/vendor/marked/marked.min.js",
     "web/templates/index.html"
   ],
   "production_tree_modified_by_this_command": false,
@@ -173,6 +177,6 @@
     ]
   },
   "runtime_root": "/home/billion-token/Deepgraph",
-  "source_commit": "9508982c724a2cb3240749e09c92a3f0a4bded1a",
+  "source_commit": "57df9c4347d8009d54b5809aaf18798cce2eac6c",
   "source_worktree_clean": true
 }
