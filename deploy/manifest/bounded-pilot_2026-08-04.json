@@ -94,6 +94,6 @@
     ]
   },
   "runtime_root": "/home/billion-token/Deepgraph",
-  "source_commit": "8bcfd7fe682e295506bc22f309c86914a4339c3d",
-  "source_worktree_clean": false
+  "source_commit": "f22af96dd23fec10bfc78c63fa46f6c30ea3e28e",
+  "source_worktree_clean": true
 }
