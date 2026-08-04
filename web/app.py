@@ -390,13 +390,24 @@ def _paper_preview_urls(
 def _workspace_payload(insight: dict) -> dict[str, Any]:
     # Ensure the workspace exists and is synced; absolute workspace paths stay
     # server-internal — the browser gets asset names and preview URLs only.
-    get_idea_workspace(int(insight["id"]), insight=insight, create=True, sync_db=True)
-    assets = list_paper_assets(int(insight["id"]), insight=insight)
-    preview_urls = _paper_preview_urls(
-        int(insight["id"]),
-        assets,
-        agenda_id=int(insight["agenda_id"]),
-    )
+    # A broken workspace on one idea (e.g. a dangling `current` symlink left by
+    # an old run) must degrade to an empty asset view, not 500 a whole listing.
+    assets: list = []
+    preview_urls: dict = {}
+    try:
+        get_idea_workspace(int(insight["id"]), insight=insight, create=True, sync_db=True)
+        assets = list_paper_assets(int(insight["id"]), insight=insight)
+        preview_urls = _paper_preview_urls(
+            int(insight["id"]),
+            assets,
+            agenda_id=int(insight["agenda_id"]),
+        )
+    except OSError as exc:
+        log_event("error", {
+            "step": "idea_workspace",
+            "insight_id": insight.get("id"),
+            "error": str(exc),
+        })
     return {
         "canonical_run_id": insight.get("canonical_run_id"),
         "plan_snapshot": _plan_snapshot(insight),
