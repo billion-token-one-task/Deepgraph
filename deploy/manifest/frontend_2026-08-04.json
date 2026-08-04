@@ -50,8 +50,8 @@
           "replaces": null,
           "runtime_locally_modified": true,
           "source": "web/templates/index.html",
-          "source_bytes": 30812,
-          "source_sha256": "6ee7582010aabcac13a266c950705367696e30a4d33331bf8d3e20e982ccf612",
+          "source_bytes": 31783,
+          "source_sha256": "50f9cfb7146a79362ae773d5b8698e071a110df0fe10e19a298a5fe82125b82a",
           "target": "/home/billion-token/Deepgraph/web/templates/index.html"
         },
         {
@@ -62,8 +62,8 @@
           "replaces": null,
           "runtime_locally_modified": true,
           "source": "web/static/js/app.js",
-          "source_bytes": 195632,
-          "source_sha256": "2da41906e8128a387121a31e9ae252d45eae33cfc07e047d316536ac5356033a",
+          "source_bytes": 196120,
+          "source_sha256": "f4edc786d54ab833db334aaa9ddb383b59cf605d81efc59c046b68f1436f35d0",
           "target": "/home/billion-token/Deepgraph/web/static/js/app.js"
         },
         {
@@ -74,8 +74,8 @@
           "replaces": null,
           "runtime_locally_modified": false,
           "source": "web/static/js/i18n.js",
-          "source_bytes": 14690,
-          "source_sha256": "ef74d2eef8f2e8747c1d0872bc976fb22df4b0bed67f6db84c89d34b0a3217ce",
+          "source_bytes": 14789,
+          "source_sha256": "60c6704070c69bd5f5aa54ebe5df212cdc2ae42ecd00373371cfb8610388f8d7",
           "target": "/home/billion-token/Deepgraph/web/static/js/i18n.js"
         },
         {
@@ -86,8 +86,8 @@
           "replaces": null,
           "runtime_locally_modified": true,
           "source": "web/static/css/style.css",
-          "source_bytes": 67308,
-          "source_sha256": "696807f657871d97822f4702d4c9cedb7666a1752a279de7a19063bc293b12a9",
+          "source_bytes": 67415,
+          "source_sha256": "85354f208df165f5212c2001ac8daf676ea10896bf4b955571979449a811f4cb",
           "target": "/home/billion-token/Deepgraph/web/static/css/style.css"
         },
         {
@@ -134,8 +134,8 @@
           "replaces": null,
           "runtime_locally_modified": true,
           "source": "orchestrator/pipeline.py",
-          "source_bytes": 44440,
-          "source_sha256": "667b1e57569d6392ae2202b2d3f13514f346c5555d4613cd0bb083301bf9b252",
+          "source_bytes": 45320,
+          "source_sha256": "f4b1ae7a6397a467b5fa33777e10e857ee427c55ac7a196d096f8891198e4370",
           "target": "/home/billion-token/Deepgraph/orchestrator/pipeline.py"
         }
       ],
@@ -173,6 +173,6 @@
     ]
   },
   "runtime_root": "/home/billion-token/Deepgraph",
-  "source_commit": "e6e6af5993b38c2273b86e00a9031454710c65a3",
+  "source_commit": "9508982c724a2cb3240749e09c92a3f0a4bded1a",
   "source_worktree_clean": true
 }
