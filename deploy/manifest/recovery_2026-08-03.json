@@ -192,8 +192,8 @@
           "replaces": null,
           "runtime_locally_modified": true,
           "source": "meta_harness/repository.py",
-          "source_bytes": 52294,
-          "source_sha256": "aa3ddb733d110ce7cabc527ece90b6794c5dab348efdbf3493e0f37b4583481a",
+          "source_bytes": 57490,
+          "source_sha256": "172a15d8a19c5a2cbc8d36c44898c5c203a6bc319c759715d719f9281ac2769e",
           "target": "/home/billion-token/Deepgraph/meta_harness/repository.py"
         },
         {
@@ -240,8 +240,8 @@
           "replaces": null,
           "runtime_locally_modified": true,
           "source": "web/meta_harness_routes.py",
-          "source_bytes": 24865,
-          "source_sha256": "7893a6d0742151f5c9918e1eebb5c62bd8412f872454e07c224de342ed825a99",
+          "source_bytes": 25470,
+          "source_sha256": "05c42cd9bdd864c51b7ab752b427a8f7b0ebfdaa740934e5892d7b4e6981034d",
           "target": "/home/billion-token/Deepgraph/web/meta_harness_routes.py"
         },
         {
@@ -343,6 +343,6 @@
     ]
   },
   "runtime_root": "/home/billion-token/Deepgraph",
-  "source_commit": "2cc470c191f68505b2ed5f5ccda4e438b6c64169",
+  "source_commit": "4b32875a6ca961b0d8f7d3fca934fde1b1fe6cf0",
   "source_worktree_clean": false
 }

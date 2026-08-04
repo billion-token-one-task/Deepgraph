@@ -106,6 +106,39 @@ def _require_short_ttl(grant: ResourceGrant, *, now: datetime | None = None) -> 
         )
 
 
+def _require_schedulable_backends(grant: ResourceGrant) -> None:
+    """A grant may only name compute backends that could actually run.
+
+    Capability was previously checked at submission time, so a grant naming an
+    unverified backend was issued happily: it reserved GPU hours and a
+    concurrency slot for work that could never be scheduled. Authority for a
+    backend that cannot run is not a smaller risk than running it -- it is a
+    budget leak plus a false statement about what the Agenda is doing.
+
+    ``llm`` is not a compute backend and is intentionally not checked here; the
+    LLM route has its own admission path.
+    """
+    from meta_harness.backend_capability import (
+        BackendCapabilityError,
+        reports_from_config,
+        require_schedulable,
+    )
+
+    compute_backends = [
+        backend for backend in grant.backend_allowlist if backend != "llm"
+    ]
+    if not compute_backends:
+        return
+    try:
+        reports = reports_from_config()
+        for backend in compute_backends:
+            require_schedulable(backend, reports)
+    except BackendCapabilityError as exc:
+        raise MetaHarnessPersistenceError(
+            f"ResourceGrant names a backend that cannot be scheduled:{exc}"
+        ) from exc
+
+
 def _canonical_hash(value: str) -> str:
     text = str(value or "").strip().lower()
     return text.removeprefix("sha256:")
@@ -739,6 +772,7 @@ class MetaHarnessRepository:
                 raise MetaHarnessPersistenceError(
                     "ResourceGrant backend exceeds agenda allowlist"
                 )
+            _require_schedulable_backends(grant)
             reservation_id = db.insert_returning_id(
                 """
                 INSERT INTO agenda_resource_ledger
@@ -805,6 +839,101 @@ class MetaHarnessRepository:
             grant.grant_id = grant_id
             grant.reservation_id = reservation_id
             return grant_id
+        except Exception:
+            db.rollback()
+            raise
+
+    def revoke_grant(
+        self,
+        grant_id: int,
+        *,
+        agenda_id: int,
+        reason: str,
+    ) -> bool:
+        """Withdraw an active grant that has not been used, and refund it.
+
+        Withdrawal is not completion: no OutcomeRecord is written and the job
+        is marked blocked rather than done. A grant that already metered usage
+        cannot be revoked this way -- that would erase the record of a spend.
+        """
+        if not str(reason or "").strip():
+            raise MetaHarnessPersistenceError("a revocation reason is required")
+        try:
+            used = db.fetchone(
+                """
+                SELECT COUNT(*) AS count
+                FROM resource_grant_usage_reservations
+                WHERE resource_grant_id=? AND agenda_id=? AND status='settled'
+                """,
+                (int(grant_id), int(agenda_id)),
+            )
+            if int((used or {}).get("count") or 0) > 0:
+                raise MetaHarnessPersistenceError(
+                    "grant already metered usage; it cannot be revoked as unused"
+                )
+            row = db.fetchone(
+                """
+                SELECT rg.id, rg.agenda_id, rg.reservation_id,
+                       arl.token_reserved, arl.gpu_hours_reserved,
+                       arl.status AS reservation_status
+                FROM resource_grants rg
+                JOIN agenda_resource_ledger arl ON arl.id=rg.reservation_id
+                WHERE rg.id=? AND rg.agenda_id=? AND rg.status='active'
+                """,
+                (int(grant_id), int(agenda_id)),
+            )
+            if not row:
+                db.commit()
+                return False
+            if row.get("reservation_status") == "reserved":
+                db.execute(
+                    """
+                    UPDATE research_agendas
+                    SET token_reserved=token_reserved-?,
+                        gpu_hours_reserved=gpu_hours_reserved-?,
+                        updated_at=CURRENT_TIMESTAMP
+                    WHERE id=?
+                    """,
+                    (
+                        int(row.get("token_reserved") or 0),
+                        float(row.get("gpu_hours_reserved") or 0),
+                        int(agenda_id),
+                    ),
+                )
+                db.execute(
+                    """
+                    UPDATE agenda_resource_ledger
+                    SET status='released', release_reason=?,
+                        settled_at=CURRENT_TIMESTAMP
+                    WHERE id=? AND status='reserved'
+                    """,
+                    (f"grant_revoked:{reason}"[:200], int(row["reservation_id"])),
+                )
+            db.execute(
+                """
+                UPDATE resource_grant_usage_reservations
+                SET status='released', release_reason=?,
+                    settled_at=CURRENT_TIMESTAMP
+                WHERE resource_grant_id=? AND agenda_id=? AND status='reserved'
+                """,
+                (f"grant_revoked:{reason}"[:200], int(grant_id), int(agenda_id)),
+            )
+            db.execute(
+                "UPDATE resource_grants SET status='revoked' WHERE id=? AND agenda_id=? AND status='active'",
+                (int(grant_id), int(agenda_id)),
+            )
+            db.execute(
+                """
+                UPDATE auto_research_jobs
+                SET status='blocked', stage='resource_grant_revoked',
+                    last_error=?, updated_at=CURRENT_TIMESTAMP
+                WHERE resource_grant_id=? AND agenda_id=?
+                  AND status NOT IN ('completed', 'failed')
+                """,
+                (f"grant revoked: {reason}"[:200], int(grant_id), int(agenda_id)),
+            )
+            db.commit()
+            return True
         except Exception:
             db.rollback()
             raise
