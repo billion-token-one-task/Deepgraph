@@ -458,6 +458,24 @@ def issue_grant():
         return _error(exc)
 
 
+@blueprint.post("/grants/<int:grant_id>/revoke")
+def revoke_grant(grant_id: int):
+    """Withdraw an unused grant and refund its reservation."""
+    try:
+        _require_operator()
+        payload = _payload()
+        revoked = MetaHarnessRepository().revoke_grant(
+            grant_id,
+            agenda_id=int(payload["agenda_id"]),
+            reason=str(payload.get("reason") or ""),
+        )
+        return jsonify(
+            {"status": "revoked" if revoked else "not_active", "grant_id": grant_id}
+        ), (200 if revoked else 404)
+    except Exception as exc:
+        return _error(exc)
+
+
 @blueprint.post("/runs/<int:run_id>/attach-grant")
 def attach_grant(run_id: int):
     try:

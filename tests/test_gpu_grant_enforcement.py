@@ -26,7 +26,7 @@ def _grant(**overrides) -> ResourceGrant:
         "token_cap": 5_000,
         "gpu_class": "a10",
         "max_gpu_hours": 2.0,
-        "backend_allowlist": ["ssh_gpu"],
+        "backend_allowlist": ["cpu"],
         "artifact_requirements": ["logs", "metrics"],
         "expires_at": (NOW + timedelta(hours=6)).isoformat(),
         "grant_reason": "portfolio_score_selected",
@@ -57,10 +57,27 @@ def _agenda(**overrides) -> dict:
 DECISION = {"agenda_id": 11, "idea_id": 41, "decision": "promote"}
 
 
-def _issue(grant, *, agenda=None, active_grants=0):
+def _capability_reports():
+    """This host: cpu verified, ssh_gpu configured but never canaried."""
+    from meta_harness.backend_capability import evaluate_backends
+
+    return evaluate_backends(
+        enabled=["cpu", "ssh_gpu"],
+        verified=["cpu"],
+        gpu_mode="ssh",
+        ssh_target_ref="env:TARGET",
+        ssh_credential_ref="env:KEY",
+        local_gpu_present=False,
+    )
+
+
+def _issue(grant, *, agenda=None, active_grants=0, reports=None):
     """Run issue_grant far enough to reach every admission check."""
     rows = [agenda or _agenda(), DECISION, None, {"count": active_grants}]
     with mock.patch(
+        "meta_harness.backend_capability.reports_from_config",
+        return_value=reports or _capability_reports(),
+    ), mock.patch(
         "meta_harness.repository.db._use_pg", return_value=False
     ), mock.patch(
         "meta_harness.repository.db.fetchone", side_effect=rows
@@ -114,11 +131,13 @@ class GpuGrantAdmissionTests(unittest.TestCase):
             _issue(_grant(), active_grants=4)
 
     def test_backend_allowlist_cannot_exceed_the_agenda(self):
+        # Agenda scope is reported before system capability, so an operator
+        # sees the specific reason the request was out of bounds.
         restricted = _agenda(backend_allowlist_json='["cpu", "llm"]')
         with self.assertRaisesRegex(
             MetaHarnessPersistenceError, "backend exceeds agenda allowlist"
         ):
-            _issue(_grant(), agenda=restricted)
+            _issue(_grant(backend_allowlist=["ssh_gpu"]), agenda=restricted)
 
     def test_ttl_must_be_short_and_in_the_future(self):
         with self.assertRaisesRegex(MetaHarnessPersistenceError, "TTL exceeds"):
@@ -170,6 +189,91 @@ class GpuGrantAdmissionTests(unittest.TestCase):
 
         with self.assertRaises(ContractValidationError):
             _grant(token_cap=0, max_gpu_hours=0.0).validate()
+
+
+class BackendCapabilityAdmissionTests(unittest.TestCase):
+    """A grant may not authorize a backend that could never be scheduled."""
+
+    def test_unverified_gpu_backend_is_refused_at_issue_time(self):
+        # Found in production: the capability model was only consulted when a
+        # job was submitted, so this grant was issued and reserved GPU hours
+        # plus a concurrency slot for work that can never run.
+        with self.assertRaisesRegex(
+            MetaHarnessPersistenceError, "cannot be scheduled"
+        ):
+            _issue(_grant(backend_allowlist=["ssh_gpu"]))
+
+    def test_a_verified_backend_is_accepted(self):
+        from meta_harness.backend_capability import evaluate_backends
+
+        verified = evaluate_backends(
+            enabled=["cpu", "ssh_gpu"],
+            verified=["cpu", "ssh_gpu"],
+            gpu_mode="ssh",
+            ssh_target_ref="env:TARGET",
+            ssh_credential_ref="env:KEY",
+            local_gpu_present=False,
+        )
+        self.assertEqual(
+            _issue(_grant(backend_allowlist=["ssh_gpu"]), reports=verified), 5
+        )
+
+    def test_llm_only_grants_do_not_need_a_compute_backend(self):
+        llm_only = _grant(
+            backend_allowlist=["llm"],
+            max_gpu_hours=0.0,
+            gpu_class="none",
+        )
+        self.assertEqual(_issue(llm_only), 5)
+
+
+class GrantRevocationTests(unittest.TestCase):
+    """Withdrawing an unused grant refunds it; a used one cannot be erased."""
+
+    def test_revoking_an_unused_grant_refunds_the_reservation(self):
+        rows = [
+            {"count": 0},
+            {
+                "id": 2,
+                "agenda_id": 11,
+                "reservation_id": 7,
+                "token_reserved": 1000,
+                "gpu_hours_reserved": 4.0,
+                "reservation_status": "reserved",
+            },
+        ]
+        with mock.patch(
+            "meta_harness.repository.db.fetchone", side_effect=rows
+        ), mock.patch("meta_harness.repository.db.execute") as execute, mock.patch(
+            "meta_harness.repository.db.commit"
+        ), mock.patch("meta_harness.repository.db.rollback"):
+            revoked = MetaHarnessRepository().revoke_grant(
+                2, agenda_id=11, reason="backend cannot be scheduled"
+            )
+
+        self.assertTrue(revoked)
+        statements = " ".join(str(call.args[0]) for call in execute.call_args_list)
+        self.assertIn("token_reserved=token_reserved-?", statements)
+        self.assertIn("gpu_hours_reserved=gpu_hours_reserved-?", statements)
+        self.assertIn("status='released'", statements)
+        self.assertIn("status='revoked'", statements)
+        # Withdrawal is not completion.
+        self.assertIn("resource_grant_revoked", statements)
+        self.assertNotIn("outcome_records", statements)
+
+    def test_a_grant_that_metered_usage_cannot_be_revoked(self):
+        with mock.patch(
+            "meta_harness.repository.db.fetchone", return_value={"count": 1}
+        ), mock.patch("meta_harness.repository.db.rollback"):
+            with self.assertRaisesRegex(
+                MetaHarnessPersistenceError, "already metered usage"
+            ):
+                MetaHarnessRepository().revoke_grant(2, agenda_id=11, reason="oops")
+
+    def test_a_reason_is_required(self):
+        with mock.patch("meta_harness.repository.db.rollback"):
+            with self.assertRaises(MetaHarnessPersistenceError):
+                MetaHarnessRepository().revoke_grant(2, agenda_id=11, reason="  ")
 
 
 if __name__ == "__main__":
