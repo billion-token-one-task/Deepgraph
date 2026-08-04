@@ -1,0 +1,57 @@
+{
+  "version": "v1",
+  "name": "harness-scaffold-self-evolution-v1",
+  "description": "Recursive self-improvement of an agent harness at the scaffold layer. With the base model frozen, can a search loop that proposes, evaluates and accepts changes to the agent's scaffold and control flow (chain-of-thought, self-consistency voting, reflexion rounds, plan-then-execute decomposition, verifier-guided retry, and their compositions) discover a scaffold that beats the frozen baseline scaffold on a fixed task suite with an automatic verifier, and does the discovered gain survive on a held-out split? The search itself is the object of study: which proposal strategy and which acceptance rule find real gains rather than overfitting the held-in split.",
+  "focus": [
+    "self improving harness",
+    "agent scaffold search",
+    "recursive self improvement",
+    "scaffold structure evolution",
+    "control flow search",
+    "self consistency",
+    "reflexion",
+    "plan then execute",
+    "verifier guided retry",
+    "held out non regression gate",
+    "automated agent design"
+  ],
+  "prefer": {
+    "constraints": {
+      "frozen_base_model": "exactly one open-weights model, at most 8B parameters, fp16 on a single A100-40GB; the model is never trained, fine-tuned or swapped mid-study",
+      "search_space_is_scaffold_only": "the search may only vary scaffold and control-flow configuration (prompt structure, number of samples, voting rule, number of reflexion rounds, decomposition depth, retry policy and their compositions); it may never edit source code, install packages or touch any live system",
+      "automatic_verifier_required": "every task must be scored by an automatic verifier with no human or LLM judge in the loop: GSM8K exact-match on the final numeric answer, HumanEval unit-test execution. This is what makes the pass rate a real measured number.",
+      "off_the_shelf_benchmarks_only": "task suites load directly through HuggingFace datasets with no bespoke agent harness, no simulator, no external service and no network access at scoring time",
+      "frozen_baseline_measured_here": "the mandatory baseline is the frozen single-pass scaffold measured on the same model, same task subset and same seeds on this hardware; published numbers are never a baseline",
+      "pre_registered_split": "the held-in and held-out task split is fixed and recorded before the first search round; the search only ever sees held-in scores",
+      "acceptance_rule": "a proposed scaffold is accepted only when it improves held-in pass rate and does not regress held-out pass rate beyond the pre-registered tolerance",
+      "compute_matched_comparison": "scaffolds are compared at matched inference cost (total sampled tokens or total model calls), so a win must not come from simply spending more compute",
+      "numeric_metrics_mandatory": "every run persists a real numeric pass rate and a real numeric inference cost; a run whose metric artifacts carry empty values is a failed run, not a completed one",
+      "negative_results_in_scope": "finding that no proposed scaffold survives the held-out gate is a valid, reportable outcome and must be reported as such"
+    }
+  },
+  "reject": {
+    "out_of_scope": [
+      "editing the DeepGraph source tree, its configuration, or any live system; the search operates on scaffold configuration only",
+      "benchmarks requiring a dedicated agent harness, sandbox or simulator (GAIA, SWE-bench, WebArena, ALFWorld and similar)",
+      "training, fine-tuning, RLHF or distillation of the base model",
+      "models above 8B parameters or setups needing multi-GPU sharding of one model",
+      "unbounded self-modification without a held-out acceptance gate",
+      "claims resting on numbers copied from papers rather than measured on this hardware"
+    ]
+  },
+  "required_output": {
+    "goal": "verified_evidence"
+  },
+  "submitter": "product-owner",
+  "token_budget": 500000,
+  "gpu_hours_budget": 100,
+  "max_concurrency": 4,
+  "backend_allowlist": [
+    "cpu",
+    "llm",
+    "ssh_gpu"
+  ],
+  "backlog_policy": "explicit_import_only",
+  "status": "active",
+  "is_active": true
+}

@@ -1,0 +1,56 @@
+{
+  "version": "v1",
+  "name": "test-time-compute-allocation-v1",
+  "description": "With the model frozen, how should a fixed test-time compute budget be spent? Compare allocation strategies at matched cost on a fixed task suite with an automatic verifier: more independent samples with majority voting, longer single chains of thought, verifier-guided reranking of a candidate pool, and adaptive allocation that spends more only on items the model is uncertain about. Which strategy buys the most accuracy per unit of compute, and where does each one saturate?",
+  "focus": [
+    "test time compute",
+    "inference scaling",
+    "self consistency voting",
+    "chain of thought length",
+    "best of n reranking",
+    "adaptive compute allocation",
+    "uncertainty based routing",
+    "compute matched comparison",
+    "accuracy cost tradeoff",
+    "mathematical reasoning"
+  ],
+  "prefer": {
+    "constraints": {
+      "frozen_base_model": "exactly one open-weights model, at most 8B parameters, fp16 on a single A100-40GB; never trained or fine-tuned",
+      "automatic_verifier_required": "scoring is automatic with no LLM judge: GSM8K and MATH exact-match on the final answer, HumanEval unit-test execution",
+      "off_the_shelf_benchmarks_only": "task suites load directly through HuggingFace datasets, with no bespoke harness, simulator or external service",
+      "compute_matched_comparison": "every strategy comparison is made at matched total sampled tokens; an accuracy gain bought purely by spending more compute is not a result, it is the null hypothesis",
+      "cost_axis_mandatory": "each run records total sampled tokens, wall-clock latency and peak memory alongside accuracy; accuracy without a cost number is an incomplete result",
+      "baseline_is_single_greedy_pass": "the mandatory baseline is a single greedy pass of the same model on the same items on this hardware",
+      "saturation_must_be_measured": "each strategy is swept across at least three budget levels so the saturation point is measured rather than asserted",
+      "seeds": "at least 3 seeds for any sampled decoding; greedy runs record that decoding is deterministic instead of faking seed variance",
+      "numeric_metrics_mandatory": "every run persists real numeric accuracy and real numeric cost values; a run whose metric artifacts carry empty values is a failed run, not a completed one",
+      "negative_results_in_scope": "finding that no strategy beats the compute-matched baseline is a valid, reportable outcome"
+    }
+  },
+  "reject": {
+    "out_of_scope": [
+      "training, fine-tuning, RLHF or distillation of the base model",
+      "benchmarks requiring a dedicated agent harness, sandbox or simulator (GAIA, SWE-bench, WebArena, ALFWorld and similar)",
+      "LLM-as-judge scoring for the primary metric",
+      "models above 8B parameters or multi-GPU sharding of one model",
+      "comparisons that are not matched on inference cost",
+      "claims resting on numbers copied from papers rather than measured on this hardware"
+    ]
+  },
+  "required_output": {
+    "goal": "verified_evidence"
+  },
+  "submitter": "product-owner",
+  "token_budget": 500000,
+  "gpu_hours_budget": 100,
+  "max_concurrency": 4,
+  "backend_allowlist": [
+    "cpu",
+    "llm",
+    "ssh_gpu"
+  ],
+  "backlog_policy": "explicit_import_only",
+  "status": "active",
+  "is_active": true
+}
