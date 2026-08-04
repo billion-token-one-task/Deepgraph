@@ -222,6 +222,24 @@ def _authorize_bounded_grant(
     return grant, dict(row)
 
 
+def _run_bound_to_grant(request: BoundedExecutionRequest) -> int:
+    """The newest experiment run this grant produced, or 0.
+
+    Asked of the database rather than of the forge's return value: the forge
+    creates the run before the review stages that can reject it, so a failed
+    forge can still leave a real run behind holding real metered spend.
+    """
+    row = db.fetchone(
+        """
+        SELECT id FROM experiment_runs
+        WHERE agenda_id=? AND deep_insight_id=? AND resource_grant_id=?
+        ORDER BY id DESC
+        """,
+        (request.agenda_id, request.idea_id, request.resource_grant_id),
+    )
+    return int((row or {}).get("id") or 0)
+
+
 def _claim_job(request: BoundedExecutionRequest) -> dict[str, Any]:
     """Take the granted job atomically; a second caller must find nothing."""
     job = db.fetchone(
@@ -356,31 +374,44 @@ def execute_granted_candidate(
 
     run_id: int | None = None
     try:
+        forge_error = ""
         forged = run_forge(request.idea_id, request.resource_grant_id)
         if not isinstance(forged, dict) or forged.get("error"):
+            forge_error = str((forged or {}).get("error") or "unknown")
+        # The forge creates the run before the stages that can reject it, so a
+        # reported error does not mean nothing exists. Ask the database what
+        # this grant actually produced instead of trusting the return value: a
+        # run that exists must be settled, or its metered spend strands the
+        # agenda's reservation with no way to release it.
+        run_id = _run_bound_to_grant(request) or int(
+            (forged or {}).get("run_id") or 0
+        ) or None
+        if not run_id:
             raise BoundedExecutionError(
-                "forge_failed:" + str((forged or {}).get("error") or "unknown")
+                "forge_failed:" + (forge_error or "forge_returned_no_run")
             )
-        run_id = int(forged.get("run_id") or 0)
-        if run_id <= 0:
-            raise BoundedExecutionError("forge_returned_no_run")
         result.experiment_run_id = run_id
+        if forge_error:
+            result.details["forge_error"] = forge_error
 
-        validated = run_validate(run_id)
-        if not isinstance(validated, dict) or validated.get("error"):
-            raise BoundedExecutionError(
-                "validation_failed:" + str((validated or {}).get("error") or "unknown")
-            )
-        verdict = str(validated.get("verdict") or "").strip().lower()
-        result.verdict = verdict
-        result.details["validation"] = {
-            key: validated.get(key)
-            for key in ("verdict", "baseline", "best_value", "effect_pct")
-        }
-        if verdict == "blocked":
-            raise BoundedExecutionError(
-                "validation_blocked:" + str(validated.get("reason") or "unknown")
-            )
+        verdict = ""
+        if not forge_error:
+            validated = run_validate(run_id)
+            if not isinstance(validated, dict) or validated.get("error"):
+                raise BoundedExecutionError(
+                    "validation_failed:"
+                    + str((validated or {}).get("error") or "unknown")
+                )
+            verdict = str(validated.get("verdict") or "").strip().lower()
+            result.verdict = verdict
+            result.details["validation"] = {
+                key: validated.get(key)
+                for key in ("verdict", "baseline", "best_value", "effect_pct")
+            }
+            if verdict == "blocked":
+                raise BoundedExecutionError(
+                    "validation_blocked:" + str(validated.get("reason") or "unknown")
+                )
 
         run = db.fetchone(
             """
@@ -393,7 +424,9 @@ def execute_granted_candidate(
         )
         if not run or int(run.get("resource_grant_id") or 0) != request.resource_grant_id:
             raise BoundedExecutionError("run_not_bound_to_grant")
-        execution_succeeded = str(run.get("status") or "") == "completed"
+        execution_succeeded = (
+            not forge_error and str(run.get("status") or "") == "completed"
+        )
 
         digest, present, missing = raw_artifacts_hash(
             agenda_id=request.agenda_id,
@@ -425,7 +458,11 @@ def execute_granted_candidate(
             # path exists to avoid.
             result.evidence_state = str(run.get("scientific_evidence_state") or "planned")
             result.details["not_advanced"] = (
-                "execution_incomplete" if not execution_succeeded else "no_artifact_files"
+                "forge_rejected_the_experiment"
+                if forge_error
+                else "execution_incomplete"
+                if not execution_succeeded
+                else "no_artifact_files"
             )
 
         outcome_id = repo.assemble_and_record_outcome(
@@ -433,7 +470,7 @@ def execute_granted_candidate(
             experiment_run_id=run_id,
         )
         result.outcome_record_id = int(outcome_id)
-        result.status = "completed"
+        result.status = "settled_without_result" if forge_error else "completed"
         _settle_job(
             job_id=job_id,
             agenda_id=request.agenda_id,
