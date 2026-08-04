@@ -111,7 +111,6 @@ class LegacyScopeBackfillTests(unittest.TestCase):
         self.assertIsNotNone(agenda_id)
         backfill.import_orphan_insights(agenda_id, execute=True)
         backfill.backfill_lineage(execute=True)
-        backfill.import_scoped_jobs(execute=True)
 
         # Orphan insight went to the legacy agenda, audited.
         row = database.fetchone("SELECT agenda_id FROM deep_insights WHERE id=2")
@@ -139,7 +138,7 @@ class LegacyScopeBackfillTests(unittest.TestCase):
             database.fetchone("SELECT agenda_id FROM experiment_runs WHERE id=11")["agenda_id"],
             1,
         )
-        # Job followed its scoped insight, audited.
+        # Job followed its scoped insight by lineage.
         self.assertEqual(
             database.fetchone("SELECT agenda_id FROM auto_research_jobs WHERE id=300")["agenda_id"],
             1,
