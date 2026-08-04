@@ -96,7 +96,7 @@
       "systemd_reload_required": false
     },
     {
-      "acceptance": "status endpoint returns 200 and counts; backend audit reports cpu enabled, ssh_gpu unknown",
+      "acceptance": "status endpoint returns 200; backend audit reports cpu enabled and ssh_gpu unknown; /llm-providers returns 403 without an operator token",
       "authorization": "required-before-deploy",
       "batch": "3-application",
       "files": [
@@ -240,8 +240,8 @@
           "replaces": null,
           "runtime_locally_modified": true,
           "source": "web/meta_harness_routes.py",
-          "source_bytes": 21280,
-          "source_sha256": "0345ae16a6fcc06e7df0ed805a11a5f82c7c3ad633328f034012b6205e1f531c",
+          "source_bytes": 24639,
+          "source_sha256": "baa3ffe3db280a0fae5605c6faa5e245507ee8f184ba927e05636d35484bbb70",
           "target": "/home/billion-token/Deepgraph/web/meta_harness_routes.py"
         },
         {
@@ -252,9 +252,45 @@
           "replaces": null,
           "runtime_locally_modified": true,
           "source": "config.py",
-          "source_bytes": 33117,
-          "source_sha256": "c2ae4c3accec1ceb71f24a443f456e18427a49ca22cb0f3d26466762b7f77d72",
+          "source_bytes": 34909,
+          "source_sha256": "3116ef165eba02191ac2f0647d9679d1fd8dd122bfc3d5e1967547235ca8dd1e",
           "target": "/home/billion-token/Deepgraph/config.py"
+        },
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/recovery_2026-08-03/llm_client.py.bak",
+          "kind": "file",
+          "mode": "0644",
+          "owner": "billion-token:billion-token",
+          "replaces": null,
+          "runtime_locally_modified": true,
+          "source": "agents/llm_client.py",
+          "source_bytes": 61146,
+          "source_sha256": "98eaba4f6c7adb7b01ca7a08799bac0e6bb361cb07b05409180fcba0c9ae2a5f",
+          "target": "/home/billion-token/Deepgraph/agents/llm_client.py"
+        },
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/recovery_2026-08-03/provider_config.py.bak",
+          "kind": "file",
+          "mode": "0644",
+          "owner": "billion-token:billion-token",
+          "replaces": null,
+          "runtime_locally_modified": false,
+          "source": "web/provider_config.py",
+          "source_bytes": 9163,
+          "source_sha256": "a1cf2d70c148723c2665cf63c23fc20d736330c6db8d9aa3399b04a3abf3b97b",
+          "target": "/home/billion-token/Deepgraph/web/provider_config.py"
+        },
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/recovery_2026-08-03/llm_providers.html.bak",
+          "kind": "file",
+          "mode": "0644",
+          "owner": "billion-token:billion-token",
+          "replaces": null,
+          "runtime_locally_modified": false,
+          "source": "web/templates/meta_harness/llm_providers.html",
+          "source_bytes": 8604,
+          "source_sha256": "4d028d2538ec457a674d8138431bd3af32f18a081819eba08804d440aac51571",
+          "target": "/home/billion-token/Deepgraph/web/templates/meta_harness/llm_providers.html"
         }
       ],
       "health_check": "curl -fsS https://deepgraph.joulebeat.com/api/meta-harness/v1/status",
@@ -278,6 +314,7 @@
   "manifest_key": "recovery_2026-08-03",
   "operator_diff_required": [
     "agents/agenda_selector.py",
+    "agents/llm_client.py",
     "agents/topic_gate.py",
     "config.py",
     "contracts/meta_harness.py",
@@ -304,6 +341,6 @@
     ]
   },
   "runtime_root": "/home/billion-token/Deepgraph",
-  "source_commit": "38432a1c6122c24d11e377ae6cce54e85ef66ef2",
+  "source_commit": "b7411db4fcbfa7f06960925a5f53ab5c7f32d36b",
   "source_worktree_clean": false
 }
