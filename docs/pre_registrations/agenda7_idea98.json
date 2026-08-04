@@ -1,0 +1,28 @@
+{
+  "prediction": {
+    "predicted_outcome": "A bounded propose-validate-accept harness-edit loop raises held-out task pass rate over a frozen harness by a small but positive margin (+3 to +8 points absolute) on the fixed suite with the fixed base model; among the three single editable surfaces, context-management logic yields the largest verified gain, tool-invocation policy second, workflow control flow smallest.",
+    "confidence": 0.55,
+    "action_if_confirmed": "Fix context-management logic as the v2 surface and spend the remaining agenda budget on a larger held-out split and a second base model to test whether the same accepted edit transfers.",
+    "action_if_refuted": "Drop the surface-ranking hypothesis and re-scope v2 to the weaker question of whether ANY single-surface bounded edit beats the frozen harness at all, with a wider weakness-mining budget and a per-surface null-result report.",
+    "already_published": "no",
+    "already_published_evidence": "Frontier packet 2 (agenda 7, gate_allowed, independent evaluator sora2_claude/claude-opus-4-6-thinking, coverage 2026-04-08..2026-05-13, 24 linked papers) found no prior work answering this question: EvoMAS 2605.08769 evolves execution-time workflows without a non-regression gate, RewardHarness 2605.08703 targets post-training rather than bounded harness edits, MemFlow 2605.03312 isolates context management alone without cross-surface comparison, Squeeze Evolve 2604.07725 and Uno-Orchestra 2605.05007 orchestrate multi-model systems without a controlled single-surface ablation, and 2605.05716 demonstrates cross-component interference but runs no bounded edit loop."
+  },
+  "minimum_falsification_experiment": {
+    "metric": "held-out task pass rate under the fixed verifier, with held-in pass rate as the non-regression guard",
+    "baseline": "frozen harness (zero accepted edits), identical base model, identical task suite, identical seeds",
+    "decisive_comparison": "pre-registered 60/40 held-in/held-out split fixed before any run; at most one accepted edit per surface; 3 seeds; a surface counts as a win only if held-out pass rate improves AND neither split regresses beyond the pre-registered tolerance; the three surfaces are ranked by held-out delta and the ranking claim requires non-overlapping 95% CIs",
+    "estimated_cost": {
+      "tokens": 5000,
+      "gpu_hours": 0,
+      "wall_hours": 4
+    }
+  },
+  "provenance": {
+    "drafted_by": "assistant (agenda-7 research driver session, 2026-08-04)",
+    "authorized_by": "operator:owner (explicit approval in the agenda-7 driver session, 2026-08-04)",
+    "review_status": "approved by the agenda owner before any resource was granted",
+    "frontier_packet_id": 2,
+    "research_problem_id": 2,
+    "note": "Pre-registration. Once a ResourceGrant exists for this idea the record is frozen; changing the prediction afterwards requires a new candidate and a new cycle."
+  }
+}
