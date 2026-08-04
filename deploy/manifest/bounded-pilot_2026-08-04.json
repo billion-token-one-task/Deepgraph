@@ -63,8 +63,8 @@
           "replaces": null,
           "runtime_locally_modified": true,
           "source": "orchestrator/bounded_execution.py",
-          "source_bytes": 17887,
-          "source_sha256": "477843c41fdc3198c195e16ed0a038399df71321ca3d544e548b3eb57adef4e7",
+          "source_bytes": 19435,
+          "source_sha256": "572522cb060025725a438bfa6fe91a37bcc6f1eadc0ff1d5099f7230a82a8599",
           "target": "/home/billion-token/Deepgraph/orchestrator/bounded_execution.py"
         },
         {
@@ -109,6 +109,6 @@
     ]
   },
   "runtime_root": "/home/billion-token/Deepgraph",
-  "source_commit": "a33d62b3face5ea1fa809c6eaa44c102d7eb652a",
-  "source_worktree_clean": false
+  "source_commit": "5ec24f1841b3725ea92957c02ec374d4799b1f4e",
+  "source_worktree_clean": true
 }
