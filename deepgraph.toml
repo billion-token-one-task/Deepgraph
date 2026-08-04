@@ -51,6 +51,21 @@ transient_cooldown_seconds = 180
 max_input_tokens = 900000
 max_output_tokens = 32000
 
+# Declarative provider routes. Everything here is non-secret; the API key is
+# named by api_key_env and read from the environment at startup, so adding a
+# provider is one block here plus one line in the environment file. A literal
+# api_key in this file is refused at startup, because this file is in Git.
+#
+# [[llm.providers]]
+# name = "gpt5"                                   # referenced by llm_routes.*
+# base_url = "https://api.example.com/v1"
+# model = "gpt-5.4"
+# model_family = "gpt"                            # independence is judged on this
+# protocol = "chat_completions"                   # or "responses"
+# api_key_env = "DEEPGRAPH_LLM_GPT5_API_KEY"
+# rpm = 0
+# enabled = true
+
 [llm.secondary]
 enabled = false
 protocol = "responses"

@@ -10,6 +10,7 @@ from config import (
     LLM_BASE_URL,
     LLM_CONNECT_TIMEOUT_SECONDS,
     LLM_EXTRA_PROVIDERS_JSON,
+    LLM_PROVIDERS,
     LLM_MAX_OUTPUT_TOKENS,
     LLM_MODEL,
     LLM_PROMPT_CACHE_ENABLED,
@@ -260,6 +261,74 @@ def _extra_openai_providers() -> list[dict]:
     return providers
 
 
+class DeclaredProviderError(RuntimeError):
+    """Raised when a declared provider entry is unsafe or unusable."""
+
+
+def _declared_providers() -> list[dict]:
+    """Providers declared in deepgraph.toml as ``[[llm.providers]]``.
+
+    Only non-secret fields live in TOML. The API key is named by
+    ``api_key_env`` and read from the environment, so adding a provider is one
+    TOML block plus one line in the environment file, instead of a JSON blob.
+
+    Two things deliberately fail rather than degrade:
+
+    * a literal ``api_key`` in TOML is refused -- TOML is tracked in Git;
+    * a referenced environment variable that is unset skips the provider with a
+      named reason, so a missing key never silently falls back to another
+      provider.
+    """
+    providers: list[dict] = []
+    for index, entry in enumerate(LLM_PROVIDERS, start=1):
+        if entry.get("enabled") is False:
+            continue
+        name = str(entry.get("name") or f"declared_{index}").strip()
+        if entry.get("api_key"):
+            raise DeclaredProviderError(
+                f"provider {name} declares a literal api_key in TOML; "
+                "use api_key_env with an environment variable name instead"
+            )
+        key_env = str(entry.get("api_key_env") or "").strip()
+        base_url = str(entry.get("base_url") or "").strip().rstrip("/")
+        model = str(entry.get("model") or "").strip()
+        if not key_env or not base_url or not model:
+            print(
+                f"[LLM] Skipping declared provider {name}: "
+                "api_key_env, base_url and model are all required",
+                flush=True,
+            )
+            continue
+        api_key = str(os.environ.get(key_env, "") or "").strip()
+        if not api_key:
+            print(
+                f"[LLM] Skipping declared provider {name}: {key_env} is not set",
+                flush=True,
+            )
+            continue
+        providers.append(
+            {
+                "name": name,
+                "base_url": base_url,
+                "api_key": api_key,
+                "model": model,
+                "model_family": str(entry.get("model_family") or "").strip(),
+                "protocol": str(entry.get("protocol") or LLM_PROTOCOL).strip().lower(),
+                "rpm": int(entry.get("rpm") or 0),
+                "stream_chat_completions": bool(
+                    entry.get("stream_chat_completions", False)
+                ),
+                "chat_endpoint": str(entry.get("chat_endpoint") or "/chat/completions"),
+                "extra_headers": (
+                    dict(entry["extra_headers"])
+                    if isinstance(entry.get("extra_headers"), dict)
+                    else {}
+                ),
+            }
+        )
+    return providers
+
+
 def _init_providers():
     """Build provider pool from config + env vars."""
     global _providers
@@ -323,6 +392,9 @@ def _init_providers():
             rpm=LLM_SECONDARY_RPM,
         )
 
+    for declared in _declared_providers():
+        _providers.append(declared)
+
     for extra in _extra_openai_providers():
         _append_openai_provider(
             name=extra["name"],
@@ -345,8 +417,9 @@ def _init_providers():
             name = f"{base_name}_{suffix}"
             suffix += 1
         provider["name"] = name
-        provider["model_family"] = (
-            str(provider.get("model_family") or provider.get("model") or "")
+        declared_family = str(provider.get("model_family") or "").strip()
+        provider["model_family"] = declared_family or (
+            str(provider.get("model") or "")
             .lower()
             .split("/", 1)[-1]
             .split("-", 1)[0]

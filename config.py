@@ -189,6 +189,15 @@ LLM_SECONDARY_RPM = _env_int("DEEPGRAPH_LLM_SECONDARY_RPM", 0, "llm.secondary.rp
 # JSON list of additional OpenAI-compatible routes. Each item may include:
 # name, base_url, api_key, model, protocol, rpm, enabled, stream_chat_completions.
 LLM_EXTRA_PROVIDERS_JSON = _env_str("DEEPGRAPH_LLM_EXTRA_PROVIDERS_JSON", "", "llm.extra_providers_json")
+# Declarative provider routes: [[llm.providers]] in deepgraph.toml. Everything
+# there is non-secret (name, base_url, model, family, protocol, rpm); the API
+# key is named by `api_key_env` and read from the environment at startup. A
+# literal key in TOML is refused rather than used, because TOML is in Git.
+LLM_PROVIDERS = [
+    dict(entry)
+    for entry in (_toml_get("llm.providers", []) or [])
+    if isinstance(entry, dict)
+]
 LLM_REASONING_EFFORT = _env_str("DEEPGRAPH_LLM_REASONING_EFFORT", "medium", "llm.reasoning_effort")
 LLM_PROMPT_CACHE_ENABLED = _env_bool("DEEPGRAPH_LLM_PROMPT_CACHE_ENABLED", True, "llm.prompt_cache_enabled")
 LLM_PROMPT_CACHE_KEY = _env_str("DEEPGRAPH_LLM_PROMPT_CACHE_KEY", "deepgraph", "llm.prompt_cache_key").strip()
