@@ -1239,6 +1239,17 @@ def call_llm_for_role(
     )
     if not grant_row:
         raise PermissionError("active scoped ResourceGrant is required for LLM role")
+    # Trim the request to what this grant still has, rather than sending the
+    # caller's own default and letting the sub-reservation refuse it. A small
+    # short grant is the whole point of the bounded pilot path: without this a
+    # single caller asking for the provider maximum makes any grant smaller
+    # than that maximum unusable, no matter how little work it needs.
+    remaining_tokens = GrantUsageLedger(resource_grant_id).remaining(
+        agenda_id=agenda_id
+    )
+    if remaining_tokens <= 0:
+        raise PermissionError("ResourceGrant token budget is exhausted")
+    token_cap = min(token_cap, remaining_tokens)
     grant = ResourceGrant(
         agenda_id=int(grant_row["agenda_id"]),
         idea_id=int(grant_row["idea_id"]),

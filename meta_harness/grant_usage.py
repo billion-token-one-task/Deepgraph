@@ -18,6 +18,46 @@ class GrantUsageLedger:
         if self.resource_grant_id <= 0:
             raise GrantUsageError("resource_grant_id must be positive")
 
+    def _committed_tokens(self) -> int:
+        """Tokens the grant has already promised: open reservations + real spend."""
+        row = db.fetchone(
+            """
+            SELECT COALESCE(SUM(
+                CASE
+                    WHEN status='reserved' THEN token_reserved
+                    WHEN status='settled' THEN COALESCE(tokens_used, 0)
+                    ELSE 0
+                END
+            ), 0) AS reserved
+            FROM resource_grant_usage_reservations
+            WHERE resource_grant_id=? AND status IN ('reserved', 'settled')
+            """,
+            (self.resource_grant_id,),
+        )
+        return int((row or {}).get("reserved") or 0)
+
+    def remaining(self, *, agenda_id: int | None = None) -> int:
+        """Tokens still available under this grant, never negative.
+
+        Callers size a request against this instead of against their own
+        default: a grant's cap is the point of the grant, and a caller asking
+        for a provider's maximum output would otherwise be refused outright
+        rather than trimmed to what was actually authorized.
+        """
+        grant = db.fetchone(
+            """
+            SELECT agenda_id, token_cap, status
+            FROM resource_grants
+            WHERE id=? AND expires_at > CURRENT_TIMESTAMP
+            """,
+            (self.resource_grant_id,),
+        )
+        if not grant or grant.get("status") != "active":
+            return 0
+        if agenda_id is not None and int(grant.get("agenda_id") or 0) != int(agenda_id):
+            return 0
+        return max(0, int(grant.get("token_cap") or 0) - self._committed_tokens())
+
     def reserve(
         self,
         *,
