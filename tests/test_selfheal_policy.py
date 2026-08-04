@@ -22,6 +22,7 @@ from orchestrator.selfheal_policy import (
     REASON_OUTPUT_FRESH,
     REASON_PROCESS_NOT_RUNNING,
     REASON_PROVIDER_ISSUE,
+    REASON_RESTART_DB_TRANSACTION_STALLED,
     REASON_RESTART_HEALTH,
     REASON_RESTART_OUTPUT_STALLED,
     SelfHealPolicy,
@@ -438,6 +439,176 @@ class StartupAndMaintenanceTests(unittest.TestCase):
         read_counts.assert_not_called()
         self.assertIsNone(signals.output_age_seconds)
         self.assertEqual(decide(signals).reason_code, REASON_AUTONOMY_DISABLED)
+
+
+class StuckTransactionSignalTests(unittest.TestCase):
+    """The half-dead state: HTTP 200, no output, and locks held forever."""
+
+    def test_abandoned_transaction_past_the_window_restarts(self):
+        signals = _working_signals(
+            output_age_seconds=10,
+            max_idle_transaction_seconds=20 * 60,
+            idle_transaction_sessions=11,
+        )
+        decision = decide(signals, policy=SelfHealPolicy(idle_transaction_seconds=15 * 60))
+
+        self.assertEqual(decision.action, ACTION_RESTART)
+        self.assertEqual(decision.reason_code, REASON_RESTART_DB_TRANSACTION_STALLED)
+        self.assertEqual(decision.details["idle_transaction_sessions"], 11)
+
+    def test_stuck_transaction_is_caught_even_with_autonomy_off(self):
+        """Output freshness cannot see this, so the autonomy hold must not mask it."""
+        signals = _working_signals(
+            auto_research_enabled=False,
+            auto_pipeline_enabled=False,
+            output_age_seconds=None,
+            max_idle_transaction_seconds=20 * 60,
+            idle_transaction_sessions=4,
+        )
+        decision = decide(signals, policy=SelfHealPolicy(idle_transaction_seconds=15 * 60))
+
+        self.assertEqual(decision.reason_code, REASON_RESTART_DB_TRANSACTION_STALLED)
+
+    def test_short_lived_transaction_is_left_alone(self):
+        """Normal write traffic is briefly idle in transaction all the time."""
+        signals = _working_signals(
+            output_age_seconds=10,
+            max_idle_transaction_seconds=30,
+            idle_transaction_sessions=3,
+        )
+        decision = decide(signals, policy=SelfHealPolicy(idle_transaction_seconds=15 * 60))
+
+        self.assertEqual(decision.action, ACTION_HOLD)
+        self.assertEqual(decision.reason_code, REASON_OUTPUT_FRESH)
+
+    def test_unavailable_transaction_signal_never_restarts_and_never_masks(self):
+        """Fail safe: unknown falls through to the existing output-stall path."""
+        self.assertEqual(
+            decide(_working_signals(output_age_seconds=10)).reason_code,
+            REASON_OUTPUT_FRESH,
+        )
+        stalled = decide(
+            _working_signals(output_age_seconds=99 * 60, max_idle_transaction_seconds=None)
+        )
+        self.assertEqual(stalled.reason_code, REASON_RESTART_OUTPUT_STALLED)
+
+    def test_stuck_transaction_restart_still_obeys_the_cooldown(self):
+        decision = decide(
+            _working_signals(
+                output_age_seconds=10,
+                max_idle_transaction_seconds=20 * 60,
+                seconds_since_last_restart=60,
+            )
+        )
+
+        self.assertEqual(decision.action, ACTION_HOLD)
+        self.assertEqual(decision.reason_code, REASON_COOLDOWN)
+        self.assertEqual(
+            decision.details["suppressed_reason"],
+            REASON_RESTART_DB_TRANSACTION_STALLED,
+        )
+
+    def test_maintenance_and_startup_grace_still_outrank_the_new_signal(self):
+        stuck = {"max_idle_transaction_seconds": 20 * 60, "output_age_seconds": 10}
+        self.assertEqual(
+            decide(_working_signals(maintenance_mode=True, **stuck)).reason_code,
+            REASON_MAINTENANCE,
+        )
+        self.assertEqual(
+            decide(_working_signals(service_uptime_seconds=5, **stuck)).reason_code,
+            REASON_STARTUP_GRACE,
+        )
+
+    def test_negative_transaction_counters_are_rejected(self):
+        with self.assertRaises(SelfHealPolicyError):
+            decide(_working_signals(max_idle_transaction_seconds=-1))
+        with self.assertRaises(SelfHealPolicyError):
+            decide(_working_signals(idle_transaction_sessions=-1))
+        with self.assertRaises(SelfHealPolicyError):
+            decide(_working_signals(), policy=SelfHealPolicy(idle_transaction_seconds=0))
+
+
+class StuckTransactionCollectionTests(unittest.TestCase):
+    def setUp(self):
+        from scripts import deepgraph_selfheal
+
+        self.runner = deepgraph_selfheal
+
+    def test_parse_transaction_health_reads_one_row(self):
+        parsed = self.runner.parse_transaction_health(" 660|11 \n")
+
+        self.assertEqual(parsed["max_idle_transaction_seconds"], 660)
+        self.assertEqual(parsed["idle_transaction_sessions"], 11)
+
+    def test_parse_transaction_health_rejects_unusable_output(self):
+        self.assertIsNone(self.runner.parse_transaction_health(""))
+        self.assertIsNone(self.runner.parse_transaction_health("ERROR:  denied"))
+        self.assertIsNone(self.runner.parse_transaction_health("1|2|3"))
+
+    def test_empty_database_maps_to_unknown_not_zero(self):
+        self.assertEqual(
+            self.runner.parse_transaction_health("-1|0")["max_idle_transaction_seconds"],
+            -1,
+        )
+        self.assertIsNone(self.runner.read_transaction_health("", psql="psql"))
+        with patch.object(self.runner, "_run", side_effect=OSError("no psql")):
+            self.assertIsNone(
+                self.runner.read_transaction_health(
+                    "postgresql://user:pw@127.0.0.1:5433/deepgraph", psql="psql"
+                )
+            )
+
+    def test_transaction_query_runs_even_when_autonomy_is_off(self):
+        """The expensive freshness scan is skipped; this cheap one is not."""
+        with mock.patch.object(
+            self.runner,
+            "parse_env_file",
+            return_value={
+                "DEEPGRAPH_AUTO_RESEARCH_ENABLED": "false",
+                "DEEPGRAPH_AUTO_PIPELINE_ENABLED": "0",
+                "DEEPGRAPH_DATABASE_URL": "postgresql://user:pw@127.0.0.1:5433/deepgraph",
+            },
+        ), mock.patch.object(
+            self.runner, "process_running", return_value=True
+        ), mock.patch.object(
+            self.runner, "probe_health", return_value=HEALTH_OK
+        ), mock.patch.object(
+            self.runner, "read_counts"
+        ) as read_counts, mock.patch.object(
+            self.runner,
+            "read_transaction_health",
+            return_value={
+                "max_idle_transaction_seconds": 1200,
+                "idle_transaction_sessions": 11,
+            },
+        ) as read_txn, mock.patch.object(
+            self.runner, "tail_text", return_value=""
+        ):
+            signals = self.runner.collect_signals(
+                runtime_env="/nonexistent/.env",
+                process_pattern="x",
+                health_url="http://127.0.0.1:8080/api/meta",
+                web_log="/nonexistent/web.log",
+                psql="psql",
+                previous_state={},
+                now=1_000_000.0,
+            )
+
+        read_counts.assert_not_called()
+        read_txn.assert_called_once()
+        self.assertEqual(signals.max_idle_transaction_seconds, 1200)
+        self.assertEqual(signals.idle_transaction_sessions, 11)
+        self.assertEqual(
+            decide(signals).reason_code, REASON_RESTART_DB_TRANSACTION_STALLED
+        )
+
+    def test_transaction_query_selects_no_row_content(self):
+        """The watchdog must never read query text or user data out of the DB."""
+        sql = self.runner.IDLE_TRANSACTION_SQL.lower()
+
+        self.assertIn("pg_stat_activity", sql)
+        self.assertNotIn("query", sql)
+        self.assertIn("pid <> pg_backend_pid()", sql)
 
 
 if __name__ == "__main__":

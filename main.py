@@ -108,6 +108,38 @@ def _run_startup_maintenance(label: str, fn) -> bool:
     return True
 
 
+def _start_degradable_worker(label: str, start_fn, ok_statuses: set[str]) -> bool:
+    """Start a background worker that is allowed to stay down.
+
+    A worker that fails closed must not take the web process with it: the
+    fail-closed contract is "this worker does not run", not "nothing runs".
+    Refusing to serve HTTP because an optional ingestion loop declined to start
+    turns a scoped denial into a site outage, so a bad status or an exception
+    is logged and skipped rather than raised.
+    """
+    print(f"Starting {label}...", flush=True)
+    try:
+        status = start_fn() or {}
+        state = status.get("status") or "unknown"
+    except Exception as exc:  # background worker startup must never kill the site
+        print(
+            f"{label} degraded: startup raised {type(exc).__name__}: {exc}; "
+            "the worker stays down and startup continues.",
+            flush=True,
+        )
+        return False
+    if state not in ok_statuses:
+        print(
+            f"{label} degraded: failed closed with status '{state}'"
+            + (f" (reason: {status['reason']})" if status.get("reason") else "")
+            + "; the worker stays down and startup continues.",
+            flush=True,
+        )
+        return False
+    print(f"{label} ready.", flush=True)
+    return True
+
+
 def main():
     if not _try_acquire_process_lock():
         owner = _current_lock_owner()
@@ -142,18 +174,12 @@ def main():
 
         if AUTO_PIPELINE_ENABLED:
             from orchestrator.paper_worker import start as start_paper_worker
-            print("Starting paper ingestion worker...", flush=True)
-            paper_worker_status = start_paper_worker()
-            if paper_worker_status.get("status") not in {
-                "started",
-                "already_running",
-                "already_running_elsewhere",
-            }:
-                raise RuntimeError(
-                    "Paper ingestion worker failed closed during startup: "
-                    f"{paper_worker_status.get('status') or 'unknown'}"
-                )
-            print("Paper ingestion worker ready.", flush=True)
+
+            _start_degradable_worker(
+                "Paper ingestion worker",
+                start_paper_worker,
+                {"started", "already_running", "already_running_elsewhere"},
+            )
 
         if SCOPED_INGESTION_WORKER_ENABLED:
             from orchestrator.scoped_ingestion_worker import (
