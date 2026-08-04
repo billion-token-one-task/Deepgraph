@@ -215,7 +215,11 @@ def readiness(entries: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
     described = []
     for entry in entries:
         key_env = str(entry.get("api_key_env") or "")
-        present = bool(str(os.environ.get(key_env, "") or "").strip())
+        # A runtime entry is read back from the live provider pool, so its
+        # credential demonstrably resolved at startup; there is no variable to
+        # re-check and its absence would misreport a working route as broken.
+        runtime = str(entry.get("source") or "") == "runtime"
+        present = runtime or bool(str(os.environ.get(key_env, "") or "").strip())
         described.append(
             {
                 "name": entry.get("name"),
@@ -232,6 +236,38 @@ def readiness(entries: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
             }
         )
     return sorted(described, key=lambda item: str(item.get("name")))
+
+
+def effective_pool() -> list[dict[str, Any]]:
+    """The routes this process would actually use, with no credential material.
+
+    The legacy provider slots (minimax, tabcode, secondary) are built from
+    environment variables and never appear in the managed store, so a report
+    based on the store alone would understate what is running -- and, worse,
+    would tell an operator that no independent evaluator exists when one does.
+    Reading the live pool back is the only answer that cannot drift.
+    """
+    try:
+        from agents import llm_client
+
+        llm_client._init_providers()  # noqa: SLF001 - reads config, no network
+        pool = list(llm_client._providers)  # noqa: SLF001
+    except Exception:
+        return []
+    return [
+        {
+            "name": str(entry.get("name") or ""),
+            "base_url": str(entry.get("base_url") or ""),
+            "model": str(entry.get("model") or ""),
+            "model_family": str(entry.get("model_family") or ""),
+            "protocol": str(entry.get("protocol") or ""),
+            "rpm": int(entry.get("rpm") or 0),
+            "enabled": True,
+            "api_key_env": "",
+            "source": "runtime",
+        }
+        for entry in pool
+    ]
 
 
 def independence_report(entries: Iterable[Mapping[str, Any]]) -> dict[str, Any]:

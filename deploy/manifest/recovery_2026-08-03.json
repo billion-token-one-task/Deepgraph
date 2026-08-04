@@ -240,8 +240,8 @@
           "replaces": null,
           "runtime_locally_modified": true,
           "source": "web/meta_harness_routes.py",
-          "source_bytes": 24639,
-          "source_sha256": "baa3ffe3db280a0fae5605c6faa5e245507ee8f184ba927e05636d35484bbb70",
+          "source_bytes": 24865,
+          "source_sha256": "7893a6d0742151f5c9918e1eebb5c62bd8412f872454e07c224de342ed825a99",
           "target": "/home/billion-token/Deepgraph/web/meta_harness_routes.py"
         },
         {
@@ -274,10 +274,10 @@
           "mode": "0644",
           "owner": "billion-token:billion-token",
           "replaces": null,
-          "runtime_locally_modified": false,
+          "runtime_locally_modified": true,
           "source": "web/provider_config.py",
-          "source_bytes": 9163,
-          "source_sha256": "a1cf2d70c148723c2665cf63c23fc20d736330c6db8d9aa3399b04a3abf3b97b",
+          "source_bytes": 10698,
+          "source_sha256": "c7005a7f13d7f156a8e688a6fb49f59ff0601c40bb248ca3fef9ba6c6e4614b3",
           "target": "/home/billion-token/Deepgraph/web/provider_config.py"
         },
         {
@@ -286,7 +286,7 @@
           "mode": "0644",
           "owner": "billion-token:billion-token",
           "replaces": null,
-          "runtime_locally_modified": false,
+          "runtime_locally_modified": true,
           "source": "web/templates/meta_harness/llm_providers.html",
           "source_bytes": 8604,
           "source_sha256": "4d028d2538ec457a674d8138431bd3af32f18a081819eba08804d440aac51571",
@@ -327,7 +327,9 @@
     "orchestrator/meta_compute_runtime.py",
     "orchestrator/selfheal_policy.py",
     "orchestrator/selfheal_policy.py",
-    "web/meta_harness_routes.py"
+    "web/meta_harness_routes.py",
+    "web/provider_config.py",
+    "web/templates/meta_harness/llm_providers.html"
   ],
   "production_tree_modified_by_this_command": false,
   "rollback": {
@@ -341,6 +343,6 @@
     ]
   },
   "runtime_root": "/home/billion-token/Deepgraph",
-  "source_commit": "b7411db4fcbfa7f06960925a5f53ab5c7f32d36b",
+  "source_commit": "2cc470c191f68505b2ed5f5ccda4e438b6c64169",
   "source_worktree_clean": false
 }
