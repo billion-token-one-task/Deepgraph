@@ -14,8 +14,8 @@
           "replaces": null,
           "runtime_locally_modified": true,
           "source": "web/app.py",
-          "source_bytes": 83822,
-          "source_sha256": "16bed12ce9e29eaa1d6a5b18b2952fe5096db9432f0f781b34b6ed80a594cd42",
+          "source_bytes": 84250,
+          "source_sha256": "e6cd996883db1058af8c4b06ccac5009001bec2f8b30a613e5ae9440c2f7aa1b",
           "target": "/home/billion-token/Deepgraph/web/app.py"
         },
         {
@@ -177,6 +177,6 @@
     ]
   },
   "runtime_root": "/home/billion-token/Deepgraph",
-  "source_commit": "57df9c4347d8009d54b5809aaf18798cce2eac6c",
-  "source_worktree_clean": true
+  "source_commit": "06b01e19ce4a68a84f666641d4aef1623a0019fb",
+  "source_worktree_clean": false
 }
