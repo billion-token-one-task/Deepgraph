@@ -49,7 +49,7 @@
           "mode": "0644",
           "owner": "billion-token:billion-token",
           "replaces": null,
-          "runtime_locally_modified": false,
+          "runtime_locally_modified": true,
           "source": "orchestrator/bounded_execution.py",
           "source_bytes": 17887,
           "source_sha256": "477843c41fdc3198c195e16ed0a038399df71321ca3d544e548b3eb57adef4e7",
@@ -61,7 +61,7 @@
           "mode": "0755",
           "owner": "billion-token:billion-token",
           "replaces": null,
-          "runtime_locally_modified": false,
+          "runtime_locally_modified": true,
           "source": "scripts/run_bounded_pilot.py",
           "source_bytes": 3067,
           "source_sha256": "c0da2fe0a5a557f81506db8d39ef5f28c8c7cab758ed67b8bfc0e96ffa62a5aa",
@@ -80,7 +80,9 @@
   "manifest_key": "bounded-pilot_2026-08-04",
   "operator_diff_required": [
     "db/database.py",
-    "main.py"
+    "main.py",
+    "orchestrator/bounded_execution.py",
+    "scripts/run_bounded_pilot.py"
   ],
   "production_tree_modified_by_this_command": false,
   "rollback": {
@@ -94,6 +96,6 @@
     ]
   },
   "runtime_root": "/home/billion-token/Deepgraph",
-  "source_commit": "51f357d4418374367e617ca4f41d6a649e44405b",
-  "source_worktree_clean": true
+  "source_commit": "0400a081e3fa2d53fa647ed080197b5db8b56b7d",
+  "source_worktree_clean": false
 }
