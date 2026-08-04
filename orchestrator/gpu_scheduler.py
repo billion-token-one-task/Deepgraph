@@ -535,6 +535,73 @@ def _configured_local_devices(inventory: dict[str, dict]) -> list[str]:
     return []
 
 
+def ssh_worker_id(host: str, port: int, device: str) -> str:
+    """Stable id for one SSH GPU device.
+
+    The port is part of the id so that several nodes behind the same public IP
+    on different ports -- a common setup for rented GPU boxes -- register as
+    distinct workers instead of colliding on ``ssh:{host}:gpu{n}``. Nothing
+    parses this id back into host/port; connection details live in metadata, so
+    this is purely a uniqueness fix.
+    """
+    return f"ssh:{host}:{int(port)}:gpu{device}"
+
+
+def upsert_ssh_worker(
+    *,
+    host: str,
+    port: int,
+    user: str,
+    device: str,
+    gpu_index: int,
+    credential_ref: str,
+    gpu_model: str | None = None,
+    total_mem_gb: float | None = None,
+    remote_base_dir: str | None = None,
+    python_bin: str | None = None,
+) -> dict:
+    """Insert or refresh one SSH GPU worker row. Returns the worker summary."""
+    worker_id = ssh_worker_id(host, port, device)
+    metadata = {
+        "backend": "ssh",
+        "visible_device": device,
+        "ssh_host": host,
+        "ssh_port": int(port),
+        "ssh_user": user,
+        "credential_ref": credential_ref,
+        "remote_base_dir": remote_base_dir or GPU_REMOTE_BASE_DIR,
+        "python_bin": python_bin or GPU_REMOTE_PYTHON,
+    }
+    model = gpu_model or GPU_DEFAULT_MODEL
+    mem = float(total_mem_gb if total_mem_gb is not None else GPU_DEFAULT_VRAM_GB)
+    existing = db.fetchone("SELECT id FROM gpu_workers WHERE id=?", (worker_id,))
+    if existing:
+        db.execute(
+            """UPDATE gpu_workers
+               SET hostname=?, gpu_index=?, gpu_model=?, total_mem_gb=?,
+                   status=CASE WHEN status IN ('busy','retired') THEN status ELSE ? END,
+                   heartbeat_at=CURRENT_TIMESTAMP, metadata=?
+               WHERE id=?""",
+            (host, gpu_index, model, mem, "idle", json.dumps(metadata), worker_id),
+        )
+    else:
+        db.execute(
+            """INSERT INTO gpu_workers
+               (id, hostname, gpu_index, gpu_model, total_mem_gb, status, metadata)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (worker_id, host, gpu_index, model, mem, "idle", json.dumps(metadata)),
+        )
+    return {
+        "id": worker_id,
+        "hostname": host,
+        "gpu_index": gpu_index,
+        "gpu_model": model,
+        "total_mem_gb": mem,
+        "status": "idle",
+        **metadata,
+    }
+
+
 def register_default_workers() -> list[dict]:
     db.init_db()
     if GPU_MODE == "ssh":
@@ -544,62 +611,15 @@ def register_default_workers() -> list[dict]:
             )
         workers = []
         for idx, gpu_id in enumerate(GPU_VISIBLE_DEVICES):
-            worker_id = f"ssh:{GPU_REMOTE_SSH_HOST}:gpu{gpu_id}"
-            metadata = {
-                "backend": "ssh",
-                "visible_device": gpu_id,
-                "ssh_host": GPU_REMOTE_SSH_HOST,
-                "ssh_port": GPU_REMOTE_SSH_PORT,
-                "ssh_user": GPU_REMOTE_SSH_USER,
-                "credential_ref": COMPUTE_SSH_CREDENTIAL_REF,
-                "remote_base_dir": GPU_REMOTE_BASE_DIR,
-                "python_bin": GPU_REMOTE_PYTHON,
-            }
-            existing = db.fetchone("SELECT id FROM gpu_workers WHERE id=?", (worker_id,))
-            payload = (
-                worker_id,
-                GPU_REMOTE_SSH_HOST,
-                idx,
-                GPU_DEFAULT_MODEL,
-                float(GPU_DEFAULT_VRAM_GB),
-                "idle",
-                json.dumps(metadata),
+            summary = upsert_ssh_worker(
+                host=GPU_REMOTE_SSH_HOST,
+                port=GPU_REMOTE_SSH_PORT,
+                user=GPU_REMOTE_SSH_USER,
+                device=gpu_id,
+                gpu_index=idx,
+                credential_ref=COMPUTE_SSH_CREDENTIAL_REF,
             )
-            if existing:
-                db.execute(
-                    """UPDATE gpu_workers
-                       SET hostname=?, gpu_index=?, gpu_model=?, total_mem_gb=?,
-                           status=CASE WHEN status='busy' THEN status ELSE ? END,
-                           heartbeat_at=CURRENT_TIMESTAMP, metadata=?
-                       WHERE id=?""",
-                    (
-                        GPU_REMOTE_SSH_HOST,
-                        idx,
-                        GPU_DEFAULT_MODEL,
-                        float(GPU_DEFAULT_VRAM_GB),
-                        "idle",
-                        json.dumps(metadata),
-                        worker_id,
-                    ),
-                )
-            else:
-                db.execute(
-                    """INSERT INTO gpu_workers
-                       (id, hostname, gpu_index, gpu_model, total_mem_gb, status, metadata)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                    payload,
-                )
-            workers.append(
-                {
-                    "id": worker_id,
-                    "hostname": GPU_REMOTE_SSH_HOST,
-                    "gpu_index": idx,
-                    "gpu_model": GPU_DEFAULT_MODEL,
-                    "total_mem_gb": float(GPU_DEFAULT_VRAM_GB),
-                    "status": "idle",
-                    **metadata,
-                }
-            )
+            workers.append(summary)
         db.commit()
         return workers
 
