@@ -1,0 +1,50 @@
+{
+  "version": "v1",
+  "name": "harness-edit-loop-study-v1",
+  "description": "Narrow first-version study of self-improving agent harnesses (after Weng 2026 / STOP / ADAS / AFlow / Self-Harness). One falsifiable question only: on a FIXED small task suite with a FIXED base model, does a bounded propose-validate-accept harness-edit loop (verifier-grounded weakness mining -> single-surface bounded edit -> held-in AND held-out non-regression gate) measurably improve task pass rate over a frozen harness, and which single editable surface (context-management logic vs tool-invocation policy vs workflow control flow) yields the largest verified gain? Negative and null results are in scope and count as outcomes.",
+  "focus": [
+    "harness edit loop",
+    "weakness mining",
+    "held-out regression gate",
+    "bounded harness edit",
+    "context management",
+    "tool invocation policy",
+    "workflow control flow",
+    "agent scaffolding",
+    "self-taught optimizer",
+    "agentic design space search"
+  ],
+  "prefer": {
+    "constraints": {
+      "fixed_base_model": "exactly one open-weights model per experiment; model identity recorded in the plan",
+      "fixed_task_suite": "exactly one small, fixed task suite per experiment; no suite switching mid-experiment",
+      "single_editable_surface": "each experiment varies ONE harness surface only; joint-surface search is out of scope for v1",
+      "acceptance_rule": "an edit is accepted only with no regression on held-in AND held-out splits; the split must be defined in the plan before any run",
+      "written_prediction_required": "every experiment states its predicted direction and magnitude before execution",
+      "negative_results_in_scope": "a null or negative result with a clean split is a valid, reportable outcome"
+    }
+  },
+  "reject": {
+    "out_of_scope": [
+      "modifying the production DeepGraph harness or any live system (that is the supervised domain of the self-improving-harness agenda)",
+      "unbounded or open-ended self-modification loops without a regression gate",
+      "multi-surface joint optimization in v1",
+      "GPU-scale model training or fine-tuning",
+      "experiments without a pre-registered held-in/held-out split"
+    ]
+  },
+  "required_output": {
+    "goal": "experiment_plan"
+  },
+  "submitter": "product-owner",
+  "token_budget": 100000,
+  "gpu_hours_budget": 0,
+  "max_concurrency": 1,
+  "backend_allowlist": [
+    "cpu",
+    "llm"
+  ],
+  "backlog_policy": "explicit_import_only",
+  "status": "active",
+  "is_active": true
+}
