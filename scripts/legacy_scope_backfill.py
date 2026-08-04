@@ -46,6 +46,7 @@ REASON = "pre-agenda historical record made visible in agenda scope; lineage pre
 # (table, parent_table, join_column_on_child). The correlated-subquery form
 # works on both PostgreSQL and SQLite.
 _LINEAGE = (
+    ("auto_research_jobs", "deep_insights", "deep_insight_id"),
     ("experiment_runs", "deep_insights", "deep_insight_id"),
     ("experiment_iterations", "experiment_runs", "run_id"),
     ("experimental_claims", "experiment_runs", "run_id"),
@@ -116,35 +117,6 @@ def import_orphan_insights(agenda_id: int, execute: bool) -> int:
         )
         done += 1
     print(f"imported {done} orphan deep_insights into agenda {agenda_id}")
-    return done
-
-
-def import_scoped_jobs(execute: bool) -> int:
-    rows = db.fetchall(
-        """
-        SELECT arj.id, di.agenda_id
-        FROM auto_research_jobs arj
-        JOIN deep_insights di ON di.id = arj.deep_insight_id
-        WHERE arj.agenda_id IS NULL AND di.agenda_id IS NOT NULL
-        ORDER BY arj.id
-        """
-    )
-    if not execute:
-        print(f"would import {len(rows)} auto_research_jobs (following their insight)")
-        return 0
-    repo = AgendaRepository()
-    done = 0
-    for row in rows:
-        repo.import_legacy_record(
-            agenda_id=int(row["agenda_id"]),
-            entity_type="auto_research_job",
-            entity_id=int(row["id"]),
-            actor=ACTOR,
-            reason=REASON,
-            idempotency_key=f"backfill-auto_research_job-{row['id']}",
-        )
-        done += 1
-    print(f"imported {done} auto_research_jobs following their insight")
     return done
 
 
@@ -220,9 +192,11 @@ def main() -> int:
         agenda_id = -1
     import_orphan_insights(agenda_id, args.execute)
     # Lineage backfill runs after insight import so freshly scoped insights
-    # propagate to their runs in the same pass.
+    # propagate to their jobs/runs in the same pass. auto_research_jobs go
+    # through lineage rather than the per-entity importer because
+    # import_legacy_record validates the target agenda contract on read, and
+    # historical agendas may not validate (e.g. NULL token_budget).
     backfill_lineage(args.execute)
-    import_scoped_jobs(args.execute)
     report("after")
     if not args.execute:
         print("dry run complete; re-run with --execute "
