@@ -1,0 +1,53 @@
+{
+  "version": "v1",
+  "name": "kv-cache-compression-tradeoff-v1",
+  "description": "On a fixed open-weights decoder LLM served on a single A100-40GB, how does KV-cache compression (quantization of cached keys/values, token eviction/selection, and cache-budget allocation across layers) trade measured generation quality against measured memory and throughput, and which compression family holds quality best at an equal memory budget? Every claim must rest on numbers this system measured itself: a full-KV-cache baseline on the same model, same prompts and same seeds, run on the same hardware.",
+  "focus": [
+    "kv cache compression",
+    "kv cache quantization",
+    "token eviction",
+    "cache budget allocation",
+    "long context inference",
+    "decode throughput",
+    "time to first token",
+    "perplexity degradation",
+    "memory quality tradeoff",
+    "efficient inference"
+  ],
+  "prefer": {
+    "constraints": {
+      "single_gpu_per_run": "each experiment run fits one A100-40GB; multi-GPU is only for running independent configurations in parallel, never for sharding one model",
+      "model_size_ceiling": "open-weights decoder models up to 14B parameters, loaded in fp16/bf16 so a full-KV baseline fits alongside the compressed variant",
+      "off_the_shelf_benchmarks_only": "datasets must load directly through the HuggingFace datasets/transformers stack with no bespoke agent harness, no simulator and no external service: WikiText-2 (perplexity), GSM8K (accuracy), LongBench-style long-context QA (F1)",
+      "numeric_metrics_mandatory": "every run must persist a real numeric metric value for the primary metric and for peak KV-cache memory; a run that produces artifacts with empty metric values is a failed run, not a completed one",
+      "baseline_is_full_kv_cache": "the mandatory baseline is the identical model and prompts with an uncompressed KV cache measured on the same GPU in the same session; published numbers from papers are never a baseline",
+      "equal_memory_comparison": "compression families are compared at matched KV-cache memory budgets, not at matched hyperparameters",
+      "seeds_and_determinism": "at least 3 seeds for any sampled decoding; greedy decoding runs record that decoding is deterministic instead of faking seed variance",
+      "report_both_axes": "a result is only reportable when quality AND cost are both measured; a quality number with no memory or throughput number is incomplete"
+    }
+  },
+  "reject": {
+    "out_of_scope": [
+      "any benchmark that requires a dedicated agent harness, sandbox or simulator to materialize (GAIA, SWE-bench, ALFWorld, WebArena and similar)",
+      "training, fine-tuning or distillation of the base model; this agenda measures inference only",
+      "models above 14B parameters or any setup needing tensor/pipeline parallelism across GPUs",
+      "claims resting on numbers copied from papers rather than measured on this hardware",
+      "serving-stack engineering work (batching schedulers, paged attention implementations) that does not isolate a KV-cache compression variable"
+    ]
+  },
+  "required_output": {
+    "goal": "verified_evidence"
+  },
+  "submitter": "product-owner",
+  "token_budget": 500000,
+  "gpu_hours_budget": 200,
+  "max_concurrency": 4,
+  "backend_allowlist": [
+    "cpu",
+    "llm",
+    "ssh_gpu"
+  ],
+  "backlog_policy": "explicit_import_only",
+  "status": "active",
+  "is_active": true
+}
