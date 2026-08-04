@@ -1,4 +1,5 @@
 """DeepGraph central configuration."""
+import json
 import os
 import sys
 import shutil
@@ -193,11 +194,49 @@ LLM_EXTRA_PROVIDERS_JSON = _env_str("DEEPGRAPH_LLM_EXTRA_PROVIDERS_JSON", "", "l
 # there is non-secret (name, base_url, model, family, protocol, rpm); the API
 # key is named by `api_key_env` and read from the environment at startup. A
 # literal key in TOML is refused rather than used, because TOML is in Git.
+LLM_PROVIDER_STORE = Path(
+    _env_str(
+        "DEEPGRAPH_LLM_PROVIDER_STORE",
+        str(PROJECT_ROOT / "config" / "llm_providers.json"),
+        "llm.provider_store",
+    )
+).expanduser()
+# Hosts an operator page is allowed to point a provider at. A provider's
+# base_url is where every prompt goes, so this list is deliberately empty by
+# default: routes cannot be added from the page until an operator sets it.
+LLM_PROVIDER_HOST_ALLOWLIST = _split_csv(
+    os.getenv("DEEPGRAPH_LLM_PROVIDER_HOST_ALLOWLIST")
+    or _toml_get("llm.provider_host_allowlist", [])
+)
+
+
+def _managed_provider_entries() -> list[dict]:
+    """Providers written by the operator page. Never contains a credential."""
+    try:
+        loaded = json.loads(LLM_PROVIDER_STORE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    entries = loaded.get("providers") if isinstance(loaded, dict) else None
+    if not isinstance(entries, list):
+        return []
+    return [
+        {**entry, "source": "managed"}
+        for entry in entries
+        if isinstance(entry, dict) and not entry.get("api_key")
+    ]
+
+
 LLM_PROVIDERS = [
-    dict(entry)
+    {**entry, "source": "toml"}
     for entry in (_toml_get("llm.providers", []) or [])
     if isinstance(entry, dict)
 ]
+_declared_names = {str(entry.get("name") or "") for entry in LLM_PROVIDERS}
+LLM_PROVIDERS.extend(
+    entry
+    for entry in _managed_provider_entries()
+    if str(entry.get("name") or "") not in _declared_names
+)
 LLM_REASONING_EFFORT = _env_str("DEEPGRAPH_LLM_REASONING_EFFORT", "medium", "llm.reasoning_effort")
 LLM_PROMPT_CACHE_ENABLED = _env_bool("DEEPGRAPH_LLM_PROMPT_CACHE_ENABLED", True, "llm.prompt_cache_enabled")
 LLM_PROMPT_CACHE_KEY = _env_str("DEEPGRAPH_LLM_PROMPT_CACHE_KEY", "deepgraph", "llm.prompt_cache_key").strip()

@@ -10,10 +10,13 @@ import hmac
 import os
 from datetime import datetime, timedelta, timezone
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, render_template, request
 
 from config import (
     HARNESS_CANDIDATE_ROOT,
+    LLM_PROVIDERS,
+    LLM_PROVIDER_HOST_ALLOWLIST,
+    LLM_PROVIDER_STORE,
     HARNESS_DATABASE_NAMESPACE_PREFIX,
     HARNESS_EVALUATOR_ARTIFACT_ROOT,
     HARNESS_EVALUATOR_ISOLATION_BINARY,
@@ -57,9 +60,17 @@ from meta_harness.ingestion_queue import (
     ScopedIngestionRequest,
 )
 from orchestrator.meta_compute_runtime import submit_colab_work
+from web import provider_config
 
 
-blueprint = Blueprint("meta_harness_v1", __name__, url_prefix="/api/meta-harness/v1")
+blueprint = Blueprint(
+    "meta_harness_v1",
+    __name__,
+    url_prefix="/api/meta-harness/v1",
+    # A dedicated template folder keeps this page out of the shared frontend
+    # templates, so operator tooling and the public UI never collide.
+    template_folder="templates",
+)
 
 
 def _payload() -> dict:
@@ -227,6 +238,92 @@ def save_frontier_from_evidence_graph():
                 "coverage": packet.coverage,
             }
         ), (201 if gate.allowed else 409)
+    except Exception as exc:
+        return _error(exc)
+
+
+@blueprint.get("/llm-providers/admin")
+def llm_provider_admin_page():
+    """Operator page for the non-secret half of provider configuration.
+
+    The page itself carries no data and no credential: every call it makes is
+    an operator-token request, and the token is typed in by the operator rather
+    than embedded here.
+    """
+    return render_template("meta_harness/llm_providers.html")
+
+
+@blueprint.get("/llm-providers")
+def list_llm_providers():
+    try:
+        _require_operator()
+        store = provider_config.load_store(LLM_PROVIDER_STORE)
+        managed = store["providers"]
+        declared = [
+            entry for entry in LLM_PROVIDERS if entry.get("source") == "toml"
+        ]
+        return jsonify(
+            {
+                "providers": provider_config.readiness(managed),
+                "declared_in_toml": provider_config.readiness(declared),
+                "independence": provider_config.independence_report(
+                    managed + declared
+                ),
+                "host_allowlist": list(LLM_PROVIDER_HOST_ALLOWLIST),
+                "store_path": str(LLM_PROVIDER_STORE),
+                "updated_at": store.get("updated_at"),
+                "updated_by": store.get("updated_by"),
+                "restart_required_to_apply": True,
+            }
+        )
+    except Exception as exc:
+        return _error(exc)
+
+
+@blueprint.post("/llm-providers")
+def upsert_llm_provider():
+    """Create or replace one provider entry. Credentials are never accepted."""
+    try:
+        _require_operator()
+        payload = _payload()
+        actor = str(payload.pop("actor", "") or "").strip()
+        if not actor:
+            raise ValueError("actor is required so the change is auditable")
+        store = provider_config.upsert(
+            LLM_PROVIDER_STORE,
+            payload,
+            allowed_hosts=LLM_PROVIDER_HOST_ALLOWLIST,
+            actor=actor,
+        )
+        return jsonify(
+            {
+                "status": "saved",
+                "providers": provider_config.readiness(store["providers"]),
+                "independence": provider_config.independence_report(
+                    store["providers"]
+                ),
+                "restart_required_to_apply": True,
+                "note": "restart deepgraph-web.service to load this route",
+            }
+        ), 201
+    except Exception as exc:
+        return _error(exc)
+
+
+@blueprint.delete("/llm-providers/<name>")
+def delete_llm_provider(name: str):
+    try:
+        _require_operator()
+        actor = str(request.args.get("actor") or "").strip()
+        if not actor:
+            raise ValueError("actor is required so the change is auditable")
+        removed = provider_config.remove(LLM_PROVIDER_STORE, name, actor=actor)
+        return jsonify(
+            {
+                "status": "removed" if removed else "not_found",
+                "restart_required_to_apply": bool(removed),
+            }
+        ), (200 if removed else 404)
     except Exception as exc:
         return _error(exc)
 

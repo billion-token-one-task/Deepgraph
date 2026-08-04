@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LLM provider routes - operator</title>
+<style>
+  :root { color-scheme: light dark; --line: #8883; --warn: #b45309; --ok: #15803d; --bad: #b91c1c; }
+  body { font: 15px/1.5 ui-sans-serif, system-ui, sans-serif; margin: 0; padding: 24px; max-width: 1000px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  p.lede { margin: 0 0 20px; opacity: .75; }
+  fieldset { border: 1px solid var(--line); border-radius: 8px; margin: 0 0 20px; padding: 16px; }
+  legend { padding: 0 6px; font-weight: 600; }
+  label { display: block; margin: 10px 0 2px; font-size: 13px; opacity: .8; }
+  input, select { width: 100%; box-sizing: border-box; padding: 7px 9px; border: 1px solid var(--line);
+                  border-radius: 6px; background: transparent; color: inherit; font: inherit; }
+  .row { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0 14px; }
+  button { padding: 8px 14px; border-radius: 6px; border: 1px solid var(--line);
+           background: transparent; color: inherit; font: inherit; cursor: pointer; }
+  button.primary { border-color: currentColor; font-weight: 600; }
+  table { border-collapse: collapse; width: 100%; font-size: 14px; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  code { font-size: 13px; }
+  .pill { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 12px; border: 1px solid currentColor; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); } .warn { color: var(--warn); }
+  .note { border-left: 3px solid var(--warn); padding: 8px 12px; margin: 0 0 20px; background: #b453090d; }
+  #message { min-height: 22px; margin: 10px 0 0; font-size: 14px; }
+  .scroll { overflow-x: auto; }
+</style>
+</head>
+<body>
+<h1>LLM provider routes</h1>
+<p class="lede">Operator-only. This page edits the <strong>non-secret</strong> half of a provider route.</p>
+
+<div class="note">
+  <strong>API keys are never handled here.</strong> An entry names the environment
+  variable that carries its key; the key itself stays in the service environment
+  file and is never sent to, stored by, or displayed on this page.
+  Saving writes configuration to disk only &mdash;
+  <strong>restart <code>deepgraph-web.service</code> to apply it</strong>.
+</div>
+
+<fieldset>
+  <legend>Operator token</legend>
+  <label for="token">Sent as <code>X-DeepGraph-Operator-Token</code>; kept in this tab only.</label>
+  <input id="token" type="password" autocomplete="off" placeholder="operator token">
+  <p><button class="primary" id="load">Load current routes</button></p>
+</fieldset>
+
+<fieldset>
+  <legend>Add or replace a route</legend>
+  <div class="row">
+    <div><label for="name">name (lowercase id)</label><input id="name" placeholder="gpt5"></div>
+    <div><label for="model">model</label><input id="model" placeholder="gpt-5.4"></div>
+    <div><label for="model_family">model_family (independence is judged on this)</label><input id="model_family" placeholder="gpt"></div>
+    <div><label for="protocol">protocol</label>
+      <select id="protocol"><option>chat_completions</option><option>responses</option></select></div>
+    <div><label for="base_url">base_url (https, host must be allowlisted)</label><input id="base_url" placeholder="https://api.example.com/v1"></div>
+    <div><label for="api_key_env">api_key_env</label><input id="api_key_env" placeholder="DEEPGRAPH_LLM_GPT5_API_KEY"></div>
+    <div><label for="rpm">rpm (0 = unlimited)</label><input id="rpm" type="number" min="0" value="0"></div>
+    <div><label for="actor">your name (recorded with the change)</label><input id="actor" placeholder="operator:name"></div>
+  </div>
+  <p><button class="primary" id="save">Save route</button></p>
+  <div id="message"></div>
+</fieldset>
+
+<fieldset>
+  <legend>Configured routes</legend>
+  <div id="independence"></div>
+  <div class="scroll"><table id="table"><tbody></tbody></table></div>
+  <p id="allowlist" class="lede"></p>
+</fieldset>
+
+<script>
+(function () {
+  var base = "/api/meta-harness/v1/llm-providers";
+  var el = function (id) { return document.getElementById(id); };
+  var token = function () { return el("token").value.trim(); };
+
+  function say(text, cls) {
+    var box = el("message");
+    box.textContent = text;
+    box.className = cls || "";
+  }
+
+  function request(method, url, body) {
+    if (!token()) { return Promise.reject(new Error("operator token is required")); }
+    var options = { method: method, headers: { "X-DeepGraph-Operator-Token": token() } };
+    if (body) {
+      options.headers["Content-Type"] = "application/json";
+      options.body = JSON.stringify(body);
+    }
+    return fetch(url, options).then(function (response) {
+      return response.json().then(function (data) {
+        if (!response.ok) { throw new Error(data.error || ("HTTP " + response.status)); }
+        return data;
+      });
+    });
+  }
+
+  function pill(ok, text) {
+    return '<span class="pill ' + (ok ? "ok" : "bad") + '">' + text + "</span>";
+  }
+
+  function render(data) {
+    var rows = [
+      "<tr><th>name</th><th>model</th><th>family</th><th>base_url</th>" +
+      "<th>key variable</th><th>state</th><th>source</th><th></th></tr>",
+    ];
+    var all = (data.declared_in_toml || []).concat(data.providers || []);
+    if (!all.length) {
+      rows.push('<tr><td colspan="8">no routes configured</td></tr>');
+    }
+    all.forEach(function (p) {
+      var state = p.ready ? pill(true, "ready")
+        : (p.key_present ? pill(false, "disabled") : pill(false, p.api_key_env + " not set"));
+      var remove = p.source === "managed"
+        ? '<button data-remove="' + p.name + '">remove</button>' : "";
+      rows.push(
+        "<tr><td><code>" + p.name + "</code></td><td>" + p.model + "</td><td>" + p.model_family +
+        "</td><td><code>" + p.base_url + "</code></td><td><code>" + p.api_key_env +
+        "</code></td><td>" + state + "</td><td>" + (p.source || "managed") + "</td><td>" + remove + "</td></tr>"
+      );
+    });
+    el("table").querySelector("tbody").innerHTML = rows.join("");
+
+    var ind = data.independence || {};
+    el("independence").innerHTML = ind.independent_evaluator_possible
+      ? '<p class="ok">An independent Frontier evaluator is possible: ready model families are ' +
+        (ind.distinct_model_families || []).join(", ") + ".</p>"
+      : '<p class="warn">No independent evaluator yet: ' + (ind.ready_routes || 0) +
+        " ready route(s), families " + ((ind.distinct_model_families || []).join(", ") || "none") +
+        ". Two ready routes with different model families are required.</p>";
+
+    el("allowlist").textContent =
+      "Allowed hosts: " + ((data.host_allowlist || []).join(", ") || "(none configured - saving is refused)") +
+      " | store: " + (data.store_path || "") +
+      (data.updated_at ? " | last change " + data.updated_at + " by " + (data.updated_by || "?") : "");
+
+    Array.prototype.forEach.call(el("table").querySelectorAll("[data-remove]"), function (button) {
+      button.addEventListener("click", function () {
+        var name = button.getAttribute("data-remove");
+        var actor = el("actor").value.trim();
+        if (!actor) { say("your name is required so the change is auditable", "bad"); return; }
+        if (!window.confirm("Remove route " + name + "?")) { return; }
+        request("DELETE", base + "/" + encodeURIComponent(name) + "?actor=" + encodeURIComponent(actor))
+          .then(function () { say("removed " + name + " - restart to apply", "warn"); load(); })
+          .catch(function (error) { say(error.message, "bad"); });
+      });
+    });
+  }
+
+  function load() {
+    request("GET", base).then(render).catch(function (error) { say(error.message, "bad"); });
+  }
+
+  el("load").addEventListener("click", load);
+  el("save").addEventListener("click", function () {
+    var body = {
+      name: el("name").value.trim(),
+      base_url: el("base_url").value.trim(),
+      model: el("model").value.trim(),
+      model_family: el("model_family").value.trim(),
+      protocol: el("protocol").value,
+      api_key_env: el("api_key_env").value.trim(),
+      rpm: parseInt(el("rpm").value || "0", 10),
+      enabled: true,
+      actor: el("actor").value.trim(),
+    };
+    request("POST", base, body)
+      .then(function (data) {
+        say("saved - restart deepgraph-web.service to apply", "warn");
+        render(data);
+      })
+      .catch(function (error) { say(error.message, "bad"); });
+  });
+})();
+</script>
+</body>
+</html>

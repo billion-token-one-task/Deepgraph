@@ -74,7 +74,7 @@
       ],
       "systemd_reload_required": false,
       "health_check": "curl -fsS https://deepgraph.joulebeat.com/api/meta-harness/v1/status",
-      "acceptance": "status endpoint returns 200 and counts; backend audit reports cpu enabled, ssh_gpu unknown",
+      "acceptance": "status endpoint returns 200; backend audit reports cpu enabled and ssh_gpu unknown; /llm-providers returns 403 without an operator token",
       "files": [
         {
           "source": "agents/topic_gate.py",
@@ -151,6 +151,24 @@
         {
           "source": "config.py",
           "target": "{runtime_root}/config.py",
+          "owner": "billion-token:billion-token",
+          "mode": "0644"
+        },
+        {
+          "source": "agents/llm_client.py",
+          "target": "{runtime_root}/agents/llm_client.py",
+          "owner": "billion-token:billion-token",
+          "mode": "0644"
+        },
+        {
+          "source": "web/provider_config.py",
+          "target": "{runtime_root}/web/provider_config.py",
+          "owner": "billion-token:billion-token",
+          "mode": "0644"
+        },
+        {
+          "source": "web/templates/meta_harness/llm_providers.html",
+          "target": "{runtime_root}/web/templates/meta_harness/llm_providers.html",
           "owner": "billion-token:billion-token",
           "mode": "0644"
         }
