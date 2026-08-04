@@ -403,10 +403,12 @@ def apply_review(
                  "holdout": HOLDOUT_REF,
              })),
         )
-        db.execute(
-            "UPDATE experiment_runs SET scientific_evidence_state=? "
-            "WHERE id=? AND agenda_id=?",
-            ("scientifically_decided", run_id, agenda_id),
+        # Scientific-state writes are centralized in the repository authority;
+        # this helper does not commit, so it stays inside this transaction.
+        from meta_harness.repository import MetaHarnessRepository
+
+        MetaHarnessRepository().mark_retrospectively_decided(
+            run_id=run_id, agenda_id=agenda_id
         )
         db.commit()
     except Exception:

@@ -843,6 +843,26 @@ class MetaHarnessRepository:
             db.rollback()
             raise
 
+    def mark_retrospectively_decided(
+        self,
+        *,
+        run_id: int,
+        agenda_id: int,
+    ) -> None:
+        """Set a run's scientific state for the capped retrospective path.
+
+        The state-authority rule keeps every write of scientific_evidence_state
+        in this module. This helper deliberately does NOT commit, so the
+        retrospective review can compose it into its single transaction (the
+        four transitions, audit record, decision record and approval must land
+        atomically or not at all). Scoped by agenda so it can never cross one.
+        """
+        db.execute(
+            "UPDATE experiment_runs SET scientific_evidence_state=? "
+            "WHERE id=? AND agenda_id=?",
+            ("scientifically_decided", int(run_id), int(agenda_id)),
+        )
+
     def revoke_grant(
         self,
         grant_id: int,
