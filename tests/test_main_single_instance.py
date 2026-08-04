@@ -160,7 +160,10 @@ class MainSingleInstanceTests(unittest.TestCase):
                 mock.patch.object(main, "AUTO_PIPELINE_ENABLED", True),
                 mock.patch.object(main, "_serve_http") as serve_http,
                 mock.patch.object(main, "_release_process_lock"),
-                mock.patch("builtins.print") as printed,
+                # Shadow print inside main's namespace only. Patching
+                # builtins.print breaks the threading excepthook, and unrelated
+                # daemon threads in the suite then fail this test.
+                mock.patch.object(main, "print", create=True) as printed,
             ):
                 main.main()
 
