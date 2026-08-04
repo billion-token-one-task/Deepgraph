@@ -17,6 +17,9 @@ Design rules:
 * restart only for a *proven* failure (health probe failing repeatedly);
 * never restart on an unknown or unavailable signal (fail safe = do nothing);
 * never restart merely because output is absent when no work is expected;
+* treat a database transaction abandoned past the reclaim window as proof in
+  its own right -- that half-dead state serves HTTP 200 and produces no output,
+  so neither the health probe nor output freshness can see it;
 * every decision carries a stable, operator-safe reason code.
 """
 
@@ -44,6 +47,7 @@ REASON_HEALTH_OK = "hold_health_ok"
 REASON_HEALTH_FLAPPING = "hold_health_failure_below_threshold"
 REASON_RESTART_HEALTH = "restart_health_probe_failed"
 REASON_RESTART_OUTPUT_STALLED = "restart_expected_output_stalled"
+REASON_RESTART_DB_TRANSACTION_STALLED = "restart_db_idle_in_transaction_stalled"
 REASON_AUTONOMY_DISABLED = "hold_autonomy_disabled_no_output_expected"
 REASON_NO_WORK_EXPECTED = "hold_no_active_work_no_output_expected"
 REASON_AWAITING_AUTHORITY = "hold_awaiting_authority"
@@ -68,6 +72,12 @@ class SelfHealPolicy:
     # host takes over a minute to finish its startup backfills, and a probe
     # that ignored that restarted it mid-startup once a minute, forever.
     startup_grace_seconds: int = 180
+    # A transaction left open by a dead worker holds its row locks forever and
+    # wedges every other writer while the HTTP probe still answers 200. The
+    # server-side idle_in_transaction_session_timeout (10 min by default) is the
+    # first line of defence; this threshold sits above it so PostgreSQL always
+    # gets the first, cheaper attempt at reclaiming the session.
+    idle_transaction_seconds: int = 15 * 60
 
     def validate(self) -> None:
         if self.stall_seconds <= 0:
@@ -78,6 +88,8 @@ class SelfHealPolicy:
             raise SelfHealPolicyError("health_failure_threshold must be positive")
         if self.startup_grace_seconds < 0:
             raise SelfHealPolicyError("startup_grace_seconds cannot be negative")
+        if self.idle_transaction_seconds <= 0:
+            raise SelfHealPolicyError("idle_transaction_seconds must be positive")
 
 
 @dataclass(frozen=True)
@@ -102,6 +114,12 @@ class SelfHealSignals:
     awaiting_authority_reasons: tuple[str, ...] = ()
     # Freshness of core research output, seconds. None = query unavailable.
     output_age_seconds: int | None = None
+    # Age of the oldest session sitting "idle in transaction", seconds.
+    # None = query unavailable. This is the half-dead signal output freshness
+    # cannot see: the process is alive and serving, but its workers are parked
+    # on locks held by a transaction nobody is going to finish.
+    max_idle_transaction_seconds: int | None = None
+    idle_transaction_sessions: int = 0
     # Provider/credit outage seen in the operator log. A restart cannot fix it.
     provider_issue: bool = False
     # Seconds since the watchdog last restarted the service. None = never.
@@ -120,6 +138,13 @@ class SelfHealSignals:
             raise SelfHealPolicyError("work counters cannot be negative")
         if self.output_age_seconds is not None and self.output_age_seconds < 0:
             raise SelfHealPolicyError("output_age_seconds cannot be negative")
+        if (
+            self.max_idle_transaction_seconds is not None
+            and self.max_idle_transaction_seconds < 0
+        ):
+            raise SelfHealPolicyError("max_idle_transaction_seconds cannot be negative")
+        if self.idle_transaction_sessions < 0:
+            raise SelfHealPolicyError("idle_transaction_sessions cannot be negative")
         if (
             self.seconds_since_last_restart is not None
             and self.seconds_since_last_restart < 0
@@ -241,7 +266,29 @@ def decide(
             },
         )
 
-    # 3. Output freshness is a *derived* signal. It only means anything when the
+    # 4. A transaction abandoned past the reclaim window is direct evidence of a
+    #    wedged writer, not an inference from missing output. It is checked
+    #    ahead of the autonomy branches on purpose: a stuck transaction is a
+    #    defect whether or not the system was asked to produce anything, and it
+    #    is invisible to both the HTTP probe and output freshness. An
+    #    unobservable age falls through rather than holding, so it can never
+    #    mask the output-stall path below.
+    if (
+        signals.max_idle_transaction_seconds is not None
+        and signals.max_idle_transaction_seconds > active_policy.idle_transaction_seconds
+    ):
+        return _restart(
+            REASON_RESTART_DB_TRANSACTION_STALLED,
+            signals,
+            active_policy,
+            {
+                "max_idle_transaction_seconds": signals.max_idle_transaction_seconds,
+                "idle_transaction_seconds": active_policy.idle_transaction_seconds,
+                "idle_transaction_sessions": signals.idle_transaction_sessions,
+            },
+        )
+
+    # 5. Output freshness is a *derived* signal. It only means anything when the
     #    system was actually asked to produce output. Every branch below is a
     #    reason the old watchdog was wrong.
     if not signals.autonomy_enabled:
@@ -283,7 +330,7 @@ def decide(
             {"output_age_seconds": signals.output_age_seconds},
         )
 
-    # 4. Admitted work, autonomy on, provider healthy, process alive, and still
+    # 6. Admitted work, autonomy on, provider healthy, process alive, and still
     #    no output for longer than the stall window: that is a real hang.
     return _restart(
         REASON_RESTART_OUTPUT_STALLED,

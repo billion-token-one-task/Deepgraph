@@ -110,6 +110,21 @@ SELECT
      AS awaiting_jobs
 """
 
+# Stuck-transaction counters. pg_stat_activity is a cheap in-memory view, so
+# this runs on every tick. No query text or user data is selected -- only the
+# age of the oldest abandoned transaction and how many there are. The watchdog's
+# own backend is excluded so it can never accuse itself.
+IDLE_TRANSACTION_SQL = """
+SELECT
+  coalesce(max(extract(epoch FROM now() - state_change))::bigint, -1)
+    AS max_idle_transaction_seconds,
+  count(*) AS idle_transaction_sessions
+FROM pg_stat_activity
+WHERE datname = current_database()
+  AND state LIKE 'idle in transaction%'
+  AND pid <> pg_backend_pid()
+"""
+
 
 def parse_env_file(path: str) -> dict[str, str]:
     """Read KEY=VALUE lines. Values are never logged by this module."""
@@ -149,6 +164,22 @@ def parse_counts(raw: str) -> dict[str, int] | None:
         "active_grants": max(0, parsed[1]),
         "running_jobs": max(0, parsed[2]),
         "awaiting_jobs": max(0, parsed[3]),
+    }
+
+
+def parse_transaction_health(raw: str) -> dict[str, int] | None:
+    """Parse the stuck-transaction row, or None if unusable."""
+    fields = [part.strip() for part in str(raw).strip().split("|")]
+    if len(fields) != 2:
+        return None
+    try:
+        parsed = [int(float(value)) for value in fields]
+    except (TypeError, ValueError):
+        return None
+    age = parsed[0]
+    return {
+        "max_idle_transaction_seconds": age if age >= 0 else -1,
+        "idle_transaction_sessions": max(0, parsed[1]),
     }
 
 
@@ -226,8 +257,8 @@ def probe_health(url: str, *, timeout: int = 10) -> str:
         return HEALTH_UNKNOWN
 
 
-def read_counts(database_url: str, *, psql: str) -> dict[str, int] | None:
-    """Run the aggregate query. Returns None when the signal is unavailable."""
+def _psql_row(database_url: str, sql: str, *, psql: str, timeout: int = 25) -> str | None:
+    """Run one read-only aggregate query. None means "signal unavailable"."""
     if not database_url:
         return None
     parsed = urlsplit(database_url)
@@ -248,15 +279,32 @@ def read_counts(database_url: str, *, psql: str) -> dict[str, int] | None:
         parsed.path.lstrip("/") or "postgres",
         "-At",
         "-c",
-        COUNTS_SQL,
+        sql,
     ]
     try:
-        completed = _run(command, env=environment, timeout=25)
+        completed = _run(command, env=environment, timeout=timeout)
     except (OSError, subprocess.SubprocessError):
         return None
     if completed.returncode != 0:
         return None
-    return parse_counts(completed.stdout)
+    return completed.stdout
+
+
+def read_counts(database_url: str, *, psql: str) -> dict[str, int] | None:
+    """Run the aggregate query. Returns None when the signal is unavailable."""
+    raw = _psql_row(database_url, COUNTS_SQL, psql=psql)
+    return None if raw is None else parse_counts(raw)
+
+
+def read_transaction_health(database_url: str, *, psql: str) -> dict[str, int] | None:
+    """Read stuck-transaction counters. Returns None when unavailable.
+
+    Unlike the output-freshness aggregate this runs on every tick, autonomy on
+    or off: an abandoned transaction wedges writers regardless of whether the
+    research loop was supposed to be producing anything.
+    """
+    raw = _psql_row(database_url, IDLE_TRANSACTION_SQL, psql=psql, timeout=15)
+    return None if raw is None else parse_transaction_health(raw)
 
 
 def tail_text(path: str, *, lines: int = 200) -> str:
@@ -310,11 +358,14 @@ def collect_signals(
     # The freshness aggregate scans large output tables. It only ever changes
     # the decision when autonomy is on, so a paused system pays nothing for a
     # one-minute tick.
+    database_url = env_values.get("DEEPGRAPH_DATABASE_URL", "")
     counts = (
-        read_counts(env_values.get("DEEPGRAPH_DATABASE_URL", ""), psql=psql)
+        read_counts(database_url, psql=psql)
         if (auto_research or auto_pipeline)
         else None
     )
+    transactions = read_transaction_health(database_url, psql=psql)
+    idle_txn_age = int((transactions or {}).get("max_idle_transaction_seconds", -1))
     last_restart = previous_state.get("last_restart_epoch")
     since_restart = (
         int(now - float(last_restart))
@@ -340,6 +391,12 @@ def collect_signals(
             ("portfolio_or_grant_decision_pending",) if awaiting_jobs else ()
         ),
         output_age_seconds=(age if counts is not None and age >= 0 else None),
+        max_idle_transaction_seconds=(
+            idle_txn_age if transactions is not None and idle_txn_age >= 0 else None
+        ),
+        idle_transaction_sessions=int(
+            (transactions or {}).get("idle_transaction_sessions") or 0
+        ),
         provider_issue=provider_issue_in_log(tail_text(web_log)),
         seconds_since_last_restart=since_restart,
         service_uptime_seconds=uptime_seconds,
@@ -413,6 +470,15 @@ def main() -> int:
     parser.add_argument("--stall-seconds", type=int, default=45 * 60)
     parser.add_argument("--cooldown-seconds", type=int, default=30 * 60)
     parser.add_argument("--health-failure-threshold", type=int, default=3)
+    parser.add_argument(
+        "--idle-transaction-seconds",
+        type=int,
+        default=15 * 60,
+        help=(
+            "age at which an abandoned database transaction counts as a wedged "
+            "writer; keep above the server idle_in_transaction_session_timeout"
+        ),
+    )
     args = parser.parse_args()
 
     def log(message: str) -> None:
@@ -455,6 +521,7 @@ def main() -> int:
         cooldown_seconds=args.cooldown_seconds,
         health_failure_threshold=args.health_failure_threshold,
         startup_grace_seconds=args.startup_grace_seconds,
+        idle_transaction_seconds=args.idle_transaction_seconds,
     )
     decision: SelfHealDecision = decide(signals, policy=policy)
 

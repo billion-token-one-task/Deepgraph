@@ -34,6 +34,14 @@ _backend_notice_lock = threading.Lock()
 _backend_notice_emitted = False
 SQLITE_BUSY_TIMEOUT_MS = int(os.environ.get("DEEPGRAPH_SQLITE_BUSY_TIMEOUT_MS", "120000"))
 SQLITE_LOCK_RETRY_SECONDS = float(os.environ.get("DEEPGRAPH_SQLITE_LOCK_RETRY_SECONDS", "120"))
+# A worker that dies mid-transaction leaves its session "idle in transaction",
+# holding row locks forever. PostgreSQL's default (0) never reclaims those, which
+# is how a single dead worker silently freezes the pipeline. Bound it per session
+# so the server rolls the abandoned transaction back and releases the locks.
+# 0 restores the PostgreSQL default of "never".
+PG_IDLE_IN_TRANSACTION_TIMEOUT_MS = int(
+    os.environ.get("DEEPGRAPH_PG_IDLE_IN_TRANSACTION_TIMEOUT_MS", "600000")
+)
 _SQLITE_LOCK_ERROR_MARKERS = (
     "database is locked",
     "database table is locked",
@@ -121,10 +129,57 @@ def _emit_backend_notice_once() -> None:
         _backend_notice_emitted = True
 
 
+def _pg_session_options() -> str:
+    """libpq startup options applied to every runtime session.
+
+    Carried on the connection string rather than issued as a `SET`: `SET` is
+    transactional, so a rollback would silently drop the guard at exactly the
+    moment a stuck transaction is being cleaned up.
+    """
+    if PG_IDLE_IN_TRANSACTION_TIMEOUT_MS <= 0:
+        return ""
+    return (
+        "-c idle_in_transaction_session_timeout="
+        f"{PG_IDLE_IN_TRANSACTION_TIMEOUT_MS}"
+    )
+
+
+def _pg_conninfo() -> str:
+    conninfo = DATABASE_URL.strip()
+    options = _pg_session_options()
+    if not options:
+        return conninfo
+    try:
+        existing = str(
+            psycopg.conninfo.conninfo_to_dict(conninfo).get("options") or ""
+        ).strip()
+        return psycopg.conninfo.make_conninfo(
+            conninfo, options=f"{existing} {options}".strip()
+        )
+    except Exception:
+        # Never let session tuning stand between the app and its database.
+        return conninfo
+
+
 def _pg_connect():
     if psycopg is None or dict_row is None:
         raise RuntimeError("PostgreSQL requested but psycopg is not installed. pip install 'psycopg[binary]>=3.1'")
-    return psycopg.connect(DATABASE_URL.strip(), row_factory=dict_row, autocommit=False)
+    conninfo = _pg_conninfo()
+    try:
+        return psycopg.connect(conninfo, row_factory=dict_row, autocommit=False)
+    except Exception as exc:
+        # Poolers such as PgBouncer reject libpq startup options outright. Losing
+        # the idle-transaction guard is bad; losing the database is worse.
+        if conninfo == DATABASE_URL.strip() or "option" not in str(exc).lower():
+            raise
+        print(
+            "[DB] WARNING: server rejected session options; connecting without "
+            "idle_in_transaction_session_timeout.",
+            flush=True,
+        )
+        return psycopg.connect(
+            DATABASE_URL.strip(), row_factory=dict_row, autocommit=False
+        )
 
 
 def get_conn():
