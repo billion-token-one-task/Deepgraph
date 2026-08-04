@@ -1,10 +1,10 @@
-"""An expired grant must not strand its candidate forever.
+"""A withdrawn grant must not strand its candidate forever.
 
-Reconciliation parks an expired candidate at ``resource_grant_expired``, but
-``issue_grant`` only re-points a job sitting at ``awaiting_portfolio_decision``.
-Without a way back, a pilot that merely ran out of clock could never be granted
-again. These tests pin the narrow return path and the guards that stop it from
-becoming a way to re-spend settled work.
+Authority is withdrawn two ways: expiry parks the candidate at
+``resource_grant_expired``, revocation at ``resource_grant_revoked``. Neither
+could move again, because ``issue_grant`` only re-points a job sitting at
+``awaiting_portfolio_decision``. These tests pin the narrow return path and the
+guards that stop it from becoming a way to re-spend settled work.
 """
 
 from __future__ import annotations
@@ -69,10 +69,10 @@ def _requeue(fake_db, **overrides):
     kwargs = {"agenda_id": AGENDA_ID, "idea_id": IDEA_ID, "reason": "pilot clock ran out"}
     kwargs.update(overrides)
     with mock.patch("meta_harness.repository.db", fake_db):
-        return MetaHarnessRepository().requeue_expired_candidate(**kwargs)
+        return MetaHarnessRepository().requeue_withdrawn_candidate(**kwargs)
 
 
-class RequeueExpiredCandidateTests(unittest.TestCase):
+class RequeueWithdrawnCandidateTests(unittest.TestCase):
     def test_an_expired_candidate_returns_to_the_portfolio_queue(self):
         fake_db = FakeDb(job=_job(), grant={"status": "expired"})
 
@@ -81,11 +81,23 @@ class RequeueExpiredCandidateTests(unittest.TestCase):
         sql, params = fake_db.statements[0]
         self.assertIn("stage='awaiting_portfolio_decision'", sql)
         self.assertIn("WHERE id=? AND agenda_id=?", sql)
-        self.assertIn("stage='resource_grant_expired'", sql)
+        self.assertIn("resource_grant_expired", sql)
         # The stale pointer must go, or the dead grant gets picked up again.
         self.assertIn("resource_grant_id=NULL", sql)
         self.assertIn("pilot clock ran out", params[0])
         self.assertEqual(fake_db.commits, 1)
+
+    def test_a_revoked_and_refunded_candidate_also_returns(self):
+        """Revocation refunds and refuses once usage is metered, same as expiry."""
+        fake_db = FakeDb(
+            job=_job(stage="resource_grant_revoked"), grant={"status": "revoked"}
+        )
+
+        self.assertTrue(_requeue(fake_db))
+
+        sql, params = fake_db.statements[0]
+        self.assertIn("resource_grant_revoked", sql)
+        self.assertIn("resource_grant_revoked", params[0])
 
     def test_a_job_at_any_other_stage_is_left_alone(self):
         for stage in ("portfolio_granted", "awaiting_portfolio_decision", "pilot_running"):
@@ -100,11 +112,13 @@ class RequeueExpiredCandidateTests(unittest.TestCase):
         self.assertFalse(_requeue(fake_db))
         self.assertEqual(fake_db.statements, [])
 
-    def test_a_live_grant_is_never_requeued_over(self):
-        for status in ("active", "consumed", "revoked"):
+    def test_a_live_or_settled_grant_is_never_requeued_over(self):
+        for status in ("active", "consumed"):
             fake_db = FakeDb(job=_job(), grant={"status": status})
 
-            with self.assertRaisesRegex(MetaHarnessPersistenceError, "expired"):
+            with self.assertRaisesRegex(
+                MetaHarnessPersistenceError, "expired or revoked"
+            ):
                 _requeue(fake_db)
             self.assertEqual(fake_db.statements, [])
             self.assertEqual(fake_db.rollbacks, 1)

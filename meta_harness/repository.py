@@ -1047,29 +1047,34 @@ class MetaHarnessRepository:
             db.rollback()
             raise
 
-    def requeue_expired_candidate(
+    def requeue_withdrawn_candidate(
         self,
         *,
         agenda_id: int,
         idea_id: int,
         reason: str,
     ) -> bool:
-        """Return a candidate whose grant expired to the portfolio queue.
+        """Return a candidate whose grant was withdrawn to the portfolio queue.
 
-        Reconciliation correctly parks an expired candidate at
-        ``resource_grant_expired``, but nothing could move it out again:
-        ``issue_grant`` only re-points a job that sits at
-        ``awaiting_portfolio_decision``, so a pilot that simply ran out of clock
-        stranded its candidate permanently. Expiry withdrew the authority to
-        spend; it did not withdraw the portfolio decision, so the candidate is
+        Authority is withdrawn two ways and both are dead ends. Reconciliation
+        parks an expired candidate at ``resource_grant_expired``; revocation
+        parks a refunded one at ``resource_grant_revoked``. Neither could move
+        again, because ``issue_grant`` only re-points a job sitting at
+        ``awaiting_portfolio_decision`` -- so a pilot that merely ran out of
+        clock, or one revoked because some unrelated dependency was missing,
+        stranded its candidate permanently. Withdrawal removed the authority to
+        spend; it did not reverse the portfolio decision, so the candidate is
         genuinely awaiting a fresh grant.
 
-        Deliberately narrow: only a job already parked at
-        ``resource_grant_expired`` moves, only when its grant really is expired,
-        and only when no OutcomeRecord exists -- requeuing settled work would
-        re-spend a budget that was already accounted for. The stale grant
-        pointer is cleared so it can never be picked up again.
+        Deliberately narrow: only those two stages move, only when the grant
+        really is expired or revoked, and only when no OutcomeRecord exists --
+        requeuing settled work would re-spend a budget already accounted for.
+        Both withdrawal paths refund before they park, and revocation refuses
+        outright once usage has been metered, so nothing here can double-spend.
+        The stale grant pointer is cleared so it can never be picked up again.
         """
+        withdrawn_stages = {"resource_grant_expired", "resource_grant_revoked"}
+        withdrawn_states = {"expired", "revoked"}
         if int(agenda_id) <= 0 or int(idea_id) <= 0:
             raise MetaHarnessPersistenceError("agenda_id and idea_id must be positive")
         if not str(reason or "").strip():
@@ -1084,7 +1089,8 @@ class MetaHarnessRepository:
                 """,
                 (int(agenda_id), int(idea_id)),
             )
-            if not job or str(job.get("stage") or "") != "resource_grant_expired":
+            stage = str((job or {}).get("stage") or "")
+            if not job or stage not in withdrawn_stages:
                 db.rollback()
                 return False
             grant_id = int(job.get("resource_grant_id") or 0)
@@ -1096,9 +1102,9 @@ class MetaHarnessRepository:
                     """,
                     (grant_id, int(agenda_id), int(idea_id)),
                 )
-                if not grant or str(grant.get("status") or "") != "expired":
+                if not grant or str(grant.get("status") or "") not in withdrawn_states:
                     raise MetaHarnessPersistenceError(
-                        "only an expired ResourceGrant can be requeued"
+                        "only an expired or revoked ResourceGrant can be requeued"
                     )
                 if db.fetchone(
                     "SELECT id FROM outcome_records WHERE resource_grant_id=?",
@@ -1113,9 +1119,14 @@ class MetaHarnessRepository:
                 SET status='queued', stage='awaiting_portfolio_decision',
                     resource_grant_id=NULL, last_error=NULL, last_note=?,
                     updated_at=CURRENT_TIMESTAMP
-                WHERE id=? AND agenda_id=? AND stage='resource_grant_expired'
+                WHERE id=? AND agenda_id=?
+                  AND stage IN ('resource_grant_expired', 'resource_grant_revoked')
                 """,
-                (f"requeued_after_grant_expiry:{reason}"[:1000], int(job["id"]), int(agenda_id)),
+                (
+                    f"requeued_after_grant_withdrawal({stage}):{reason}"[:1000],
+                    int(job["id"]),
+                    int(agenda_id),
+                ),
             )
             db.commit()
             return True
