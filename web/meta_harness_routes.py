@@ -262,13 +262,15 @@ def list_llm_providers():
         declared = [
             entry for entry in LLM_PROVIDERS if entry.get("source") == "toml"
         ]
+        # Independence is judged on what the process would actually route to,
+        # which includes the legacy env-configured slots, not just the store.
+        runtime = provider_config.effective_pool()
         return jsonify(
             {
                 "providers": provider_config.readiness(managed),
                 "declared_in_toml": provider_config.readiness(declared),
-                "independence": provider_config.independence_report(
-                    managed + declared
-                ),
+                "runtime_pool": provider_config.readiness(runtime),
+                "independence": provider_config.independence_report(runtime),
                 "host_allowlist": list(LLM_PROVIDER_HOST_ALLOWLIST),
                 "store_path": str(LLM_PROVIDER_STORE),
                 "updated_at": store.get("updated_at"),

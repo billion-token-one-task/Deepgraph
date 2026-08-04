@@ -240,5 +240,57 @@ class IndependenceTests(unittest.TestCase):
         self.assertFalse(report["independent_evaluator_possible"])
 
 
+class EffectivePoolTests(unittest.TestCase):
+    """The page must report what the process would actually route to."""
+
+    def test_runtime_entries_are_ready_without_an_env_variable(self):
+        described = provider_config.readiness(
+            [{"name": "secondary", "model": "glm-5.2", "model_family": "glm",
+              "source": "runtime", "api_key_env": "", "enabled": True}]
+        )
+
+        self.assertTrue(described[0]["ready"])
+        self.assertTrue(described[0]["key_present"])
+
+    def test_independence_counts_legacy_slots_not_only_the_store(self):
+        # The store knows nothing about the env-configured "secondary" slot, so
+        # judging independence from the store alone said "not possible" while a
+        # second family was in fact live.
+        pool = [
+            {"name": "secondary", "model": "glm-5.2", "model_family": "glm",
+             "source": "runtime", "api_key_env": "", "enabled": True},
+            {"name": "sora2_gemini", "model": "gemini-3.6-flash-high",
+             "model_family": "gemini", "source": "runtime", "api_key_env": "",
+             "enabled": True},
+        ]
+        report = provider_config.independence_report(pool)
+
+        self.assertEqual(report["ready_routes"], 2)
+        self.assertTrue(report["independent_evaluator_possible"])
+        self.assertEqual(report["distinct_model_families"], ["gemini", "glm"])
+
+    def test_effective_pool_never_returns_a_credential(self):
+        fake = [{"name": "secondary", "model": "glm-5.2", "model_family": "glm",
+                 "api_key": "sk-live-secret", "base_url": "https://x/v1",
+                 "protocol": "chat_completions", "rpm": 0}]
+        with mock.patch.dict("sys.modules"):
+            import agents.llm_client as client
+            with mock.patch.object(client, "_providers", fake), \
+                    mock.patch.object(client, "_init_providers", lambda: None):
+                pool = provider_config.effective_pool()
+
+        self.assertEqual(pool[0]["name"], "secondary")
+        self.assertNotIn("sk-live-secret", json.dumps(pool))
+        self.assertNotIn("api_key", json.dumps(pool).replace("api_key_env", ""))
+
+    def test_a_broken_provider_pool_degrades_to_empty_not_an_exception(self):
+        import agents.llm_client as client
+
+        with mock.patch.object(
+            client, "_init_providers", side_effect=RuntimeError("no providers")
+        ):
+            self.assertEqual(provider_config.effective_pool(), [])
+
+
 if __name__ == "__main__":
     unittest.main()
