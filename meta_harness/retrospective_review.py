@@ -404,8 +404,9 @@ def apply_review(
              })),
         )
         db.execute(
-            "UPDATE experiment_runs SET scientific_evidence_state=? WHERE id=?",
-            ("scientifically_decided", run_id),
+            "UPDATE experiment_runs SET scientific_evidence_state=? "
+            "WHERE id=? AND agenda_id=?",
+            ("scientifically_decided", run_id, agenda_id),
         )
         db.commit()
     except Exception:

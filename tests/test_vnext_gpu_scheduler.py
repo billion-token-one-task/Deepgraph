@@ -631,10 +631,15 @@ class GpuSchedulerTests(unittest.TestCase):
         workers = gpu_scheduler.register_default_workers()
 
         self.assertEqual(len(workers), 2)
-        first = database.fetchone("SELECT * FROM gpu_workers WHERE id=?", ("ssh:gpu.example.com:gpu0",))
+        # The id now carries the port so two nodes behind one host:different-port
+        # do not collide on ssh:{host}:gpu{n}.
+        first = database.fetchone(
+            "SELECT * FROM gpu_workers WHERE id=?", ("ssh:gpu.example.com:55860:gpu0",)
+        )
         self.assertIsNotNone(first)
         self.assertIn('"backend": "ssh"', first["metadata"])
         self.assertIn('"ssh_host": "gpu.example.com"', first["metadata"])
+        self.assertIn('"ssh_port": 55860', first["metadata"])
 
     def test_claim_worker_ignores_idle_worker_with_running_job(self):
         gpu_scheduler.GPU_VISIBLE_DEVICES = ["0"]
