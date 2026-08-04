@@ -79,6 +79,7 @@ DEFAULT_WEB_SERVICE = "deepgraph-web.service"
 DEFAULT_PROCESS_PATTERN = "Deepgraph/main.py"
 DEFAULT_HEALTH_URL = "http://127.0.0.1:8080/api/meta"
 DEFAULT_LOG = "/var/log/deepgraph-selfheal.log"
+DEFAULT_MAINTENANCE_FILE = "/var/lib/deepgraph-selfheal/maintenance"
 PROVIDER_ISSUE_MARKERS = (
     "cooling down",
     "auth failed (401)",
@@ -167,6 +168,33 @@ def _run(command: list[str], *, env: dict[str, str] | None = None, timeout: int 
         env=env,
         check=False,
     )
+
+
+def service_uptime_seconds(unit: str) -> int | None:
+    """Seconds since the unit entered the active state, or None if unknown."""
+    try:
+        completed = _run(
+            ["systemctl", "show", unit, "-p", "ActiveEnterTimestamp", "--value"],
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    stamp = completed.stdout.strip()
+    if completed.returncode != 0 or not stamp:
+        return None
+    try:
+        parsed = subprocess.run(
+            ["date", "-d", stamp, "+%s"], capture_output=True, text=True, check=False
+        )
+        entered = int(parsed.stdout.strip())
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    return max(0, int(time.time()) - entered)
+
+
+def maintenance_declared(path: str) -> bool:
+    """An operator file beats every signal; deployments must not race us."""
+    return Path(path).exists()
 
 
 def process_running(pattern: str) -> bool:
@@ -272,10 +300,21 @@ def collect_signals(
     psql: str,
     previous_state: dict,
     now: float,
+    uptime_seconds: int | None = None,
+    maintenance: bool = False,
 ) -> SelfHealSignals:
     env_values = parse_env_file(runtime_env)
     health_status = probe_health(health_url)
-    counts = read_counts(env_values.get("DEEPGRAPH_DATABASE_URL", ""), psql=psql)
+    auto_research = env_flag(env_values, "DEEPGRAPH_AUTO_RESEARCH_ENABLED", True)
+    auto_pipeline = env_flag(env_values, "DEEPGRAPH_AUTO_PIPELINE_ENABLED", False)
+    # The freshness aggregate scans large output tables. It only ever changes
+    # the decision when autonomy is on, so a paused system pays nothing for a
+    # one-minute tick.
+    counts = (
+        read_counts(env_values.get("DEEPGRAPH_DATABASE_URL", ""), psql=psql)
+        if (auto_research or auto_pipeline)
+        else None
+    )
     last_restart = previous_state.get("last_restart_epoch")
     since_restart = (
         int(now - float(last_restart))
@@ -292,12 +331,8 @@ def collect_signals(
             int(previous_state.get("health_consecutive_failures") or 0),
             health_status=health_status,
         ),
-        auto_research_enabled=env_flag(
-            env_values, "DEEPGRAPH_AUTO_RESEARCH_ENABLED", True
-        ),
-        auto_pipeline_enabled=env_flag(
-            env_values, "DEEPGRAPH_AUTO_PIPELINE_ENABLED", False
-        ),
+        auto_research_enabled=auto_research,
+        auto_pipeline_enabled=auto_pipeline,
         active_resource_grants=int((counts or {}).get("active_grants") or 0),
         running_jobs=running_jobs,
         awaiting_authority=bool(awaiting_jobs > 0 and running_jobs == 0),
@@ -307,6 +342,8 @@ def collect_signals(
         output_age_seconds=(age if counts is not None and age >= 0 else None),
         provider_issue=provider_issue_in_log(tail_text(web_log)),
         seconds_since_last_restart=since_restart,
+        service_uptime_seconds=uptime_seconds,
+        maintenance_mode=maintenance,
     )
 
 
@@ -365,6 +402,14 @@ def main() -> int:
         default=None,
         help="service to keep started (repeatable); never the web service",
     )
+    parser.add_argument(
+        "--maintenance-file",
+        default=os.environ.get(
+            "DEEPGRAPH_SELFHEAL_MAINTENANCE_FILE", DEFAULT_MAINTENANCE_FILE
+        ),
+        help="while this file exists the watchdog takes no action",
+    )
+    parser.add_argument("--startup-grace-seconds", type=int, default=180)
     parser.add_argument("--stall-seconds", type=int, default=45 * 60)
     parser.add_argument("--cooldown-seconds", type=int, default=30 * 60)
     parser.add_argument("--health-failure-threshold", type=int, default=3)
@@ -395,6 +440,8 @@ def main() -> int:
     previous = state.load()
     now = time.time()
     signals = collect_signals(
+        uptime_seconds=service_uptime_seconds(args.web_service),
+        maintenance=maintenance_declared(args.maintenance_file),
         runtime_env=args.runtime_env,
         process_pattern=args.process_pattern,
         health_url=args.health_url,
@@ -407,6 +454,7 @@ def main() -> int:
         stall_seconds=args.stall_seconds,
         cooldown_seconds=args.cooldown_seconds,
         health_failure_threshold=args.health_failure_threshold,
+        startup_grace_seconds=args.startup_grace_seconds,
     )
     decision: SelfHealDecision = decide(signals, policy=policy)
 
