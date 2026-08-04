@@ -394,6 +394,7 @@ def _workspace_payload(insight: dict) -> dict[str, Any]:
     # an old run) must degrade to an empty asset view, not 500 a whole listing.
     assets: list = []
     preview_urls: dict = {}
+    plan_snapshot: dict = {}
     try:
         get_idea_workspace(int(insight["id"]), insight=insight, create=True, sync_db=True)
         assets = list_paper_assets(int(insight["id"]), insight=insight)
@@ -402,6 +403,9 @@ def _workspace_payload(insight: dict) -> dict[str, Any]:
             assets,
             agenda_id=int(insight["agenda_id"]),
         )
+        # plan_file_path() also creates the workspace, so it must sit inside
+        # the same guard.
+        plan_snapshot = _plan_snapshot(insight)
     except OSError as exc:
         log_event("error", {
             "step": "idea_workspace",
@@ -410,7 +414,7 @@ def _workspace_payload(insight: dict) -> dict[str, Any]:
         })
     return {
         "canonical_run_id": insight.get("canonical_run_id"),
-        "plan_snapshot": _plan_snapshot(insight),
+        "plan_snapshot": plan_snapshot,
         "paper_assets": assets,
         "paper_preview_urls": preview_urls,
     }
