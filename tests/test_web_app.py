@@ -192,6 +192,21 @@ class ExperimentGroupApiTests(unittest.TestCase):
         self.assertIn("/papers/1", group["paper_preview_urls"]["index"])
         self.assertIn("agenda_id=1", group["paper_preview_urls"]["index"])
 
+    def test_broken_workspace_degrades_listing_instead_of_500(self):
+        # A dangling `current` symlink (or any OSError) on one idea's workspace
+        # must not take down the whole experiment_groups listing.
+        with mock.patch.object(
+            web_app,
+            "get_idea_workspace",
+            side_effect=FileExistsError("File exists: .../current"),
+        ):
+            response = self.client.get("/api/experiment_groups?agenda_id=1")
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(len(payload), 1)
+        self.assertEqual(payload[0]["paper_assets"], [])
+        self.assertEqual(payload[0]["paper_preview_urls"], {})
+
     def test_api_experiment_group_detail_includes_run_history_and_artifacts(self):
         response = self.client.get("/api/experiment_groups/1?agenda_id=1")
         payload = response.get_json()
