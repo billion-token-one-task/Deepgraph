@@ -37,6 +37,8 @@ ACTION_HOLD = "hold"
 # Reason codes are part of the operator contract: they are logged, alerted on
 # and asserted in tests. Do not rename one without updating the runbook.
 REASON_PROCESS_NOT_RUNNING = "hold_process_not_running_systemd_owns_recovery"
+REASON_STARTUP_GRACE = "hold_within_startup_grace"
+REASON_MAINTENANCE = "hold_maintenance_mode"
 REASON_HEALTH_UNKNOWN = "hold_health_probe_unavailable"
 REASON_HEALTH_OK = "hold_health_ok"
 REASON_HEALTH_FLAPPING = "hold_health_failure_below_threshold"
@@ -62,6 +64,10 @@ class SelfHealPolicy:
     stall_seconds: int = 45 * 60
     cooldown_seconds: int = 30 * 60
     health_failure_threshold: int = 3
+    # A service that is still starting is not a service that has failed. This
+    # host takes over a minute to finish its startup backfills, and a probe
+    # that ignored that restarted it mid-startup once a minute, forever.
+    startup_grace_seconds: int = 180
 
     def validate(self) -> None:
         if self.stall_seconds <= 0:
@@ -70,6 +76,8 @@ class SelfHealPolicy:
             raise SelfHealPolicyError("cooldown_seconds must be positive")
         if self.health_failure_threshold <= 0:
             raise SelfHealPolicyError("health_failure_threshold must be positive")
+        if self.startup_grace_seconds < 0:
+            raise SelfHealPolicyError("startup_grace_seconds cannot be negative")
 
 
 @dataclass(frozen=True)
@@ -98,6 +106,10 @@ class SelfHealSignals:
     provider_issue: bool = False
     # Seconds since the watchdog last restarted the service. None = never.
     seconds_since_last_restart: int | None = None
+    # Seconds since the unit entered the active state. None = not observable.
+    service_uptime_seconds: int | None = None
+    # An operator has declared a maintenance window; the watchdog stands down.
+    maintenance_mode: bool = False
 
     def validate(self) -> None:
         if self.health_status not in HEALTH_STATES:
@@ -113,6 +125,8 @@ class SelfHealSignals:
             and self.seconds_since_last_restart < 0
         ):
             raise SelfHealPolicyError("seconds_since_last_restart cannot be negative")
+        if self.service_uptime_seconds is not None and self.service_uptime_seconds < 0:
+            raise SelfHealPolicyError("service_uptime_seconds cannot be negative")
 
     @property
     def autonomy_enabled(self) -> bool:
@@ -174,6 +188,12 @@ def decide(
     active_policy.validate()
     signals.validate()
 
+    # 0. An operator-declared maintenance window outranks every signal: a
+    #    deployment stops the service on purpose, and a watchdog that races the
+    #    operator is worse than no watchdog.
+    if signals.maintenance_mode:
+        return SelfHealDecision(ACTION_HOLD, REASON_MAINTENANCE, {})
+
     # 1. A dead process belongs to systemd's Restart= directive. Two supervisors
     #    fighting over the same unit is how restart storms start.
     if not signals.web_process_running:
@@ -183,7 +203,23 @@ def decide(
             {"owner": "systemd"},
         )
 
-    # 2. A failing health probe is the only *positive* proof of a wedged
+    # 2. Still starting is not failed. Without this, a probe faster than the
+    #    startup time is a guaranteed restart loop -- which is exactly what
+    #    happened on this host with a one-minute external healthcheck.
+    if (
+        signals.service_uptime_seconds is not None
+        and signals.service_uptime_seconds < active_policy.startup_grace_seconds
+    ):
+        return SelfHealDecision(
+            ACTION_HOLD,
+            REASON_STARTUP_GRACE,
+            {
+                "service_uptime_seconds": signals.service_uptime_seconds,
+                "startup_grace_seconds": active_policy.startup_grace_seconds,
+            },
+        )
+
+    # 3. A failing health probe is the only *positive* proof of a wedged
     #    process, so it is the only signal allowed to restart on its own.
     if signals.health_status == HEALTH_FAILED:
         if signals.health_consecutive_failures >= active_policy.health_failure_threshold:

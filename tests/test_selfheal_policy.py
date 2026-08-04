@@ -1,10 +1,13 @@
 """The watchdog must not restart a deliberately paused system."""
 
 import unittest
+from unittest import mock
 from unittest.mock import patch
 
 from orchestrator.selfheal_policy import (
     ACTION_HOLD,
+    REASON_MAINTENANCE,
+    REASON_STARTUP_GRACE,
     ACTION_RESTART,
     HEALTH_FAILED,
     HEALTH_OK,
@@ -347,6 +350,94 @@ class RunnerSignalParsingTests(unittest.TestCase):
             # the next candidate instead of poisoning sys.path.
             with patch.dict(os.environ, {"DEEPGRAPH_SELFHEAL_LIB": "/nonexistent"}):
                 self.assertNotEqual(self.runner._resolve_library_root(), "/nonexistent")
+
+
+class StartupAndMaintenanceTests(unittest.TestCase):
+    """The two rules that would have prevented tonight's restart loop."""
+
+    def test_a_service_that_is_still_starting_is_never_restarted(self):
+        # The external one-minute healthcheck killed this host's web service
+        # mid-startup, once a minute, because startup takes longer than a
+        # minute. A probe faster than startup is a guaranteed restart loop
+        # unless the policy knows what "still starting" looks like.
+        signals = _working_signals(
+            health_status=HEALTH_FAILED,
+            health_consecutive_failures=9,
+            service_uptime_seconds=30,
+        )
+
+        decision = decide(signals)
+
+        self.assertEqual(decision.action, ACTION_HOLD)
+        self.assertEqual(decision.reason_code, REASON_STARTUP_GRACE)
+
+    def test_the_same_failure_restarts_once_startup_has_finished(self):
+        signals = _working_signals(
+            health_status=HEALTH_FAILED,
+            health_consecutive_failures=3,
+            service_uptime_seconds=600,
+        )
+
+        self.assertEqual(decide(signals).action, ACTION_RESTART)
+
+    def test_unknown_uptime_does_not_block_a_real_restart(self):
+        signals = _working_signals(
+            health_status=HEALTH_FAILED,
+            health_consecutive_failures=3,
+            service_uptime_seconds=None,
+        )
+
+        self.assertEqual(decide(signals).action, ACTION_RESTART)
+
+    def test_maintenance_mode_outranks_every_signal(self):
+        signals = _working_signals(
+            maintenance_mode=True,
+            web_process_running=False,
+            health_status=HEALTH_FAILED,
+            health_consecutive_failures=99,
+            output_age_seconds=86_400,
+        )
+
+        decision = decide(signals)
+
+        self.assertEqual(decision.action, ACTION_HOLD)
+        self.assertEqual(decision.reason_code, REASON_MAINTENANCE)
+
+    def test_negative_uptime_is_rejected(self):
+        with self.assertRaises(SelfHealPolicyError):
+            decide(_working_signals(service_uptime_seconds=-1))
+        with self.assertRaises(SelfHealPolicyError):
+            decide(_working_signals(), policy=SelfHealPolicy(startup_grace_seconds=-1))
+
+    def test_a_one_minute_tick_on_a_paused_system_skips_the_expensive_query(self):
+        from scripts import deepgraph_selfheal
+
+        with mock.patch.object(
+            deepgraph_selfheal, "parse_env_file",
+            return_value={"DEEPGRAPH_AUTO_RESEARCH_ENABLED": "false",
+                          "DEEPGRAPH_AUTO_PIPELINE_ENABLED": "0"},
+        ), mock.patch.object(
+            deepgraph_selfheal, "process_running", return_value=True
+        ), mock.patch.object(
+            deepgraph_selfheal, "probe_health", return_value=HEALTH_OK
+        ), mock.patch.object(
+            deepgraph_selfheal, "read_counts"
+        ) as read_counts, mock.patch.object(
+            deepgraph_selfheal, "tail_text", return_value=""
+        ):
+            signals = deepgraph_selfheal.collect_signals(
+                runtime_env="/nonexistent/.env",
+                process_pattern="x",
+                health_url="http://127.0.0.1:8080/api/meta",
+                web_log="/nonexistent/web.log",
+                psql="psql",
+                previous_state={},
+                now=1_000_000.0,
+            )
+
+        read_counts.assert_not_called()
+        self.assertIsNone(signals.output_age_seconds)
+        self.assertEqual(decide(signals).reason_code, REASON_AUTONOMY_DISABLED)
 
 
 if __name__ == "__main__":

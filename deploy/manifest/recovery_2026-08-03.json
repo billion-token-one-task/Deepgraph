@@ -14,8 +14,8 @@
           "replaces": "/usr/local/bin/deepgraph-selfheal.sh",
           "runtime_locally_modified": false,
           "source": "scripts/deepgraph_selfheal.py",
-          "source_bytes": 15232,
-          "source_sha256": "d0b994567410986fea3f4b3ece892525e0f413a80509626f5f342466b980ce3f",
+          "source_bytes": 17172,
+          "source_sha256": "bab74c842db450dc6ec35496973121713ad7785f8faa21d14859389b5d17d86d",
           "target": "/usr/local/bin/deepgraph-selfheal.py"
         },
         {
@@ -26,8 +26,8 @@
           "replaces": null,
           "runtime_locally_modified": true,
           "source": "orchestrator/selfheal_policy.py",
-          "source_bytes": 10437,
-          "source_sha256": "c8238aaa760c4acfa85b6d2443246bff5f70db38aee46886daa04dbc92ef7107",
+          "source_bytes": 12289,
+          "source_sha256": "8b061bbe798ca46a8797658e6d1f45073b7253957fbf4c5c6c741a811b943662",
           "target": "/usr/local/lib/deepgraph/orchestrator/selfheal_policy.py"
         },
         {
@@ -62,8 +62,8 @@
           "replaces": null,
           "runtime_locally_modified": false,
           "source": "deploy/deepgraph-selfheal.timer",
-          "source_bytes": 171,
-          "source_sha256": "c6a1358078a8e9804b22e1e3d3b78d0d186d7d766b5bb5227b2ee6af177bff17",
+          "source_bytes": 165,
+          "source_sha256": "28d3a6c84d7b0b823fa01b65f09c16489392a22344525551fab7a7d099d7d512",
           "target": "/etc/systemd/system/deepgraph-selfheal.timer"
         }
       ],
@@ -228,8 +228,8 @@
           "replaces": null,
           "runtime_locally_modified": true,
           "source": "orchestrator/selfheal_policy.py",
-          "source_bytes": 10437,
-          "source_sha256": "c8238aaa760c4acfa85b6d2443246bff5f70db38aee46886daa04dbc92ef7107",
+          "source_bytes": 12289,
+          "source_sha256": "8b061bbe798ca46a8797658e6d1f45073b7253957fbf4c5c6c741a811b943662",
           "target": "/home/billion-token/Deepgraph/orchestrator/selfheal_policy.py"
         },
         {
@@ -343,6 +343,6 @@
     ]
   },
   "runtime_root": "/home/billion-token/Deepgraph",
-  "source_commit": "4b32875a6ca961b0d8f7d3fca934fde1b1fe6cf0",
+  "source_commit": "6eb938158d130f2da821b14fdc83d2283627fc57",
   "source_worktree_clean": false
 }
