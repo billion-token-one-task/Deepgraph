@@ -1,0 +1,57 @@
+{
+  "manifest_key": "bounded-pilot_2026-08-04",
+  "description": "Fail-closed ingestion worker degrades instead of killing the web process; PostgreSQL sessions carry an idle-in-transaction reclaim bound; the portfolio_granted authorization finally has a bounded, single-candidate reader.",
+  "target_host": "deepgraph runtime host",
+  "runtime_root": "/home/billion-token/Deepgraph",
+  "backup_root": "/home/ec2-user/deepgraph-rollback",
+  "batches": [
+    {
+      "batch": "5-resilience",
+      "authorization": "required-before-deploy",
+      "purpose": "Stop a fail-closed worker from taking the site down, and stop an abandoned transaction from wedging every writer.",
+      "restart_required": [
+        "deepgraph-web.service"
+      ],
+      "systemd_reload_required": false,
+      "health_check": "curl -fsS -o /dev/null -w '%{http_code}' https://deepgraph.joulebeat.com/api/meta",
+      "acceptance": "site returns 200 after the 60-90s startup backfills; `show idle_in_transaction_session_timeout` reports 10min on a new application session; no idle-in-transaction session older than 10 minutes survives",
+      "files": [
+        {
+          "source": "main.py",
+          "target": "{runtime_root}/main.py",
+          "owner": "billion-token:billion-token",
+          "mode": "0644"
+        },
+        {
+          "source": "db/database.py",
+          "target": "{runtime_root}/db/database.py",
+          "owner": "billion-token:billion-token",
+          "mode": "0644"
+        }
+      ]
+    },
+    {
+      "batch": "6-bounded-execution",
+      "authorization": "required-before-deploy",
+      "purpose": "Add the reader for stage='portfolio_granted' so one authorized candidate can run without global autonomy.",
+      "restart_required": [],
+      "systemd_reload_required": false,
+      "health_check": "python3 scripts/run_bounded_pilot.py --agenda 5 --idea 97 --grant <id> --actor ops:recovery --dry-run",
+      "acceptance": "dry run reports status=admissible with backends within cpu/llm and max_gpu_hours=0; a grant outside those bounds is refused",
+      "files": [
+        {
+          "source": "orchestrator/bounded_execution.py",
+          "target": "{runtime_root}/orchestrator/bounded_execution.py",
+          "owner": "billion-token:billion-token",
+          "mode": "0644"
+        },
+        {
+          "source": "scripts/run_bounded_pilot.py",
+          "target": "{runtime_root}/scripts/run_bounded_pilot.py",
+          "owner": "billion-token:billion-token",
+          "mode": "0755"
+        }
+      ]
+    }
+  ]
+}
