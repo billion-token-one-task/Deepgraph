@@ -496,6 +496,26 @@ header#topBar {
     border-color: #a8842a;
 }
 
+/* Small dim second line under a core stat number */
+.stat-subtext {
+    font-size: 0.66rem;
+    color: var(--text-dim);
+    margin-top: 3px;
+    line-height: 1.3;
+}
+
+/* Agenda scope switcher in the top bar */
+.agenda-select {
+    max-width: 230px;
+    background: transparent;
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 4px 8px;
+    font-size: 0.72rem;
+    margin-right: 10px;
+}
+
 /* Language switcher (ported from the pre-upgrade frontend) */
 .lang-switch {
     display: inline-flex;

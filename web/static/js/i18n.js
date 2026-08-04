@@ -41,6 +41,7 @@
       "stat.paperIdeas": "Paper Ideas Generated",
       "stat.experimentRuns": "Experiment Runs",
       "stat.decidedFindings": "Decided Findings",
+      "stat.decidedPending": "{n} candidates awaiting adjudication",
       "stat.analysisTokens": "Analysis Tokens",
       "stat.results": "Results",
       "stat.taxonomyNodes": "Taxonomy Nodes",
@@ -124,6 +125,7 @@
       "verdict.refuted": "refuted",
       "verdict.inconclusive": "inconclusive",
 
+      "tl.legacy": "LEGACY IMPORT",
       "tl.signal": "SIGNALS",
       "tl.candidate": "CANDIDATE",
       "tl.authorization": "AUTHORIZATION",
@@ -167,6 +169,7 @@
       "stat.paperIdeas": "已生成论文想法",
       "stat.experimentRuns": "实验运行",
       "stat.decidedFindings": "已判定发现",
+      "stat.decidedPending": "{n} 项候选待裁决",
       "stat.analysisTokens": "分析 Token",
       "stat.results": "结果",
       "stat.taxonomyNodes": "分类节点",
@@ -250,6 +253,7 @@
       "verdict.refuted": "反驳",
       "verdict.inconclusive": "不确定",
 
+      "tl.legacy": "历史导入",
       "tl.signal": "信号",
       "tl.candidate": "候选",
       "tl.authorization": "授权",

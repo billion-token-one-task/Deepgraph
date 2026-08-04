@@ -447,6 +447,29 @@ def _job_events(agenda_id: int) -> list[dict]:
     return events
 
 
+def _legacy_import_events(agenda_id: int) -> list[dict]:
+    return [
+        {
+            "kind": "legacy_import",
+            "at": _ts(row.get("imported_at")),
+            "entity_type": row.get("entity_type"),
+            "entity_id": row.get("entity_id"),
+            "actor": _scrub_text(str(row.get("actor") or "")),
+            "reason": _scrub_text(str(row.get("reason") or "")),
+        }
+        for row in _rows(
+            """
+            SELECT entity_type, entity_id, actor, reason, imported_at
+            FROM legacy_scope_imports
+            WHERE agenda_id=?
+            ORDER BY imported_at DESC, id DESC
+            LIMIT 100
+            """,
+            (agenda_id,),
+        )
+    ]
+
+
 def _outcome_events(agenda_id: int) -> list[dict]:
     return [
         {
@@ -487,6 +510,7 @@ def agenda_timeline(agenda_id: int):
         _TIMELINE_MAX_LIMIT,
     )
     events: list[dict] = []
+    events.extend(_legacy_import_events(agenda_id))
     events.extend(_signal_events(agenda_id))
     events.extend(_candidate_events(agenda_id))
     events.extend(_grant_events(agenda_id))

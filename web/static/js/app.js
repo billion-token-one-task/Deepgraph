@@ -94,10 +94,33 @@ async function initAgendaScope() {
     try {
         const data = await api('/api/v1/agendas');
         agendaList = data.agendas || [];
-        const active = agendaList.find(a => a.is_active) || agendaList[0];
+        const stored = parseInt(localStorage.getItem('deepgraph.agenda') || '', 10);
+        const fromStore = agendaList.find(a => a.id === stored);
+        const active = fromStore || agendaList.find(a => a.is_active) || agendaList[0];
         if (active) currentAgendaId = active.id;
+        renderAgendaSwitcher();
     } catch (e) {
         console.error('Agenda scope unavailable:', e);
+    }
+}
+
+function renderAgendaSwitcher() {
+    const select = el('agendaSelect');
+    if (!select || agendaList.length < 2) return;
+    select.innerHTML = agendaList.map(a =>
+        `<option value="${a.id}"${a.id === currentAgendaId ? ' selected' : ''}>#${a.id} ${esc(trunc(a.name, 42))}</option>`
+    ).join('');
+    select.style.display = '';
+    if (!select._wired) {
+        select._wired = true;
+        select.addEventListener('change', () => {
+            const next = parseInt(select.value, 10);
+            if (!next || next === currentAgendaId) return;
+            currentAgendaId = next;
+            localStorage.setItem('deepgraph.agenda', String(next));
+            evidenceStateMap = null;
+            onTabActivated(activeTab);
+        });
     }
 }
 
@@ -366,6 +389,15 @@ async function refreshStats() {
             if (card && s.scientific_decisions_total > 0) {
                 card.title = `Audited verdicts: ${s.decisions_supported || 0} supported, `
                     + `${s.decisions_refuted || 0} refuted, ${s.decisions_inconclusive || 0} inconclusive.`;
+            }
+            // Honest bridge while zero: show how much completed work is queued
+            // for adjudication instead of a dead-looking 0.
+            const sub = el('statDecidedSub');
+            if (sub) {
+                const pending = s.adjudication_candidates || 0;
+                sub.textContent = (!s.scientific_decisions_total && pending > 0)
+                    ? tr('stat.decidedPending', '{n} candidates awaiting adjudication').replace('{n}', fmt(pending))
+                    : '';
             }
         }
         el('statTokens').textContent        = fmt(s.tokens_consumed || 0);
@@ -2866,6 +2898,7 @@ async function loadExperimentsTab() {
 // ── Process timeline rendering ───────────────────────────────────────
 
 const TIMELINE_KIND_META = {
+    legacy_import:      { key: 'tl.legacy',        label: 'LEGACY IMPORT', color: '#9a9088' },
     signal:             { key: 'tl.signal',        label: 'SIGNALS',       color: '#2e86ab' },
     candidate_decision: { key: 'tl.candidate',     label: 'CANDIDATE',     color: '#a8842a' },
     authorization:      { key: 'tl.authorization', label: 'AUTHORIZATION', color: '#7a5ea8' },
@@ -2877,6 +2910,9 @@ const TIMELINE_KIND_META = {
 
 function timelineEventText(ev) {
     switch (ev.kind) {
+        case 'legacy_import':
+            return `${esc(ev.entity_type || 'entity')} #${ev.entity_id ?? '?'} imported into this agenda by ${esc(ev.actor || '?')}`
+                + (ev.reason ? ` — ${esc(trunc(ev.reason, 120))}` : '');
         case 'signal':
             return `Frontier packet for problem #${ev.research_problem_id ?? '?'} — gate ${ev.gate_allowed ? 'allowed' : 'refused'}`
                 + ((ev.gate_reason_codes || []).length ? ` [${ev.gate_reason_codes.map(esc).join(', ')}]` : '');

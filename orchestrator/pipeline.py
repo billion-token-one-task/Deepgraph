@@ -1059,4 +1059,23 @@ def get_stats_dict() -> dict:
         base["decisions_supported"] = 0
         base["decisions_refuted"] = 0
         base["decisions_inconclusive"] = 0
+    try:
+        # Completed runs with a real measured baseline that have not yet been
+        # adjudicated by the evidence ladder. Shown as the honest bridge while
+        # scientific_decisions_total is still zero.
+        base["adjudication_candidates"] = db.fetchone(
+            """
+            SELECT COUNT(*) as c FROM experiment_runs er
+            WHERE er.status='completed'
+              AND er.baseline_metric_value IS NOT NULL
+              AND er.baseline_metric_value <> 0
+              AND er.best_metric_value IS NOT NULL
+              AND NOT EXISTS (
+                  SELECT 1 FROM scientific_decision_records sdr
+                  WHERE sdr.experiment_run_id = er.id
+              )
+            """
+        )["c"]
+    except Exception:
+        base["adjudication_candidates"] = 0
     return base
