@@ -1041,4 +1041,22 @@ def get_stats_dict() -> dict:
         )["c"]
     except Exception:
         base["agenda_tokens_total"] = 0
+    try:
+        # Terminal scientific output: audited verdicts recorded by the
+        # evidence ladder. This is the only stat that counts conclusions;
+        # everything else on the dashboard is input, cost, or intermediate
+        # process. Zero is an honest value here, not an error.
+        base["scientific_decisions_total"] = db.fetchone(
+            "SELECT COUNT(*) as c FROM scientific_decision_records"
+        )["c"]
+        for verdict in ("supported", "refuted", "inconclusive"):
+            base[f"decisions_{verdict}"] = db.fetchone(
+                "SELECT COUNT(*) as c FROM scientific_decision_records WHERE verdict=?",
+                (verdict,),
+            )["c"]
+    except Exception:
+        base["scientific_decisions_total"] = 0
+        base["decisions_supported"] = 0
+        base["decisions_refuted"] = 0
+        base["decisions_inconclusive"] = 0
     return base

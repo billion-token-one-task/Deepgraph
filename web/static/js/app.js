@@ -359,6 +359,15 @@ async function refreshStats() {
         el('statPapers').textContent        = fmt(s.papers_processed || 0);
         el('statDeepDiscoveries').textContent = fmt(s.deep_insights_total || 0);
         el('statExperiments').textContent   = fmt(s.experiment_runs_total || 0);
+        const decidedEl = el('statDecided');
+        if (decidedEl) {
+            decidedEl.textContent = fmt(s.scientific_decisions_total || 0);
+            const card = decidedEl.closest('.stat-card');
+            if (card && s.scientific_decisions_total > 0) {
+                card.title = `Audited verdicts: ${s.decisions_supported || 0} supported, `
+                    + `${s.decisions_refuted || 0} refuted, ${s.decisions_inconclusive || 0} inconclusive.`;
+            }
+        }
         el('statTokens').textContent        = fmt(s.tokens_consumed || 0);
 
         // Detail stat cards (collapsed section)
