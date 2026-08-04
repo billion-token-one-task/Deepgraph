@@ -1047,6 +1047,82 @@ class MetaHarnessRepository:
             db.rollback()
             raise
 
+    def requeue_expired_candidate(
+        self,
+        *,
+        agenda_id: int,
+        idea_id: int,
+        reason: str,
+    ) -> bool:
+        """Return a candidate whose grant expired to the portfolio queue.
+
+        Reconciliation correctly parks an expired candidate at
+        ``resource_grant_expired``, but nothing could move it out again:
+        ``issue_grant`` only re-points a job that sits at
+        ``awaiting_portfolio_decision``, so a pilot that simply ran out of clock
+        stranded its candidate permanently. Expiry withdrew the authority to
+        spend; it did not withdraw the portfolio decision, so the candidate is
+        genuinely awaiting a fresh grant.
+
+        Deliberately narrow: only a job already parked at
+        ``resource_grant_expired`` moves, only when its grant really is expired,
+        and only when no OutcomeRecord exists -- requeuing settled work would
+        re-spend a budget that was already accounted for. The stale grant
+        pointer is cleared so it can never be picked up again.
+        """
+        if int(agenda_id) <= 0 or int(idea_id) <= 0:
+            raise MetaHarnessPersistenceError("agenda_id and idea_id must be positive")
+        if not str(reason or "").strip():
+            raise MetaHarnessPersistenceError("a requeue reason is required")
+        try:
+            lock = " FOR UPDATE" if db._use_pg() else ""  # noqa: SLF001
+            job = db.fetchone(
+                f"""
+                SELECT id, stage, status, resource_grant_id
+                FROM auto_research_jobs
+                WHERE agenda_id=? AND deep_insight_id=?{lock}
+                """,
+                (int(agenda_id), int(idea_id)),
+            )
+            if not job or str(job.get("stage") or "") != "resource_grant_expired":
+                db.rollback()
+                return False
+            grant_id = int(job.get("resource_grant_id") or 0)
+            if grant_id > 0:
+                grant = db.fetchone(
+                    """
+                    SELECT status FROM resource_grants
+                    WHERE id=? AND agenda_id=? AND idea_id=?
+                    """,
+                    (grant_id, int(agenda_id), int(idea_id)),
+                )
+                if not grant or str(grant.get("status") or "") != "expired":
+                    raise MetaHarnessPersistenceError(
+                        "only an expired ResourceGrant can be requeued"
+                    )
+                if db.fetchone(
+                    "SELECT id FROM outcome_records WHERE resource_grant_id=?",
+                    (grant_id,),
+                ):
+                    raise MetaHarnessPersistenceError(
+                        "candidate already has an OutcomeRecord; it is settled"
+                    )
+            db.execute(
+                """
+                UPDATE auto_research_jobs
+                SET status='queued', stage='awaiting_portfolio_decision',
+                    resource_grant_id=NULL, last_error=NULL, last_note=?,
+                    updated_at=CURRENT_TIMESTAMP
+                WHERE id=? AND agenda_id=? AND stage='resource_grant_expired'
+                """,
+                (f"requeued_after_grant_expiry:{reason}"[:1000], int(job["id"]), int(agenda_id)),
+            )
+            db.commit()
+            return True
+        except Exception:
+            db.rollback()
+            raise
+
     def assemble_and_record_outcome(
         self,
         *,
