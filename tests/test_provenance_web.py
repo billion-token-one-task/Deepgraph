@@ -65,9 +65,14 @@ def _create_meta_harness_tables():
             id INTEGER PRIMARY KEY, agenda_id INTEGER, idea_id INTEGER,
             experiment_run_id INTEGER, execution_result TEXT, effect REAL,
             baseline REAL, verdict TEXT, state_decision TEXT, recorded_at TEXT)""",
+        """CREATE TABLE IF NOT EXISTS legacy_scope_imports (
+            id INTEGER PRIMARY KEY, agenda_id INTEGER, entity_type TEXT,
+            entity_id INTEGER, actor TEXT, reason TEXT, idempotency_key TEXT,
+            imported_at TEXT)""",
     ]
     for statement in statements:
         database.execute(statement)
+    database.commit()
 
 
 class ProvenanceApiTests(unittest.TestCase):
@@ -177,15 +182,30 @@ class ProvenanceApiTests(unittest.TestCase):
                 gate_reason_codes_json, created_at)
                VALUES (1, 9, 0, '["obsolete_evidence"]', '2026-08-01 00:10:00')"""
         )
+        database.execute(
+            """INSERT INTO legacy_scope_imports
+               (agenda_id, entity_type, entity_id, actor, reason,
+                idempotency_key, imported_at)
+               VALUES (1, 'deep_insight', 7, 'legacy_scope_backfill',
+                       'artifacts were in /home/billion-token/x', 'k1',
+                       '2026-08-01 00:05:00')"""
+        )
+        database.commit()
         payload = self.client.get("/api/v1/agendas/1/timeline").get_json()
         events = payload["events"]
-        self.assertEqual([e["kind"] for e in events], ["job", "authorization", "signal"])
+        self.assertEqual(
+            [e["kind"] for e in events],
+            ["job", "authorization", "signal", "legacy_import"],
+        )
         body = str(payload)
         self.assertNotIn("/home/", body)
         self.assertIn("<path>", body)
-        signal = events[-1]
+        signal = events[2]
         self.assertFalse(signal["gate_allowed"])
         self.assertEqual(signal["gate_reason_codes"], ["obsolete_evidence"])
+        legacy = events[3]
+        self.assertEqual(legacy["entity_id"], 7)
+        self.assertEqual(legacy["actor"], "legacy_scope_backfill")
 
     def test_selection_rationale_exposes_rejected_candidates(self):
         database.execute(

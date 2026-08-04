@@ -65,6 +65,7 @@
             </div>
         </div>
         <div class="topbar-right">
+            <select id="agendaSelect" class="agenda-select" title="Research agenda scope" style="display:none;"></select>
             <div class="lang-switch">
                 <button type="button" class="lang-btn" data-lang="en" data-i18n="lang.en">EN</button>
                 <button type="button" class="lang-btn" data-lang="zh" data-i18n="lang.zh">ZH</button>
@@ -157,6 +158,7 @@
                             </div>
                             <div class="stat-number" id="statDecided">0</div>
                             <div class="stat-label" data-i18n="stat.decidedFindings">Decided Findings</div>
+                            <div class="stat-subtext" id="statDecidedSub"></div>
                         </div>
                         <div class="stat-card" title="LLM tokens spent reading and reasoning over source papers">
                             <div class="stat-icon stat-icon-cyan">
