@@ -40,6 +40,12 @@
       "acceptance": "dry run reports status=admissible with backends within cpu/llm and max_gpu_hours=0; a grant outside those bounds is refused",
       "files": [
         {
+          "source": "meta_harness/grant_usage.py",
+          "target": "{runtime_root}/meta_harness/grant_usage.py",
+          "owner": "billion-token:billion-token",
+          "mode": "0644"
+        },
+        {
           "source": "orchestrator/bounded_execution.py",
           "target": "{runtime_root}/orchestrator/bounded_execution.py",
           "owner": "billion-token:billion-token",

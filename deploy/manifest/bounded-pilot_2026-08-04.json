@@ -44,6 +44,18 @@
       "batch": "6-bounded-execution",
       "files": [
         {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/bounded-pilot_2026-08-04/grant_usage.py.bak",
+          "kind": "file",
+          "mode": "0644",
+          "owner": "billion-token:billion-token",
+          "replaces": null,
+          "runtime_locally_modified": true,
+          "source": "meta_harness/grant_usage.py",
+          "source_bytes": 7637,
+          "source_sha256": "e67814e54a8bcfbc879434d138ee1eb00d832ce2b92559216ace237b00cb8f51",
+          "target": "/home/billion-token/Deepgraph/meta_harness/grant_usage.py"
+        },
+        {
           "backup_artifact": "/home/ec2-user/deepgraph-rollback/bounded-pilot_2026-08-04/bounded_execution.py.bak",
           "kind": "file",
           "mode": "0644",
@@ -81,6 +93,7 @@
   "operator_diff_required": [
     "db/database.py",
     "main.py",
+    "meta_harness/grant_usage.py",
     "orchestrator/bounded_execution.py",
     "scripts/run_bounded_pilot.py"
   ],
@@ -96,6 +109,6 @@
     ]
   },
   "runtime_root": "/home/billion-token/Deepgraph",
-  "source_commit": "0400a081e3fa2d53fa647ed080197b5db8b56b7d",
+  "source_commit": "a33d62b3face5ea1fa809c6eaa44c102d7eb652a",
   "source_worktree_clean": false
 }
