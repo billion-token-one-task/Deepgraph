@@ -264,8 +264,8 @@
           "replaces": null,
           "runtime_locally_modified": true,
           "source": "agents/llm_client.py",
-          "source_bytes": 61146,
-          "source_sha256": "98eaba4f6c7adb7b01ca7a08799bac0e6bb361cb07b05409180fcba0c9ae2a5f",
+          "source_bytes": 61782,
+          "source_sha256": "f82cd935938302c68575a9bed10d29eecac87093e4e73dc9693584615ab0e867",
           "target": "/home/billion-token/Deepgraph/agents/llm_client.py"
         },
         {
@@ -343,6 +343,6 @@
     ]
   },
   "runtime_root": "/home/billion-token/Deepgraph",
-  "source_commit": "0400a081e3fa2d53fa647ed080197b5db8b56b7d",
+  "source_commit": "cce27345bc3fb083de680707470bbe32bb8d66c0",
   "source_worktree_clean": true
 }
