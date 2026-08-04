@@ -104,6 +104,8 @@ class FakeDb:
             return dict(self.grant) if self.grant else None
         if "from auto_research_jobs" in text:
             return dict(self.job) if self.job else None
+        if "select id from experiment_runs" in text:
+            return {"id": self.run["id"]} if self.run else None
         if "from experiment_runs" in text:
             return dict(self.run) if self.run else None
         raise AssertionError(f"unexpected fetchone: {text}")
@@ -384,7 +386,37 @@ class FirstChainTests(unittest.TestCase):
         self.assertEqual(result.details["not_advanced"], "execution_incomplete")
         self.assertEqual(repo.assembled, [(GRANT_ID, RUN_ID)])
 
-    def test_a_forge_failure_blocks_the_job_and_refunds_the_grant(self):
+    def test_a_forge_that_metered_spend_is_settled_not_revoked(self):
+        """The forge creates the run before the gates that can reject it.
+
+        A rejected experiment still holds real metered tokens, and a grant with
+        metered usage cannot be revoked as unused -- so without settling it, the
+        agenda's reservation is stranded with no way back.
+        """
+        fake_db = FakeDb(
+            grant=_grant_row(),
+            job=_job_row(),
+            run=_run_row(status="failed"),
+            artifacts=[{"id": 1, "artifact_type": "log", "path": str(Path(__file__))}],
+        )
+        repo = FakeRepository()
+
+        result = _run(
+            fake_db,
+            repo,
+            forge=lambda i, g: {"error": "blocked: 8 blocking review issues"},
+        )
+
+        self.assertEqual(result.status, "settled_without_result")
+        self.assertEqual(result.experiment_run_id, RUN_ID)
+        self.assertIn("8 blocking review issues", result.details["forge_error"])
+        self.assertEqual(result.details["not_advanced"], "forge_rejected_the_experiment")
+        # Settled, not revoked, and never promoted up the evidence ladder.
+        self.assertEqual(repo.assembled, [(GRANT_ID, RUN_ID)])
+        self.assertEqual(repo.advanced, [])
+        self.assertEqual(repo.revoked, [])
+
+    def test_a_forge_failure_with_no_run_blocks_the_job_and_refunds_the_grant(self):
         fake_db = FakeDb(grant=_grant_row(), job=_job_row())
         repo = FakeRepository()
 
