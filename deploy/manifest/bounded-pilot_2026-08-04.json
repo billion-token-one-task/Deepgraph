@@ -1,0 +1,99 @@
+{
+  "backup_root": "/home/ec2-user/deepgraph-rollback",
+  "batches": [
+    {
+      "acceptance": "site returns 200 after the 60-90s startup backfills; `show idle_in_transaction_session_timeout` reports 10min on a new application session; no idle-in-transaction session older than 10 minutes survives",
+      "authorization": "required-before-deploy",
+      "batch": "5-resilience",
+      "files": [
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/bounded-pilot_2026-08-04/main.py.bak",
+          "kind": "file",
+          "mode": "0644",
+          "owner": "billion-token:billion-token",
+          "replaces": null,
+          "runtime_locally_modified": true,
+          "source": "main.py",
+          "source_bytes": 8532,
+          "source_sha256": "00440475819adf10169744e88bd4154a1f7dcde3d072a5378a882188e00f007d",
+          "target": "/home/billion-token/Deepgraph/main.py"
+        },
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/bounded-pilot_2026-08-04/database.py.bak",
+          "kind": "file",
+          "mode": "0644",
+          "owner": "billion-token:billion-token",
+          "replaces": null,
+          "runtime_locally_modified": true,
+          "source": "db/database.py",
+          "source_bytes": 64172,
+          "source_sha256": "866c98184701406d38616e44f032a7f7a932269a9dddedfa7c08d2fb88a7c62d",
+          "target": "/home/billion-token/Deepgraph/db/database.py"
+        }
+      ],
+      "health_check": "curl -fsS -o /dev/null -w '%{http_code}' https://deepgraph.joulebeat.com/api/meta",
+      "purpose": "Stop a fail-closed worker from taking the site down, and stop an abandoned transaction from wedging every writer.",
+      "restart_required": [
+        "deepgraph-web.service"
+      ],
+      "systemd_reload_required": false
+    },
+    {
+      "acceptance": "dry run reports status=admissible with backends within cpu/llm and max_gpu_hours=0; a grant outside those bounds is refused",
+      "authorization": "required-before-deploy",
+      "batch": "6-bounded-execution",
+      "files": [
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/bounded-pilot_2026-08-04/bounded_execution.py.bak",
+          "kind": "file",
+          "mode": "0644",
+          "owner": "billion-token:billion-token",
+          "replaces": null,
+          "runtime_locally_modified": false,
+          "source": "orchestrator/bounded_execution.py",
+          "source_bytes": 17887,
+          "source_sha256": "477843c41fdc3198c195e16ed0a038399df71321ca3d544e548b3eb57adef4e7",
+          "target": "/home/billion-token/Deepgraph/orchestrator/bounded_execution.py"
+        },
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/bounded-pilot_2026-08-04/run_bounded_pilot.py.bak",
+          "kind": "file",
+          "mode": "0755",
+          "owner": "billion-token:billion-token",
+          "replaces": null,
+          "runtime_locally_modified": false,
+          "source": "scripts/run_bounded_pilot.py",
+          "source_bytes": 3067,
+          "source_sha256": "c0da2fe0a5a557f81506db8d39ef5f28c8c7cab758ed67b8bfc0e96ffa62a5aa",
+          "target": "/home/billion-token/Deepgraph/scripts/run_bounded_pilot.py"
+        }
+      ],
+      "health_check": "python3 scripts/run_bounded_pilot.py --agenda 5 --idea 97 --grant <id> --actor ops:recovery --dry-run",
+      "purpose": "Add the reader for stage='portfolio_granted' so one authorized candidate can run without global autonomy.",
+      "restart_required": [],
+      "systemd_reload_required": false
+    }
+  ],
+  "description": "Fail-closed ingestion worker degrades instead of killing the web process; PostgreSQL sessions carry an idle-in-transaction reclaim bound; the portfolio_granted authorization finally has a bounded, single-candidate reader.",
+  "environment_keys": [],
+  "file_contents_read_from_production": false,
+  "manifest_key": "bounded-pilot_2026-08-04",
+  "operator_diff_required": [
+    "db/database.py",
+    "main.py"
+  ],
+  "production_tree_modified_by_this_command": false,
+  "rollback": {
+    "order": "reverse batch order",
+    "steps": [
+      "systemctl stop deepgraph-selfheal.timer",
+      "restore each backup_artifact over its target and verify SHA256",
+      "systemctl daemon-reload",
+      "systemctl restart deepgraph-web.service if batch 3 was applied",
+      "schema batch 2 is additive: leave the tables in place, they are unused by the previous code"
+    ]
+  },
+  "runtime_root": "/home/billion-token/Deepgraph",
+  "source_commit": "8bcfd7fe682e295506bc22f309c86914a4339c3d",
+  "source_worktree_clean": false
+}
