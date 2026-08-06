@@ -144,9 +144,9 @@ review:
 ```
 
 The adapted legacy lane is intentionally retained as a separate audit lane:
-39 passed / 30 failed. See
-[LEGACY_TEST_CLASSIFICATION.md](archive/LEGACY_TEST_CLASSIFICATION.md) for the
-test-by-test rejected/obsolete or new-contract classification. No compatibility
+39 passed / 30 failed. The test-by-test rejected/obsolete or new-contract
+classification lives in git history (LEGACY_TEST_CLASSIFICATION.md, removed
+from the tree 2026-08-06). No compatibility
 shim restores grantless, unscoped, password-bearing or unlimited behavior.
 
 Every `false`, empty field or missing hash remains a blocker. A code-defined
