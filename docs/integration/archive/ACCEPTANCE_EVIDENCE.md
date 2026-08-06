@@ -7,7 +7,7 @@ performed.
 `Implemented` below means code/test material exists. It does not mean runtime
 verified. Only isolated CI/canary evidence can change a `pending` item to
 accepted. Record that evidence using
-[ISOLATED_CI_EVIDENCE_TEMPLATE.md](ISOLATED_CI_EVIDENCE_TEMPLATE.md).
+[ISOLATED_CI_EVIDENCE_TEMPLATE.md](../ISOLATED_CI_EVIDENCE_TEMPLATE.md).
 
 | # | Gate | Current evidence | Status |
 |---|---|---|---|

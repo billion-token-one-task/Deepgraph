@@ -11,7 +11,7 @@ legacy tests were 39 passed/30 failed and are individually classified in
 URL, provider credential, deployment, or database was used.
 
 Record the isolated run in
-[ISOLATED_CI_EVIDENCE_TEMPLATE.md](ISOLATED_CI_EVIDENCE_TEMPLATE.md). Empty or
+[ISOLATED_CI_EVIDENCE_TEMPLATE.md](../ISOLATED_CI_EVIDENCE_TEMPLATE.md). Empty or
 false fields remain blockers; do not infer acceptance from test code alone.
 
 ## Lane 1: static source audit
@@ -73,7 +73,7 @@ env -u DEEPGRAPH_DATABASE_URL -u DATABASE_URL \
 
 ## Lane 3: disposable PostgreSQL restore
 
-Follow [MIGRATION_RUNBOOK.md](MIGRATION_RUNBOOK.md), then run:
+Follow [MIGRATION_RUNBOOK.md](../MIGRATION_RUNBOOK.md), then run:
 
 ```bash
 DEEPGRAPH_ALLOW_ISOLATED_INTEGRATION_TESTS=1 \
