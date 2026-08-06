@@ -410,7 +410,10 @@ def main() -> int:
     parser.add_argument("--spend-limit", type=int, default=60000,
                         help="cumulative token delta across target agendas before new spend stops")
     parser.add_argument("--max-new-grants", type=int, default=2, help="per agenda per pass")
-    parser.add_argument("--grant-token-cap", type=int, default=5000)
+    # 5000 starves the forge: measured 2026-08-06, benchmark_design alone
+    # metered 3654 and the code scout then died on
+    # provider_usage_exceeded_reserved_cap (same failure as job 98 on 08-04).
+    parser.add_argument("--grant-token-cap", type=int, default=15000)
     parser.add_argument("--grant-gpu-hours", type=float, default=2.0)
     parser.add_argument("--gpu-class", default="NVIDIA A100-PCIE-40GB")
     # Contract max is 20000; cycle-1's real evaluator consumed 13717 and a

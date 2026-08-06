@@ -1,0 +1,19 @@
+[Unit]
+Description=DeepGraph V1 execution worker (forge -> experiment_run -> gpu_job)
+Documentation=file:/home/billion-token/Deepgraph/docs/upgrade-plan-v1-v2.md
+After=network-online.target postgresql.service deepgraph-web.service
+
+[Service]
+Type=simple
+User=billion-token
+WorkingDirectory=/home/billion-token/Deepgraph
+ExecStart=/home/billion-token/Deepgraph/.venv/bin/python scripts/auto_execute.py --interval 120
+# Long-lived on purpose: the execution path spawns daemon worker threads that
+# die with their parent, so a timer one-shot would kill work in flight.
+Restart=always
+RestartSec=30
+MemoryMax=3G
+Nice=5
+
+[Install]
+WantedBy=multi-user.target
