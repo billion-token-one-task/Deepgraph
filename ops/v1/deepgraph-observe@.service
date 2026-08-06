@@ -1,0 +1,19 @@
+[Unit]
+Description=DeepGraph read-only agenda observer (agenda %i)
+Documentation=file:/home/billion-token/Deepgraph/docs/upgrade-plan-v1-v2.md
+After=network-online.target postgresql.service
+
+[Service]
+Type=simple
+User=billion-token
+WorkingDirectory=/home/billion-token/Deepgraph
+ExecStart=/home/billion-token/Deepgraph/.venv/bin/python scripts/observe_agenda_run.py --agenda %i --interval 900 --hours 24 --out /home/ec2-user/deepgraph-reports/observe_agenda%i.jsonl
+# The script exits cleanly after --hours; Restart keeps the window rolling and
+# the JSONL is opened in append mode, so restarts (and host reboots) lose nothing.
+Restart=always
+RestartSec=60
+MemoryMax=512M
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

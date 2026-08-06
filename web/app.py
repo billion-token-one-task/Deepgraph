@@ -1577,7 +1577,13 @@ def api_events():
         # Start from near the end - only send last 20 events on connect
         all_events = get_events(0)
         last_seq = max(0, all_events[-1]["seq"] - 20) if all_events else 0
-        while True:
+        # A quiet stream must still write to the socket: without the keepalive
+        # a disconnected client is never detected and the waitress thread leaks
+        # forever (2026-08-06: all 8 threads were parked here, HTTP fleet-wide
+        # dead). The lifetime cap bounds the damage either way; EventSource
+        # reconnects transparently.
+        deadline = time.monotonic() + 600
+        while time.monotonic() < deadline:
             events = get_events(last_seq)
             for e in events:
                 # Event payloads carry free text (including error messages);
@@ -1585,6 +1591,7 @@ def api_events():
                 line = _scrub_path_text(json.dumps(e, ensure_ascii=False, default=str))
                 yield f"data: {line}\n\n"
                 last_seq = e["seq"] + 1
+            yield ": keepalive\n\n"
             time.sleep(2)  # slower polling = less browser load
 
     return Response(generate(), mimetype="text/event-stream",
