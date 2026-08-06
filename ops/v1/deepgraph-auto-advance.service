@@ -7,7 +7,7 @@ After=network-online.target postgresql.service
 Type=oneshot
 User=billion-token
 WorkingDirectory=/home/billion-token/Deepgraph
-ExecStart=/home/billion-token/Deepgraph/.venv/bin/python scripts/auto_advance.py
+ExecStart=/home/billion-token/Deepgraph/.venv/bin/python scripts/auto_advance.py --agenda 10 --agenda 11
 # LLM/gate calls only; the memory-hungry discovery path is deliberately out of
 # scope for this unit (see seed_ideation.py).
 MemoryMax=2G
