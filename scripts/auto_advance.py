@@ -215,8 +215,18 @@ def ensure_frontier_packet(
         journal.log("frontier_no_problems", agenda_id=agenda_id)
         return None
     repo = FrontierAuthorityRepository()
+    attempts = state.setdefault("frontier_attempts", {})
     for problem in problems:
-        key = f"auto-advance-v1:agenda{agenda_id}:problem{problem['id']}"
+        akey = f"{agenda_id}:{problem['id']}"
+        tries = int(attempts.get(akey, 0))
+        if tries >= 4:
+            journal.log("frontier_attempts_exhausted", agenda_id=agenda_id,
+                        problem_id=problem["id"], tries=tries)
+            continue
+        attempts[akey] = tries + 1
+        # A failed authority is settled+revoked and its idempotency key is
+        # burned forever, so every attempt needs a fresh key.
+        key = f"auto-advance-v1:agenda{agenda_id}:problem{problem['id']}:t{tries + 1}"
         issued = _now()
         try:
             authority_id = repo.issue(
@@ -293,7 +303,8 @@ def advance_agenda(agenda_id: int, state: dict, journal: Journal, args) -> None:
                 record=draft_preregistration(insight),
                 actor=ACTOR,
             )
-            journal.log("preregistration", agenda_id=agenda_id, idea_id=insight["id"], **outcome)
+            # record_prediction's dict already carries agenda_id/idea_id.
+            journal.log("preregistration", **outcome)
         except Exception as exc:
             db.rollback()
             journal.log(
@@ -402,7 +413,9 @@ def main() -> int:
     parser.add_argument("--grant-token-cap", type=int, default=5000)
     parser.add_argument("--grant-gpu-hours", type=float, default=2.0)
     parser.add_argument("--gpu-class", default="NVIDIA A100-PCIE-40GB")
-    parser.add_argument("--authority-token-cap", type=int, default=15000)
+    # Contract max is 20000; cycle-1's real evaluator consumed 13717 and a
+    # 15000 cap was exceeded in practice, charging the agenda for nothing.
+    parser.add_argument("--authority-token-cap", type=int, default=20000)
     parser.add_argument("--evaluator-provider", default="sora2_claude")
     parser.add_argument("--evaluator-model", default="claude-opus-4-6-thinking")
     parser.add_argument("--evaluator-family", default="claude")
