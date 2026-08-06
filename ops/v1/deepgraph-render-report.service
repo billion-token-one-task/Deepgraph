@@ -1,0 +1,11 @@
+[Unit]
+Description=DeepGraph observation report renderer (agenda 10/11)
+After=network-online.target postgresql.service
+
+[Service]
+Type=oneshot
+User=billion-token
+WorkingDirectory=/home/billion-token/Deepgraph
+ExecStart=/home/billion-token/Deepgraph/.venv/bin/python scripts/render_observation_report.py --agenda 10 --agenda 11 --trace-dir /home/ec2-user/deepgraph-reports --out /home/ec2-user/deepgraph-reports/observation_v1.html
+ExecStartPost=/usr/bin/ln -sf /home/ec2-user/deepgraph-reports/observation_v1.html /home/ec2-user/deepgraph-reports/latest.html
+MemoryMax=512M

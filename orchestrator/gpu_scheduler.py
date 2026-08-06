@@ -26,6 +26,7 @@ from config import (
     GPU_STALE_RECOVERY_POLL_SECONDS,
     GPU_REMOTE_BASE_DIR,
     GPU_REMOTE_PYTHON,
+    GPU_REMOTE_SSH_ENDPOINTS,
     GPU_REMOTE_SSH_HOST,
     GPU_REMOTE_SSH_PORT,
     GPU_REMOTE_SSH_USER,
@@ -605,21 +606,33 @@ def upsert_ssh_worker(
 def register_default_workers() -> list[dict]:
     db.init_db()
     if GPU_MODE == "ssh":
-        if not GPU_REMOTE_SSH_HOST or not GPU_REMOTE_SSH_USER:
+        if not (GPU_REMOTE_SSH_ENDPOINTS or GPU_REMOTE_SSH_HOST) or not GPU_REMOTE_SSH_USER:
             raise RuntimeError(
-                "DEEPGRAPH_GPU_MODE=ssh requires DEEPGRAPH_GPU_REMOTE_SSH_HOST and DEEPGRAPH_GPU_REMOTE_SSH_USER."
+                "DEEPGRAPH_GPU_MODE=ssh requires DEEPGRAPH_GPU_REMOTE_SSH_HOST (or"
+                " DEEPGRAPH_GPU_REMOTE_SSH_ENDPOINTS) and DEEPGRAPH_GPU_REMOTE_SSH_USER."
             )
+        endpoints: list[tuple[str, int]] = []
+        for entry in GPU_REMOTE_SSH_ENDPOINTS:
+            host, sep, port = entry.rpartition(":")
+            if not sep or not host or not port.isdigit():
+                raise RuntimeError(
+                    f"DEEPGRAPH_GPU_REMOTE_SSH_ENDPOINTS entry {entry!r} is not host:port"
+                )
+            endpoints.append((host, int(port)))
+        if not endpoints:
+            endpoints = [(GPU_REMOTE_SSH_HOST, GPU_REMOTE_SSH_PORT)]
         workers = []
-        for idx, gpu_id in enumerate(GPU_VISIBLE_DEVICES):
-            summary = upsert_ssh_worker(
-                host=GPU_REMOTE_SSH_HOST,
-                port=GPU_REMOTE_SSH_PORT,
-                user=GPU_REMOTE_SSH_USER,
-                device=gpu_id,
-                gpu_index=idx,
-                credential_ref=COMPUTE_SSH_CREDENTIAL_REF,
-            )
-            workers.append(summary)
+        for host, port in endpoints:
+            for idx, gpu_id in enumerate(GPU_VISIBLE_DEVICES):
+                summary = upsert_ssh_worker(
+                    host=host,
+                    port=port,
+                    user=GPU_REMOTE_SSH_USER,
+                    device=gpu_id,
+                    gpu_index=idx,
+                    credential_ref=COMPUTE_SSH_CREDENTIAL_REF,
+                )
+                workers.append(summary)
         db.commit()
         return workers
 

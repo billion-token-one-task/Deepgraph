@@ -1,0 +1,11 @@
+[Unit]
+Description=Advance granted/queued DeepGraph research jobs every 10 minutes (V1 glue)
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=10min
+# A oneshot service still counts as active while running, so the timer never
+# overlaps a slow advance pass with a new one.
+
+[Install]
+WantedBy=timers.target

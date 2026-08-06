@@ -1,0 +1,14 @@
+[Unit]
+Description=DeepGraph V1 chain advancer (reconcile -> portfolio -> grant -> execute)
+Documentation=file:/home/billion-token/Deepgraph/docs/upgrade-plan-v1-v2.md
+After=network-online.target postgresql.service
+
+[Service]
+Type=oneshot
+User=billion-token
+WorkingDirectory=/home/billion-token/Deepgraph
+ExecStart=/home/billion-token/Deepgraph/.venv/bin/python scripts/auto_advance.py
+# LLM/gate calls only; the memory-hungry discovery path is deliberately out of
+# scope for this unit (see seed_ideation.py).
+MemoryMax=2G
+TimeoutStartSec=1800

@@ -636,6 +636,11 @@ GPU_JOB_TIMEOUT_SECONDS = _env_int("DEEPGRAPH_GPU_JOB_TIMEOUT_SECONDS", 14400, "
 GPU_REMOTE_SSH_HOST = _env_str("DEEPGRAPH_GPU_REMOTE_SSH_HOST", "", "gpu.remote.ssh_host")
 GPU_REMOTE_SSH_PORT = _env_int("DEEPGRAPH_GPU_REMOTE_SSH_PORT", 22, "gpu.remote.ssh_port")
 GPU_REMOTE_SSH_USER = _env_str("DEEPGRAPH_GPU_REMOTE_SSH_USER", "", "gpu.remote.ssh_user")
+# CSV of host:port endpoints sharing GPU_REMOTE_SSH_USER and the credential ref.
+# When set it supersedes the single HOST/PORT pair for worker registration; the
+# single-pair form leaves any hand-registered second endpoint with a frozen
+# heartbeat, which the scheduler then treats as a vanished half-fleet.
+GPU_REMOTE_SSH_ENDPOINTS = _split_csv(os.getenv("DEEPGRAPH_GPU_REMOTE_SSH_ENDPOINTS") or _toml_get("gpu.remote.ssh_endpoints", None)) or []
 GPU_REMOTE_SSH_PASSWORD = _env_str("DEEPGRAPH_GPU_REMOTE_SSH_PASSWORD", "", "gpu.remote.ssh_password")
 GPU_REMOTE_BASE_DIR = _env_str("DEEPGRAPH_GPU_REMOTE_BASE_DIR", "/root/deepgraph-remote-worker", "gpu.remote.base_dir")
 GPU_REMOTE_PYTHON = _env_str("DEEPGRAPH_GPU_REMOTE_PYTHON", "python", "gpu.remote.python")
