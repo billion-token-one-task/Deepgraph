@@ -1,3 +1,7 @@
+> **归档说明 (2026-08-06):** 本文件是 2026-04-21 交接快照。其后系统经历
+> meta-harness v1 与 recovery/frontend merge 两代升级, 架构与全部数字均已过时。
+> 现状见根 [README](../../../README.md)。
+
 # DeepGraph 接手 PRD / Handoff
 
 日期: 2026-04-21
