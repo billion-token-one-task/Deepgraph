@@ -1,6 +1,10 @@
 # Paper-Grade Benchmark Agent Plan
 
-Status note: this document is the initial general benchmark plan. The active repaired CGGR evidence contract for run45/run46/run47 is narrower and is recorded in `docs/cggr_run32_paper_artifact_gate.md` and `docs/cggr_current_completion_audit.md`: `MuSiQue-Ans`, `StrategyQA`, `2WikiMultihopQA`, and `Stress Test Split: Simple-vs-Hard Counterfactual Partition` on a pinned Qwen instruct checkpoint with seeds `[0, 1, 2, 3, 4]`. Do not treat the older GSM8K/HotpotQA/Llama/oracle matrix below as a requirement for the already-running run47 claim unless a new pre-registered contract is created.
+> **注 (2026-08-06):** 下方状态注原先把两份合同文档写作 `docs/` 路径; 它们实际位于
+> `plugins/examples/cggr/docs/`, 路径已修正。本文其余部分是早期通用 benchmark 计划,
+> 其 GSM8K/HotpotQA/Llama/oracle 旧矩阵仅供历史参考, 不构成现行要求。
+
+Status note: this document is the initial general benchmark plan. The active repaired CGGR evidence contract for run45/run46/run47 is narrower and is recorded in [`plugins/examples/cggr/docs/cggr_run32_paper_artifact_gate.md`](../plugins/examples/cggr/docs/cggr_run32_paper_artifact_gate.md) and [`plugins/examples/cggr/docs/cggr_current_completion_audit.md`](../plugins/examples/cggr/docs/cggr_current_completion_audit.md): `MuSiQue-Ans`, `StrategyQA`, `2WikiMultihopQA`, and `Stress Test Split: Simple-vs-Hard Counterfactual Partition` on a pinned Qwen instruct checkpoint with seeds `[0, 1, 2, 3, 4]`. Do not treat the older GSM8K/HotpotQA/Llama/oracle matrix below as a requirement for the already-running run47 claim unless a new pre-registered contract is created.
 
 本文档定义 DeepGraph 中用于 CGGR / selective deliberation QA 的论文级真实 benchmark 实验组织方式。目标不是跑通脚本，而是让每个 agent 只对自己的合同负责，并产出可审计、可复现、可写入论文主文的实验 artifact。
 

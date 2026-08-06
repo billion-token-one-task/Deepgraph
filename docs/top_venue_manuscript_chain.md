@@ -5,7 +5,8 @@ pipeline changes that enforce it.
 
 ## Reference Corpus
 
-- Local reference papers live in `H:\Deepgraph\workspace\pdfs`.
+- Local reference papers live in `H:\Deepgraph\workspace\pdfs` (2026-08-06 注:
+  此为另一台 Windows 工作机的本地路径, 不存在于本服务器)。
 - The current corpus contains 292 PDF files, including `2604.14206.pdf`,
   `2604.15356.pdf`, and related 2604-series papers. One observed zero-byte
   file, `2604.22554.pdf`, is skipped by profiling, leaving 291 non-empty PDFs.

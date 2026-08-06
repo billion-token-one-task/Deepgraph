@@ -27,7 +27,10 @@ That is recorded drift, not an accepted pattern. The source-owned replacement is
 | Tests | `tests/test_selfheal_policy.py` |
 
 Do not edit the installed copy. Change the source, run the tests, then deploy
-through `deploy/manifest/selfheal_v2.json`.
+through the `1-selfheal` batch of `deploy/manifest/recovery_2026-08-03.spec.json`
+(pinned SHA256 set in `deploy/manifest/recovery_2026-08-03.json`). The
+previously referenced `deploy/manifest/selfheal_v2.json` never existed in this
+repo (2026-08-06 audit).
 
 ## Decision rules
 
