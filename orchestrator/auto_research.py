@@ -692,7 +692,8 @@ def _benchmark_harness_design_repair_row(insight_id: int) -> dict | None:
     row = db.fetchone(
         """
         SELECT bhj.*, arj.status AS auto_status, arj.stage AS auto_stage,
-               arj.last_note AS auto_last_note, arj.last_error AS auto_last_error
+               arj.last_note AS auto_last_note, arj.last_error AS auto_last_error,
+               arj.resource_grant_id AS auto_resource_grant_id
         FROM benchmark_harness_jobs bhj
         LEFT JOIN auto_research_jobs arj ON arj.deep_insight_id=bhj.deep_insight_id
         WHERE bhj.deep_insight_id=?
