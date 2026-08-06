@@ -9,6 +9,7 @@
 - [integration/STATE_DICTIONARY.md](integration/STATE_DICTIONARY.md) - 全部状态词汇的含义与边界 (两账制口径)
 - [integration/CONFIGURATION.md](integration/CONFIGURATION.md) - 策略字段与 secret-reference 配置
 - [integration/SCHEMA_DIFF.md](integration/SCHEMA_DIFF.md) - schema 增量与迁移策略 (仅基于源码 SQL 与 Git diff)
+- [ROADMAP.md](ROADMAP.md) - 旧 3 周计划/18 周路线图的下落: 逐条源码对账与作废理由 (2026-08-06)
 - [agent_architecture.md](agent_architecture.md) - agent 目录归属边界 (兼容优先布局)
 - [reflection-20260806-autonomy-repair.md](reflection-20260806-autonomy-repair.md) - 自治链条为何没走通: 反思与修复方案 (2026-08-06)
 - [paper_grade_benchmark_agent_plan.md](paper_grade_benchmark_agent_plan.md) - 早期通用 benchmark 计划, 旧矩阵仅供历史参考 (见文内状态注)
