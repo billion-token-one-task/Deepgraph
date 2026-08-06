@@ -78,7 +78,7 @@ end of this checklist so it does not rewrite that prior audit record.
 - [x] **P0-05** UI, images, historical papers and submission assets are
   explicitly excluded from v1.
 - [x] **P0-06** Root changelog records lineage and candidate status:
-  [CHANGELOG.md](../../CHANGELOG.md).
+  [CHANGELOG.md](../../../CHANGELOG.md).
 
 ## P1. GitHub base scientific integrity and plugin boundary
 

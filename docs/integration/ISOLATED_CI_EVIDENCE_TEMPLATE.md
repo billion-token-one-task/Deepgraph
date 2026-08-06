@@ -145,7 +145,7 @@ review:
 
 The adapted legacy lane is intentionally retained as a separate audit lane:
 39 passed / 30 failed. See
-[LEGACY_TEST_CLASSIFICATION.md](LEGACY_TEST_CLASSIFICATION.md) for the
+[LEGACY_TEST_CLASSIFICATION.md](archive/LEGACY_TEST_CLASSIFICATION.md) for the
 test-by-test rejected/obsolete or new-contract classification. No compatibility
 shim restores grantless, unscoped, password-bearing or unlimited behavior.
 

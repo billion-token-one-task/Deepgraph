@@ -476,7 +476,7 @@ python3.12 scripts/run_bounded_pilot.py \
 Policy fields and secret-reference configuration:
 [CONFIGURATION.md](docs/integration/CONFIGURATION.md). Evidence behind the
 accepted CPU + SSH A100 release scope:
-[ACCEPTANCE_EVIDENCE.md](docs/integration/ACCEPTANCE_EVIDENCE.md).
+[ACCEPTANCE_EVIDENCE.md](docs/integration/archive/ACCEPTANCE_EVIDENCE.md).
 
 ## Configuration
 
@@ -529,7 +529,7 @@ identically before and after the recovery and frontend workstreams
 `docs/frontend/FRONTEND_MERGE_IMPLEMENTATION.md`; last recorded 2026-08-04).
 Within that set, 30 adapted-legacy failures are individually classified as
 audited obsolete or replaced contracts in
-[LEGACY_TEST_CLASSIFICATION.md](docs/integration/LEGACY_TEST_CLASSIFICATION.md).
+[LEGACY_TEST_CLASSIFICATION.md](docs/integration/archive/LEGACY_TEST_CLASSIFICATION.md).
 Compatibility shims do not restore grantless, unscoped, password-bearing or
 unlimited behavior.
 
@@ -580,7 +580,7 @@ separately. The README no longer carries a duplicate copy.
 | [docs/frontend/FRONTEND_DISCOVERY_AND_RECOMMENDATION.md](docs/frontend/FRONTEND_DISCOVERY_AND_RECOMMENDATION.md) | Why the UI is shaped this way; open product decisions |
 | [docs/frontend/FRONTEND_MERGE_IMPLEMENTATION.md](docs/frontend/FRONTEND_MERGE_IMPLEMENTATION.md) | What the frontend merge changed |
 | [docs/integration/STATE_DICTIONARY.md](docs/integration/STATE_DICTIONARY.md) | Every state name and what it does and does not mean |
-| [docs/integration/UNVERIFIED.md](docs/integration/UNVERIFIED.md) | Claims deliberately not made |
+| [docs/integration/archive/UNVERIFIED.md](docs/integration/archive/UNVERIFIED.md) | Claims deliberately not made (2026-08 integration snapshot) |
 | [docs/integration/ARCHITECTURE.md](docs/integration/ARCHITECTURE.md) | Control-plane architecture in detail |
 
 ## License

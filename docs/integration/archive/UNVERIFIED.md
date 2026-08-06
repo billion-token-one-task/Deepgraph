@@ -42,7 +42,7 @@ The following items were not proven by this isolated session:
 
 Evidence that is available is recorded in
 [ACCEPTANCE_EVIDENCE.md](ACCEPTANCE_EVIDENCE.md) and the filled
-[ISOLATED_CI_EVIDENCE_TEMPLATE.md](ISOLATED_CI_EVIDENCE_TEMPLATE.md).
+[ISOLATED_CI_EVIDENCE_TEMPLATE.md](../ISOLATED_CI_EVIDENCE_TEMPLATE.md).
 
 ## 2026-08-02 local original-database closure
 
