@@ -286,6 +286,91 @@ def ensure_frontier_packet(
     return None
 
 
+_STARVED = "provider_usage_exceeded_reserved_cap"
+
+
+def regrant_starved(agenda_id: int, state: dict, journal: Journal, args) -> None:
+    """Re-grant candidates whose grant ran out mid-forge.
+
+    A pilot cap that the forge cannot live on is a resource error, not a
+    verdict on the idea: the benchmark designer meters first and whatever runs
+    next dies on provider_usage_exceeded_reserved_cap. The exhausted grant
+    cannot be revoked (its usage is settled) and expires on its own TTL; this
+    issues a larger one and points the job at it. Once per idea.
+    """
+    done = state.setdefault("regranted", {})
+    rows = _rows(
+        "SELECT arj.id, arj.deep_insight_id, arj.status, arj.stage, arj.resource_grant_id,"
+        "       arj.last_error, rg.token_cap"
+        "  FROM auto_research_jobs arj"
+        "  JOIN resource_grants rg ON rg.id = arj.resource_grant_id"
+        " WHERE arj.agenda_id=? AND arj.last_error LIKE ?"
+        " ORDER BY arj.id",
+        (agenda_id, f"%{_STARVED}%"),
+    )
+    for job in rows:
+        idea_id = int(job["deep_insight_id"])
+        if str(idea_id) in done or int(job["token_cap"] or 0) >= args.grant_token_cap:
+            continue
+        packet_row = db.fetchone(
+            "SELECT id FROM idea_decision_packets WHERE agenda_id=? AND idea_id=?"
+            "   AND decision IN ('promote','revisit') ORDER BY id DESC LIMIT 1",
+            (agenda_id, idea_id),
+        )
+        if not packet_row:
+            journal.log("regrant_no_packet", agenda_id=agenda_id, idea_id=idea_id)
+            continue
+        packet = _rebuild_decision(agenda_id, idea_id, int(dict(packet_row)["id"]))
+        backends = json.loads(dict(db.fetchone(
+            "SELECT backend_allowlist_json FROM research_agendas WHERE id=?", (agenda_id,)
+        ))["backend_allowlist_json"])
+        try:
+            grant = issue_resource_grant(
+                packet,
+                stage="pilot",
+                token_cap=args.grant_token_cap,
+                gpu_class=args.gpu_class if "ssh_gpu" in backends else "none",
+                max_gpu_hours=args.grant_gpu_hours if "ssh_gpu" in backends else 0.0,
+                backend_allowlist=[b for b in ("cpu", "llm", "ssh_gpu") if b in backends],
+                artifact_requirements=ARTIFACT_REQUIREMENTS,
+                expires_at=(_now() + timedelta(hours=12)).isoformat(),
+                idempotency_key=f"auto-advance-v1:idea{idea_id}:regrant1",
+            )
+            grant_id = MetaHarnessRepository().issue_grant(grant)
+        except Exception as exc:
+            db.rollback()
+            journal.log("regrant_refused", agenda_id=agenda_id, idea_id=idea_id,
+                        reason=f"{type(exc).__name__}: {exc}")
+            continue
+        from orchestrator.auto_research import _upsert_job
+
+        _upsert_job(
+            idea_id,
+            resource_grant_id=grant_id,
+            last_error=None,
+            last_note=f"auto-advance-v1: regranted at cap {args.grant_token_cap} after"
+                      f" grant {job['resource_grant_id']} was exhausted mid-forge.",
+        )
+        done[str(idea_id)] = grant_id
+        journal.log("regranted", agenda_id=agenda_id, idea_id=idea_id,
+                    old_grant=job["resource_grant_id"], new_grant=grant_id,
+                    token_cap=args.grant_token_cap)
+
+
+def _rebuild_decision(agenda_id: int, idea_id: int, packet_id: int) -> IdeaDecisionPacket:
+    """A promoted packet carrying the persisted decision_packet_id."""
+    row = dict(db.fetchone(
+        "SELECT frontier_packet_id FROM idea_decision_packets WHERE id=?", (packet_id,)
+    ))
+    packet = build_packet(agenda_id, idea_id, int(row["frontier_packet_id"]))
+    packet.decision = "promote"
+    packet.reason_codes = ["portfolio_score_selected", "regrant_after_forge_starvation"]
+    packet.revisit_condition = {}
+    packet.revisit_after = None
+    packet.decision_packet_id = packet_id
+    return packet
+
+
 def advance_agenda(agenda_id: int, state: dict, journal: Journal, args) -> None:
     # a. pre-registrations for unregistered, still-live insights
     unregistered = _rows(
@@ -460,6 +545,7 @@ def main() -> int:
             if spent >= args.spend_limit:
                 journal.log("spend_limit_reached", spent=spent, limit=args.spend_limit)
                 break
+            regrant_starved(agenda_id, state, journal, args)
             advance_agenda(agenda_id, state, journal, args)
     finally:
         _save_state(state_path, state)
