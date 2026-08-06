@@ -50,15 +50,16 @@ def _log(path: Path, step: str, **fields) -> None:
         handle.write(line + "\n")
 
 
-def _granted_waiting() -> int:
-    row = db.fetchone(
-        """SELECT COUNT(*) AS c
+def _granted_jobs() -> dict[str, int]:
+    """Job states that still hold an active grant, for the pass log."""
+    rows = db.fetchall(
+        """SELECT arj.status AS s, COUNT(*) AS c
              FROM auto_research_jobs arj
              JOIN resource_grants rg ON rg.id = arj.resource_grant_id
             WHERE rg.status='active' AND rg.expires_at > CURRENT_TIMESTAMP
-              AND arj.status IN ('queued','eligible','queued_cpu','queued_gpu')"""
+            GROUP BY arj.status"""
     )
-    return int(dict(row or {}).get("c") or 0)
+    return {str(dict(r)["s"]): int(dict(r)["c"]) for r in rows}
 
 
 def main() -> int:
@@ -75,15 +76,16 @@ def main() -> int:
 
     while not _stop:
         try:
-            waiting = _granted_waiting()
-            if waiting:
-                result = _launch_candidates_to_capacity()
-                scheduled = result.get("scheduled") if isinstance(result, dict) else None
-                _log(log_path, "launch_pass", waiting=waiting,
-                     scheduled=scheduled, detail={k: v for k, v in (result or {}).items()
-                                                  if k != "scheduled"})
-            else:
-                _log(log_path, "idle", waiting=0)
+            # Always call it: the function's own preamble recovers stale runs
+            # and repairs benchmark-harness jobs, and those states are not in
+            # the queued set - gating on "queued" work would strand them.
+            granted = _granted_jobs()
+            result = _launch_candidates_to_capacity()
+            scheduled = result.get("scheduled") if isinstance(result, dict) else None
+            detail = {k: v for k, v in (result or {}).items()
+                      if k != "scheduled" and v not in (0, {}, [], None)}
+            _log(log_path, "launch_pass", granted_jobs=granted,
+                 scheduled=scheduled, detail=detail)
         except Exception as exc:
             try:
                 db.rollback()
