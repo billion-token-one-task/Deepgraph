@@ -1,5 +1,11 @@
 # LLM 潜空间通信：已有实验 + 合作方向
 
+> **定位说明 (2026-08-06, owner 确认):** 本文是人工开展的 LLM 潜空间通信研究的
+> 合作 pitch, 其实验与结论**不是 DeepGraph 自动实验系统的产出**, 也未经过本系统
+> 的证据阶梯与 `decide_evidence` 闸门, 不计入系统 scientific register。根 README
+> 的 "系统无科学发现 (`scientific_decisions_total = 0`)" 说的是自动系统的产出,
+> 与本文无冲突: 两者不是同一件事。文中数字的证据材料不在本仓库。
+
 ## 一句话
 
 我们已验证 LLM agent 可以用 **512 字节** 的压缩潜向量替代 MB 级 token 通信，在 GSM8K 上达到与全 KV 传递同等准确率（91%）。现在需要算力做三件事：大规模训练压缩器、原生 latent 通信预训练、以及 latent + tool use 混合通信。
