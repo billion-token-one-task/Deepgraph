@@ -224,7 +224,14 @@ def ensure_harvest_signal_schema(table: str | None = None) -> None:
         _ensure_column(name, "refute_count", "INTEGER DEFAULT 0")
         _ensure_column(name, "last_outcome_at", "TIMESTAMP")
         db.execute(f"UPDATE {name} SET signal_role=? WHERE signal_role IS NULL OR signal_role=''", (role,))
-        rows = db.fetchall(f"SELECT * FROM {name} WHERE content_hash IS NULL OR content_hash=''")
+        # Backfill in bounded batches. hidden_variable_bridges carries 7.36M
+        # unhashed rows (14 GB); the unbounded SELECT * here pulled the whole
+        # table into memory and OOM-killed every discovery/seeding process on
+        # this 7 GB host. Readers tolerate a missing hash (they compute it on
+        # the fly), so incremental backfill is safe.
+        rows = db.fetchall(
+            f"SELECT * FROM {name} WHERE content_hash IS NULL OR content_hash='' LIMIT 2000"
+        )
         for row in rows:
             content_hash = _stable_signal_hash(name, row)
             db.execute(f"UPDATE {name} SET content_hash=? WHERE id=?", (content_hash, row["id"]))
