@@ -1,0 +1,12 @@
+[Unit]
+Description=DeepGraph arXiv harvest (focused categories, no LLM cost)
+After=network-online.target postgresql.service
+
+[Service]
+Type=oneshot
+User=billion-token
+WorkingDirectory=/home/billion-token/Deepgraph
+ExecStart=/home/billion-token/Deepgraph/.venv/bin/python scripts/harvest_papers.py
+MemoryMax=1G
+TimeoutStartSec=1800
+Nice=10
