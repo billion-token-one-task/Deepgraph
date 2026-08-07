@@ -1249,7 +1249,15 @@ def call_llm_for_role(
     )
     if remaining_tokens <= 0:
         raise PermissionError("ResourceGrant token budget is exhausted")
-    token_cap = min(token_cap, remaining_tokens)
+    # Callers pass max_tokens meaning "how much output do I allow", but the
+    # router compares the cap against input + output, so a long prompt alone
+    # can exceed it and the call dies as provider_usage_exceeded_reserved_cap
+    # before producing anything. Benchmark design sends a 16000-char prompt
+    # under a 4096 cap and could therefore never succeed, whatever the grant
+    # size. Add the prompt's own cost to the cap; the grant's remaining budget
+    # is still the hard ceiling, so this loosens nothing that guards spend.
+    approx_prompt_tokens = (len(system_prompt) + len(user_prompt)) // 3
+    token_cap = min(token_cap + approx_prompt_tokens, remaining_tokens)
     grant = ResourceGrant(
         agenda_id=int(grant_row["agenda_id"]),
         idea_id=int(grant_row["idea_id"]),
