@@ -1526,7 +1526,8 @@ def _run_has_automation_failure(run: dict) -> bool:
 
 def _retry_failed_run_with_repair(insight_id: int, run: dict, resource_class: str) -> bool:
     job = db.fetchone(
-        "SELECT last_note, last_error FROM auto_research_jobs WHERE deep_insight_id=?",
+        "SELECT last_note, last_error, resource_grant_id FROM auto_research_jobs"
+        " WHERE deep_insight_id=?",
         (insight_id,),
     ) or {}
     previous_attempt = max(
@@ -1547,7 +1548,10 @@ def _retry_failed_run_with_repair(insight_id: int, run: dict, resource_class: st
             "warnings": ["Repair the experiment design or runnable benchmark contract before reforge."],
         },
         attempt=next_attempt,
-        resource_grant_id=run.get("resource_grant_id"),
+        # The run carries the grant it was forged under, which is usually
+        # expired by the time a repair is attempted; the job carries the
+        # current one. Prefer the job's, fall back to the run's.
+        resource_grant_id=job.get("resource_grant_id") or run.get("resource_grant_id"),
     )
     if repair.get("error"):
         _upsert_job(
