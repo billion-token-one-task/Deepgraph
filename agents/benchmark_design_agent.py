@@ -591,6 +591,17 @@ Rules:
   multi-suite evaluation for the claim.
 - If you are not confident from the given context, set status to
   "literature_review_required" instead of guessing.
+- EXECUTABILITY: exactly these benchmarks can run on the built-in runner today:
+  GSM8K, MBPP, MMLU, ARC (AI2-ARC / ARC-Challenge), BoolQ, CommonsenseQA,
+  OpenBookQA, QASC, StrategyQA. Anything else - MATH, PRM800K, ProcessBench,
+  Spider, BIRD, HarmBench, AdvBench, AgentDojo, LongMemEval, CIFAR-10, CLEVRER,
+  T2I-CompBench - needs a dedicated harness that does not exist yet, so a plan
+  containing only those cannot be executed at all.
+  Therefore: **at least one candidate benchmark must come from the executable
+  list above**, chosen so it genuinely tests the claim. Name the
+  harness-requiring benchmarks too if the claim needs them, with
+  "requires_harness": true - they will be deferred, not run - but never return a
+  set where every entry requires a harness.
 """
 
 
