@@ -2144,6 +2144,17 @@ def _resource_granted_proposer_json(
         raise PermissionError(
             "resource-granted LLM scope is incomplete: " + ",".join(missing)
         )
+    # A settled reservation cannot be reused - the ledger refuses the key and
+    # the call dies as "idempotency key already exists with status settled" -
+    # but it also cannot be replayed, because only the token accounting was
+    # kept, not the model's answer. So a genuine retry has to be a new call
+    # with a new key, while attempt 1 stays stable within itself.
+    prior = db.fetchone(
+        "SELECT COUNT(*) AS c FROM resource_grant_usage_reservations"
+        " WHERE resource_grant_id=? AND idempotency_key LIKE ?",
+        (int(llm_scope["resource_grant_id"]), f"{operation}:%"),
+    )
+    attempt = int(dict(prior or {}).get("c") or 0)
     digest = hashlib.sha256(
         "\n".join(
             (
@@ -2151,6 +2162,7 @@ def _resource_granted_proposer_json(
                 str(llm_scope["idea_id"]),
                 str(llm_scope["resource_grant_id"]),
                 operation,
+                str(attempt),
                 user_prompt,
             )
         ).encode("utf-8")
