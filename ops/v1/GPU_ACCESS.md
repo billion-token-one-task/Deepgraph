@@ -1,7 +1,13 @@
 # 怎么用这批 A100 (给人和给 AI 的调用说明)
 
+> **站点参数不写在本文件里。** 下面用符号代替真实取值:
+> `$GPU_HOST` (主机地址)、`$GPU_PORT_A` / `$GPU_PORT_B` (两台机的 SSH 端口)、
+> `$GPU_USER` (登录用户)、`~/.ssh/<gpu-key>` (密钥文件)。
+> 真实取值在部署机的 `.env` 与私有运维记录中, 不进入本仓库。
+
+
 硬件事实 (2026-08-07 实测, 修正早先的说法): **两台独立物理机**, 不是一台机器的两个端口 --
-`111.172.214.101:32035` = 主机 `yzy-A100-0001`, `:32036` = 主机 `yzy-A100-0002`, 各 4 张
+`$GPU_HOST:$GPU_PORT_A` = 主机 `A100-A`, `:$GPU_PORT_B` = 主机 `A100-B`, 各 4 张
 NVIDIA A100-PCIE-40GB。**每台 128 核 / 251GB 内存 / 800GB+ 空闲磁盘, 常态负载接近 0**,
 也就是说这是两台几乎完全闲置的大机器, 不只是显卡。宿主 CPU 是 aarch64 (Kunpeng-920), 驱动 570.86.10,
 torch 2.5.1+cu124, 实测 fp16 matmul8192 = 159.7 TFLOPS。远端工作根目录 `/root/deepgraph-remote-worker`,
@@ -36,7 +42,7 @@ from orchestrator.ssh_gpu_backend import run_remote_experiment
 
 worker = db.fetchone(
     "SELECT * FROM gpu_workers WHERE id=? ",
-    ("ssh:111.172.214.101:32035:gpu0",),
+    ("ssh:$GPU_HOST:$GPU_PORT_A:gpu0",),
 )
 result = run_remote_experiment(
     worker=dict(worker),
@@ -61,10 +67,10 @@ worker 行里的 `metadata` 决定连哪台: `ssh_host` / `ssh_port` / `ssh_user
 真的发生过一次, 被拦下)。密钥可以单独吊销 -- 删 authorized_keys 一行即可。
 
 一次性配好: 运维在部署机执行 `bash ~/install_gpu_key.sh` (脚本从 .env 取密码、临时 askpass
-注入、用完即删, 全程不打印密码), 它把 `~/.ssh/gpu_ed25519.pub` 追加到两个端点 root 的
+注入、用完即删, 全程不打印密码), 它把 `~/.ssh/<gpu-key>.pub` 追加到两个端点 root 的
 authorized_keys。之后告诉对方:
 
-- 目标: `ssh -i ~/.ssh/gpu_ed25519 -p 32035 root@111.172.214.101` (另一台 `-p 32036`),
+- 目标: `ssh -i ~/.ssh/<gpu-key> -p $GPU_PORT_A $GPU_USER@$GPU_HOST` (另一台 `-p $GPU_PORT_B`),
   每台 4 张 A100-40GB, **不需要任何密码**;
 - 若对方不在这台部署机上, 由运维用带外方式送私钥, 不要贴进聊天; 泄漏后果也仅限于吊销这一把;
 - 工作目录: 自建 `/root/<你的名字>-work/`, **不要碰 `/root/deepgraph-remote-worker`**
@@ -77,8 +83,8 @@ authorized_keys。之后告诉对方:
 
 一句话模板 (可直接贴给另一个 AI):
 
-> 你有 8 张 A100-40GB, 在 `111.172.214.101` 的两个端口 `32035` 和 `32036` (各 4 张),
-> 用户 root, **用密钥登录**: `ssh -i ~/.ssh/gpu_ed25519 -p 32035 root@111.172.214.101`,
+> 你有 8 张 A100-40GB, 在 `$GPU_HOST` 的两个端口 `$GPU_PORT_A` 和 `$GPU_PORT_B` (各 4 张),
+> 用户 root, **用密钥登录**: `ssh -i ~/.ssh/<gpu-key> -p $GPU_PORT_A $GPU_USER@$GPU_HOST`,
 > 不需要密码。不要索要密码, 也不要把任何凭据写进脚本或聊天; 密钥不通就找运维重装公钥。
 > 远端 python3 已装好 torch 2.5.1+cu124/transformers/datasets/accelerate, aarch64 架构,
 > 装包时注意选 aarch64 轮子。下载 HuggingFace 模型前必须

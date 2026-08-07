@@ -17,8 +17,8 @@ from orchestrator.gpu_node_registry import (
 
 def _spec(**overrides) -> SSHNodeSpec:
     values = {
-        "host": "111.172.214.101",
-        "port": 32035,
+        "host": "203.0.113.10",
+        "port": 2200,
         "user": "root",
         "credential_ref": "env:DEEPGRAPH_SSH_CREDENTIAL",
     }
@@ -30,10 +30,10 @@ class WorkerIdTests(unittest.TestCase):
     def test_the_id_includes_the_port_so_same_ip_nodes_coexist(self):
         from orchestrator.gpu_scheduler import ssh_worker_id
 
-        a = ssh_worker_id("111.172.214.101", 32035, "0")
-        b = ssh_worker_id("111.172.214.101", 32036, "0")
+        a = ssh_worker_id("203.0.113.10", 2200, "0")
+        b = ssh_worker_id("203.0.113.10", 2201, "0")
 
-        self.assertEqual(a, "ssh:111.172.214.101:32035:gpu0")
+        self.assertEqual(a, "ssh:203.0.113.10:2200:gpu0")
         self.assertNotEqual(a, b)
 
 
@@ -111,15 +111,15 @@ class ConfiguredNodesTests(unittest.TestCase):
     def test_parses_a_list_of_nodes(self):
         raw = json.dumps(
             [
-                {"host": "111.172.214.101", "port": 32035, "user": "root",
+                {"host": "203.0.113.10", "port": 2200, "user": "root",
                  "credential_ref": "env:DEEPGRAPH_SSH_CREDENTIAL"},
-                {"host": "111.172.214.101", "port": 32036, "user": "root",
+                {"host": "203.0.113.10", "port": 2201, "user": "root",
                  "credential_ref": "env:DEEPGRAPH_SSH_CREDENTIAL"},
             ]
         )
         nodes = configured_nodes(raw)
 
-        self.assertEqual([n.port for n in nodes], [32035, 32036])
+        self.assertEqual([n.port for n in nodes], [2200, 2201])
 
     def test_bad_or_empty_config_yields_no_nodes(self):
         self.assertEqual(configured_nodes(""), [])
