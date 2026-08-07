@@ -336,9 +336,22 @@ def process_single_paper(
     paper_id: str,
     *,
     llm_scope: dict | None = None,
+    stop_after: str | None = None,
 ) -> dict:
-    """Run full pipeline on one paper: extract -> classify -> store results -> check contradictions."""
-    llm_scope = require_active_scope(llm_scope)
+    """Run full pipeline on one paper: extract -> classify -> store results -> check contradictions.
+
+    ``stop_after='graph_written'`` replays an extraction this paper already
+    paid for - the checkpoint holds the claims, results and entities - into
+    the graph and stops before the contradiction pass. That path issues no LLM
+    call, so it needs no ResourceGrant; it is refused unless the checkpoint is
+    actually there, and every other path still requires an active scope.
+    """
+    replay_only = stop_after == "graph_written"
+    if replay_only:
+        if _load_checkpoint_payload(paper_id, "extracted") is None:
+            return {"error": "replay requires a stored extraction checkpoint"}
+    else:
+        llm_scope = require_active_scope(llm_scope)
     paper = db.fetchone("SELECT * FROM papers WHERE id=?", (paper_id,))
     if not paper:
         return {"error": "Paper not found"}
@@ -556,6 +569,11 @@ def process_single_paper(
                     dedupe_key=f"node_touched:{paper_id}:{node_id}",
                 )
             current_stage = active_stage
+
+        if replay_only:
+            # Everything past here costs tokens; a replay stops with the graph
+            # written and the paper left for a granted pass to finish.
+            return result
 
         # Step 3: Check contradictions (batch — 1 LLM call per paper)
         contradiction_checkpoint = (
