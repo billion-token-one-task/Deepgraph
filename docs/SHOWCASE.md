@@ -74,11 +74,3 @@ Manuscript generation is gated, and the gates are load-bearing:
 
 For a research-automation system, knowing when *not* to publish is the
 feature that makes everything else trustworthy.
-
-## Team research line: latent communication
-
-Alongside the engine, the team runs a human-led research line on LLM
-latent-space communication -- compressing inter-agent messages into 512-byte
-slot-attention vectors. Results, positioning against LatentMAS / Interlat /
-Vision Wormhole, and collaboration directions:
-[LATENT_COMMUNICATION_RESEARCH.md](../LATENT_COMMUNICATION_RESEARCH.md).

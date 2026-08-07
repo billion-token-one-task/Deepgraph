@@ -19,68 +19,112 @@
 ## 设计原则：The Bitter Lesson
 
 Rich Sutton 的 *The Bitter Lesson* 指出：回看 AI 七十年，能随算力扩展的通用方法，
-最终都会超过依赖人工编码知识的方法。DeepGraph 把这句话当作架构约束而不是口号，
-系统之所以长成现在这样，原因就在这里：
+最终都会超过依赖人工编码知识的方法。对一个"要做研究"的系统来说，这句话落到一个
+很硬的问题上：研究问题从哪来？如果来自某个人写的选题清单，系统的天花板就是那个人。
+所以在 DeepGraph 里，研究问题来自语料本身的结构，而决定给谁投入资源的排序，
+是从实验结果里学出来的，不是人手调的。
 
-- **核心是通用搜索，不是专家启发式的集合。** 研究候选来自一个扫遍全图的廉价 SQL
-  信号挖掘器加上通用的想法生成 agent，而不是人工整理的选题清单。扩大论文语料和
-  算力预算，搜索面直接变宽。
-- **人工领域知识被隔离。** 领域执行器和方法别名放在可选插件里
-  （`plugins/examples/cggr/`）。按设计，任何人工编写的领域 agent 都拿不到独立的预算
-  权限，所以专用代码永远不可能悄悄变成决定资源去向的东西。
-- **策略可以被学习替换。** 当前的组合决策策略是一个刻意保持透明的 best-of-N 启发式，
-  记录输入、置信区间和机会成本；它的结构就是为了在积累足够 `OutcomeRecord` 之后，
-  能换成受约束的 contextual bandit 或 Thompson 采样（见 `docs/internal/ARCHITECTURE.md`）。
-- **用反馈，不用打补丁。** 失败应当被通用的"运行—观察—修复"循环吸收，并作为
-  outcome record 回灌，而不是在代码里再加一个特例分支。
-- **算力是被预算化的基本单位。** 每一笔开销都要先预留、再计量、最后对着 agenda
-  预算结算，这才让"把算力加上去"是一个受控操作，而不是打开水龙头。
+下面每一条都对应本仓库里的一个具体机制，不是表态：
 
-规模化的搜索只有在"判断什么是真的"这个筛子同样能规模化时才划算。那个筛子就是下面的
+| Bitter Lesson 约束 | 在 DeepGraph 里是什么 | 代码位置 |
+|---|---|---|
+| 要搜索，不要人工整理的知识 | 十个结构信号计算器以**纯 SQL、零 LLM 调用**在全图上做联接，枚举研究切入点：实体重叠、矛盾簇、性能平台期、负空间缺口、claim-方法缺口、机制冲突、隐变量桥接 | `agents/signal_harvester.py:453-1662`，入口 `harvest_all():1828` |
+| 排序是学出来的，不是调出来的 | 实验结果更新各信号类型的后验；学到的权重既重排后续候选，又被注入想法生成的提示词 | `agents/meta_learner.py:200`、`agents/idea_taste.py:74`、`agents/paper_idea_agent.py:580-583` |
+| 人工知识拿不到预算 | frontier 权限被硬性限死在 2 万 token / 120 分钟 / **0.0 GPU 小时**，且"不可能变成 ResourceGrant"；只有落库的组合决策才能签发授权；插件完全在 agent 注册表之外 | `contracts/meta_harness.py:131-216`、`meta_harness/portfolio.py:269-272`、`plugins/__init__.py:1-3` |
+| 策略在结构上可被替换 | 组合决策策略是一个冻结的、带版本号的 dataclass，调用时注入；每个输入都是带置信区间和证据来源的 `Estimate`——所以换成 bandit 或 Thompson 采样不需要改调用方 | `meta_harness/portfolio.py:12-36,102`、`contracts/meta_harness.py:52-81` |
+| 算力是被预算化的基本单位 | 每一笔开销都先预留、再计量、最后对着 agenda 预算结算，"把算力加上去"因此是一个受控旋钮而不是水龙头 | `meta_harness/repository.py:691`、`orchestrator/bounded_execution.py` |
+
+规模化的搜索只有在"判断什么是真的"这个筛子同样能规模化时才划算。那个筛子就是
 证据阶梯，它是这套系统的另一半。
 
 ---
 
-## 系统在做什么
+## 这个环怎么转
+
+DeepGraph 是一个环，不是一条流水线：论文变成结构，结构变成候选，过闸的候选变成实验，
+而实验结果反过来改变下一轮去搜哪一类结构。
 
 ```mermaid
-flowchart LR
-  A["arXiv 论文"] --> B["PDF 解析<br/>GROBID"]
-  B --> C["LLM 抽取<br/>claims / methods / results"]
-  C --> D[("证据图谱<br/>实体、关系、矛盾")]
-  D --> E["信号挖掘器<br/>纯 SQL，零 LLM 成本"]
-  E --> F["范式 agent<br/>Tier 1"]
-  E --> G["论文想法 agent<br/>Tier 2"]
-  F --> H{"选题闸门"}
-  G --> H
-  H -->|"通过"| I["ResourceGrant<br/>限定范围、会过期"]
-  H -->|"停放或终止<br/>带记录的理由"| Z["Backlog"]
-  I --> J["实验执行<br/>CPU / 远端 GPU"]
-  J --> K{"证据阶梯"}
-  K -->|"闸门通过"| L["论文生成<br/>受合同约束"]
-  K -->|"被拦下"| Z
-  L --> M["投稿包"]
-  J -.->|"OutcomeRecord<br/>反馈"| E
+flowchart TB
+  A["arXiv 论文"] --> B["PDF 解析 + LLM 抽取<br/>claims / methods / results"]
+  B --> C[("证据图谱<br/>实体、关系、矛盾")]
+  C --> D["信号挖掘器<br/>10 个结构计算器<br/>纯 SQL，零 LLM"]
+  D --> E["研究问题与论文想法<br/>带完整信号血缘"]
+  E --> F{"选题闸门<br/>预期信息量<br/>用比特定价"}
+  F -->|"停放或终止<br/>带记录在案的理由"| C
+  F -->|"通过"| G["组合决策<br/>+ ResourceGrant"]
+  G --> H["实验执行<br/>CPU / 远端 GPU"]
+  H --> I{"证据阶梯<br/>内容哈希闸门"}
+  I -->|"闸门通过"| J["论文生成<br/>受合同约束"]
+  I -->|"被拦下"| C
+  H --> K["按结果更新<br/>信号后验"]
+  K -->|"元学习权重"| D
+  K -->|"权重注入提示词"| E
 ```
 
 1. **摄取** —— arXiv 发现、PDF 解析、用 LLM 把 claims / methods / results / taxonomy
-   抽成结构化数据写入 PostgreSQL。
-2. **建图** —— 跨论文合并实体、关系、矛盾与证据链接，做实体消歧和领域摘要。
-3. **发现** —— 零 LLM 成本的 SQL 信号挖掘器找出重叠、汇聚模式、矛盾簇和性能平台期；
-   范式 agent 与论文想法 agent 把这些信号变成可执行的研究候选。
-4. **执行** —— 过闸的候选拿到限定范围的资源授权、冻结的 benchmark 合同，
-   然后在 CPU 或远端 GPU 上运行。
-5. **成稿** —— 受合同约束的论文生成：claim-证据矩阵、审稿模拟、图表与版式审计、
-   PDF 完整性检查。
+   抽成结构化数据写入 PostgreSQL，全程在限定范围的授权下进行
+   （`orchestrator/scoped_ingestion_worker.py:32`）。
+2. **建结构** —— 跨论文合并实体、关系、矛盾与证据链接，做实体消歧和领域摘要。
+3. **搜索** —— 信号挖掘器在全图上找结构性切口；问题与想法 agent 把它们变成可执行的
+   候选，每个候选都刻上它来自哪些信号行、哪些论文、哪个提示词版本和模型版本
+   （`db/schema_v2.sql:44-49`）。
+4. **筛选** —— 选题闸门用比特给入场定价；组合决策对幸存者排序并签发限定范围、
+   会过期的授权。
+5. **执行并学习** —— 运行产出证据，其结果反过来更新产生这个想法的那类信号的后验。
 
 ---
 
 ## 差异化在哪里
 
-多数自动科研系统把"任务跑完了"当成"结果是真的"。DeepGraph 建立在相反的前提上，
-这套纪律就是它的核心创新。
+按重要性排的三条：这个系统自己搜索自己的研究问题；它根据什么起了作用来改变搜索方式；
+而规模化的搜索之所以有意义，是因为下游的一切都拒绝把未经证明的结果叫做发现。
 
-### 1. 带内容哈希闸门的证据阶梯
+### 1. 它搜索自己的问题空间
+
+候选池不是一张选题清单。`agents/signal_harvester.py` 里的十个计算器专门去找文献里
+**结构上有意思**的地方——两个互相不引用却高度重叠的子领域、跨论文已经平台化的指标、
+有 claim 却没有方法支撑的断言、在一处被主张又在另一处被推翻的机制、把原本互不相连的
+结果桥接起来的变量。它们是全图上的 SQL 联接，**路径里完全没有 LLM**
+（`agents/signal_harvester.py:3,9-18`），所以语料变大，变宽的是搜索面而不是账单。
+
+人的输入以**范围**的形式进入，而不是内容：agenda 限定可以搜索空间的哪一部分
+（`agents/topic_gate.py:248`），但从不提供候选本身。每个候选都带着可机器校验的血缘，
+能追回到产生它的信号行和论文，所以任何一个提案都能被追溯到暗示它的那处结构。
+
+### 2. 它根据证据改变搜索方式
+
+```mermaid
+flowchart LR
+  A["实验结果<br/>被解释"] -->|"写回"| B["按信号类型<br/>更新后验"]
+  B --> C[("agenda_signal_outcomes")]
+  C --> D["meta_learner<br/>Beta 平滑权重<br/>信任爬坡、上下截断"]
+  D -->|"重排候选"| E["idea_taste<br/>taste 打分"]
+  D -->|"作为 SIGNAL PRIORITY<br/>注入"| F["想法生成提示词"]
+  E --> G["下一轮搜索"]
+  F --> G
+  G -.->|"产出下一个结果"| A
+```
+
+一次实验结束后，`agents/result_interpreter.py:636` 把结论交给
+`agents/problem_first.py:721`，后者更新产生该想法的那类信号的后验（`:567`），
+并记入 `agenda_signal_outcomes`（`:614`）。`agents/meta_learner.py:200` 把这段历史
+变成带信任爬坡的 Beta 平滑权重，并截断在有界区间内，使任何单次结果都无法主导
+（`:231-234`）。这些权重接着做两件事：通过 `agents/idea_taste.py:74` 重排后续候选，
+以及作为一段显式的 `SIGNAL PRIORITY (meta-learned weights)` 写进生成提示词本身
+（`agents/paper_idea_agent.py:580-583`）。
+
+效果是：真正产出过效应的信号类型会拿到更多搜索预算，没产出的会变少——全程没有人去
+编辑任何一个权重。这个回路刻意保持**按 agenda 隔离**：`agents/meta_learner.py:204`
+的 docstring 明确拒绝使用旧的全局表，正是为了不让一个 agenda 的结果泄漏进另一个
+agenda 的排序策略。
+
+### 3. 闸门才是让规模化搜索值得跑的原因
+
+一个分不清真结果和侥幸结果的自动搜索器，只会更快地产出噪音。下面这些机制的存在，
+是为了让搜索规模化时，规模化的是证据而不是主张。
+
+#### 3.1 带内容哈希闸门的证据阶梯
 
 结论每次只能往上爬一级，每一级都要求哈希过的原始产物、钉死的 benchmark 合同
 和独立评估。证据不齐的转移不会被记成一次失败，而是直接拒绝——阶梯因此不会漂移
@@ -100,7 +144,7 @@ flowchart TD
   M -.-> X
 ```
 
-### 2. 两本账，永不混写
+#### 3.2 两本账，永不混写
 
 "它跑了没有"和"审计过的证据说了什么"分开存储、分开提供、分开显示，一直贯彻到
 界面上的两个徽章。一个运行状态为 `completed` 的任务，在证据另有说法之前，
@@ -111,14 +155,14 @@ flowchart TD
 | **运行账** (`RUN`) | 任务执行了吗？ | `planned`、`running`、`completed`、`failed`、`cancelled` |
 | **科学账** (`EVIDENCE` / `DECIDED`) | 审计过的证据说了什么？ | `not assessed`、`sanity_passed`、`full_benchmark_complete`、`evidence_audited`、`decided`、`manuscript_allowed` |
 
-### 3. 用比特给"入场"定价的选题闸门
+#### 3.3 用比特给"入场"定价的选题闸门
 
 候选在花掉任何资源之前，必须带着预先登记的预测；预期信息增益随后由一个纯函数
 算出——不调 LLM、不查数据库，也没有任何开关能把它关掉（`agents/topic_gate.py`）。
 没过闸的候选会被停放或终止，**并且带着记录在案的理由**，所以一次拒绝是可审计的，
 而不是无声无息的。
 
-### 4. 授权经济学：预留、计量、结算
+#### 3.4 授权经济学：预留、计量、结算
 
 ```mermaid
 flowchart LR
@@ -133,14 +177,14 @@ flowchart LR
 没有授权就不能运行，失败结算得和成功一样诚实——一个只会给赢家结账的系统，
 在任何账目上都不值得信任。
 
-### 5. 会说"不"的论文闸门
+#### 3.5 会说"不"的论文闸门
 
 一条论文 claim 必须能追溯到冻结的合同、完整的证据清单、多 seed 统计和签名的
 审稿人批准，才能拿到 `manuscript_allowed`（`contracts/scientific_evidence.py`、
 `agents/paper_completeness.py`）。没过质量闸门的稿件包会被盖上 `DO_NOT_SUBMIT.md`
 并附上具体修复清单，而不是被发出去。
 
-### 6. 把运维也写进合同
+#### 3.6 把运维也写进合同
 
 SHA 钉死的部署清单、只增不改的数据库迁移、每个 tick 最多做一个动作的自愈看门狗，
 以及只读的审计脚本（`orchestrator/selfheal_policy.py`、`deploy/`）。
@@ -208,7 +252,6 @@ python3.12 main.py
 | [docs/SHOWCASE.md](docs/SHOWCASE.md) | 实时数字、演示路线、案例 |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | 下一步计划 |
 | [docs/upgrade-plan-v1-v2.md](docs/upgrade-plan-v1-v2.md) | V1 到 V2 升级计划 |
-| [LATENT_COMMUNICATION_RESEARCH.md](LATENT_COMMUNICATION_RESEARCH.md) | 团队的潜空间通信研究线 |
 | `docs/internal/` | 运维 runbook、状态字典、配置与架构参考 |
 
 版本历史：[CHANGELOG.md](CHANGELOG.md)，单独维护。
