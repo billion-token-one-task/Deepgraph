@@ -59,12 +59,17 @@ def _pressure(max_load: float, min_free_mb: int) -> str | None:
 
 
 def _graph_batch(limit: int) -> list[str]:
+    # Only a checkpoint that actually holds an extraction can be replayed. Most
+    # 'extracted' checkpoints on this corpus store a failure instead (LLM
+    # cooldown during the 2026 outages), and those papers need a paid
+    # re-extraction, not a replay.
     return [
         r["id"]
         for r in db.fetchall(
             "SELECT p.id FROM papers p"
             "  JOIN paper_stage_checkpoints c ON c.paper_id=p.id AND c.stage='extracted'"
             " WHERE p.processing_stage='extracted' AND p.status IN ('ingested','error')"
+            "   AND COALESCE(c.error_message,'')='' AND c.payload NOT LIKE '%\"error\"%'"
             " ORDER BY p.published_date DESC NULLS LAST LIMIT ?",
             (limit,),
         )
@@ -126,6 +131,7 @@ def main() -> int:
     for mode in modes:
         pick = _graph_batch if mode == "graph" else _text_batch
         work = _do_graph if mode == "graph" else _do_text
+        skip: set[str] = set()
         while True:
             if args.max_papers and (done["graph"] + done["text"]) >= args.max_papers:
                 break
@@ -134,9 +140,12 @@ def main() -> int:
                 _log(log_path, "paused", reason=reason)
                 time.sleep(60)
                 continue
-            batch = pick(args.batch)
+            # A failed paper keeps matching the same query, so without this the
+            # loop would re-pick it forever and never reach the rest.
+            batch = [pid for pid in pick(args.batch + len(skip)) if pid not in skip]
             if not batch:
                 break
+            batch = batch[: args.batch]
             with ThreadPoolExecutor(max_workers=max(1, args.workers)) as pool:
                 futures = [pool.submit(work, pid) for pid in batch]
                 for future in as_completed(futures):
@@ -145,6 +154,7 @@ def main() -> int:
                         done[mode] += 1
                     else:
                         done["failed"] += 1
+                        skip.add(paper_id)
                         _log(log_path, f"{mode}_failed", paper_id=paper_id, detail=detail[:200])
             _log(log_path, "progress", mode=mode, **done,
                  elapsed_min=round((time.time() - started) / 60, 1))
