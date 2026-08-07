@@ -86,6 +86,14 @@ def _save_state(path: Path, state: dict) -> None:
 
 
 def _spent_delta(state: dict, agenda_ids: list[int]) -> int:
+    """Tokens actually burned since this driver started.
+
+    research_agendas.token_spent alone undercounts badly: it only moves when a
+    whole grant settles, so every call made inside a still-active grant is
+    invisible. Measured 2026-08-07: the ledger read 31817 while 34062 more had
+    already been metered inside live grants, and the guard let spending run
+    past its limit. Count the per-call reservations too.
+    """
     total = 0
     for aid in agenda_ids:
         row = db.fetchone(
@@ -94,6 +102,14 @@ def _spent_delta(state: dict, agenda_ids: list[int]) -> int:
         if not row:
             continue
         spent = int(dict(row)["s"])
+        in_flight = db.fetchone(
+            "SELECT COALESCE(SUM(u.tokens_used),0) AS s"
+            "  FROM resource_grant_usage_reservations u"
+            "  JOIN resource_grants g ON g.id = u.resource_grant_id"
+            " WHERE u.agenda_id=? AND u.status='settled' AND g.status='active'",
+            (aid,),
+        )
+        spent += int(dict(in_flight or {}).get("s") or 0)
         baseline = state["spend_baseline"].setdefault(str(aid), spent)
         total += max(0, spent - int(baseline))
     return total
@@ -563,13 +579,13 @@ def main() -> int:
                         help="repeatable; default 10 and 11")
     parser.add_argument("--state", default="/home/ec2-user/deepgraph-reports/auto_advance_state.json")
     parser.add_argument("--log", default="/home/ec2-user/deepgraph-reports/auto_advance_log.jsonl")
-    parser.add_argument("--spend-limit", type=int, default=60000,
+    parser.add_argument("--spend-limit", type=int, default=120000,
                         help="cumulative token delta across target agendas before new spend stops")
     parser.add_argument("--max-new-grants", type=int, default=2, help="per agenda per pass")
-    # 5000 starves the forge: measured 2026-08-06, benchmark_design alone
-    # metered 3654 and the code scout then died on
-    # provider_usage_exceeded_reserved_cap (same failure as job 98 on 08-04).
-    parser.add_argument("--grant-token-cap", type=int, default=15000)
+    # One forge pass measured 2026-08-07: repair 12626 + code scout 1976 +
+    # benchmark design ~8400 = ~23000. A 15000 cap left 398 for the design
+    # call, so the pass died one step from a runnable plan.
+    parser.add_argument("--grant-token-cap", type=int, default=40000)
     parser.add_argument("--grant-gpu-hours", type=float, default=2.0)
     parser.add_argument("--gpu-class", default="NVIDIA A100-PCIE-40GB")
     # Contract max is 20000; cycle-1's real evaluator consumed 13717 and a
