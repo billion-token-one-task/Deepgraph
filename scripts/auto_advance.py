@@ -99,6 +99,21 @@ def _spent_delta(state: dict, agenda_ids: list[int]) -> int:
     return total
 
 
+def _grant_key(agenda_id: int, idea_id: int, suffix: str) -> str:
+    """A key that has not been used before.
+
+    issue_grant is idempotent on (agenda_id, idempotency_key) and *returns the
+    existing grant* on replay - so a fixed key would silently hand back
+    yesterday's expired grant and strand the job forever.
+    """
+    row = db.fetchone(
+        "SELECT COUNT(*) AS c FROM resource_grants"
+        " WHERE agenda_id=? AND idea_id=? AND idempotency_key LIKE ?",
+        (agenda_id, idea_id, "auto-advance-v1:%"),
+    )
+    return f"auto-advance-v1:idea{idea_id}:{suffix}:a{int(dict(row)['c']) + 1}"
+
+
 def _clip(text: str | None, limit: int = 600) -> str:
     return (text or "").strip()[:limit]
 
@@ -334,7 +349,7 @@ def regrant_starved(agenda_id: int, state: dict, journal: Journal, args) -> None
                 backend_allowlist=[b for b in ("cpu", "llm", "ssh_gpu") if b in backends],
                 artifact_requirements=ARTIFACT_REQUIREMENTS,
                 expires_at=(_now() + timedelta(hours=12)).isoformat(),
-                idempotency_key=f"auto-advance-v1:idea{idea_id}:regrant1",
+                idempotency_key=_grant_key(agenda_id, idea_id, "regrant"),
             )
             grant_id = MetaHarnessRepository().issue_grant(grant)
         except Exception as exc:
@@ -344,8 +359,18 @@ def regrant_starved(agenda_id: int, state: dict, journal: Journal, args) -> None
             continue
         from orchestrator.auto_research import _upsert_job
 
+        # Put it back in a state a consumer actually reads: review_pending and
+        # the design-repair stage are claimed by nobody, so a job left there
+        # sits until its grant expires (observed overnight on idea 110).
+        harness_open = db.fetchone(
+            "SELECT 1 AS x FROM benchmark_harness_jobs"
+            " WHERE agenda_id=? AND deep_insight_id=? AND status='harness_required'",
+            (agenda_id, idea_id),
+        )
         _upsert_job(
             idea_id,
+            status="harness_required" if harness_open else "queued",
+            stage="benchmark_harness_required" if harness_open else "experiment_review_repair",
             resource_grant_id=grant_id,
             last_error=None,
             last_note=f"auto-advance-v1: regranted at cap {args.grant_token_cap} after"
@@ -470,7 +495,7 @@ def advance_agenda(agenda_id: int, state: dict, journal: Journal, args) -> None:
                     backend_allowlist=attempt["backends"],
                     artifact_requirements=ARTIFACT_REQUIREMENTS,
                     expires_at=(_now() + timedelta(hours=attempt["ttl_hours"])).isoformat(),
-                    idempotency_key=f"auto-advance-v1:idea{idea_id}:{attempt['suffix']}",
+                    idempotency_key=_grant_key(agenda_id, idea_id, attempt["suffix"]),
                 )
                 grant_id = repo.issue_grant(grant)
             except Exception as exc:
