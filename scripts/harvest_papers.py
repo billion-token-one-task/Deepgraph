@@ -27,15 +27,18 @@ from db import database as db  # noqa: E402
 from ingestion.arxiv_client import search_papers  # noqa: E402
 from ingestion.arxiv_ids import arxiv_base_id  # noqa: E402
 
-FOCUS_CATEGORIES = [
+# The original six the corpus was built on, kept intact - 21k papers and every
+# taxonomy node downstream assume them; dropping one would strand that lineage.
+BASE_CATEGORIES = ["cs.AI", "cs.LG", "cs.CL", "cs.CV", "cs.MA", "stat.ML"]
+# Added 2026-08-07 for the owner's directions: biological evolution, ecosystems
+# and communities, agents, harnesses, language models.
+ADDED_CATEGORIES = [
     "q-bio.PE",   # populations and evolution: evolution, ecology, communities
+    "q-bio.NC",   # neurons and cognition: adjacent mechanism work
     "nlin.AO",    # adaptation and self-organizing systems: collective dynamics
     "cs.NE",      # neural and evolutionary computing: the bridge to ML
-    "cs.MA",      # multiagent systems
-    "cs.AI",      # agents, planning, tool use
-    "cs.CL",      # language models
-    "cs.LG",      # learning, benchmarks, harnesses
 ]
+FOCUS_CATEGORIES = BASE_CATEGORIES + ADDED_CATEGORIES
 
 
 def harvest(categories: list[str], per_category: int, log_path: Path) -> dict:
