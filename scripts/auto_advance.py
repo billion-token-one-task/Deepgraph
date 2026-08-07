@@ -303,29 +303,62 @@ def ensure_frontier_packet(
 
 _STARVED = "provider_usage_exceeded_reserved_cap"
 
+# Stages a failure lands in that no consumer ever claims. The candidate pool
+# accepts status='queued' unconditionally and status='failed' only for a short
+# allowlist of stages, so anything else is a terminal parking spot in practice.
+DEAD_END = {
+    ("failed", "forge_failed"),
+    ("failed", "experiment_failed_repair_failed"),
+    ("failed", "exception"),
+    ("review_pending", "benchmark_harness_design_repair"),
+    ("blocked", "experiment_review_blocked_final"),
+}
+MAX_RECYCLES = 3
 
-def regrant_starved(agenda_id: int, state: dict, journal: Journal, args) -> None:
-    """Re-grant candidates whose grant ran out mid-forge.
 
-    A pilot cap that the forge cannot live on is a resource error, not a
-    verdict on the idea: the benchmark designer meters first and whatever runs
-    next dies on provider_usage_exceeded_reserved_cap. The exhausted grant
-    cannot be revoked (its usage is settled) and expires on its own TTL; this
-    issues a larger one and points the job at it. Once per idea.
+def recycle_stranded(agenda_id: int, state: dict, journal: Journal, args) -> None:
+    """Give a stranded candidate a live grant and a state someone reads.
+
+    Two independent failure modes put a job somewhere nothing claims it: a
+    pilot cap the forge cannot live on (the benchmark designer meters first and
+    the next agent dies on provider_usage_exceeded_reserved_cap), and a repair
+    that parks the job in a stage outside the candidate pool's accepted set. An
+    exhausted grant cannot be revoked - its usage is settled - so it is left to
+    expire and a fresh one is issued. Bounded per idea, and it never touches a
+    job that is genuinely in flight.
     """
-    done = state.setdefault("regranted", {})
+    counts = state.setdefault("recycles", {})
     rows = _rows(
         "SELECT arj.id, arj.deep_insight_id, arj.status, arj.stage, arj.resource_grant_id,"
-        "       arj.last_error, rg.token_cap"
+        "       arj.last_error, rg.token_cap, rg.status AS grant_status,"
+        "       (rg.expires_at > CURRENT_TIMESTAMP) AS grant_live"
         "  FROM auto_research_jobs arj"
-        "  JOIN resource_grants rg ON rg.id = arj.resource_grant_id"
-        " WHERE arj.agenda_id=? AND arj.last_error LIKE ?"
-        " ORDER BY arj.id",
-        (agenda_id, f"%{_STARVED}%"),
+        "  LEFT JOIN resource_grants rg ON rg.id = arj.resource_grant_id"
+        " WHERE arj.agenda_id=? ORDER BY arj.id",
+        (agenda_id,),
     )
     for job in rows:
         idea_id = int(job["deep_insight_id"])
-        if str(idea_id) in done or int(job["token_cap"] or 0) >= args.grant_token_cap:
+        stranded = (str(job["status"]), str(job["stage"])) in DEAD_END
+        starved = _STARVED in str(job["last_error"] or "")
+        if not (stranded or starved):
+            continue
+        used = int(counts.get(str(idea_id), 0))
+        if used >= MAX_RECYCLES:
+            journal.log("recycle_exhausted", agenda_id=agenda_id, idea_id=idea_id,
+                        status=job["status"], stage=job["stage"], recycles=used)
+            continue
+        counts[str(idea_id)] = used + 1
+        grant_ok = (
+            str(job["grant_status"] or "") == "active"
+            and bool(job["grant_live"])
+            and int(job["token_cap"] or 0) >= args.grant_token_cap
+        )
+        if grant_ok:
+            grant_id = int(job["resource_grant_id"])
+            journal.log("recycle_keeps_grant", agenda_id=agenda_id, idea_id=idea_id,
+                        resource_grant_id=grant_id)
+            _requeue_for_consumer(agenda_id, idea_id, grant_id, journal, args, used + 1)
             continue
         packet_row = db.fetchone(
             "SELECT id FROM idea_decision_packets WHERE agenda_id=? AND idea_id=?"
@@ -357,29 +390,42 @@ def regrant_starved(agenda_id: int, state: dict, journal: Journal, args) -> None
             journal.log("regrant_refused", agenda_id=agenda_id, idea_id=idea_id,
                         reason=f"{type(exc).__name__}: {exc}")
             continue
-        from orchestrator.auto_research import _upsert_job
-
-        # Put it back in a state a consumer actually reads: review_pending and
-        # the design-repair stage are claimed by nobody, so a job left there
-        # sits until its grant expires (observed overnight on idea 110).
-        harness_open = db.fetchone(
-            "SELECT 1 AS x FROM benchmark_harness_jobs"
-            " WHERE agenda_id=? AND deep_insight_id=? AND status='harness_required'",
-            (agenda_id, idea_id),
-        )
-        _upsert_job(
-            idea_id,
-            status="harness_required" if harness_open else "queued",
-            stage="benchmark_harness_required" if harness_open else "experiment_review_repair",
-            resource_grant_id=grant_id,
-            last_error=None,
-            last_note=f"auto-advance-v1: regranted at cap {args.grant_token_cap} after"
-                      f" grant {job['resource_grant_id']} was exhausted mid-forge.",
-        )
-        done[str(idea_id)] = grant_id
         journal.log("regranted", agenda_id=agenda_id, idea_id=idea_id,
                     old_grant=job["resource_grant_id"], new_grant=grant_id,
-                    token_cap=args.grant_token_cap)
+                    token_cap=args.grant_token_cap, was=f"{job['status']}/{job['stage']}")
+        _requeue_for_consumer(agenda_id, idea_id, grant_id, journal, args, used + 1)
+
+
+def _requeue_for_consumer(agenda_id: int, idea_id: int, grant_id: int,
+                          journal: Journal, args, recycle: int) -> None:
+    """Move a job into a state some consumer actually claims.
+
+    The candidate pool takes status='queued' unconditionally; the harness
+    consumer takes harness_required/harness_required. Clearing last_error and
+    rewriting last_note also resets the repair-attempt counters, which are
+    parsed out of that prose rather than stored as columns.
+    """
+    from orchestrator.auto_research import _upsert_job
+
+    harness_open = db.fetchone(
+        "SELECT 1 AS x FROM benchmark_harness_jobs"
+        " WHERE agenda_id=? AND deep_insight_id=? AND status='harness_required'",
+        (agenda_id, idea_id),
+    )
+    status = "harness_required" if harness_open else "queued"
+    stage = "benchmark_harness_required" if harness_open else "retry_failed_run"
+    _upsert_job(
+        idea_id,
+        status=status,
+        stage=stage,
+        resource_grant_id=grant_id,
+        assigned_worker=None,
+        last_error=None,
+        last_note=(f"auto-advance-v1 recycle {recycle}/{MAX_RECYCLES}: requeued on grant"
+                   f" {grant_id} (cap {args.grant_token_cap})."),
+    )
+    journal.log("requeued_for_consumer", agenda_id=agenda_id, idea_id=idea_id,
+                resource_grant_id=grant_id, status=status, stage=stage, recycle=recycle)
 
 
 def _rebuild_decision(agenda_id: int, idea_id: int, packet_id: int) -> IdeaDecisionPacket:
@@ -389,7 +435,7 @@ def _rebuild_decision(agenda_id: int, idea_id: int, packet_id: int) -> IdeaDecis
     ))
     packet = build_packet(agenda_id, idea_id, int(row["frontier_packet_id"]))
     packet.decision = "promote"
-    packet.reason_codes = ["portfolio_score_selected", "regrant_after_forge_starvation"]
+    packet.reason_codes = ["portfolio_score_selected", "regrant_after_stranded_or_starved"]
     packet.revisit_condition = {}
     packet.revisit_after = None
     packet.decision_packet_id = packet_id
@@ -570,7 +616,7 @@ def main() -> int:
             if spent >= args.spend_limit:
                 journal.log("spend_limit_reached", spent=spent, limit=args.spend_limit)
                 break
-            regrant_starved(agenda_id, state, journal, args)
+            recycle_stranded(agenda_id, state, journal, args)
             advance_agenda(agenda_id, state, journal, args)
     finally:
         _save_state(state_path, state)
