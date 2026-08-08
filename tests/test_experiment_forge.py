@@ -548,6 +548,11 @@ class GenerateScaffoldTests(unittest.TestCase):
         self.assertNotIn("prediction = target", train_py)
         self.assertNotIn("extract_gsm8k_answer(row[\"answer\"])", train_py)
 
+        proxy = experiment_forge.build_proxy_config(plan)
+        self.assertEqual(proxy["reproduction_iterations"], 1)
+        self.assertEqual(proxy["max_iterations"], 0)
+        self.assertEqual(proxy["refute_min_iterations"], 0)
+
     def test_resolved_benchmark_design_is_reused_without_llm_redesign(self):
         contract = {
             "status": "resolved",
