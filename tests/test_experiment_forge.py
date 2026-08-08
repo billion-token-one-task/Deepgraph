@@ -553,6 +553,7 @@ class GenerateScaffoldTests(unittest.TestCase):
         self.assertEqual(proxy["reproduction_iterations"], 1)
         self.assertEqual(proxy["max_iterations"], 0)
         self.assertEqual(proxy["refute_min_iterations"], 0)
+        self.assertEqual(proxy["benchmark_seeds"], 1)
 
     def test_resolved_benchmark_design_is_reused_without_llm_redesign(self):
         contract = {

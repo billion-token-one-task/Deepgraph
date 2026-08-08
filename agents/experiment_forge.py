@@ -3396,7 +3396,17 @@ def build_proxy_config(plan: dict, codebase: dict | None = None, *, judgement=No
         "benchmark_dataset": EXPERIMENT_REAL_BENCHMARK_DATASET,
         "benchmark_dataset_config": EXPERIMENT_REAL_BENCHMARK_DATASET_CONFIG,
         "benchmark_max_examples_per_seed": _optional_nonnegative_int(plan.get("max_eval_examples"), EXPERIMENT_REAL_BENCHMARK_MAX_EXAMPLES),
-        "benchmark_seeds": max(1, _optional_nonnegative_int(plan.get("minimum_seeds"), EXPERIMENT_REAL_BENCHMARK_SEEDS)),
+        "benchmark_seeds": (
+            1
+            if executable_probe
+            else max(
+                1,
+                _optional_nonnegative_int(
+                    plan.get("minimum_seeds"),
+                    EXPERIMENT_REAL_BENCHMARK_SEEDS,
+                ),
+            )
+        ),
         "benchmark_time_budget_seconds": EXPERIMENT_REAL_BENCHMARK_TIME_BUDGET,
     }
     publication_contract = plan.get("publication_evidence_contract") if isinstance(plan, dict) else {}
