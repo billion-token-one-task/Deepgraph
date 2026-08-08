@@ -510,6 +510,133 @@ class GenerateScaffoldTests(unittest.TestCase):
         self.assertIn("full_benchmark_completed", train_py)
         self.assertIn("sys.exit(2)", train_py)
 
+    def test_executable_probe_uses_real_gsm8k_runner_without_label_fallback(self):
+        plan = {
+            "harness_recovery_fresh_forge": True,
+            "benchmark_targets": [
+                {
+                    "name": "GSM8K",
+                    "hf_dataset": "openai/gsm8k",
+                    "config": "main",
+                    "split": "test",
+                    "task_type": "math_qa",
+                    "benchmark_role": "executable_probe",
+                    "generated_runner_supported": True,
+                }
+            ],
+            "model_targets": [
+                {"hf_model": "Qwen/Qwen3.5-4B", "requires_cuda": True}
+            ],
+            "metrics": {"primary": "exact_match"},
+            "minimum_seeds": 1,
+            "procedure": "Score intermediate reasoning before choosing an answer.",
+        }
+
+        train_py = experiment_forge._real_llm_benchmark_train_py(
+            method_name="Process Reward Probe",
+            metric_name="exact_match",
+            plan=plan,
+        )
+
+        compile(train_py, "train.py", "exec")
+        self.assertIn("openai/gsm8k", train_py)
+        self.assertIn('CANDIDATE_METHOD = "process_guided_candidate"', train_py)
+        self.assertIn('"per_method": per_method', train_py)
+        self.assertIn('"candidate_method": CANDIDATE_METHOD', train_py)
+        self.assertIn('"label_fallback_used": False', train_py)
+        self.assertIn('"full_benchmark_completed": False', train_py)
+        self.assertNotIn("prediction = target", train_py)
+        self.assertNotIn("extract_gsm8k_answer(row[\"answer\"])", train_py)
+
+    def test_resolved_benchmark_design_is_reused_without_llm_redesign(self):
+        contract = {
+            "status": "resolved",
+            "candidate_benchmarks": [
+                {
+                    "name": "GSM8K",
+                    "hf_dataset": "openai/gsm8k",
+                    "task_type": "math_qa",
+                    "literature_sources": [{"title": "GSM8K"}],
+                }
+            ],
+            "benchmark_evidence": [{"name": "GSM8K"}],
+            "required_baseline_families": ["Direct", "Process-guided"],
+            "primary_metric_candidates": ["exact_match"],
+            "blockers": [],
+            "warnings": [],
+        }
+        parsed = {
+            "title": "Process reward probe",
+            "problem_statement": "Test process-guided math reasoning.",
+            "resource_class": "gpu_large",
+            "experimental_plan": {
+                "benchmark_design_status": "resolved",
+                "benchmark_design_contract": contract,
+                "benchmark_targets": contract["candidate_benchmarks"],
+                "datasets": [{"name": "GSM8K"}],
+                "metrics": {"primary": "exact_match"},
+            },
+        }
+        method = {"name": "Process Reward Probe", "type": "reasoning"}
+
+        with mock.patch.object(
+            experiment_forge,
+            "build_benchmark_design_contract",
+            side_effect=AssertionError("resolved design must not be called again"),
+        ):
+            enriched = experiment_forge._enrich_experimental_plan(
+                parsed,
+                method,
+                llm_scope={
+                    "agenda_id": 11,
+                    "idea_id": 105,
+                    "resource_grant_id": 17,
+                    "stage": "pilot",
+                },
+            )
+
+        self.assertEqual(enriched["benchmark_design_status"], "resolved")
+        self.assertEqual(enriched["benchmark_design_contract"], contract)
+
+    def test_gpu_plan_drops_stale_bootstrap_models(self):
+        plan = {
+            "harness_recovery_fresh_forge": True,
+            "benchmark_targets": [
+                {
+                    "name": "GSM8K",
+                    "hf_dataset": "openai/gsm8k",
+                    "task_type": "math_qa",
+                    "generated_runner_supported": True,
+                }
+            ],
+            "model_targets": [
+                {"hf_model": "Qwen/Qwen2.5-0.5B-Instruct", "requires_cuda": True},
+                {"hf_model": "TinyLlama/TinyLlama-1.1B-Chat-v1.0", "requires_cuda": True},
+            ],
+            "metrics": {"primary": "exact_match"},
+        }
+        parsed = {
+            "title": "Math reasoning",
+            "resource_class": "gpu_large",
+            "proposed_method": {"name": "Candidate", "type": "reasoning"},
+        }
+
+        with mock.patch.object(
+            experiment_forge,
+            "EXPERIMENT_REAL_LLM_MODEL",
+            "Qwen/Qwen3.5-4B",
+        ):
+            normalized = experiment_forge._ensure_real_benchmark_plan(
+                parsed,
+                parsed["proposed_method"],
+                plan,
+                "gpu_large",
+            )
+
+        models = [row["hf_model"] for row in normalized["model_targets"]]
+        self.assertEqual(models[0], "Qwen/Qwen3.5-4B")
+        self.assertFalse(any("Qwen2.5" in name or "TinyLlama" in name for name in models))
+
     def test_setup_workspace_falls_back_to_archive_when_git_missing(self):
         codebase = {
             "url": "https://github.com/example/project",

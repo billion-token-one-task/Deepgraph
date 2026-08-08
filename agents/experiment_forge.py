@@ -1277,6 +1277,32 @@ def _ensure_real_benchmark_plan(
             if name and name.lower() not in {"toy", "dummy", "mock", "synthetic"}:
                 normalized_models.append(dict(row))
     default_models = _default_real_model_targets(parsed, resource_class)
+    if str(resource_class or "").strip().lower() != "cpu":
+        # Old plans can retain the Qwen2.5/TinyLlama bootstrap list forever.
+        # GPU evidence must prefer the configured current-generation model.
+        legacy_markers = ("qwen2.5", "tinyllama")
+        normalized_models = [
+            row
+            for row in normalized_models
+            if not any(
+                marker in str(
+                    row.get("hf_model") or row.get("model") or row.get("name") or ""
+                ).lower()
+                for marker in legacy_markers
+            )
+        ]
+        current_defaults = [
+            row
+            for row in default_models
+            if not any(
+                marker in str(
+                    row.get("hf_model") or row.get("model") or row.get("name") or ""
+                ).lower()
+                for marker in legacy_markers
+            )
+        ]
+        if current_defaults:
+            default_models = current_defaults
     if not normalized_models:
         normalized_models = default_models
     else:
@@ -1868,12 +1894,26 @@ def _enrich_experimental_plan(
             {**parsed, "proposed_method": method, "experimental_plan": plan}
         )
 
-    benchmark_design = build_benchmark_design_contract(
-        parsed,
-        method,
-        plan,
-        llm_scope=llm_scope,
+    # Re-forging must reuse the locked scientific design. Re-running the
+    # benchmark designer spends the replacement grant and can move the target
+    # after observing an operational failure.
+    existing_design = (
+        plan.get("benchmark_design_contract")
+        if isinstance(plan.get("benchmark_design_contract"), dict)
+        else {}
     )
+    if (
+        plan.get("benchmark_design_status") == DESIGN_STATUS_RESOLVED
+        and existing_design.get("status") == DESIGN_STATUS_RESOLVED
+    ):
+        benchmark_design = existing_design
+    else:
+        benchmark_design = build_benchmark_design_contract(
+            parsed,
+            method,
+            plan,
+            llm_scope=llm_scope,
+        )
     plan = apply_benchmark_design_contract(plan, benchmark_design)
     design_resolved = plan.get("benchmark_design_status") == DESIGN_STATUS_RESOLVED
 
@@ -2767,6 +2807,214 @@ def _benchmark_recipe_blocker_train_py(*, metric_name: str, error: str, plan: di
     """)
 
 
+def _executable_probe_train_py(*, method_name: str, metric_name: str, plan: dict) -> str:
+    """Render the audited GSM8K runner for a manuscript-blocked V1 probe."""
+    defaults = _real_benchmark_defaults(plan)
+    target = defaults["targets"][0]
+    target_key = _canonical_name(target.get("name") or target.get("hf_dataset"))
+    dataset_key = _canonical_name(defaults.get("dataset_id"))
+    if "gsm8k" not in target_key and "gsm8k" not in dataset_key:
+        return _benchmark_recipe_blocker_train_py(
+            metric_name=metric_name,
+            error=(
+                "the audited executable-probe runner currently supports GSM8K only; "
+                f"received {target.get('name') or defaults.get('dataset_id')}"
+            ),
+            plan=plan,
+        )
+
+    payload = {
+        "method_name": str(method_name),
+        "metric_name": str(metric_name or "exact_match"),
+        "model_id": str(defaults["model_id"]),
+        "dataset_id": str(defaults["dataset_id"] or "openai/gsm8k"),
+        "dataset_config": str(defaults.get("dataset_config") or "main"),
+        "dataset_split": str(defaults.get("dataset_split") or "test"),
+        "max_examples": int(defaults.get("max_examples") or 32),
+        "seeds": max(1, int(defaults.get("seeds") or 1)),
+        "procedure": _non_empty_text(plan.get("procedure"))[:1200],
+    }
+    encoded = json.dumps(payload, ensure_ascii=False).replace("'''", "\\u0027\\u0027\\u0027")
+    return textwrap.dedent(f"""\
+    import json
+    import os
+    import random
+    import re
+    import time
+    from pathlib import Path
+
+    import torch
+    from datasets import load_dataset
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
+
+    DEFAULTS = json.loads(r'''{encoded}''')
+    BASELINE_METHOD = "direct_answer_baseline"
+    CANDIDATE_METHOD = "process_guided_candidate"
+
+
+    def normalize_answer(value):
+        text = str(value or "").strip().replace(",", "")
+        if "####" in text:
+            text = text.rsplit("####", 1)[-1].strip()
+        matches = re.findall(r"-?\\d+(?:\\.\\d+)?", text)
+        if not matches:
+            return text.lower()
+        number = matches[-1]
+        try:
+            parsed = float(number)
+            return str(int(parsed)) if parsed.is_integer() else str(parsed)
+        except ValueError:
+            return number
+
+
+    def render_prompt(tokenizer, question, method):
+        if method == BASELINE_METHOD:
+            instruction = "Solve the problem and give only the final numeric answer."
+        else:
+            procedure = DEFAULTS.get("procedure") or DEFAULTS["method_name"]
+            instruction = (
+                "Solve independently with an explicit step-by-step reasoning process, "
+                "check each intermediate step, then end with '#### <numeric answer>'. "
+                "The pre-registered process policy is: " + procedure
+            )
+        messages = [
+            {{"role": "system", "content": instruction}},
+            {{"role": "user", "content": str(question)}},
+        ]
+        if hasattr(tokenizer, "apply_chat_template") and tokenizer.chat_template:
+            return tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        return instruction + "\\n\\nProblem: " + str(question) + "\\nAnswer:"
+
+
+    def main():
+        if not torch.cuda.is_available():
+            raise RuntimeError("CUDA is required for the executable benchmark probe")
+        started = time.time()
+        model_id = os.getenv("DEEPGRAPH_BENCHMARK_MODEL", DEFAULTS["model_id"])
+        dataset_id = os.getenv("DEEPGRAPH_BENCHMARK_DATASET", DEFAULTS["dataset_id"])
+        dataset_config = os.getenv("DEEPGRAPH_BENCHMARK_DATASET_CONFIG", DEFAULTS["dataset_config"])
+        requested = int(os.getenv("DEEPGRAPH_BENCHMARK_MAX_EXAMPLES", str(DEFAULTS["max_examples"])))
+        cap = int(os.getenv("DEEPGRAPH_BENCHMARK_MAX_EXAMPLES_CAP", "64"))
+        max_examples = min(requested if requested > 0 else DEFAULTS["max_examples"], cap)
+        max_examples = max(1, max_examples)
+        requested_seeds = int(os.getenv("DEEPGRAPH_BENCHMARK_SEEDS", str(DEFAULTS["seeds"])))
+        seed_cap = int(os.getenv("DEEPGRAPH_BENCHMARK_SEEDS_CAP", "3"))
+        seeds = list(range(max(1, min(requested_seeds, seed_cap))))
+
+        dataset = load_dataset(dataset_id, dataset_config or None, split=DEFAULTS["dataset_split"])
+        examples = list(dataset.select(range(min(max_examples, len(dataset)))))
+        if not examples:
+            raise RuntimeError("real benchmark dataset resolved to zero examples")
+
+        tokenizer = AutoTokenizer.from_pretrained(model_id, trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(
+            model_id,
+            torch_dtype=torch.bfloat16,
+            device_map="auto",
+            trust_remote_code=True,
+        )
+        model.eval()
+        torch.cuda.reset_peak_memory_stats()
+
+        methods = [BASELINE_METHOD, CANDIDATE_METHOD]
+        correct = {{name: 0 for name in methods}}
+        totals = {{name: 0 for name in methods}}
+        token_totals = {{name: 0 for name in methods}}
+        seed_results = []
+        predictions = []
+        for seed in seeds:
+            random.seed(seed)
+            torch.manual_seed(seed)
+            seed_methods = {{}}
+            for method in methods:
+                seed_correct = 0
+                seed_tokens = 0
+                for index, row in enumerate(examples):
+                    question = row["question"]
+                    target = normalize_answer(row["answer"])
+                    prompt = render_prompt(tokenizer, question, method)
+                    inputs = tokenizer(prompt, return_tensors="pt")
+                    input_ids = inputs["input_ids"].to(model.device)
+                    attention_mask = inputs.get("attention_mask")
+                    if attention_mask is not None:
+                        attention_mask = attention_mask.to(model.device)
+                    with torch.inference_mode():
+                        generated = model.generate(
+                            input_ids=input_ids,
+                            attention_mask=attention_mask,
+                            max_new_tokens=160 if method == CANDIDATE_METHOD else 48,
+                            do_sample=False,
+                            pad_token_id=tokenizer.eos_token_id,
+                        )
+                    new_tokens = generated[0, input_ids.shape[1]:]
+                    prediction_text = tokenizer.decode(new_tokens, skip_special_tokens=True)
+                    prediction = normalize_answer(prediction_text)
+                    is_correct = prediction == target
+                    seed_correct += int(is_correct)
+                    seed_tokens += int(new_tokens.numel())
+                    predictions.append({{
+                        "seed": seed,
+                        "index": index,
+                        "method": method,
+                        "prediction": prediction,
+                        "target": target,
+                        "correct": is_correct,
+                    }})
+                score = seed_correct / len(examples)
+                correct[method] += seed_correct
+                totals[method] += len(examples)
+                token_totals[method] += seed_tokens
+                seed_methods[method] = {{"metric_value": score, "exact_match": score}}
+            seed_results.append({{"seed": seed, "methods": seed_methods}})
+
+        per_method = {{}}
+        for method in methods:
+            score = correct[method] / totals[method]
+            per_method[method] = {{
+                "metric_value": score,
+                "exact_match": score,
+                "num_correct": correct[method],
+                "num_examples": totals[method],
+                "avg_new_tokens": token_totals[method] / totals[method],
+            }}
+        peak_vram_mb = torch.cuda.max_memory_allocated() / (1024 ** 2)
+        summary = {{
+            "primary_metric": "exact_match",
+            "metric_name": "exact_match",
+            "candidate_method": CANDIDATE_METHOD,
+            "best_method": max(per_method, key=lambda name: per_method[name]["exact_match"]),
+            "per_method": per_method,
+            "seed_results": seed_results,
+            "num_seeds": len(seeds),
+            "dataset": {{"name": "GSM8K", "id": dataset_id, "split": DEFAULTS["dataset_split"], "num_examples": len(examples)}},
+            "datasets": [{{"name": "GSM8K", "id": dataset_id, "split": DEFAULTS["dataset_split"], "num_examples": len(examples)}}],
+            "model": {{"id": model_id, "backend": "transformers", "cuda": True}},
+            "models": [{{"id": model_id, "backend": "transformers", "cuda": True}}],
+            "peak_vram_mb": peak_vram_mb,
+            "duration_seconds": time.time() - started,
+            "load_failures": [],
+            "probe_completed": True,
+            "probe_only": True,
+            "blocks_manuscript": True,
+            "full_benchmark_completed": False,
+            "label_fallback_used": False,
+        }}
+        results_dir = Path(__file__).resolve().parents[1] / "results"
+        results_dir.mkdir(parents=True, exist_ok=True)
+        (results_dir / "benchmark_summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+        with (results_dir / "raw_predictions.jsonl").open("w", encoding="utf-8") as handle:
+            for row in predictions:
+                handle.write(json.dumps(row, ensure_ascii=False) + "\\n")
+        print(f"peak_vram_mb: {{peak_vram_mb:.1f}}")
+        print("FINAL_RESULTS: " + json.dumps(summary, ensure_ascii=False))
+
+
+    if __name__ == "__main__":
+        main()
+    """)
+
+
 def _real_llm_benchmark_train_py(*, method_name: str, metric_name: str, plan: dict) -> str:
     """Render a benchmark runner only through an explicit implementation plugin.
 
@@ -2775,6 +3023,13 @@ def _real_llm_benchmark_train_py(*, method_name: str, metric_name: str, plan: di
     silently mapping an unknown method to a topic runner would invalidate the
     benchmark contract.
     """
+    if _plan_uses_executable_probe(plan or {}):
+        return _executable_probe_train_py(
+            method_name=method_name,
+            metric_name=metric_name,
+            plan=plan,
+        )
+
     runner_plugin = str((plan or {}).get("runner_plugin") or "").strip()
     if runner_plugin != "example.cggr":
         return _benchmark_recipe_blocker_train_py(

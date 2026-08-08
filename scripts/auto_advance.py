@@ -118,7 +118,10 @@ def _spent_delta(state: dict, agenda_ids: list[int]) -> int:
             "  FROM resource_grant_usage_reservations u"
             "  JOIN resource_grants g ON g.id = u.resource_grant_id"
             " WHERE u.agenda_id=? AND u.status='settled'"
-            "   AND g.status <> 'consumed'",
+            "   AND g.status <> 'consumed'"
+            # A live grant's full cap is counted below. Its settled calls are
+            # already inside that cap and must not be added a second time.
+            "   AND NOT (g.status='active' AND g.expires_at > CURRENT_TIMESTAMP)",
             (aid,),
         )
         spent += int(dict(metered or {}).get("s") or 0)
@@ -344,6 +347,7 @@ _STARVED = "provider_usage_exceeded_reserved_cap"
 # allowlist of stages, so anything else is a terminal parking spot in practice.
 DEAD_END = {
     ("failed", "forge_failed"),
+    ("failed", "gpu_failed"),
     ("failed", "experiment_failed_repair_failed"),
     ("failed", "exception"),
     ("review_pending", "benchmark_harness_design_repair"),
@@ -384,7 +388,15 @@ def recycle_stranded(agenda_id: int, state: dict, journal: Journal, args) -> Non
             journal.log("recycle_exhausted", agenda_id=agenda_id, idea_id=idea_id,
                         status=job["status"], stage=job["stage"], recycles=used)
             continue
-        if _spent_delta(state, args.agenda) + int(args.grant_token_cap) > args.spend_limit:
+        grant_ok = (
+            str(job["grant_status"] or "") == "active"
+            and bool(job["grant_live"])
+            and int(job["token_cap"] or 0) >= args.grant_token_cap
+        )
+        if (
+            not grant_ok
+            and _spent_delta(state, args.agenda) + int(args.grant_token_cap) > args.spend_limit
+        ):
             journal.log(
                 "spend_limit_reached",
                 agenda_id=agenda_id,
@@ -394,11 +406,6 @@ def recycle_stranded(agenda_id: int, state: dict, journal: Journal, args) -> Non
             )
             continue
         counts[str(idea_id)] = used + 1
-        grant_ok = (
-            str(job["grant_status"] or "") == "active"
-            and bool(job["grant_live"])
-            and int(job["token_cap"] or 0) >= args.grant_token_cap
-        )
         if grant_ok:
             grant_id = int(job["resource_grant_id"])
             journal.log("recycle_keeps_grant", agenda_id=agenda_id, idea_id=idea_id,
