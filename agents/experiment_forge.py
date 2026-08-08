@@ -2859,6 +2859,13 @@ def _executable_probe_train_py(*, method_name: str, metric_name: str, plan: dict
 
     import torch
     from datasets import load_dataset
+    import transformers
+
+    # Text-only runners must not import the optional vision stack. Some GPU
+    # images carry a torchvision build whose custom ops do not match torch;
+    # Transformers otherwise imports it while resolving a causal LM class.
+    transformers.utils.is_torchvision_available = lambda: False
+    transformers.utils.import_utils.is_torchvision_available = lambda: False
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
 
