@@ -1,0 +1,43 @@
+{
+  "manifest_key": "autonomy-probe-recovery-2026-08-08",
+  "description": "Recover agenda-scoped autonomous execution through an honest executable benchmark probe while preserving formal benchmark and manuscript gates.",
+  "runtime_root": "/home/billion-token/Deepgraph",
+  "backup_root": "/home/ec2-user/deepgraph-rollback",
+  "batches": [
+    {
+      "batch": "application-autonomy",
+      "authorization": "required-before-deploy",
+      "purpose": "Agenda scope, benchmark runner capability, harness-recovery probe routing, and spend/retry guard fixes.",
+      "restart_required": ["deepgraph-auto-execute.service"],
+      "systemd_reload_required": false,
+      "health_check": "Run the existing auto-advance/auto-execute observation and verify a real metric-bearing outcome; no manual chain step.",
+      "acceptance": "At least one agenda autonomously reaches grant, experiment_run, non-empty real metric_value, and outcome_record.",
+      "files": [
+        {
+          "source": "agents/agenda_relevance.py",
+          "target": "{runtime_root}/agents/agenda_relevance.py",
+          "owner": "billion-token:billion-token",
+          "mode": "0644"
+        },
+        {
+          "source": "agents/experiment_forge.py",
+          "target": "{runtime_root}/agents/experiment_forge.py",
+          "owner": "billion-token:billion-token",
+          "mode": "0644"
+        },
+        {
+          "source": "agents/experiment_review.py",
+          "target": "{runtime_root}/agents/experiment_review.py",
+          "owner": "billion-token:billion-token",
+          "mode": "0644"
+        },
+        {
+          "source": "scripts/auto_advance.py",
+          "target": "{runtime_root}/scripts/auto_advance.py",
+          "owner": "billion-token:billion-token",
+          "mode": "0644"
+        }
+      ]
+    }
+  ]
+}
