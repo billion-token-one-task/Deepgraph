@@ -1,0 +1,58 @@
+{
+  "backup_root": "/home/ec2-user/deepgraph-rollback",
+  "batches": [
+    {
+      "acceptance": "The autonomous retry reaches a real non-empty GSM8K baseline/candidate metric and a trusted outcome_record without operator business-table writes.",
+      "authorization": "user-requested-deploy-and-restart",
+      "batch": "probe-runner-repair",
+      "files": [
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/autonomy-probe-runner-repair-2026-08-08/experiment_forge.py.bak",
+          "kind": "file",
+          "mode": "0644",
+          "owner": "billion-token:billion-token",
+          "source": "agents/experiment_forge.py",
+          "source_bytes": 158688,
+          "source_sha256": "0bf24b721a5c01b7c5b75be48c693a2c8292d9c7aebb25f0a184514590f22c09",
+          "target": "/home/billion-token/Deepgraph/agents/experiment_forge.py",
+          "target_predeploy_sha256": "ee1622be84fdeafb647aa64ffc3ebf5e1ad088f96b89761e56d577cfd17d3286"
+        },
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/autonomy-probe-runner-repair-2026-08-08/auto_advance.py.bak",
+          "kind": "file",
+          "mode": "0644",
+          "owner": "billion-token:billion-token",
+          "source": "scripts/auto_advance.py",
+          "source_bytes": 30719,
+          "source_sha256": "fbdb166a2cd4f2a5c11bd9bf5cb14b537bab0d23cecfd6116d8ba78a7a80c0f7",
+          "target": "/home/billion-token/Deepgraph/scripts/auto_advance.py",
+          "target_predeploy_sha256": "6858033618f0b11d213a0001bd98e48a15c3c5d8707e4b5f910b61ee8fe88f09"
+        }
+      ],
+      "health_check": "Observe timer-driven recycle, executor-owned GPU scheduling, real persisted metric values, grant settlement, and outcome recording.",
+      "purpose": "Add an audited, label-leak-free GSM8K executable probe; reuse locked benchmark design and active grant; remove live-grant spend double counting; recycle gpu_failed jobs.",
+      "restart_required": [
+        "deepgraph-auto-execute.service"
+      ],
+      "systemd_reload_required": false
+    }
+  ],
+  "description": "Repair the post-forge executable-probe failure found by autonomous run 123 without changing credentials, environment, schema, or budget limits.",
+  "environment_keys": [],
+  "manifest_key": "autonomy-probe-runner-repair-2026-08-08",
+  "operator_diff_required": [
+    "agents/experiment_forge.py",
+    "scripts/auto_advance.py"
+  ],
+  "production_tree_modified_by_this_command": false,
+  "rollback": {
+    "order": "reverse file order",
+    "steps": [
+      "restore each backup_artifact over its target and verify SHA256",
+      "restart deepgraph-auto-execute.service"
+    ]
+  },
+  "runtime_root": "/home/billion-token/Deepgraph",
+  "source_commit": "b51835c5144977763b199871560b3d4c6228faba",
+  "source_worktree_clean_except_preserved_untracked_docs_tasks": true
+}
