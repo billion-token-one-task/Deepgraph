@@ -617,7 +617,9 @@ class GenerateScaffoldTests(unittest.TestCase):
         }
         parsed = {
             "title": "Math reasoning",
-            "resource_class": "gpu_large",
+            # The historical row says CPU, but executable probes are scheduled
+            # on GPU and therefore must not inherit CPU bootstrap models.
+            "resource_class": "cpu",
             "proposed_method": {"name": "Candidate", "type": "reasoning"},
         }
 
@@ -630,7 +632,7 @@ class GenerateScaffoldTests(unittest.TestCase):
                 parsed,
                 parsed["proposed_method"],
                 plan,
-                "gpu_large",
+                "cpu",
             )
 
         models = [row["hf_model"] for row in normalized["model_targets"]]

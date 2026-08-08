@@ -1276,8 +1276,19 @@ def _ensure_real_benchmark_plan(
             name = _non_empty_text(row.get("hf_model") or row.get("model") or row.get("name"))
             if name and name.lower() not in {"toy", "dummy", "mock", "synthetic"}:
                 normalized_models.append(dict(row))
-    default_models = _default_real_model_targets(parsed, resource_class)
-    if str(resource_class or "").strip().lower() != "cpu":
+    # Executable probes are routed to a GPU worker even when an old insight row
+    # still says resource_class=cpu. Model policy must follow the actual
+    # evidence route, otherwise the stale CPU bootstrap list leaks back into
+    # the benchmark manifest and overrides the runner's current model default.
+    gpu_evidence = (
+        str(resource_class or "").strip().lower() != "cpu"
+        or _plan_uses_executable_probe(plan)
+    )
+    default_models = _default_real_model_targets(
+        parsed,
+        "gpu_large" if gpu_evidence else resource_class,
+    )
+    if gpu_evidence:
         # Old plans can retain the Qwen2.5/TinyLlama bootstrap list forever.
         # GPU evidence must prefer the configured current-generation model.
         legacy_markers = ("qwen2.5", "tinyllama")
