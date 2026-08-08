@@ -1,0 +1,90 @@
+{
+  "backup_root": "/home/ec2-user/deepgraph-rollback",
+  "batches": [
+    {
+      "acceptance": "At least one agenda autonomously reaches grant, experiment_run, non-empty real metric_value, and outcome_record.",
+      "authorization": "required-before-deploy",
+      "batch": "application-autonomy",
+      "files": [
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/autonomy-probe-recovery-2026-08-08/agenda_relevance.py.bak",
+          "kind": "file",
+          "mode": "0644",
+          "owner": "billion-token:billion-token",
+          "replaces": null,
+          "runtime_locally_modified": true,
+          "source": "agents/agenda_relevance.py",
+          "source_bytes": 2157,
+          "source_sha256": "120bffc8b89c571df3ffa4dd37e8eac5aa800f7a43c37d12a430c56cf5a9ef86",
+          "target": "/home/billion-token/Deepgraph/agents/agenda_relevance.py"
+        },
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/autonomy-probe-recovery-2026-08-08/experiment_forge.py.bak",
+          "kind": "file",
+          "mode": "0644",
+          "owner": "billion-token:billion-token",
+          "replaces": null,
+          "runtime_locally_modified": true,
+          "source": "agents/experiment_forge.py",
+          "source_bytes": 147201,
+          "source_sha256": "ee1622be84fdeafb647aa64ffc3ebf5e1ad088f96b89761e56d577cfd17d3286",
+          "target": "/home/billion-token/Deepgraph/agents/experiment_forge.py"
+        },
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/autonomy-probe-recovery-2026-08-08/experiment_review.py.bak",
+          "kind": "file",
+          "mode": "0644",
+          "owner": "billion-token:billion-token",
+          "replaces": null,
+          "runtime_locally_modified": true,
+          "source": "agents/experiment_review.py",
+          "source_bytes": 18896,
+          "source_sha256": "91ce8e80c21b1f64b45409e82e73f54a50c928593a6ce591b141e3114af20aea",
+          "target": "/home/billion-token/Deepgraph/agents/experiment_review.py"
+        },
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/autonomy-probe-recovery-2026-08-08/auto_advance.py.bak",
+          "kind": "file",
+          "mode": "0644",
+          "owner": "billion-token:billion-token",
+          "replaces": null,
+          "runtime_locally_modified": true,
+          "source": "scripts/auto_advance.py",
+          "source_bytes": 30401,
+          "source_sha256": "6858033618f0b11d213a0001bd98e48a15c3c5d8707e4b5f910b61ee8fe88f09",
+          "target": "/home/billion-token/Deepgraph/scripts/auto_advance.py"
+        }
+      ],
+      "health_check": "Run the existing auto-advance/auto-execute observation and verify a real metric-bearing outcome; no manual chain step.",
+      "purpose": "Agenda scope, benchmark runner capability, harness-recovery probe routing, and spend/retry guard fixes.",
+      "restart_required": [
+        "deepgraph-auto-execute.service"
+      ],
+      "systemd_reload_required": false
+    }
+  ],
+  "description": "Recover agenda-scoped autonomous execution through an honest executable benchmark probe while preserving formal benchmark and manuscript gates.",
+  "environment_keys": [],
+  "file_contents_read_from_production": false,
+  "manifest_key": "autonomy-probe-recovery-2026-08-08",
+  "operator_diff_required": [
+    "agents/agenda_relevance.py",
+    "agents/experiment_forge.py",
+    "agents/experiment_review.py",
+    "scripts/auto_advance.py"
+  ],
+  "production_tree_modified_by_this_command": false,
+  "rollback": {
+    "order": "reverse batch order",
+    "steps": [
+      "systemctl stop deepgraph-selfheal.timer",
+      "restore each backup_artifact over its target and verify SHA256",
+      "systemctl daemon-reload",
+      "systemctl restart deepgraph-web.service if batch 3 was applied",
+      "schema batch 2 is additive: leave the tables in place, they are unused by the previous code"
+    ]
+  },
+  "runtime_root": "/home/billion-token/Deepgraph",
+  "source_commit": "1e5a3564ca4f17494bc2f4177492e2bb746d4aac",
+  "source_worktree_clean": true
+}
