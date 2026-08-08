@@ -2842,7 +2842,10 @@ def _executable_probe_train_py(*, method_name: str, metric_name: str, plan: dict
         "dataset_config": str(defaults.get("dataset_config") or "main"),
         "dataset_split": str(defaults.get("dataset_split") or "test"),
         "max_examples": int(defaults.get("max_examples") or 32),
-        "seeds": max(1, int(defaults.get("seeds") or 1)),
+        # This route is explicitly a manuscript-blocked execution probe. One
+        # deterministic seed is enough to produce an honest pilot metric; the
+        # deferred formal benchmark retains its multi-seed requirement.
+        "seeds": 1,
         "procedure": _non_empty_text(plan.get("procedure"))[:1200],
     }
     encoded = json.dumps(payload, ensure_ascii=False).replace("'''", "\\u0027\\u0027\\u0027")
@@ -3349,6 +3352,7 @@ def build_proxy_config(plan: dict, codebase: dict | None = None, *, judgement=No
     compute = plan.get("compute_budget", {}) if isinstance(plan, dict) else {}
     codebase = codebase or {}
     real_benchmark = bool(plan.get("real_benchmark_required") or plan.get("benchmark_targets"))
+    executable_probe = _plan_uses_executable_probe(plan)
     time_budget_seconds = (
         max(EXPERIMENT_TIME_BUDGET, EXPERIMENT_REAL_BENCHMARK_TIME_BUDGET)
         if real_benchmark and EXPERIMENT_REQUIRE_REAL_BENCHMARK
@@ -3360,9 +3364,12 @@ def build_proxy_config(plan: dict, codebase: dict | None = None, *, judgement=No
         "max_epochs": EXPERIMENT_PROXY_MAX_EPOCHS,
         "time_budget_seconds": time_budget_seconds,
         "early_stop_threshold": EXPERIMENT_EARLY_STOP_THRESHOLD,
-        "max_iterations": EXPERIMENT_MAX_ITERATIONS,
-        "reproduction_iterations": EXPERIMENT_REPRODUCTION_ITERS,
-        "refute_min_iterations": EXPERIMENT_REFUTE_MIN_ITERS,
+        # The probe runner already executes the frozen baseline/candidate
+        # comparison. Running a code-modification loop afterwards would spend
+        # LLM budget on a different experiment and can corrupt that contract.
+        "max_iterations": 0 if executable_probe else EXPERIMENT_MAX_ITERATIONS,
+        "reproduction_iterations": 1 if executable_probe else EXPERIMENT_REPRODUCTION_ITERS,
+        "refute_min_iterations": 0 if executable_probe else EXPERIMENT_REFUTE_MIN_ITERS,
         "estimated_gpu_hours": compute.get("total_gpu_hours", "unknown"),
         "main_train_file": codebase.get("main_train_file"),
         "baseline_command": codebase.get("main_eval_command"),
@@ -3370,9 +3377,9 @@ def build_proxy_config(plan: dict, codebase: dict | None = None, *, judgement=No
         "synthetic_fallback_allowed": bool(EXPERIMENT_ALLOW_SYNTHETIC_FALLBACK),
         "budget_policy": {
             "per_iteration_time_budget_seconds": time_budget_seconds,
-            "max_hypothesis_iterations": EXPERIMENT_MAX_ITERATIONS,
-            "reproduction_iterations": EXPERIMENT_REPRODUCTION_ITERS,
-            "refute_min_iterations": EXPERIMENT_REFUTE_MIN_ITERS,
+            "max_hypothesis_iterations": 0 if executable_probe else EXPERIMENT_MAX_ITERATIONS,
+            "reproduction_iterations": 1 if executable_probe else EXPERIMENT_REPRODUCTION_ITERS,
+            "refute_min_iterations": 0 if executable_probe else EXPERIMENT_REFUTE_MIN_ITERS,
             "estimated_gpu_hours": compute.get("total_gpu_hours", "unknown"),
             "gpu_devices": list(GPU_VISIBLE_DEVICES),
             "gpu_model": GPU_DEFAULT_MODEL,
