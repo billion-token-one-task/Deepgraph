@@ -187,6 +187,18 @@ class GenerateScaffoldTests(unittest.TestCase):
         self.assertFalse(target["generated_runner_supported"])
         self.assertIn("no concrete Hugging Face dataset id", target["generated_runner_blocker"])
 
+    def test_known_harness_benchmark_is_not_promoted_by_an_hf_id(self):
+        target = experiment_forge._normalize_benchmark_target(
+            {
+                "name": "MATH-500",
+                "hf_dataset": "HuggingFaceH4/MATH-500",
+                "task_type": "math_qa",
+            }
+        )
+
+        self.assertFalse(target["generated_runner_supported"])
+        self.assertIn("dedicated domain benchmark harness", target["generated_runner_blocker"])
+
     def test_real_benchmark_defaults_require_explicit_targets_or_real_datasets(self):
         with self.assertRaisesRegex(ValueError, "explicit benchmark_targets or real datasets"):
             experiment_forge._real_benchmark_defaults({"datasets": [], "benchmark_targets": []})
@@ -304,6 +316,7 @@ class GenerateScaffoldTests(unittest.TestCase):
 
         self.assertTrue(plan["generated_runner_supported"])
         self.assertEqual([row["name"] for row in plan["benchmark_targets"]], ["MBPP"])
+        self.assertEqual(plan["benchmark_targets"][0]["benchmark_role"], "executable_probe")
         self.assertEqual(plan["deferred_benchmark_targets"], ["HumanEval"])
         self.assertTrue(plan["benchmark_harness_deferred"])
         self.assertEqual(plan["benchmark_execution"]["deferred_target_count"], 1)

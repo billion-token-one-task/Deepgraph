@@ -53,6 +53,7 @@ from meta_harness.topic_gate_record import record_prediction  # noqa: E402
 
 ACTOR = "ops:auto-advance-v1"
 ARTIFACT_REQUIREMENTS = ["raw_metrics", "run_manifest", "environment_manifest", "claim_ledger"]
+RECYCLE_EPOCH = "executable-probe-recovery-v2"
 
 
 def _now() -> datetime:
@@ -77,8 +78,16 @@ def _rows(sql: str, params: tuple = ()) -> list[dict]:
 
 def _load_state(path: Path) -> dict:
     if path.exists():
-        return json.loads(path.read_text(encoding="utf-8"))
-    return {"spend_baseline": {}, "frontier_packets": {}}
+        state = json.loads(path.read_text(encoding="utf-8"))
+    else:
+        state = {"spend_baseline": {}, "frontier_packets": {}}
+    # Retry counts are operational state, not business history.  A deployed
+    # repair must get one fresh autonomous attempt without an operator editing
+    # the state file or any business table.
+    if state.get("recycle_epoch") != RECYCLE_EPOCH:
+        state["recycles"] = {}
+        state["recycle_epoch"] = RECYCLE_EPOCH
+    return state
 
 
 def _save_state(path: Path, state: dict) -> None:
@@ -86,13 +95,15 @@ def _save_state(path: Path, state: dict) -> None:
 
 
 def _spent_delta(state: dict, agenda_ids: list[int]) -> int:
-    """Tokens actually burned since this driver started.
+    """Tokens consumed or irrevocably reserved since this driver started.
 
     research_agendas.token_spent alone undercounts badly: it only moves when a
     whole grant settles, so every call made inside a still-active grant is
-    invisible. Measured 2026-08-07: the ledger read 31817 while 34062 more had
-    already been metered inside live grants, and the guard let spending run
-    past its limit. Count the per-call reservations too.
+    invisible. Expired grants also retain settled sub-reservations even though
+    their agenda reservation is released and no OutcomeRecord is created.
+    Count those metered calls and the full cap of live grants so the outer
+    pilot guard cannot issue a second grant after reserving the remaining
+    budget.
     """
     total = 0
     for aid in agenda_ids:
@@ -102,14 +113,23 @@ def _spent_delta(state: dict, agenda_ids: list[int]) -> int:
         if not row:
             continue
         spent = int(dict(row)["s"])
-        in_flight = db.fetchone(
+        metered = db.fetchone(
             "SELECT COALESCE(SUM(u.tokens_used),0) AS s"
             "  FROM resource_grant_usage_reservations u"
             "  JOIN resource_grants g ON g.id = u.resource_grant_id"
-            " WHERE u.agenda_id=? AND u.status='settled' AND g.status='active'",
+            " WHERE u.agenda_id=? AND u.status='settled'"
+            "   AND g.status <> 'consumed'",
             (aid,),
         )
-        spent += int(dict(in_flight or {}).get("s") or 0)
+        spent += int(dict(metered or {}).get("s") or 0)
+        live_reservations = db.fetchone(
+            "SELECT COALESCE(SUM(token_cap),0) AS s"
+            "  FROM resource_grants"
+            " WHERE agenda_id=? AND status='active'"
+            "   AND expires_at > CURRENT_TIMESTAMP",
+            (aid,),
+        )
+        spent += int(dict(live_reservations or {}).get("s") or 0)
         baseline = state["spend_baseline"].setdefault(str(aid), spent)
         total += max(0, spent - int(baseline))
     return total
@@ -364,6 +384,15 @@ def recycle_stranded(agenda_id: int, state: dict, journal: Journal, args) -> Non
             journal.log("recycle_exhausted", agenda_id=agenda_id, idea_id=idea_id,
                         status=job["status"], stage=job["stage"], recycles=used)
             continue
+        if _spent_delta(state, args.agenda) + int(args.grant_token_cap) > args.spend_limit:
+            journal.log(
+                "spend_limit_reached",
+                agenda_id=agenda_id,
+                idea_id=idea_id,
+                limit=args.spend_limit,
+                reason="fresh grant would exceed the cumulative pilot guard",
+            )
+            continue
         counts[str(idea_id)] = used + 1
         grant_ok = (
             str(job["grant_status"] or "") == "active"
@@ -517,7 +546,7 @@ def advance_agenda(agenda_id: int, state: dict, journal: Journal, args) -> None:
         return
     repo = MetaHarnessRepository()
     for job in waiting:
-        if _spent_delta(state, args.agenda) >= args.spend_limit:
+        if _spent_delta(state, args.agenda) + int(args.grant_token_cap) > args.spend_limit:
             journal.log("spend_limit_reached", agenda_id=agenda_id, limit=args.spend_limit)
             return
         idea_id = int(job["deep_insight_id"])

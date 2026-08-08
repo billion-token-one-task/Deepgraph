@@ -100,6 +100,37 @@ class ExperimentReviewTests(unittest.TestCase):
         self.assertEqual(judgement.environment_review["harness_queue"], "benchmark_harness_jobs")
         self.assertIn("Benchmark Harness Code Agent", judgement.environment_review["required_harness_agents"])
 
+    def test_review_allows_real_probe_after_harness_recovery(self):
+        judgement = review_experiment_candidate(
+            {
+                "id": 5,
+                "tier": 2,
+                "title": "Recovered mathematical reasoning probe",
+                "resource_class": "gpu_large",
+                "proposed_method": {"name": "Method", "definition": "route extra reasoning"},
+                "experimental_plan": {
+                    "benchmark_design_status": "literature_review_required",
+                    "benchmark_design_blockers": ["formal benchmark review remains pending"],
+                    "harness_recovery_fresh_forge": True,
+                    "generated_runner_supported": True,
+                    "benchmark_targets": [{"name": "GSM8K", "benchmark_role": "executable_probe"}],
+                    "datasets": [{"name": "GSM8K"}],
+                    "baselines": [{"name": "BaselineA"}, {"name": "BaselineB"}],
+                    "model_targets": [{"name": "Qwen/Qwen3.5-4B"}],
+                    "metrics": {"primary": "accuracy"},
+                    "compute_budget": {"total_gpu_hours": 2},
+                    "minimum_seeds": 1,
+                },
+            },
+            codebase={"url": "scratch", "name": "generated-probe"},
+            entrypoint_available=False,
+        )
+
+        self.assertEqual(judgement.recommended_route, "formal")
+        self.assertTrue(judgement.formal_experiment)
+        self.assertFalse(judgement.environment_review["benchmark_harness_required"])
+        self.assertIn("manuscript-blocked", " ".join(judgement.warnings))
+
 
 
 if __name__ == "__main__":
