@@ -9,7 +9,7 @@
         {
           "backup_artifact": "/home/ec2-user/deepgraph-rollback/autonomy-probe-runner-repair-2026-08-08/experiment_forge.py.bak",
           "kind": "file",
-          "mode": "0644",
+          "mode": "0664",
           "owner": "billion-token:billion-token",
           "source": "agents/experiment_forge.py",
           "source_bytes": 158688,
@@ -20,7 +20,7 @@
         {
           "backup_artifact": "/home/ec2-user/deepgraph-rollback/autonomy-probe-runner-repair-2026-08-08/auto_advance.py.bak",
           "kind": "file",
-          "mode": "0644",
+          "mode": "0775",
           "owner": "billion-token:billion-token",
           "source": "scripts/auto_advance.py",
           "source_bytes": 30719,
