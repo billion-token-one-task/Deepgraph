@@ -50,8 +50,14 @@ def candidate_scope_text(candidate: dict[str, Any]) -> str:
         "formal_structure",
         "transformation",
         "proposed_method",
+        # Older candidates often put agenda-specific terms in the declared
+        # experiment rather than repeating them in the method prose.
+        "experimental_plan",
+        "evidence_plan",
     )
-    return " ".join(str(candidate.get(field) or "") for field in fields).lower()
+    return " ".join(
+        str(candidate.get(field) or "") for field in fields
+    ).lower()
 
 
 def insight_in_scope(

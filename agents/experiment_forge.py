@@ -835,14 +835,51 @@ _GENERATED_RUNNER_TEXT_TASK_TYPES = {
     "derived_stress_split",
 }
 
+# Public data does not imply that the built-in runner knows the benchmark's
+# metric and annotation protocol.  These names remain on the dedicated
+# harness path even when a literature design supplies an HF dataset id.
+_DEDICATED_HARNESS_BENCHMARK_ALIASES = {
+    "math",
+    "math500",
+    "prm800k",
+    "processbench",
+    "spider",
+    "bird",
+    "harmbench",
+    "advbench",
+    "agentdojo",
+    "longmemeval",
+    "cifar10",
+    "clevrer",
+    "t2icompbench",
+}
+
 
 def _generated_runner_support_reason(target: dict) -> tuple[bool, str]:
     """Return whether the built-in runner can execute this benchmark target."""
     name = _non_empty_text(target.get("name") or target.get("hf_dataset") or "benchmark")
+    if target.get("generated_runner_supported") is False:
+        return False, f"{name} is explicitly marked as requiring a dedicated domain benchmark harness."
     if target.get("derive_from_loaded_benchmarks"):
         return True, ""
     if target.get("requires_harness"):
         return False, f"{name} requires a dedicated domain benchmark harness."
+
+    benchmark_names = [
+        target.get("name"),
+        target.get("hf_dataset"),
+        *(target.get("hf_candidates") or []),
+    ]
+    has_concrete_source = bool(
+        target.get("direct_files")
+        or _non_empty_text(target.get("hf_dataset"))
+        or any(_non_empty_text(value) for value in (target.get("hf_candidates") or []))
+    )
+    if has_concrete_source:
+        for value in benchmark_names:
+            key = _canonical_name(value)
+            if any(alias in key for alias in _DEDICATED_HARNESS_BENCHMARK_ALIASES):
+                return False, f"{name} requires a dedicated domain benchmark harness."
 
     task_type = _non_empty_text(target.get("task_type")).lower()
     if task_type == "benchmark":
@@ -1114,7 +1151,15 @@ def _ensure_real_benchmark_plan(
             llm_scope=llm_scope,
         )
         plan = apply_benchmark_design_contract(plan, benchmark_design)
-    if plan.get("benchmark_design_status") and plan.get("benchmark_design_status") != DESIGN_STATUS_RESOLVED:
+    # The harness consumer can recover an executable benchmark subset while
+    # the formal/domain benchmark design remains unresolved.  This is an
+    # honest bootstrap probe; manuscript evidence stays blocked.
+    harness_recovery_probe = bool(plan.get("harness_recovery_fresh_forge"))
+    if (
+        plan.get("benchmark_design_status")
+        and plan.get("benchmark_design_status") != DESIGN_STATUS_RESOLVED
+        and not harness_recovery_probe
+    ):
         blockers = plan.get("benchmark_design_blockers") if isinstance(plan.get("benchmark_design_blockers"), list) else []
         plan["real_benchmark_required"] = True
         plan["requires_real_model"] = True
@@ -1208,6 +1253,15 @@ def _ensure_real_benchmark_plan(
                 ],
             }
     active_targets = runnable_targets or real_targets
+    if runnable_targets and (recipe_blockers or harness_recovery_probe):
+        for target in runnable_targets:
+            target.setdefault("benchmark_role", "executable_probe")
+            target.setdefault("formal_target_deferred", bool(recipe_blockers))
+            if recipe_blockers:
+                target.setdefault(
+                    "probe_for_deferred_benchmark_targets",
+                    [item.get("name") for item in recipe_blockers if item.get("name")],
+                )
     plan["benchmark_targets"] = active_targets
     plan["datasets"] = [
         {"name": row.get("name") or row.get("hf_dataset") or row.get("dataset")}

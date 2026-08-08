@@ -126,7 +126,14 @@ def review_experiment_candidate(
         and plan.get("benchmark_harness_deferred")
         and deferred_benchmark_targets
     )
-    if deferred_harness_required:
+    # A harness consumer may produce a real executable probe while the formal
+    # domain benchmark remains deferred.  Let the probe run for falsification,
+    # but keep the result manuscript-blocked and evidence-bounded.
+    harness_recovery_probe = bool(
+        plan.get("harness_recovery_fresh_forge")
+        and plan.get("generated_runner_supported") is not False
+    )
+    if deferred_harness_required and not harness_recovery_probe:
         blockers.append(
             "Benchmark design gate: formal benchmark target(s) are deferred to harness before execution: "
             + ", ".join(deferred_benchmark_targets[:6])
@@ -135,13 +142,19 @@ def review_experiment_candidate(
         design_blockers = plan.get("benchmark_design_blockers") if isinstance(plan.get("benchmark_design_blockers"), list) else []
         if not design_blockers and isinstance(benchmark_design.get("blockers"), list):
             design_blockers = benchmark_design.get("blockers")
-        blockers.extend(
-            f"Benchmark design gate: {str(item)}"
-            for item in design_blockers
-            if str(item).strip()
-        )
-        if not design_blockers:
-            blockers.append("Benchmark design gate: domain literature review is required before formal experiment execution.")
+        if harness_recovery_probe:
+            warnings.append(
+                "Executable benchmark probe is allowed for autonomous falsification; "
+                "formal domain-benchmark evidence remains deferred and manuscript-blocked."
+            )
+        else:
+            blockers.extend(
+                f"Benchmark design gate: {str(item)}"
+                for item in design_blockers
+                if str(item).strip()
+            )
+            if not design_blockers:
+                blockers.append("Benchmark design gate: domain literature review is required before formal experiment execution.")
     elif benchmark_design_status == "resolved":
         try:
             minimum_benchmark_count = max(1, int(benchmark_design.get("minimum_benchmark_count") or 1))
@@ -260,6 +273,7 @@ def review_experiment_candidate(
     recipe_blockers = plan.get("benchmark_recipe_blockers")
     benchmark_harness_required = bool(
         EXPERIMENT_REQUIRE_REAL_BENCHMARK
+        and not harness_recovery_probe
         and (plan.get("generated_runner_supported") is False or deferred_harness_required)
     )
     unsupported_benchmark_targets: list[str] = []
@@ -321,7 +335,10 @@ def review_experiment_candidate(
         "generated_real_benchmark_runner_allowed": generated_real_runner,
         "entrypoint_available": entrypoint_available if entrypoint_available is not None else bool(main_train_file),
         "cpu_compatible": spec.resource_class in {"", "cpu"},
-        "benchmark_harness_required": benchmark_harness_required or bool(benchmark_design_status and benchmark_design_status != "resolved"),
+        "benchmark_harness_required": benchmark_harness_required or (
+            not harness_recovery_probe
+            and bool(benchmark_design_status and benchmark_design_status != "resolved")
+        ),
         "benchmark_design_status": benchmark_design_status or "missing",
         "benchmark_design_domain": benchmark_design.get("domain"),
         "benchmark_design_task_family": benchmark_design.get("task_family"),
