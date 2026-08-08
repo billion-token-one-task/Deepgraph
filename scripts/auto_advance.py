@@ -53,7 +53,7 @@ from meta_harness.topic_gate_record import record_prediction  # noqa: E402
 
 ACTOR = "ops:auto-advance-v1"
 ARTIFACT_REQUIREMENTS = ["raw_metrics", "run_manifest", "environment_manifest", "claim_ledger"]
-RECYCLE_EPOCH = "executable-probe-recovery-v2"
+RECYCLE_EPOCH = "public-hub-download-recovery-v3"
 
 
 def _now() -> datetime:

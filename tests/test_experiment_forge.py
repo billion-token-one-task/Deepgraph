@@ -546,6 +546,7 @@ class GenerateScaffoldTests(unittest.TestCase):
         self.assertIn('"label_fallback_used": False', train_py)
         self.assertIn('"full_benchmark_completed": False', train_py)
         self.assertIn("is_torchvision_available = lambda: False", train_py)
+        self.assertIn('os.environ.setdefault("HF_HUB_DISABLE_XET", "1")', train_py)
         self.assertNotIn("prediction = target", train_py)
         self.assertNotIn("extract_gsm8k_answer(row[\"answer\"])", train_py)
 

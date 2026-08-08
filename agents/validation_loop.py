@@ -3192,7 +3192,7 @@ def run_validation_loop(run_id: int, execution_context: dict | None = None) -> d
         if repair_round >= REPRODUCTION_REPAIR_MAX_ROUNDS:
             break
 
-        _launch_reproduction_repair(
+        repair_result = _launch_reproduction_repair(
             run_id=run_id,
             workdir=workdir,
             code_dir=code_dir,
@@ -3202,6 +3202,18 @@ def run_validation_loop(run_id: int, execution_context: dict | None = None) -> d
             last_result=last_repro_result,
             environment_report=environment_report,
         )
+        # A refused/unavailable repair did not change the code. Retrying the
+        # identical crashed command only burns GPU time and creates misleading
+        # "repair applied" iterations. Leave the run failed so the bounded
+        # outer autonomous recovery policy can act after an operator deploys a
+        # real infrastructure fix.
+        if not repair_result.get("ok"):
+            print(
+                "[LOOP] Phase 1: repair unavailable; refusing unchanged GPU retry "
+                f"(error={str(repair_result.get('error') or 'no patch')[:200]})",
+                flush=True,
+            )
+            break
         msg = f"repro auto-repair {repair_round + 1}"
         if _git_binary():
             _git_commit(code_dir, msg)
