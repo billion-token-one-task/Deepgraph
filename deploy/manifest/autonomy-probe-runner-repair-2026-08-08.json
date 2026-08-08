@@ -12,8 +12,8 @@
           "mode": "0664",
           "owner": "billion-token:billion-token",
           "source": "agents/experiment_forge.py",
-          "source_bytes": 159784,
-          "source_sha256": "f6f96c41abd3be4a3a73cc041ac240232c0c1f6e6c38db62e2ea21c49d3d5067",
+          "source_bytes": 160177,
+          "source_sha256": "873b9efcf47a145165355ff81efc2bca9a5ed09c7b99958fb9f84b171bf286e5",
           "target": "/home/billion-token/Deepgraph/agents/experiment_forge.py",
           "target_predeploy_sha256": "ee1622be84fdeafb647aa64ffc3ebf5e1ad088f96b89761e56d577cfd17d3286"
         },
@@ -53,6 +53,6 @@
     ]
   },
   "runtime_root": "/home/billion-token/Deepgraph",
-  "source_commit": "d649c2439d9d07d58816225161d2bfd6fa567a58",
+  "source_commit": "ba42472d746ab30b7ba9afbdce98808a6659923f",
   "source_worktree_clean_except_preserved_untracked_docs_tasks": true
 }
