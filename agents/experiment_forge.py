@@ -2857,6 +2857,12 @@ def _executable_probe_train_py(*, method_name: str, metric_name: str, plan: dict
     import time
     from pathlib import Path
 
+    # Public model downloads must remain usable on workers without a Hub
+    # credential.  Some huggingface_hub/hf_xet combinations incorrectly send
+    # public shards through the authenticated CAS reconstruction endpoint and
+    # receive 401.  The ordinary Hub download path is public and auditable.
+    os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+
     import torch
     from datasets import load_dataset
     import transformers
