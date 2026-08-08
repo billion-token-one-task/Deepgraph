@@ -1,0 +1,72 @@
+{
+  "backup_root": "/home/ec2-user/deepgraph-rollback/autonomy-public-hub-recovery-2026-08-08",
+  "batches": [
+    {
+      "acceptance": "A timer-owned retry reaches a real non-empty GSM8K baseline/candidate metric and a trusted outcome_record without operator business-table writes.",
+      "authorization": "user-requested-deploy-and-restart",
+      "batch": "public-hub-download-recovery",
+      "files": [
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/autonomy-public-hub-recovery-2026-08-08/experiment_forge.py.bak",
+          "kind": "file",
+          "mode": "0664",
+          "owner": "billion-token:billion-token",
+          "source": "agents/experiment_forge.py",
+          "source_bytes": 160716,
+          "source_sha256": "bec6c51a806e82746e527217a3d61d1421d4a88d1bd88673297d8065fb05fb6f",
+          "target": "/home/billion-token/Deepgraph/agents/experiment_forge.py",
+          "target_predeploy_sha256": "873b9efcf47a145165355ff81efc2bca9a5ed09c7b99958fb9f84b171bf286e5"
+        },
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/autonomy-public-hub-recovery-2026-08-08/validation_loop.py.bak",
+          "kind": "file",
+          "mode": "0664",
+          "owner": "billion-token:billion-token",
+          "source": "agents/validation_loop.py",
+          "source_bytes": 154247,
+          "source_sha256": "f72dfe4370f95e6721597a237c237640fe34f71decbbdf051b8c02f72ce98c5e",
+          "target": "/home/billion-token/Deepgraph/agents/validation_loop.py",
+          "target_predeploy_sha256": "c74417788ea48de4d4e84bd890f6d05a82a7b02653ac58b812e45522dced3a71"
+        },
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/autonomy-public-hub-recovery-2026-08-08/auto_advance.py.bak",
+          "kind": "file",
+          "mode": "0775",
+          "owner": "billion-token:billion-token",
+          "source": "scripts/auto_advance.py",
+          "source_bytes": 30722,
+          "source_sha256": "b9d8fa75fa1488a502823a4e0c43493791f7ffa9d8f15ce9559fc65cd2eec925",
+          "target": "/home/billion-token/Deepgraph/scripts/auto_advance.py",
+          "target_predeploy_sha256": "fbdb166a2cd4f2a5c11bd9bf5cb14b537bab0d23cecfd6116d8ba78a7a80c0f7"
+        }
+      ],
+      "health_check": "Observe timer-owned infrastructure retry, executor-owned GPU scheduling, real persisted metric values, grant settlement, and outcome recording.",
+      "purpose": "Disable unauthenticated Xet/CAS reconstruction for public model shards, stop unchanged GPU retries after an unavailable LLM repair, and grant one fresh bounded recovery epoch.",
+      "restart_required": [
+        "deepgraph-auto-execute.service",
+        "deepgraph-auto-advance.timer"
+      ],
+      "systemd_reload_required": false
+    }
+  ],
+  "description": "Repair the public Qwen3.5 shard download failure exposed by autonomous run 125 without changing credentials, environment, schema, or budget limits.",
+  "environment_keys": [],
+  "manifest_key": "autonomy-public-hub-recovery-2026-08-08",
+  "operator_diff_required": [
+    "agents/experiment_forge.py",
+    "agents/validation_loop.py",
+    "scripts/auto_advance.py"
+  ],
+  "production_tree_modified_by_this_command": false,
+  "rollback": {
+    "order": "reverse file order",
+    "steps": [
+      "restore each backup_artifact over its target and verify SHA256",
+      "restart deepgraph-auto-execute.service and deepgraph-auto-advance.timer"
+    ]
+  },
+  "runtime_root": "/home/billion-token/Deepgraph",
+  "source_commit": "bd440f7ba5f9617de3609083cc9969747771b64a",
+  "source_worktree_clean_except_preserved_untracked_docs_tasks": true,
+  "tests": "py_compile plus 10 focused unit tests passed"
+}
