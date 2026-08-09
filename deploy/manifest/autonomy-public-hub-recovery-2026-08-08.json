@@ -34,14 +34,14 @@
           "mode": "0775",
           "owner": "billion-token:billion-token",
           "source": "scripts/auto_advance.py",
-          "source_bytes": 30722,
-          "source_sha256": "b9d8fa75fa1488a502823a4e0c43493791f7ffa9d8f15ce9559fc65cd2eec925",
+          "source_bytes": 33111,
+          "source_sha256": "aa1f9f571f2e1df459830d764397a3a9dd1d8a1eda0ea1d4ea18131718ab2a4e",
           "target": "/home/billion-token/Deepgraph/scripts/auto_advance.py",
           "target_predeploy_sha256": "fbdb166a2cd4f2a5c11bd9bf5cb14b537bab0d23cecfd6116d8ba78a7a80c0f7"
         }
       ],
       "health_check": "Observe timer-owned infrastructure retry, executor-owned GPU scheduling, real persisted metric values, grant settlement, and outcome recording.",
-      "purpose": "Disable unauthenticated Xet/CAS reconstruction for public model shards, stop unchanged GPU retries after an unavailable LLM repair, and grant one fresh bounded recovery epoch.",
+      "purpose": "Disable unauthenticated Xet/CAS reconstruction for public model shards, stop unchanged GPU retries after an unavailable LLM repair, and issue a zero-token GPU-only recovery grant solely for a previously audited deterministic probe.",
       "restart_required": [
         "deepgraph-auto-execute.service",
         "deepgraph-auto-advance.timer"
@@ -66,7 +66,7 @@
     ]
   },
   "runtime_root": "/home/billion-token/Deepgraph",
-  "source_commit": "bd440f7ba5f9617de3609083cc9969747771b64a",
+  "source_commit": "63b40bccdde87d3dee45054c0069c02406ec1706",
   "source_worktree_clean_except_preserved_untracked_docs_tasks": true,
-  "tests": "py_compile plus 10 focused unit tests passed"
+  "tests": "py_compile plus 11 focused unit tests passed; actual run 125 artifacts satisfy the audited GPU-only recovery predicate"
 }
