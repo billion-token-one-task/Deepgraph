@@ -1,0 +1,113 @@
+{
+  "manifest_key": "autonomy-v1-generic-control-2026-08-09",
+  "description": "Deploy the canonical GPU attempt ledger, structured capability/preflight control, generic runner contract, durable failure policy, automatic outcome finalization, and direction-driven multi-candidate loop.",
+  "runtime_root": "/home/billion-token/Deepgraph",
+  "backup_root": "/home/ec2-user/deepgraph-rollback",
+  "capture_target_predeploy_sha256": true,
+  "preconditions": [
+    "Explicit grouped production-write and service-restart authorization is recorded.",
+    "R8 snapshot shows zero active Deepgraph experiment runs, attempt reservations, queued/running GPU jobs, and Colab requests.",
+    "A PostgreSQL custom-format backup and the OPERATORS.log predeployment snapshot are recorded before services stop.",
+    "Unrelated GPU workloads are not stopped or modified."
+  ],
+  "deployment_steps": [
+    "Stop deepgraph-auto-advance.timer, deepgraph-auto-execute.service, and deepgraph-web.service only after R8 is zero.",
+    "Apply batch 1 through scripts/deploy_manifest_batch.py and verify every deployed SHA256.",
+    "Run guarded live-local migrations 0003, 0004, 0005, and 0006 in order and verify deepgraph_schema_migrations checksums.",
+    "Apply batch 3, run systemctl daemon-reload, then restart web, auto-execute, and auto-advance timer.",
+    "Append every production action, backup path, checksum, migration result, restart, and health result to OPERATORS.log.",
+    "After restart, make no manual business-state calls; observe only normal services/timer."
+  ],
+  "tests": "77 focused unit/service tests, 20 migration/runner tests, and 10 isolated PostgreSQL fault/accounting tests passed; py_compile and git diff --check passed.",
+  "rollback": {
+    "order": "stop services after R8 zero, then reverse batches 3 and 1",
+    "steps": [
+      "Use deploy_manifest_batch.py --rollback for 3-auto-advance-unit and 1-application-staging; each restored file must match its recorded predeployment SHA256.",
+      "For batch-1 paths whose deployment ledger has backup=null, remove only those exact newly installed files after confirming the ledger target and source SHA256.",
+      "Leave additive migrations 0003-0006 in place; previous code does not use the new tables.",
+      "Run systemctl daemon-reload, restart deepgraph-web.service and deepgraph-auto-execute.service, then enable/start deepgraph-auto-advance.timer.",
+      "Record rollback commands, restored hashes, service states, and health results in OPERATORS.log."
+    ]
+  },
+  "batches": [
+    {
+      "batch": "1-application-staging",
+      "authorization": "required-before-deploy",
+      "purpose": "Stage the reviewed control-plane, runner, migration, and autonomous service code while all Deepgraph attempts/GPU jobs are at R8 zero.",
+      "restart_required": [
+        "deepgraph-web.service",
+        "deepgraph-auto-execute.service"
+      ],
+      "systemd_reload_required": false,
+      "health_check": "Re-hash every staged target, py_compile runtime modules, and keep services stopped until additive migrations 0003-0006 are recorded.",
+      "acceptance": "Every deployed SHA256 equals this manifest; no live attempt or GPU job crosses the staging boundary.",
+      "files": [
+        {"source":"agents/experiment_forge.py","target":"{runtime_root}/agents/experiment_forge.py","owner":"billion-token:billion-token","mode":"0644"},
+        {"source":"agents/paper_idea_agent.py","target":"{runtime_root}/agents/paper_idea_agent.py","owner":"billion-token:billion-token","mode":"0644"},
+        {"source":"agents/problem_first.py","target":"{runtime_root}/agents/problem_first.py","owner":"billion-token:billion-token","mode":"0644"},
+        {"source":"agents/tier2_review_refine.py","target":"{runtime_root}/agents/tier2_review_refine.py","owner":"billion-token:billion-token","mode":"0644"},
+        {"source":"agents/topic_gate.py","target":"{runtime_root}/agents/topic_gate.py","owner":"billion-token:billion-token","mode":"0644"},
+        {"source":"agents/validation_loop.py","target":"{runtime_root}/agents/validation_loop.py","owner":"billion-token:billion-token","mode":"0644"},
+        {"source":"config.py","target":"{runtime_root}/config.py","owner":"billion-token:billion-token","mode":"0644"},
+        {"source":"contracts/meta_harness.py","target":"{runtime_root}/contracts/meta_harness.py","owner":"billion-token:billion-token","mode":"0644"},
+        {"source":"db/insight_outcomes.py","target":"{runtime_root}/db/insight_outcomes.py","owner":"billion-token:billion-token","mode":"0644"},
+        {"source":"db/migrations/0003_attempt_gpu_usage.sql","target":"{runtime_root}/db/migrations/0003_attempt_gpu_usage.sql","owner":"billion-token:billion-token","mode":"0644"},
+        {"source":"db/migrations/0004_runner_capability_preflight.sql","target":"{runtime_root}/db/migrations/0004_runner_capability_preflight.sql","owner":"billion-token:billion-token","mode":"0644"},
+        {"source":"db/migrations/0005_failure_fingerprint_policy.sql","target":"{runtime_root}/db/migrations/0005_failure_fingerprint_policy.sql","owner":"billion-token:billion-token","mode":"0644"},
+        {"source":"db/migrations/0006_candidate_stage_gate_history.sql","target":"{runtime_root}/db/migrations/0006_candidate_stage_gate_history.sql","owner":"billion-token:billion-token","mode":"0644"},
+        {"source":"meta_harness/attempt_gpu_usage.py","target":"{runtime_root}/meta_harness/attempt_gpu_usage.py","owner":"billion-token:billion-token","mode":"0644"},
+        {"source":"meta_harness/backends/colab_durable.py","target":"{runtime_root}/meta_harness/backends/colab_durable.py","owner":"billion-token:billion-token","mode":"0644"},
+        {"source":"meta_harness/compute_repository.py","target":"{runtime_root}/meta_harness/compute_repository.py","owner":"billion-token:billion-token","mode":"0644"},
+        {"source":"meta_harness/failure_policy.py","target":"{runtime_root}/meta_harness/failure_policy.py","owner":"billion-token:billion-token","mode":"0644"},
+        {"source":"meta_harness/failure_repository.py","target":"{runtime_root}/meta_harness/failure_repository.py","owner":"billion-token:billion-token","mode":"0644"},
+        {"source":"meta_harness/outcome_finalizer.py","target":"{runtime_root}/meta_harness/outcome_finalizer.py","owner":"billion-token:billion-token","mode":"0644"},
+        {"source":"meta_harness/portfolio.py","target":"{runtime_root}/meta_harness/portfolio.py","owner":"billion-token:billion-token","mode":"0644"},
+        {"source":"meta_harness/preflight_repository.py","target":"{runtime_root}/meta_harness/preflight_repository.py","owner":"billion-token:billion-token","mode":"0644"},
+        {"source":"meta_harness/repository.py","target":"{runtime_root}/meta_harness/repository.py","owner":"billion-token:billion-token","mode":"0644"},
+        {"source":"meta_harness/runner_capability.py","target":"{runtime_root}/meta_harness/runner_capability.py","owner":"billion-token:billion-token","mode":"0644"},
+        {"source":"meta_harness/runner_contract.py","target":"{runtime_root}/meta_harness/runner_contract.py","owner":"billion-token:billion-token","mode":"0644"},
+        {"source":"meta_harness/runner_materialization.py","target":"{runtime_root}/meta_harness/runner_materialization.py","owner":"billion-token:billion-token","mode":"0644"},
+        {"source":"meta_harness/runners/__init__.py","target":"{runtime_root}/meta_harness/runners/__init__.py","owner":"billion-token:billion-token","mode":"0644"},
+        {"source":"meta_harness/runners/generic_transformers.py","target":"{runtime_root}/meta_harness/runners/generic_transformers.py","owner":"billion-token:billion-token","mode":"0644"},
+        {"source":"meta_harness/topic_gate_record.py","target":"{runtime_root}/meta_harness/topic_gate_record.py","owner":"billion-token:billion-token","mode":"0644"},
+        {"source":"orchestrator/auto_research.py","target":"{runtime_root}/orchestrator/auto_research.py","owner":"billion-token:billion-token","mode":"0644"},
+        {"source":"orchestrator/bounded_execution.py","target":"{runtime_root}/orchestrator/bounded_execution.py","owner":"billion-token:billion-token","mode":"0644"},
+        {"source":"orchestrator/colab_worker.py","target":"{runtime_root}/orchestrator/colab_worker.py","owner":"billion-token:billion-token","mode":"0644"},
+        {"source":"orchestrator/discovery_scheduler.py","target":"{runtime_root}/orchestrator/discovery_scheduler.py","owner":"billion-token:billion-token","mode":"0644"},
+        {"source":"orchestrator/gpu_scheduler.py","target":"{runtime_root}/orchestrator/gpu_scheduler.py","owner":"billion-token:billion-token","mode":"0644"},
+        {"source":"orchestrator/meta_compute_runtime.py","target":"{runtime_root}/orchestrator/meta_compute_runtime.py","owner":"billion-token:billion-token","mode":"0644"},
+        {"source":"scripts/auto_advance.py","target":"{runtime_root}/scripts/auto_advance.py","owner":"billion-token:billion-token","mode":"0755"},
+        {"source":"scripts/auto_execute.py","target":"{runtime_root}/scripts/auto_execute.py","owner":"billion-token:billion-token","mode":"0755"},
+        {"source":"scripts/meta_harness_migration.py","target":"{runtime_root}/scripts/meta_harness_migration.py","owner":"billion-token:billion-token","mode":"0755"}
+      ]
+    },
+    {
+      "batch": "2-additive-schema",
+      "authorization": "required-before-deploy",
+      "purpose": "Apply the additive canonical-attempt, capability/preflight, failure-fingerprint, and stage-gate-history schemas through the guarded migration runner.",
+      "restart_required": [],
+      "systemd_reload_required": false,
+      "health_check": "Run guarded migration plans then apply 0003, 0004, 0005, and 0006; verify destructive_tokens=[] and all four checksums in deepgraph_schema_migrations.",
+      "acceptance": "All migrations were already exercised on an isolated PostgreSQL restore; live application is additive and checksum-recorded.",
+      "files": [
+        {"source":"db/migrations/0003_attempt_gpu_usage.sql","target":"applied-via-scripts/meta_harness_migration.py","owner":"n/a","mode":"n/a","kind":"migration"},
+        {"source":"db/migrations/0004_runner_capability_preflight.sql","target":"applied-via-scripts/meta_harness_migration.py","owner":"n/a","mode":"n/a","kind":"migration"},
+        {"source":"db/migrations/0005_failure_fingerprint_policy.sql","target":"applied-via-scripts/meta_harness_migration.py","owner":"n/a","mode":"n/a","kind":"migration"},
+        {"source":"db/migrations/0006_candidate_stage_gate_history.sql","target":"applied-via-scripts/meta_harness_migration.py","owner":"n/a","mode":"n/a","kind":"migration"}
+      ]
+    },
+    {
+      "batch": "3-auto-advance-unit",
+      "authorization": "required-before-deploy",
+      "purpose": "Remove hard-coded agenda IDs so each timer pass discovers every active budgeted research direction.",
+      "restart_required": ["deepgraph-auto-advance.timer"],
+      "systemd_reload_required": true,
+      "health_check": "systemctl cat shows an ExecStart without --agenda; timer and auto-execute are active after restart.",
+      "acceptance": "The timer invokes the normal service entrypoint for all active budgeted agendas and does not manually advance business state.",
+      "files": [
+        {"source":"deploy/deepgraph-auto-advance.service","target":"/etc/systemd/system/deepgraph-auto-advance.service","owner":"root:root","mode":"0644"}
+      ]
+    }
+  ],
+  "environment_keys": []
+}
