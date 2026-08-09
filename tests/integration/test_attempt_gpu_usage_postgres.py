@@ -108,6 +108,7 @@ class IsolatedAttemptGPUUsageTests(unittest.TestCase):
                 (self.agenda_id, self.idea_id, frontier_id),
             )
             decision_id = int(cur.fetchone()["id"])
+            self.decision_id = decision_id
             cur.execute(
                 """
                 INSERT INTO agenda_resource_ledger
@@ -174,6 +175,14 @@ class IsolatedAttemptGPUUsageTests(unittest.TestCase):
                 f"DELETE FROM {table} WHERE agenda_id=?",
                 (self.agenda_id,),
             )
+        self.db.execute(
+            "DELETE FROM candidate_preflight_results_v1 WHERE agenda_id=?",
+            (self.agenda_id,),
+        )
+        self.db.execute(
+            "DELETE FROM candidate_execution_requirements_v1 WHERE agenda_id=?",
+            (self.agenda_id,),
+        )
         self.db.execute("DELETE FROM deep_insights WHERE id=?", (self.idea_id,))
         self.db.execute("DELETE FROM research_agendas WHERE id=?", (self.agenda_id,))
         self.db.commit()
@@ -551,6 +560,120 @@ class IsolatedAttemptGPUUsageTests(unittest.TestCase):
         self.assertEqual(pending, [request_id])
         self.assertEqual(usage["wall_seconds"], 7.0)
         self.assertEqual(usage["reason_code"], "attempt_failed")
+
+    def test_passed_preflight_is_required_and_bound_to_compute_grant(self):
+        from contracts.meta_harness import ResourceGrant
+        from meta_harness.preflight_repository import CandidatePreflightRepository
+        from meta_harness.repository import MetaHarnessRepository
+        from meta_harness.runner_capability import (
+            PreflightEngine,
+            PreflightEnvironment,
+            RepositoryMetadata,
+        )
+
+        class Metadata:
+            def dataset(self, repository_id, revision, config):
+                return RepositoryMetadata(
+                    True,
+                    resolved_revision="e" * 40,
+                    fields=("sentence", "class_id"),
+                )
+
+            def model(self, repository_id, revision):
+                return RepositoryMetadata(
+                    True,
+                    resolved_revision="f" * 40,
+                    task="sequence_classification",
+                    size_gb=0.25,
+                )
+
+            def dependency_available(self, name):
+                return True
+
+        plan = {
+            "execution_requirements": {
+                "schema_version": "experiment_requirements_v1",
+                "task_protocol": "sequence_classification",
+                "dataset": {
+                    "repository_id": "opaque/dataset-one",
+                    "revision": "release",
+                    "config": "default",
+                    "split": "test",
+                    "field_mapping": {"text": "sentence", "label": "class_id"},
+                },
+                "model": {
+                    "repository_id": "opaque/model-one",
+                    "revision": "release",
+                    "framework": "transformers",
+                    "task": "sequence_classification",
+                    "requires_cuda": False,
+                },
+                "metric": {"name": "accuracy", "direction": "higher"},
+                "dependencies": ["torch", "transformers", "datasets"],
+                "seeds": [0, 1],
+                "sample_cap": 16,
+                "artifact_contract": [
+                    "final_results",
+                    "raw_predictions",
+                    "environment_manifest",
+                ],
+                "preferred_backends": ["cpu"],
+            }
+        }
+        self.db.execute(
+            "UPDATE deep_insights SET experimental_plan=? WHERE id=?",
+            (__import__("json").dumps(plan), self.idea_id),
+        )
+        self.db.commit()
+        result = CandidatePreflightRepository().run_candidate(
+            agenda_id=self.agenda_id,
+            idea_id=self.idea_id,
+            engine=PreflightEngine(probe=Metadata()),
+            environment=PreflightEnvironment(
+                enabled_backends=("cpu",),
+                backend_vram_gb={"cpu": 0.0},
+                network_available=True,
+                disk_free_gb=10.0,
+            ),
+            idempotency_key=f"{self.namespace}:preflight",
+        )
+        self.assertTrue(result.passed)
+
+        self.db.execute("DELETE FROM resource_grants WHERE id=?", (self.grant_id,))
+        self.db.execute("DELETE FROM agenda_resource_ledger WHERE id=?", (self.ledger_id,))
+        self.db.execute(
+            """
+            UPDATE research_agendas
+            SET gpu_hours_reserved=0, backend_allowlist_json='["cpu"]'
+            WHERE id=?
+            """,
+            (self.agenda_id,),
+        )
+        self.db.commit()
+        grant = ResourceGrant(
+            agenda_id=self.agenda_id,
+            idea_id=self.idea_id,
+            decision_packet_id=self.decision_id,
+            stage="pilot",
+            token_cap=1,
+            max_gpu_hours=0.0,
+            backend_allowlist=["cpu"],
+            artifact_requirements=["final_results", "raw_predictions"],
+            expires_at=(datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat(),
+            grant_reason="isolated preflight",
+            idempotency_key=f"grant:{self.namespace}:preflight",
+            preflight_result_id=result.preflight_result_id,
+        )
+        grant_id = MetaHarnessRepository().issue_grant(grant)
+        persisted = self.db.fetchone(
+            "SELECT preflight_result_id FROM resource_grants WHERE id=?",
+            (grant_id,),
+        )
+        self.db.commit()
+        self.assertEqual(
+            int(persisted["preflight_result_id"]),
+            int(result.preflight_result_id),
+        )
 
 
 if __name__ == "__main__":

@@ -122,6 +122,11 @@ def _grant_from_row(row: dict[str, Any]) -> ResourceGrant:
         status=str(row.get("status") or ""),
         grant_id=int(row.get("id") or 0),
         reservation_id=int(row.get("reservation_id") or 0),
+        preflight_result_id=(
+            int(row["preflight_result_id"])
+            if row.get("preflight_result_id")
+            else None
+        ),
     )
 
 

@@ -203,6 +203,16 @@ You will receive the problem statement and proposed method.
 9. **Title Naming**: Follow this binding title policy.
 """ + TITLE_NAMING_STANDARD_TEXT + """
 
+10. **Execution Requirements**: Declare the cheapest falsification run as a
+structured capability contract before any execution grant exists.
+   - Use concrete public dataset/model repository IDs and an explicit revision
+     or tag; never use a display name as a repository ID.
+   - Declare task protocol, semantic dataset field roles, model task/framework,
+     metric direction, dependency/network/disk/VRAM needs, seeds/sample cap,
+     backend preferences, and required raw artifacts.
+   - Do not claim availability. A separate metadata preflight verifies every
+     repository, revision, schema, dependency, and resource before grant.
+
 Output: one raw JSON object only (no markdown fences; strict JSON).
 
 Return JSON:
@@ -247,6 +257,38 @@ Return JSON:
     "hours_per_run": "Estimate",
     "total_gpu_hours": "Estimate",
     "estimated_cost": "$X at cloud rates"
+  },
+  "execution_requirements": {
+    "schema_version": "experiment_requirements_v1",
+    "task_protocol": "generative_qa|sequence_classification|retrieval_ranking|another explicit protocol",
+    "dataset": {
+      "repository_id": "public repository id",
+      "revision": "immutable commit or explicit tag",
+      "config": "dataset config or empty string",
+      "split": "evaluation split",
+      "field_mapping": {"semantic_role": "actual_column_name"}
+    },
+    "model": {
+      "repository_id": "public repository id",
+      "revision": "immutable commit or explicit tag",
+      "framework": "transformers|sentence_transformers|another explicit framework",
+      "task": "causal_lm|sequence_classification|embedding|another explicit task",
+      "min_vram_gb": 0,
+      "requires_cuda": false,
+      "quantization": "none|4bit|8bit"
+    },
+    "metric": {
+      "name": "machine-computable primary metric",
+      "direction": "higher|lower",
+      "required_prediction_fields": ["prediction", "target"]
+    },
+    "dependencies": ["package_name"],
+    "network_required": true,
+    "min_disk_gb": 1,
+    "seeds": [0],
+    "sample_cap": 32,
+    "artifact_contract": ["final_results", "raw_predictions", "environment_manifest"],
+    "preferred_backends": ["cpu|local_gpu|ssh_gpu|colab_gpu"]
   },
   "risks": [
     {
@@ -1195,6 +1237,9 @@ def discover_paper_ideas(
                 "ablations": result3.get("ablations", []),
                 "expected_results": result3.get("expected_results", {}),
                 "compute_budget": result3.get("compute_budget", {}),
+                "execution_requirements": result3.get(
+                    "execution_requirements", {}
+                ),
                 "risks": result3.get("risks", []),
                 "paper_title": normalized_paper_title,
                 "raw_paper_title": raw_paper_title,

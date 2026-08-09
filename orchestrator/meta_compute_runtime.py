@@ -681,7 +681,34 @@ def _grant_from_row(row: dict) -> ResourceGrant:
         status=str(row["status"]),
         grant_id=int(row["id"]),
         reservation_id=int(row["reservation_id"]),
+        preflight_result_id=(
+            int(row["preflight_result_id"])
+            if row.get("preflight_result_id")
+            else None
+        ),
     )
+
+
+def _require_grant_preflight(grant_row: dict, *, backend_kind: str) -> None:
+    if not db._use_pg():  # noqa: SLF001
+        return
+    from meta_harness.preflight_repository import (
+        CandidatePreflightRepository,
+        PreflightPersistenceError,
+    )
+
+    try:
+        CandidatePreflightRepository().require_passed(
+            preflight_result_id=int(grant_row.get("preflight_result_id") or 0),
+            agenda_id=int(grant_row["agenda_id"]),
+            idea_id=int(grant_row["idea_id"]),
+            allowed_backends=(str(backend_kind),),
+            required_artifacts=tuple(
+                _load_json_list(grant_row.get("artifact_requirements_json"))
+            ),
+        )
+    except PreflightPersistenceError as exc:
+        raise ComputeBackendError(str(exc)) from exc
 
 
 def submit_experiment_run(
@@ -721,6 +748,7 @@ def submit_experiment_run(
         require_schedulable(backend_kind, reports_from_config())
     except BackendCapabilityError as exc:
         raise ComputeBackendError(str(exc)) from exc
+    _require_grant_preflight(grant_row, backend_kind=backend_kind)
     attempt_key = (
         f"experiment-run:{agenda_id}:{idea_id}:{experiment_run_id}:"
         f"{grant.stage}"
@@ -799,6 +827,7 @@ def submit_colab_work(spec: ColabWorkSpec) -> ComputeJob:
             "active scoped ResourceGrant is required for Colab work"
         )
     grant = _grant_from_row(grant_row)
+    _require_grant_preflight(grant_row, backend_kind="colab_gpu")
     try:
         attempt_reservation = GrantGPUUsageControl().reserve_attempt(
             agenda_id=spec.agenda_id,

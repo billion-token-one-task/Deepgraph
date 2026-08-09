@@ -25,6 +25,7 @@ MIGRATION_KEYS = (
     "0001_meta_harness_v1",
     "0002_topic_gate_and_frontier_authority",
     "0003_attempt_gpu_usage",
+    "0004_runner_capability_preflight",
 )
 MIGRATION_KEY = MIGRATION_KEYS[0]
 MIGRATION = MIGRATIONS_DIR / f"{MIGRATION_KEY}.sql"

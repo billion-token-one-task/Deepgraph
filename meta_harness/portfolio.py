@@ -264,6 +264,7 @@ def issue_resource_grant(
     artifact_requirements: list[str],
     expires_at: str,
     idempotency_key: str,
+    preflight_result_id: int | None = None,
 ) -> ResourceGrant:
     decision.validate()
     if decision.decision not in {"promote", "revisit"}:
@@ -283,6 +284,7 @@ def issue_resource_grant(
         expires_at=expires_at,
         grant_reason=";".join(decision.reason_codes),
         idempotency_key=idempotency_key,
+        preflight_result_id=preflight_result_id,
     )
     grant.validate()
     return grant

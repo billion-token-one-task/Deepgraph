@@ -48,11 +48,18 @@ from db import database as db  # noqa: E402
 from meta_harness.frontier_authority import FrontierAuthorityRepository  # noqa: E402
 from meta_harness.frontier_bootstrap import run_bootstrap_evaluation  # noqa: E402
 from meta_harness.portfolio import decide_portfolio, issue_resource_grant  # noqa: E402
+from meta_harness.preflight_repository import CandidatePreflightRepository  # noqa: E402
 from meta_harness.repository import MetaHarnessRepository  # noqa: E402
 from meta_harness.topic_gate_record import record_prediction  # noqa: E402
 
 ACTOR = "ops:auto-advance-v1"
-ARTIFACT_REQUIREMENTS = ["raw_metrics", "run_manifest", "environment_manifest", "claim_ledger"]
+ARTIFACT_REQUIREMENTS = [
+    "final_results",
+    "raw_predictions",
+    "environment_manifest",
+    "dataset_manifest",
+    "model_manifest",
+]
 RECYCLE_EPOCH = "public-hub-download-recovery-v3"
 
 
@@ -356,42 +363,6 @@ DEAD_END = {
 MAX_RECYCLES = 3
 
 
-def _audited_gpu_probe_recovery(agenda_id: int, idea_id: int) -> bool:
-    """Whether the latest failed run can be reforged without any LLM spend.
-
-    This is intentionally narrower than ``gpu_failed``.  A zero-token grant is
-    safe only for the deterministic, audited GSM8K probe: its locked contract
-    skips benchmark design/code scout, and hypothesis coding is disabled.  The
-    generated runner markers prevent an arbitrary failed GPU experiment from
-    being silently downgraded to a token-free authority.
-    """
-    row = db.fetchone(
-        "SELECT workdir FROM experiment_runs"
-        " WHERE agenda_id=? AND deep_insight_id=? AND status='failed'"
-        " ORDER BY id DESC LIMIT 1",
-        (agenda_id, idea_id),
-    )
-    if not row:
-        return False
-    workdir = Path(str(dict(row).get("workdir") or ""))
-    try:
-        proxy = json.loads((workdir / "spec" / "proxy_config.json").read_text(encoding="utf-8"))
-        runner = (workdir / "code" / "train.py").read_text(encoding="utf-8")
-    except (OSError, ValueError, TypeError):
-        return False
-    return bool(
-        proxy.get("real_benchmark_required")
-        and str(proxy.get("benchmark_dataset") or "").lower() == "openai/gsm8k"
-        and str(proxy.get("benchmark_model") or "").strip()
-        and int(proxy.get("reproduction_iterations") or 0) == 1
-        and int(proxy.get("max_iterations") or 0) == 0
-        and int(proxy.get("refute_min_iterations") or 0) == 0
-        and 'CANDIDATE_METHOD = "process_guided_candidate"' in runner
-        and '"label_fallback_used": False' in runner
-        and "load_dataset(" in runner
-    )
-
-
 def _grant_gpu_usage(resource_grant_id: int):
     from meta_harness.attempt_gpu_usage import GrantGPUUsageControl
 
@@ -434,17 +405,13 @@ def recycle_stranded(agenda_id: int, state: dict, journal: Journal, args) -> Non
             journal.log("recycle_exhausted", agenda_id=agenda_id, idea_id=idea_id,
                         status=job["status"], stage=job["stage"], recycles=used)
             continue
-        gpu_only_recovery = (
-            (str(job["status"]), str(job["stage"])) == ("failed", "gpu_failed")
-            and _audited_gpu_probe_recovery(agenda_id, idea_id)
-        )
-        required_token_cap = 0 if gpu_only_recovery else int(args.grant_token_cap)
+        required_token_cap = int(args.grant_token_cap)
         grant_ok = (
             str(job["grant_status"] or "") == "active"
             and bool(job["grant_live"])
             and int(job["token_cap"] or 0) >= required_token_cap
         )
-        if gpu_only_recovery and grant_ok:
+        if grant_ok and float(job.get("max_gpu_hours") or 0.0) > 0:
             gpu_usage = _grant_gpu_usage(int(job["resource_grant_id"]))
             if gpu_usage.remaining_gpu_seconds <= 0:
                 journal.log(
@@ -502,20 +469,42 @@ def recycle_stranded(agenda_id: int, state: dict, journal: Journal, args) -> Non
         backends = json.loads(dict(db.fetchone(
             "SELECT backend_allowlist_json FROM research_agendas WHERE id=?", (agenda_id,)
         ))["backend_allowlist_json"])
-        allowed_backends = [b for b in ("cpu", "llm", "ssh_gpu") if b in backends]
-        if gpu_only_recovery:
-            allowed_backends = [b for b in allowed_backends if b != "llm"]
+        preflight = CandidatePreflightRepository().run_candidate(
+            agenda_id=agenda_id,
+            idea_id=idea_id,
+        )
+        if not preflight.passed or preflight.selected_backend not in backends:
+            journal.log(
+                "regrant_preflight_deferred",
+                agenda_id=agenda_id,
+                idea_id=idea_id,
+                status=preflight.status,
+                reason_codes=preflight.reason_codes,
+            )
+            continue
+        allowed_backends = [preflight.selected_backend]
+        if "llm" in backends:
+            allowed_backends.append("llm")
         try:
             grant = issue_resource_grant(
                 packet,
                 stage="pilot",
                 token_cap=required_token_cap,
-                gpu_class=args.gpu_class if "ssh_gpu" in backends else "none",
-                max_gpu_hours=args.grant_gpu_hours if "ssh_gpu" in backends else 0.0,
+                gpu_class=(
+                    args.gpu_class
+                    if preflight.selected_backend != "cpu"
+                    else "none"
+                ),
+                max_gpu_hours=(
+                    args.grant_gpu_hours
+                    if preflight.selected_backend != "cpu"
+                    else 0.0
+                ),
                 backend_allowlist=allowed_backends,
                 artifact_requirements=ARTIFACT_REQUIREMENTS,
                 expires_at=(_now() + timedelta(hours=12)).isoformat(),
                 idempotency_key=_grant_key(agenda_id, idea_id, "regrant"),
+                preflight_result_id=preflight.preflight_result_id,
             )
             grant_id = MetaHarnessRepository().issue_grant(grant)
         except Exception as exc:
@@ -525,7 +514,7 @@ def recycle_stranded(agenda_id: int, state: dict, journal: Journal, args) -> Non
             continue
         journal.log("regranted", agenda_id=agenda_id, idea_id=idea_id,
                     old_grant=job["resource_grant_id"], new_grant=grant_id,
-                    token_cap=required_token_cap, gpu_only_recovery=gpu_only_recovery,
+                    token_cap=required_token_cap,
                     was=f"{job['status']}/{job['stage']}")
         _requeue_for_consumer(
             agenda_id, idea_id, grant_id, journal, args, used + 1,
@@ -658,17 +647,58 @@ def advance_agenda(agenda_id: int, state: dict, journal: Journal, args) -> None:
                     decision_packet_id=decision.decision_packet_id)
         if decision.decision not in {"promote", "revisit"}:
             continue
+        preflight = CandidatePreflightRepository().run_candidate(
+            agenda_id=agenda_id,
+            idea_id=idea_id,
+        )
+        journal.log(
+            "preflight",
+            agenda_id=agenda_id,
+            idea_id=idea_id,
+            status=preflight.status,
+            reason_codes=preflight.reason_codes,
+            adapter_id=preflight.adapter_id,
+            selected_backend=preflight.selected_backend,
+            preflight_result_id=preflight.preflight_result_id,
+        )
+        if not preflight.passed:
+            from orchestrator.auto_research import _upsert_job
+
+            _upsert_job(
+                idea_id,
+                status="deferred",
+                stage="capability_preflight_deferred",
+                assigned_worker=None,
+                last_error="preflight:" + ",".join(preflight.reason_codes),
+                last_note=(
+                    "Candidate deferred before grant; capability or metadata "
+                    "requirements are not currently satisfied."
+                ),
+            )
+            continue
         agenda_backends = json.loads(dict(db.fetchone(
             "SELECT backend_allowlist_json FROM research_agendas WHERE id=?", (agenda_id,)
         ))["backend_allowlist_json"])
-        attempts = []
-        gpu_backends = [b for b in ("cpu", "llm", "ssh_gpu") if b in agenda_backends]
-        if "ssh_gpu" in gpu_backends and args.grant_gpu_hours > 0:
-            attempts.append({"backends": gpu_backends, "gpu_hours": args.grant_gpu_hours,
-                             "gpu_class": args.gpu_class, "ttl_hours": 12, "suffix": "gpu"})
-        attempts.append({"backends": [b for b in ("cpu", "llm") if b in agenda_backends],
-                         "gpu_hours": 0.0, "gpu_class": "none", "ttl_hours": 24,
-                         "suffix": "cpu"})
+        if preflight.selected_backend not in agenda_backends:
+            journal.log(
+                "preflight_backend_not_in_agenda",
+                agenda_id=agenda_id,
+                idea_id=idea_id,
+                selected_backend=preflight.selected_backend,
+            )
+            continue
+        compute_backend = str(preflight.selected_backend)
+        selected_backends = [compute_backend]
+        if "llm" in agenda_backends:
+            selected_backends.append("llm")
+        gpu_selected = compute_backend != "cpu"
+        attempts = [{
+            "backends": selected_backends,
+            "gpu_hours": args.grant_gpu_hours if gpu_selected else 0.0,
+            "gpu_class": args.gpu_class if gpu_selected else "none",
+            "ttl_hours": 12 if gpu_selected else 24,
+            "suffix": "preflight",
+        }]
         for attempt in attempts:
             try:
                 grant = issue_resource_grant(
@@ -681,6 +711,7 @@ def advance_agenda(agenda_id: int, state: dict, journal: Journal, args) -> None:
                     artifact_requirements=ARTIFACT_REQUIREMENTS,
                     expires_at=(_now() + timedelta(hours=attempt["ttl_hours"])).isoformat(),
                     idempotency_key=_grant_key(agenda_id, idea_id, attempt["suffix"]),
+                    preflight_result_id=preflight.preflight_result_id,
                 )
                 grant_id = repo.issue_grant(grant)
             except Exception as exc:
