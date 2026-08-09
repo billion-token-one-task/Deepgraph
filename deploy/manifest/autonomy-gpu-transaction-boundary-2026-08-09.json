@@ -16,6 +16,17 @@
           "source_sha256": "402942dd2bca39af93bddb2e149f38a26fca291203fa1b688e2281b7459d9060",
           "target": "/home/billion-token/Deepgraph/agents/validation_loop.py",
           "target_predeploy_sha256": "f72dfe4370f95e6721597a237c237640fe34f71decbbdf051b8c02f72ce98c5e"
+        },
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/autonomy-gpu-transaction-boundary-2026-08-09/auto_advance.py.bak",
+          "kind": "file",
+          "mode": "0755",
+          "owner": "billion-token:billion-token",
+          "source": "scripts/auto_advance.py",
+          "source_bytes": 34944,
+          "source_sha256": "46ad2b081c4c09294fe26f77fc5f58626bd1845f0410bfa20d6620a3a2b5944d",
+          "target": "/home/billion-token/Deepgraph/scripts/auto_advance.py",
+          "target_predeploy_sha256": "aa1f9f571f2e1df459830d764397a3a9dd1d8a1eda0ea1d4ea18131718ab2a4e"
         }
       ],
       "health_check": "Wait for R8 zero active runs/GPU jobs, restart the validation owner, then observe timer-owned execution through metric persistence, grant settlement, and outcome creation.",
@@ -31,18 +42,20 @@
   "environment_keys": [],
   "manifest_key": "autonomy-gpu-transaction-boundary-2026-08-09",
   "operator_diff_required": [
-    "agents/validation_loop.py"
+    "agents/validation_loop.py",
+    "scripts/auto_advance.py"
   ],
   "production_tree_modified_by_this_command": false,
   "rollback": {
     "order": "reverse file order",
     "steps": [
       "restore validation_loop.py.bak and verify SHA256",
+      "restore auto_advance.py.bak and verify SHA256",
       "restart deepgraph-web.service and deepgraph-auto-execute.service after R8 reaches zero"
     ]
   },
   "runtime_root": "/home/billion-token/Deepgraph",
-  "source_commit": "a2d3685098e72313d55605424cf0099bded03e7a",
+  "source_commit": "159a236a4be11a59b329cd73f1f2482dcc724860",
   "source_worktree_clean_except_preserved_untracked_docs_tasks": true,
-  "tests": "py_compile plus 32 focused validation/database unit tests passed"
+  "tests": "py_compile plus 38 focused timer/validation/database unit tests passed"
 }
