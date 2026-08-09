@@ -2862,6 +2862,11 @@ def _executable_probe_train_py(*, method_name: str, metric_name: str, plan: dict
     # public shards through the authenticated CAS reconstruction endpoint and
     # receive 401.  The ordinary Hub download path is public and auditable.
     os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
+    # Multi-GB public shards can legitimately go longer than the Hub client's
+    # short default timeout between CDN reads/TLS handshakes. Preserve resume
+    # semantics while giving the real model download a bounded useful window.
+    os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "300")
+    os.environ.setdefault("HF_HUB_ETAG_TIMEOUT", "60")
 
     import torch
     from datasets import load_dataset
