@@ -1,0 +1,48 @@
+{
+  "backup_root": "/home/ec2-user/deepgraph-rollback/autonomy-gpu-transaction-boundary-2026-08-09",
+  "batches": [
+    {
+      "acceptance": "A timer-owned audited SSH GPU probe can outlive the PostgreSQL idle-transaction guard and still persist real metrics, settle its grant, and create an outcome_record.",
+      "authorization": "user-approved-production-repair-and-restart",
+      "batch": "gpu-transaction-boundary-repair",
+      "files": [
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/autonomy-gpu-transaction-boundary-2026-08-09/validation_loop.py.bak",
+          "kind": "file",
+          "mode": "0664",
+          "owner": "billion-token:billion-token",
+          "source": "agents/validation_loop.py",
+          "source_bytes": 154669,
+          "source_sha256": "816aedcc9057ba7f0acb1857834f952663f24981d57de6810348fd707eab4506",
+          "target": "/home/billion-token/Deepgraph/agents/validation_loop.py",
+          "target_predeploy_sha256": "f72dfe4370f95e6721597a237c237640fe34f71decbbdf051b8c02f72ce98c5e"
+        }
+      ],
+      "health_check": "Wait for R8 zero active runs/GPU jobs, restart the validation owner, then observe timer-owned execution through metric persistence, grant settlement, and outcome creation.",
+      "purpose": "Close the read-only metadata transaction before a long SSH GPU call so PostgreSQL's idle-transaction guard cannot sever the connection needed for settlement.",
+      "restart_required": [
+        "deepgraph-web.service",
+        "deepgraph-auto-execute.service"
+      ],
+      "systemd_reload_required": false
+    }
+  ],
+  "description": "Repair the transaction lifetime exposed by long public-model downloads during autonomous GPU validation.",
+  "environment_keys": [],
+  "manifest_key": "autonomy-gpu-transaction-boundary-2026-08-09",
+  "operator_diff_required": [
+    "agents/validation_loop.py"
+  ],
+  "production_tree_modified_by_this_command": false,
+  "rollback": {
+    "order": "reverse file order",
+    "steps": [
+      "restore validation_loop.py.bak and verify SHA256",
+      "restart deepgraph-web.service and deepgraph-auto-execute.service after R8 reaches zero"
+    ]
+  },
+  "runtime_root": "/home/billion-token/Deepgraph",
+  "source_commit": "c1b73d976844d0b16fa30e1d6608504a77af045e",
+  "source_worktree_clean_except_preserved_untracked_docs_tasks": true,
+  "tests": "py_compile plus 30 focused validation/database unit tests passed"
+}
