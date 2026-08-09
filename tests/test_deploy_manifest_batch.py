@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -136,13 +138,61 @@ class RealManifestTests(unittest.TestCase):
         )
         for batch in manifest["batches"]:
             for entry in batch["files"]:
-                source = ROOT / entry["source"]
                 with self.subTest(source=entry["source"]):
-                    self.assertTrue(source.is_file())
+                    source_at_commit = subprocess.run(
+                        [
+                            "git",
+                            "show",
+                            f"{manifest['source_commit']}:{entry['source']}",
+                        ],
+                        cwd=ROOT,
+                        capture_output=True,
+                        check=False,
+                    )
+                    self.assertEqual(source_at_commit.returncode, 0)
                     self.assertEqual(
-                        hashlib.sha256(source.read_bytes()).hexdigest(),
+                        hashlib.sha256(source_at_commit.stdout).hexdigest(),
                         entry["source_sha256"],
                     )
+
+
+class ManifestBuilderSnapshotTests(unittest.TestCase):
+    def test_predeploy_snapshot_records_only_hash_and_presence(self):
+        from scripts import build_deployment_manifest as builder
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = Path(tmpdir) / "runtime.py"
+            target.write_bytes(b"predeploy bytes")
+            spec = Path(tmpdir) / "spec.json"
+            spec.write_text(
+                json.dumps(
+                    {
+                        "manifest_key": "snapshot-test",
+                        "capture_target_predeploy_sha256": True,
+                        "batches": [
+                            {
+                                "batch": "application",
+                                "files": [
+                                    {
+                                        "source": "scripts/deepgraph_selfheal.py",
+                                        "target": str(target),
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            payload = builder.build(spec)
+
+        entry = payload["batches"][0]["files"][0]
+        self.assertEqual(entry["target_predeploy_state"], "present")
+        self.assertEqual(
+            entry["target_predeploy_sha256"],
+            hashlib.sha256(b"predeploy bytes").hexdigest(),
+        )
+        self.assertTrue(payload["file_contents_read_from_production"])
 
 
 if __name__ == "__main__":
