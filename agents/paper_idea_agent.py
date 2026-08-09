@@ -260,7 +260,8 @@ Return JSON:
   },
   "execution_requirements": {
     "schema_version": "experiment_requirements_v1",
-    "task_protocol": "generative_qa|sequence_classification|retrieval_ranking|another explicit protocol",
+    "task_protocol": "generative_qa|sequence_classification",
+    "candidate_hook": "candidate_prompt for generative_qa, candidate_text for sequence_classification",
     "dataset": {
       "repository_id": "public repository id",
       "revision": "immutable commit or explicit tag",
@@ -287,7 +288,7 @@ Return JSON:
     "min_disk_gb": 1,
     "seeds": [0],
     "sample_cap": 32,
-    "artifact_contract": ["final_results", "raw_predictions", "environment_manifest"],
+    "artifact_contract": ["final_results", "raw_predictions", "environment_manifest", "dataset_manifest", "model_manifest"],
     "preferred_backends": ["cpu|local_gpu|ssh_gpu|colab_gpu"]
   },
   "risks": [
@@ -902,15 +903,18 @@ def _proposal_candidate_and_grant(
         raise ValueError("proposal generation requires a persisted research problem")
     existing = db.fetchone(
         """
-        SELECT id FROM deep_insights
+        SELECT id, status FROM deep_insights
         WHERE agenda_id=? AND research_problem_id=?
-          AND status='proposal_pending'
+          AND COALESCE(outcome, 'pending')='pending'
+          AND COALESCE(status, 'candidate') NOT IN ('archived', 'exists')
         ORDER BY id DESC LIMIT 1
         """,
         (agenda_id, problem_id),
     )
     if existing:
         candidate_id = int(existing["id"])
+        if str(existing.get("status") or "") != "proposal_pending":
+            return candidate_id, None
     else:
         inserted = db.fetchone(
             """
@@ -952,7 +956,8 @@ def _proposal_candidate_and_grant(
                 """
                 SELECT id FROM deep_insights
                 WHERE agenda_id=? AND research_problem_id=?
-                  AND status='proposal_pending'
+                  AND COALESCE(outcome, 'pending')='pending'
+                  AND COALESCE(status, 'candidate') NOT IN ('archived', 'exists')
                 ORDER BY id DESC LIMIT 1
                 """,
                 (agenda_id, problem_id),
@@ -1016,8 +1021,11 @@ def discover_paper_ideas(
         or signals["claim_method_gaps"]
     )
     if not has_signals:
-        print("[PAPER_IDEA] No signals available. Run signal_harvester first.", flush=True)
-        return []
+        print(
+            "[PAPER_IDEA] No harvested signals available; continuing from "
+            "the agenda direction seed.",
+            flush=True,
+        )
 
     recent_memory = _recent_tier2_memory()
     problems = select_problem_first_candidates(

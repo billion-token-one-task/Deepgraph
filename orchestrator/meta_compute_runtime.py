@@ -283,6 +283,11 @@ class LegacyCPUValidationTransport:
             filename = Path(str(item.get("path") or "")).name
             if filename:
                 names.add(filename)
+                logical_name = Path(filename).stem
+                names.add(logical_name)
+                manifest.setdefault(
+                    logical_name, {"uri": str(item.get("path") or "")}
+                )
             if filename in {
                 "environment_manifest.json",
                 "environment.json",
@@ -538,6 +543,11 @@ class LegacyGPUQueueTransport:
             filename = Path(str(item.get("path") or "")).name
             if filename:
                 names.add(filename)
+                logical_name = Path(filename).stem
+                names.add(logical_name)
+                manifest.setdefault(
+                    logical_name, {"uri": str(item.get("path") or "")}
+                )
             if filename in {
                 "environment_manifest.json",
                 "environment.json",

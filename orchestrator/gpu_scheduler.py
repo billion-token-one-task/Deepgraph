@@ -15,7 +15,6 @@ from pathlib import Path
 from agents.knowledge_loop import process_completed_run
 from agents.manuscript_pipeline import generate_submission_bundle
 from agents.validation_loop import run_full_benchmark_completion, run_validation_loop
-from agents.benchmark_design_agent import infer_benchmark_domain
 from agents.compute_profile import detect_compute_profile
 from compat.filelock import FileLock
 from config import (
@@ -1191,99 +1190,45 @@ def _launch_blocker_for_run(run: dict | None) -> str | None:
     )
     if any(token in error.lower() for token in invalid_tokens):
         return "experiment_run error_message marks it invalid or blocked; refusing to launch queued GPU job"
-    legacy_blocker = _legacy_benchmark_manifest_blocker(run)
-    if legacy_blocker:
-        return legacy_blocker
+    preflight_blocker = _capability_preflight_blocker(run)
+    if preflight_blocker:
+        return preflight_blocker
     return None
 
 
-def _canon_benchmark_name(value: object) -> str:
-    return "".join(ch for ch in str(value or "").lower() if ch.isalnum())
-
-
-def _load_json_maybe(value: object) -> dict:
-    if isinstance(value, dict):
-        return value
-    try:
-        parsed = json.loads(str(value or "{}"))
-    except (TypeError, json.JSONDecodeError):
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
-
-
-def _load_json_file(path: Path) -> dict:
-    try:
-        parsed = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return parsed if isinstance(parsed, dict) else {}
-
-
-_GENERIC_PROBE_BENCHMARKS = {
-    "gsm8k": "GSM8K",
-    "openaigsm8k": "GSM8K",
-    "mbpp": "MBPP",
-    "googleresearchdatasetsmbpp": "MBPP",
-}
-
-_DOMAIN_ALLOWED_GENERIC_PROBES = {
-    "math_reasoning_prm": {"GSM8K"},
-    "formal_code_reasoning": {"MBPP"},
-}
-
-
-def _manifest_generic_probe_names(manifest: dict) -> list[str]:
-    protocol = manifest.get("benchmark_protocol") if isinstance(manifest.get("benchmark_protocol"), dict) else {}
-    rows = []
-    if isinstance(protocol.get("dataset_protocols"), list):
-        rows.extend(row for row in protocol["dataset_protocols"] if isinstance(row, dict))
-    requirements = protocol.get("full_benchmark_requirements") if isinstance(protocol.get("full_benchmark_requirements"), dict) else {}
-    for name in requirements.get("required_dataset_names") or []:
-        rows.append({"name": name})
-    names: list[str] = []
-    seen: set[str] = set()
-    for row in rows:
-        values = (row.get("name"), row.get("canonical_name"), row.get("hf_dataset"), row.get("dataset"))
-        for value in values:
-            label = _GENERIC_PROBE_BENCHMARKS.get(_canon_benchmark_name(value))
-            if label and label not in seen:
-                seen.add(label)
-                names.append(label)
-    return names
-
-
-def _manifest_uses_gsm8k(manifest: dict) -> bool:
-    return "GSM8K" in _manifest_generic_probe_names(manifest)
-
-
-def _legacy_benchmark_manifest_blocker(run: dict) -> str | None:
-    workdir = Path(str(run.get("workdir") or "")).expanduser()
-    if not workdir:
+def _capability_preflight_blocker(run: dict) -> str | None:
+    """Fail closed for production compute not bound to a passed capability."""
+    if not db._use_pg():  # noqa: SLF001 - SQLite unit fixtures predate V1 grants.
         return None
-    manifest = _load_json_file(workdir / "spec" / "benchmark_manifest.json")
-    generic_probe_names = _manifest_generic_probe_names(manifest) if manifest else []
-    if not manifest or not generic_probe_names:
-        return None
-    insight_id = run.get("deep_insight_id")
-    insight = db.fetchone(
-        "SELECT title, problem_statement, existing_weakness, proposed_method, experimental_plan FROM deep_insights WHERE id=?",
-        (insight_id,),
-    ) if insight_id is not None else None
-    generic_label = "/".join(generic_probe_names)
-    legacy_prefix = "legacy benchmark manifest uses GSM8K" if generic_probe_names == ["GSM8K"] else f"legacy benchmark manifest uses generic benchmark {generic_label}"
-    if not insight:
-        return f"{legacy_prefix} but the insight record is missing; benchmark design review is required before launch"
-    method = _load_json_maybe(insight.get("proposed_method"))
-    plan = _load_json_maybe(insight.get("experimental_plan"))
-    domain = infer_benchmark_domain(dict(insight), method, plan)
-    domain_name = str(domain.get("domain") or "unknown")
-    allowed = set(_DOMAIN_ALLOWED_GENERIC_PROBES.get(domain_name, set()))
-    if set(generic_probe_names).issubset(allowed):
-        return None
-    return (
-        f"{legacy_prefix} for domain "
-        f"{domain_name}; benchmark design review/harness is required before launch"
+    grant_id = int(run.get("resource_grant_id") or 0)
+    if grant_id <= 0:
+        return "experiment run is not bound to a ResourceGrant"
+    row = db.fetchone(
+        """
+        SELECT rg.preflight_result_id, p.status, p.adapter_id,
+               p.dataset_revision, p.model_revision
+        FROM resource_grants rg
+        LEFT JOIN candidate_preflight_results_v1 p
+          ON p.id=rg.preflight_result_id
+         AND p.agenda_id=rg.agenda_id AND p.idea_id=rg.idea_id
+        WHERE rg.id=? AND rg.agenda_id=? AND rg.idea_id=?
+        """,
+        (
+            grant_id,
+            int(run.get("agenda_id") or 0),
+            int(run.get("deep_insight_id") or 0),
+        ),
     )
+    if not row or int(row.get("preflight_result_id") or 0) <= 0:
+        return "legacy compute run lacks a capability preflight binding"
+    if (
+        str(row.get("status") or "") != "passed"
+        or not str(row.get("adapter_id") or "").strip()
+        or not str(row.get("dataset_revision") or "").strip()
+        or not str(row.get("model_revision") or "").strip()
+    ):
+        return "compute grant capability preflight is incomplete or not passed"
+    return None
 
 
 def _fail_blocked_queued_job(job: dict, reason: str) -> None:

@@ -27,6 +27,7 @@ def _run():
         "status": "completed",
         "scientific_evidence_state": "full_benchmark_complete",
         "baseline_metric_value": 0.5,
+        "best_metric_value": 0.6,
         "effect_size": 0.1,
         "hypothesis_verdict": "supported",
     }
@@ -50,7 +51,7 @@ def test_trusted_outcome_assembly_does_not_promote_operational_support():
             "fetchall",
             side_effect=[
                 [],
-                [{"id": 9, "artifact_type": "source_data", "path": "run/a.json"}],
+                [{"id": 9, "artifact_type": "final_results", "path": "run/final_results.json"}],
                 [{"id": 10, "role": "proposer", "status": "succeeded"}],
             ],
         ),
@@ -93,7 +94,7 @@ def test_trusted_outcome_assembly_uses_canonical_supported_decision():
         mock.patch.object(
             repository_module.db,
             "fetchall",
-            side_effect=[[], [], []],
+            side_effect=[[], [{"id": 9, "artifact_type": "final_results", "path": "run/final_results.json"}], []],
         ),
         mock.patch.object(repo, "record_outcome", return_value=13) as record,
     ):

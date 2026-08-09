@@ -47,6 +47,16 @@ class IsolatedAttemptGPUUsageTests(unittest.TestCase):
             source_commit=SOURCE_COMMIT,
             migration_key="0003_attempt_gpu_usage",
         )
+        apply_to_isolated_restore(
+            URL,
+            source_commit=SOURCE_COMMIT,
+            migration_key="0005_failure_fingerprint_policy",
+        )
+        apply_to_isolated_restore(
+            URL,
+            source_commit=SOURCE_COMMIT,
+            migration_key="0006_candidate_stage_gate_history",
+        )
         os.environ["DEEPGRAPH_DATABASE_URL"] = URL
         os.environ["DEEPGRAPH_PG_IDLE_IN_TRANSACTION_TIMEOUT_MS"] = "200"
 
@@ -146,6 +156,21 @@ class IsolatedAttemptGPUUsageTests(unittest.TestCase):
 
     def tearDown(self):
         self.db.execute(
+            "DELETE FROM insight_events WHERE scope='deep_insights' AND insight_id=?",
+            (self.idea_id,),
+        )
+        self.db.execute("DELETE FROM outcome_records WHERE agenda_id=?", (self.agenda_id,))
+        self.db.execute(
+            "DELETE FROM candidate_stage_gate_records_v1 WHERE agenda_id=?",
+            (self.agenda_id,),
+        )
+        self.db.execute(
+            "DELETE FROM experiment_failure_fingerprints_v1 WHERE agenda_id=?",
+            (self.agenda_id,),
+        )
+        self.db.execute("DELETE FROM experiment_artifacts WHERE agenda_id=?", (self.agenda_id,))
+        self.db.execute("DELETE FROM auto_research_jobs WHERE agenda_id=?", (self.agenda_id,))
+        self.db.execute(
             "DELETE FROM colab_work_requests_v1 WHERE agenda_id=?",
             (self.agenda_id,),
         )
@@ -186,6 +211,218 @@ class IsolatedAttemptGPUUsageTests(unittest.TestCase):
         self.db.execute("DELETE FROM deep_insights WHERE id=?", (self.idea_id,))
         self.db.execute("DELETE FROM research_agendas WHERE id=?", (self.agenda_id,))
         self.db.commit()
+
+    def test_terminal_run_finalizer_records_one_metered_outcome(self):
+        from meta_harness.outcome_finalizer import finalize_terminal_outcomes
+
+        run_id = self.db.insert_returning_id(
+            """
+            INSERT INTO experiment_runs
+                (agenda_id, deep_insight_id, resource_grant_id, status, phase,
+                 baseline_metric_name, baseline_metric_value,
+                 best_metric_value, effect_size, hypothesis_verdict,
+                 scientific_evidence_state, completed_at)
+            VALUES (?, ?, ?, 'completed', 'hypothesis_testing', 'accuracy',
+                    0.5, 0.4, -0.1, 'refuted', 'planned', CURRENT_TIMESTAMP)
+            RETURNING id
+            """,
+            (self.agenda_id, self.idea_id, self.grant_id),
+        )
+        self.db.execute(
+            """
+            INSERT INTO experiment_artifacts
+                (agenda_id, run_id, artifact_type, path, metric_key,
+                 metric_value, metadata)
+            VALUES (?, ?, 'final_results', '/isolated/final_results.json',
+                    'accuracy', 0.4, '{}')
+            """,
+            (self.agenda_id, run_id),
+        )
+        self.db.execute(
+            """
+            INSERT INTO compute_jobs_v1
+                (agenda_id, idea_id, resource_grant_id, stage, backend_kind,
+                 backend_job_id, idempotency_key, command_ref,
+                 artifact_namespace, requested_gpu_hours, timeout_seconds,
+                 status, timeout_at, artifact_manifest_json, usage_json)
+            VALUES (?, ?, ?, 'pilot', 'cpu', ?, ?, 'run:test', 'isolated',
+                    0, 60, 'succeeded', CURRENT_TIMESTAMP + INTERVAL '1 hour',
+                    '{"final_results":{"path":"/isolated/final_results.json"}}',
+                    '{"gpu_hours":0,"wall_seconds":2}')
+            """,
+            (
+                self.agenda_id,
+                self.idea_id,
+                self.grant_id,
+                f"cpu:{self.namespace}",
+                f"compute:{self.namespace}",
+            ),
+        )
+        self.db.execute(
+            """
+            INSERT INTO auto_research_jobs
+                (agenda_id, deep_insight_id, resource_grant_id,
+                 experiment_run_id, status, stage)
+            VALUES (?, ?, ?, ?, 'review_pending',
+                    'scientific_decision_required')
+            """,
+            (self.agenda_id, self.idea_id, self.grant_id, run_id),
+        )
+        self.db.commit()
+
+        first = finalize_terminal_outcomes()
+        second = finalize_terminal_outcomes()
+        outcome = self.db.fetchone(
+            """
+            SELECT verdict, actual_tokens, actual_gpu_hours, baseline
+            FROM outcome_records WHERE resource_grant_id=?
+            """,
+            (self.grant_id,),
+        )
+        counts = self.db.fetchone(
+            "SELECT COUNT(*) AS n FROM outcome_records WHERE resource_grant_id=?",
+            (self.grant_id,),
+        )
+        grant = self.db.fetchone(
+            "SELECT status FROM resource_grants WHERE id=?", (self.grant_id,)
+        )
+        ledger = self.db.fetchone(
+            "SELECT status, tokens_used, gpu_hours_used FROM agenda_resource_ledger WHERE id=?",
+            (self.ledger_id,),
+        )
+        self.db.commit()
+
+        self.assertEqual(len(first.finalized), 1)
+        self.assertEqual(second.already_finalized, first.finalized)
+        self.assertEqual(int(counts["n"]), 1)
+        self.assertEqual(outcome["verdict"], "refuted")
+        self.assertEqual(int(outcome["actual_tokens"]), 0)
+        self.assertEqual(float(outcome["actual_gpu_hours"]), 0.0)
+        self.assertEqual(float(outcome["baseline"]), 0.5)
+        self.assertEqual(grant["status"], "consumed")
+        self.assertEqual(ledger["status"], "settled")
+        self.assertEqual(int(ledger["tokens_used"]), 0)
+        self.assertEqual(float(ledger["gpu_hours_used"]), 0.0)
+
+    def test_proposal_grant_settles_then_requires_fresh_experiment_gate(self):
+        from meta_harness.repository import MetaHarnessRepository
+        from meta_harness.topic_gate_record import record_prediction
+
+        self.db.execute(
+            """
+            UPDATE resource_grants
+            SET stage='proposal', token_cap=100, max_gpu_hours=0,
+                backend_allowlist_json='["llm"]',
+                artifact_requirements_json='["candidate_design"]'
+            WHERE id=?
+            """,
+            (self.grant_id,),
+        )
+        self.db.execute(
+            "UPDATE agenda_resource_ledger SET token_reserved=100, gpu_hours_reserved=0 WHERE id=?",
+            (self.ledger_id,),
+        )
+        self.db.execute(
+            "UPDATE research_agendas SET token_reserved=100, gpu_hours_reserved=0 WHERE id=?",
+            (self.agenda_id,),
+        )
+        self.db.execute(
+            "UPDATE research_agendas SET focus_json=? WHERE id=?",
+            (f'["{self.namespace}"]', self.agenda_id),
+        )
+        self.db.execute(
+            "UPDATE deep_insights SET status='proposal_pending' WHERE id=?",
+            (self.idea_id,),
+        )
+        self.db.commit()
+        recorded = record_prediction(
+            agenda_id=self.agenda_id,
+            idea_id=self.idea_id,
+            actor="isolated-test",
+            record={
+                "prediction": {
+                    "predicted_outcome": (
+                        "A candidate design with a structured execution contract is produced."
+                    ),
+                    "confidence": 0.55,
+                    "action_if_confirmed": "Run experiment preflight.",
+                    "action_if_refuted": "Revise the research problem.",
+                },
+                "minimum_falsification_experiment": {
+                    "metric": "candidate contract completeness",
+                    "baseline": "no generated candidate",
+                    "decisive_comparison": "valid contract versus no contract",
+                    "estimated_cost": {
+                        "tokens": 100,
+                        "gpu_hours": 0,
+                        "wall_hours": 1,
+                    },
+                },
+                "provenance": {
+                    "drafted_by": "isolated-test",
+                    "authorized_by": "isolated-test",
+                    "review_status": "test",
+                },
+            },
+        )
+        self.db.execute(
+            "UPDATE deep_insights SET status='candidate' WHERE id=?",
+            (self.idea_id,),
+        )
+        self.db.execute(
+            """
+            INSERT INTO auto_research_jobs
+                (agenda_id, deep_insight_id, resource_grant_id, status, stage)
+            VALUES (?, ?, ?, 'deferred', 'proposal_generation_granted')
+            """,
+            (self.agenda_id, self.idea_id, self.grant_id),
+        )
+        self.db.commit()
+
+        used = MetaHarnessRepository().complete_proposal_generation(
+            grant_id=self.grant_id,
+            agenda_id=self.agenda_id,
+            idea_id=self.idea_id,
+        )
+        grant = self.db.fetchone(
+            "SELECT status FROM resource_grants WHERE id=?", (self.grant_id,)
+        )
+        job = self.db.fetchone(
+            """
+            SELECT status, stage, resource_grant_id FROM auto_research_jobs
+            WHERE agenda_id=? AND deep_insight_id=?
+            """,
+            (self.agenda_id, self.idea_id),
+        )
+        insight = self.db.fetchone(
+            "SELECT topic_gate_json FROM deep_insights WHERE id=?",
+            (self.idea_id,),
+        )
+        ledger = self.db.fetchone(
+            "SELECT status, tokens_used, gpu_hours_used FROM agenda_resource_ledger WHERE id=?",
+            (self.ledger_id,),
+        )
+        history = self.db.fetchone(
+            """
+            SELECT stage, actor FROM candidate_stage_gate_records_v1
+            WHERE agenda_id=? AND idea_id=?
+            """,
+            (self.agenda_id, self.idea_id),
+        )
+        self.db.commit()
+
+        self.assertEqual(used, 0)
+        self.assertEqual(recorded["status"], "recorded")
+        self.assertEqual(grant["status"], "consumed")
+        self.assertEqual(job["status"], "queued")
+        self.assertEqual(job["stage"], "awaiting_portfolio_decision")
+        self.assertIsNone(job["resource_grant_id"])
+        self.assertIsNone(insight["topic_gate_json"])
+        self.assertEqual(ledger["status"], "settled")
+        self.assertEqual(int(ledger["tokens_used"]), 0)
+        self.assertEqual(float(ledger["gpu_hours_used"]), 0.0)
+        self.assertEqual(history["stage"], "proposal")
+        self.assertEqual(history["actor"], "isolated-test")
 
     def _reserve(self, key: str, timeout: int = 60):
         return self.Control().reserve_attempt(

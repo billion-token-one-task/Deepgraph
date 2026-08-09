@@ -14,6 +14,8 @@ from agents.signal_harvester import (
     signal_ref_from_row,
     structural_score,
 )
+from agents.agenda_relevance import agenda_scope_terms
+from agents.agenda_repository import row_to_agenda
 from db import database as db
 from db.evidence_graph import upsert_entity
 from meta_harness.scientific_authority import positive_decision_authorized
@@ -429,7 +431,70 @@ def discover_research_problems(
     persist: bool = True,
 ) -> list[dict]:
     agenda_id = _require_agenda_id(agenda_id)
-    candidates = [promote_to_problem(signal) for signal in get_problem_signals(limit=max(limit * 2, limit))]
+    signals = get_problem_signals(limit=max(limit * 2, limit))
+    candidates = [promote_to_problem(signal) for signal in signals]
+    agenda_row = (
+        db.fetchone("SELECT * FROM research_agendas WHERE id=?", (agenda_id,))
+        if db.table_exists("research_agendas")
+        else None
+    )
+    if agenda_row:
+        agenda = row_to_agenda(agenda_row)
+        terms = agenda_scope_terms(agenda)
+        scoped = [
+            problem
+            for problem in candidates
+            if any(term in _text_blob(problem) for term in terms)
+        ]
+        if scoped:
+            candidates = scoped
+        else:
+            direction = str(agenda.description or agenda.name).strip()
+            focus = ", ".join(terms)
+            candidates = [
+                {
+                    "problem_statement": (
+                        f"Within the research direction '{direction}', determine which "
+                        f"falsifiable intervention concerning {focus or direction} can "
+                        "improve a measurable baseline under the declared resource budget, "
+                        "and identify the smallest controlled experiment that would refute it."
+                    ),
+                    "source_signal_ref": {
+                        "kind": "agenda_direction",
+                        "axis": "effectiveness",
+                        "agenda_id": agenda_id,
+                        "agenda_version": agenda.version,
+                    },
+                    "node_ids": [],
+                    "paper_ids": [],
+                    "support_count": 0,
+                    "status": "open",
+                    "attempts_count": 0,
+                    "ruled_out_approaches": [],
+                    "problem_quality_score": 1.0,
+                },
+                {
+                    "problem_statement": (
+                        f"Within the research direction '{direction}', identify the "
+                        f"boundary conditions and resource/robustness trade-offs for "
+                        f"{focus or direction}; design a measurable comparison whose "
+                        "negative result would rule out at least one plausible approach."
+                    ),
+                    "source_signal_ref": {
+                        "kind": "agenda_direction",
+                        "axis": "boundary_conditions",
+                        "agenda_id": agenda_id,
+                        "agenda_version": agenda.version,
+                    },
+                    "node_ids": [],
+                    "paper_ids": [],
+                    "support_count": 0,
+                    "status": "open",
+                    "attempts_count": 0,
+                    "ruled_out_approaches": [],
+                    "problem_quality_score": 0.9,
+                },
+            ]
     candidates.sort(key=lambda item: item.get("problem_quality_score") or 0, reverse=True)
     out = candidates[:limit]
     if persist:

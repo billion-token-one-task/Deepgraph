@@ -50,6 +50,13 @@ from config import (
     RUNTIME_PYTHON,
 )
 from db import database as db
+from meta_harness.runner_contract import (
+    RunnerContractError,
+    validate_final_results,
+    verify_metric_from_artifacts,
+)
+from meta_harness.failure_policy import FailureContext, classify_failure, decide_recovery
+from meta_harness.failure_repository import FailureRecoveryRepository
 from orchestrator import ssh_gpu_backend
 
 
@@ -337,9 +344,75 @@ def _execution_diagnostics(
         "benchmark_stage_trace": trace,
         "final_results_present": "FINAL_RESULTS:" in text,
     }
+    if failure_type:
+        out["reason_code"] = (
+            "metric_missing"
+            if failure_type in {"missing_final_results", "missing_metric"}
+            else classify_failure(
+                message=" ".join([failure_type, text]),
+                returncode=returncode,
+                final_results_present="FINAL_RESULTS:" in text,
+            )
+        )
     if returncode is not None:
         out["returncode"] = returncode
     return out
+
+
+def _execution_recovery_decision(
+    run_id: int,
+    result: dict,
+    *,
+    retry_count: int,
+):
+    try:
+        return FailureRecoveryRepository().decide_for_run(
+            experiment_run_id=run_id,
+            execution_result=result,
+            retry_count=retry_count,
+        )[0]
+    except Exception:
+        db.rollback()
+        reason = str(result.get("reason_code") or "") or classify_failure(
+            message=" ".join(
+                [
+                    str(result.get("error") or ""),
+                    str(result.get("failure_type") or ""),
+                ]
+            ),
+            returncode=result.get("returncode"),
+            final_results_present=bool(result.get("final_results_present")),
+        )
+        remaining = _remaining_grant_gpu_seconds(run_id) or 0.0
+        return decide_recovery(
+            FailureContext(
+                reason_code=reason,
+                detail=str(result.get("error") or reason),
+                code_hash="unavailable",
+                environment_hash="unavailable",
+                remaining_gpu_seconds=remaining,
+                retry_count=retry_count,
+            ),
+            fingerprint_seen=False,
+        )
+
+
+def _apply_runner_recovery_adjustments(code_dir: Path, adjustments: dict) -> bool:
+    config_path = code_dir / "execution_requirements.json"
+    if not config_path.is_file() or not adjustments:
+        return False
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    runtime = dict(config.get("runtime_adjustments") or {})
+    runtime.update(adjustments)
+    config["runtime_adjustments"] = runtime
+    config_path.write_text(
+        json.dumps(config, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return True
 
 
 def _benchmark_package_complete(summary: dict, criteria: dict) -> bool:
@@ -1596,6 +1669,22 @@ def _run_experiment(
 
     metric = None
     benchmark_summary = _parse_benchmark_summary_from_log(log_path)
+    if benchmark_summary.get("schema_version") == "final_results_v1":
+        try:
+            _record_contract_artifacts(run_id, workdir, benchmark_summary)
+        except RunnerContractError as exc:
+            return {
+                "status": "crash",
+                "metric": None,
+                "duration": duration,
+                "error": str(exc),
+                "failure_type": exc.reason_code,
+                "final_results_present": True,
+                "command_tokens": command_tokens,
+                "log_path": str(log_path),
+                "benchmark_summary": benchmark_summary,
+                **execution_meta,
+            }
     benchmark_metric_name, benchmark_candidate_method, benchmark_candidate_value, benchmark_baseline_value, benchmark_num_seeds = _benchmark_scores(benchmark_summary) if benchmark_summary else ("metric", None, None, None, 0)
     if benchmark_candidate_value is not None:
         metric = benchmark_candidate_value
@@ -1972,6 +2061,16 @@ def _record_artifact(
     agenda_id = int((run or {}).get("agenda_id") or 0)
     if agenda_id <= 0:
         raise RuntimeError("artifact write requires an agenda-scoped experiment run")
+    existing = db.fetchone(
+        """
+        SELECT id FROM experiment_artifacts
+        WHERE agenda_id=? AND run_id=? AND artifact_type=? AND path=?
+        ORDER BY id LIMIT 1
+        """,
+        (agenda_id, run_id, artifact_type, str(path)),
+    )
+    if existing:
+        return
     db.execute(
         """
         INSERT INTO experiment_artifacts
@@ -1988,6 +2087,70 @@ def _record_artifact(
             json.dumps(metadata or {}),
         ),
     )
+
+
+def _record_contract_artifacts(
+    run_id: int | None,
+    workdir: Path,
+    log_summary: dict,
+) -> None:
+    """Verify raw evidence and register every logical runner artifact."""
+
+    if run_id is None:
+        raise RunnerContractError("runner_contract_violation", "run_id_missing")
+    results_dir = (workdir / "results").resolve()
+    final_path = results_dir / "final_results.json"
+    if not final_path.is_file():
+        raise RunnerContractError("artifact_contract_violation", "final_results")
+    payload = validate_final_results(
+        json.loads(final_path.read_text(encoding="utf-8"))
+    )
+    for key in (
+        "dataset_revision",
+        "model_revision",
+        "baseline_method",
+        "candidate_method",
+        "metric_name",
+        "metric_direction",
+        "baseline_metric_value",
+        "best_metric_value",
+    ):
+        if payload.get(key) != log_summary.get(key):
+            raise RunnerContractError("runner_contract_violation", f"log_file_{key}")
+    verify_metric_from_artifacts(final_path)
+    artifacts = payload["artifacts"]
+    hashes = payload["artifact_hashes"]
+    for artifact_type, ref in artifacts.items():
+        if not isinstance(ref, dict) or not str(ref.get("path") or "").strip():
+            raise RunnerContractError(
+                "artifact_contract_violation", str(artifact_type)
+            )
+        path = (results_dir / str(ref["path"])).resolve()
+        if path != results_dir and results_dir not in path.parents:
+            raise RunnerContractError("artifact_contract_violation", "path_escape")
+        if not path.is_file():
+            raise RunnerContractError(
+                "artifact_contract_violation", str(artifact_type)
+            )
+        expected = str(hashes.get(artifact_type) or "")
+        if expected and hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+            raise RunnerContractError("artifact_hash_mismatch", str(artifact_type))
+        _record_artifact(
+            int(run_id),
+            str(artifact_type),
+            path,
+            metric_key=str(payload["metric_name"]),
+            metric_value=(
+                float(payload["best_metric_value"])
+                if artifact_type == "final_results"
+                else None
+            ),
+            metadata={
+                "contract_type": "RunnerArtifact",
+                "sha256": expected or hashlib.sha256(path.read_bytes()).hexdigest(),
+            },
+        )
+    db.commit()
 
 
 def _read_experiment_spec(
@@ -2875,8 +3038,22 @@ def run_full_benchmark_completion(run_id: int, execution_context: dict | None = 
         return {"run_id": run_id, "verdict": "failed", "reason": str(error), "execution_report": result}
 
     _, _, candidate_value, baseline_value, _ = _benchmark_scores(benchmark_summary)
-    baseline = float(baseline_value if baseline_value is not None else run.get("baseline_metric_value") or 0.0)
-    best_value = float(candidate_value if candidate_value is not None else metric if metric is not None else run.get("best_metric_value") or baseline)
+    if baseline_value is None or candidate_value is None:
+        error = "metric_missing:baseline_or_candidate_metric"
+        db.execute(
+            "UPDATE experiment_runs SET status='failed', phase='full_benchmark', error_message=?, completed_at=CURRENT_TIMESTAMP WHERE id=? AND agenda_id=?",
+            (error, run_id, int(run["agenda_id"])),
+        )
+        db.commit()
+        return {
+            "run_id": run_id,
+            "verdict": "failed",
+            "reason": error,
+            "reason_code": "metric_missing",
+            "execution_report": result,
+        }
+    baseline = float(baseline_value)
+    best_value = float(candidate_value)
     verdict = _determine_final_verdict(
         baseline=baseline,
         best_value=best_value,
@@ -3162,6 +3339,7 @@ def run_validation_loop(run_id: int, execution_context: dict | None = None) -> d
     benchmark_candidate_values: list[float] = []
     benchmark_summary: dict = {}
     last_repro_result: dict = {"status": "pending", "error": "no attempt yet"}
+    last_recovery_decision = None
 
     repair_round = 0
     while True:
@@ -3242,6 +3420,23 @@ def run_validation_loop(run_id: int, execution_context: dict | None = None) -> d
                 print(f"[LOOP] Reproduction {i+1}/{repro_iters}: {metric_name}={metric}", flush=True)
             else:
                 print(f"[LOOP] Reproduction {i+1}/{repro_iters}: no metric (status={result.get('status')})", flush=True)
+                last_recovery_decision = _execution_recovery_decision(
+                    run_id,
+                    result,
+                    retry_count=repair_round,
+                )
+                result["reason_code"] = last_recovery_decision.reason_code
+                result["recovery_action"] = last_recovery_decision.action
+                if last_recovery_decision.action == "retry_adjusted":
+                    if not _apply_runner_recovery_adjustments(
+                        code_dir, dict(last_recovery_decision.adjustments)
+                    ):
+                        break
+                    continue
+                if last_recovery_decision.action == "retry_with_backoff":
+                    time.sleep(max(0, int(last_recovery_decision.backoff_seconds)))
+                    continue
+                break
 
         if baseline_values:
             break
@@ -3249,6 +3444,9 @@ def run_validation_loop(run_id: int, execution_context: dict | None = None) -> d
         if REPRODUCTION_REPAIR_MAX_ROUNDS <= 0:
             break
         if repair_round >= REPRODUCTION_REPAIR_MAX_ROUNDS:
+            break
+
+        if not last_recovery_decision or not last_recovery_decision.invoke_llm_repair:
             break
 
         repair_result = _launch_reproduction_repair(
@@ -3287,10 +3485,20 @@ def run_validation_loop(run_id: int, execution_context: dict | None = None) -> d
     if not baseline_values:
         failure_type = str(last_repro_result.get("failure_type") or "missing_metric")
         last_error = str(last_repro_result.get("error") or "no metric obtained")
+        recovery_action = (
+            last_recovery_decision.action
+            if last_recovery_decision is not None
+            else "defer"
+        )
+        reason_code = (
+            last_recovery_decision.reason_code
+            if last_recovery_decision is not None
+            else failure_type
+        )
         error_message = (
             "reproduction failed: no metric obtained; "
-            f"last_failure_type={failure_type}; "
-            f"code_repair_required; last_error={last_error[:500]}"
+            f"reason_code={reason_code}; recovery_action={recovery_action}; "
+            f"last_failure_type={failure_type}; last_error={last_error[:500]}"
         )
         db.execute(
             "UPDATE experiment_runs SET status='failed', error_message=?, completed_at=CURRENT_TIMESTAMP WHERE id=? AND agenda_id=?",
@@ -3307,7 +3515,11 @@ def run_validation_loop(run_id: int, execution_context: dict | None = None) -> d
             "verdict": "failed",
             "reason": "reproduction_failure",
             "failure_type": failure_type,
-            "code_repair_required": True,
+            "code_repair_required": bool(
+                last_recovery_decision and last_recovery_decision.invoke_llm_repair
+            ),
+            "reason_code": reason_code,
+            "recovery_action": recovery_action,
         }
 
     benchmark_mode = bool(benchmark_summary and benchmark_baseline_values and benchmark_candidate_values)

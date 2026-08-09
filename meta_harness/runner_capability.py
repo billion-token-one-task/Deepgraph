@@ -60,6 +60,7 @@ class ExperimentRequirements:
     dataset: DatasetRequirement
     model: ModelRequirement
     metric: MetricRequirement
+    candidate_hook: str = ""
     dependencies: tuple[str, ...] = ()
     network_required: bool = True
     min_disk_gb: float = 1.0
@@ -104,6 +105,14 @@ class ExperimentRequirements:
             "lower",
         }:
             raise CapabilityContractError("metric_contract_invalid")
+        expected_hook = {
+            "generative_qa": "candidate_prompt",
+            "sequence_classification": "candidate_text",
+        }.get(self.task_protocol)
+        if expected_hook and self.candidate_hook != expected_hook:
+            raise CapabilityContractError("candidate_hook_contract_invalid")
+        if not self.candidate_hook.strip():
+            raise CapabilityContractError("candidate_hook_required")
         if not self.seeds or any(int(seed) < 0 for seed in self.seeds):
             raise CapabilityContractError("seed_contract_invalid")
         if self.sample_cap is not None and int(self.sample_cap) <= 0:
@@ -163,6 +172,13 @@ class ExperimentRequirements:
                     )
                 ),
             ),
+            candidate_hook=str(
+                value.get("candidate_hook")
+                or {
+                    "generative_qa": "candidate_prompt",
+                    "sequence_classification": "candidate_text",
+                }.get(str(value.get("task_protocol") or ""), "")
+            ),
             dependencies=tuple(str(item) for item in value.get("dependencies", ())),
             network_required=bool(value.get("network_required", True)),
             min_disk_gb=float(value.get("min_disk_gb") or 0.0),
@@ -193,6 +209,7 @@ class RunnerCapability:
     adapter_id: str
     version: str
     task_protocols: tuple[str, ...]
+    candidate_hooks: tuple[str, ...]
     dataset_roles: tuple[str, ...]
     model_frameworks: tuple[str, ...]
     model_tasks: tuple[str, ...]
@@ -213,6 +230,8 @@ class RunnerCapability:
         blockers: list[str] = []
         if requirements.task_protocol not in self.task_protocols:
             blockers.append("unsupported_task_protocol")
+        if requirements.candidate_hook not in self.candidate_hooks:
+            blockers.append("candidate_hook_unsupported")
         if not set(requirements.dataset.field_mapping).issuperset(
             self.dataset_roles
         ):
@@ -269,6 +288,7 @@ def default_runner_capabilities() -> tuple[RunnerCapability, ...]:
             adapter_id="transformers_causal_lm_qa_v1",
             version="1.0.0",
             task_protocols=("generative_qa",),
+            candidate_hooks=("candidate_prompt",),
             dataset_roles=("prompt", "target"),
             model_frameworks=("transformers",),
             model_tasks=("causal_lm", "text_generation"),
@@ -287,29 +307,12 @@ def default_runner_capabilities() -> tuple[RunnerCapability, ...]:
             adapter_id="transformers_sequence_classification_v1",
             version="1.0.0",
             task_protocols=("sequence_classification",),
+            candidate_hooks=("candidate_text",),
             dataset_roles=("text", "label"),
             model_frameworks=("transformers",),
             model_tasks=("sequence_classification",),
             metric_names=("accuracy", "f1", "macro_f1"),
             dependencies=("torch", "transformers", "datasets"),
-            can_install_dependencies=True,
-            network_required=True,
-            min_disk_gb=2.0,
-            min_vram_gb=0.0,
-            supports_seed=True,
-            supports_sample_cap=True,
-            output_artifacts=common_outputs,
-            backends=("cpu",) + common_backends,
-        ),
-        RunnerCapability(
-            adapter_id="sentence_embedding_retrieval_v1",
-            version="1.0.0",
-            task_protocols=("retrieval_ranking",),
-            dataset_roles=("query", "document", "relevance"),
-            model_frameworks=("sentence_transformers", "transformers"),
-            model_tasks=("embedding",),
-            metric_names=("mrr", "recall_at_k", "ndcg"),
-            dependencies=("torch", "transformers"),
             can_install_dependencies=True,
             network_required=True,
             min_disk_gb=2.0,
@@ -742,6 +745,10 @@ def requirements_from_plan(plan: Mapping[str, Any]) -> ExperimentRequirements:
                 or "higher"
             ).lower(),
         ),
+        candidate_hook={
+            "generative_qa": "candidate_prompt",
+            "sequence_classification": "candidate_text",
+        }.get(protocol, str(plan.get("candidate_hook") or "")),
         dependencies=("torch", "transformers", "datasets"),
         network_required=True,
         min_disk_gb=float((plan.get("compute_budget") or {}).get("disk_gb") or 4.0),

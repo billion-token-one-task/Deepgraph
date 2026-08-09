@@ -36,18 +36,17 @@ class AutoResearchLoopTests(unittest.TestCase):
 
 
 class AutoResearchRoutingTests(unittest.TestCase):
-    def test_real_llm_benchmark_plan_upgrades_cpu_route_to_gpu_large(self):
+    def test_structured_runner_requirements_upgrade_cpu_route_to_gpu_large(self):
         insight = {
             "id": 31,
             "resource_class": "cpu",
             "title": "Closed-loop benchmark routing",
             "experimental_plan": json.dumps(
                 {
-                    "datasets": [{"name": "GSM8K"}],
-                    "baselines": [
-                        {"name": "Vanilla Direct Answering"},
-                        {"name": "Always-Reason Chain-of-Thought"},
-                    ],
+                    "execution_requirements": {
+                        "model": {"requires_cuda": True},
+                        "preferred_backends": ["ssh_gpu"],
+                    },
                 }
             ),
         }
@@ -56,7 +55,14 @@ class AutoResearchRoutingTests(unittest.TestCase):
             resource_class, reason = auto_research.assess_experiment_route(insight)
 
         self.assertEqual(resource_class, "gpu_large")
-        self.assertIn("upgraded cpu route to gpu_large", reason)
+        self.assertIn("structured runner requirements", reason)
+
+    def test_core_route_source_has_no_benchmark_or_model_name_switches(self):
+        import inspect
+
+        source = inspect.getsource(auto_research._requires_accelerated_runner).lower()
+        for forbidden in ("gsm8k", "qwen", "llama", "process_guided_candidate"):
+            self.assertNotIn(forbidden, source)
 
 
 class AutoResearchSchedulingTests(unittest.TestCase):

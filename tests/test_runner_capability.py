@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from unittest import mock
 
 from meta_harness.runner_capability import (
     DatasetRequirement,
@@ -13,6 +14,7 @@ from meta_harness.runner_capability import (
     RunnerRegistry,
     requirements_from_plan,
 )
+from orchestrator import gpu_scheduler
 
 
 class Probe:
@@ -61,6 +63,7 @@ def qa_requirements(dataset="org/qa-corpus", model="org/generator"):
             requires_cuda=True,
         ),
         metric=MetricRequirement("exact_match", "higher"),
+        candidate_hook="candidate_prompt",
         dependencies=("torch", "transformers", "datasets"),
         seeds=(3, 9),
         sample_cap=32,
@@ -90,6 +93,7 @@ def classification_requirements():
             requires_cuda=True,
         ),
         metric=MetricRequirement("macro_f1", "higher"),
+        candidate_hook="candidate_text",
         dependencies=("torch", "transformers", "datasets"),
         artifact_contract=(
             "final_results",
@@ -227,6 +231,35 @@ class RunnerCapabilityTests(unittest.TestCase):
         )
         self.assertEqual(requirements.model.task, "sequence_classification")
         self.assertEqual(requirements.seeds, (0, 1))
+
+
+class ComputePreflightGuardTests(unittest.TestCase):
+    def test_production_guard_requires_passed_revision_bound_adapter(self):
+        run = {"agenda_id": 2, "deep_insight_id": 3, "resource_grant_id": 5}
+        with (
+            mock.patch.object(gpu_scheduler.db, "_use_pg", return_value=True),
+            mock.patch.object(
+                gpu_scheduler.db,
+                "fetchone",
+                return_value={
+                    "preflight_result_id": 7,
+                    "status": "passed",
+                    "adapter_id": "transformers.generative_qa.v1",
+                    "dataset_revision": "a" * 40,
+                    "model_revision": "b" * 40,
+                },
+            ),
+        ):
+            self.assertIsNone(gpu_scheduler._capability_preflight_blocker(run))
+
+    def test_production_guard_quarantines_every_unbound_legacy_run(self):
+        run = {"agenda_id": 2, "deep_insight_id": 3, "resource_grant_id": 5}
+        with (
+            mock.patch.object(gpu_scheduler.db, "_use_pg", return_value=True),
+            mock.patch.object(gpu_scheduler.db, "fetchone", return_value=None),
+        ):
+            reason = gpu_scheduler._capability_preflight_blocker(run)
+        self.assertIn("lacks a capability preflight", reason)
 
 
 if __name__ == "__main__":

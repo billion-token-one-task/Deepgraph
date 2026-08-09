@@ -47,6 +47,7 @@ from contracts.meta_harness import (  # noqa: E402
 from db import database as db  # noqa: E402
 from meta_harness.frontier_authority import FrontierAuthorityRepository  # noqa: E402
 from meta_harness.frontier_bootstrap import run_bootstrap_evaluation  # noqa: E402
+from meta_harness.outcome_finalizer import finalize_terminal_outcomes  # noqa: E402
 from meta_harness.portfolio import decide_portfolio, issue_resource_grant  # noqa: E402
 from meta_harness.preflight_repository import CandidatePreflightRepository  # noqa: E402
 from meta_harness.repository import MetaHarnessRepository  # noqa: E402
@@ -81,6 +82,20 @@ class Journal:
 
 def _rows(sql: str, params: tuple = ()) -> list[dict]:
     return [dict(r) for r in db.fetchall(sql, params)]
+
+
+def active_agenda_ids() -> list[int]:
+    return [
+        int(row["id"])
+        for row in _rows(
+            """
+            SELECT id FROM research_agendas
+            WHERE is_active=1 AND status='active'
+              AND token_budget > token_spent + token_reserved
+            ORDER BY updated_at ASC, id ASC
+            """
+        )
+    ]
 
 
 def _load_state(path: Path) -> dict:
@@ -164,7 +179,12 @@ def _clip(text: str | None, limit: int = 600) -> str:
     return (text or "").strip()[:limit]
 
 
-def draft_preregistration(insight: dict) -> dict:
+def draft_preregistration(
+    insight: dict,
+    *,
+    token_cap: int,
+    gpu_hours: float,
+) -> dict:
     """Mechanical pre-registration from the insight's own fields.
 
     No LLM call happens here (pre-idea LLM spend would be ungranted). The
@@ -206,7 +226,11 @@ def draft_preregistration(insight: dict) -> dict:
             "metric": metric,
             "baseline": baseline,
             "decisive_comparison": comparison,
-            "estimated_cost": {"tokens": 5000, "gpu_hours": 0, "wall_hours": 4},
+            "estimated_cost": {
+                "tokens": max(1, int(token_cap)),
+                "gpu_hours": max(0.0, float(gpu_hours)),
+                "wall_hours": 4,
+            },
         },
         "provenance": {
             "drafted_by": f"{ACTOR}(mechanical-from-insight-fields)",
@@ -437,6 +461,7 @@ def recycle_stranded(agenda_id: int, state: dict, journal: Journal, args) -> Non
                 continue
         if (
             not grant_ok
+            and args.spend_limit > 0
             and _spent_delta(state, args.agenda) + required_token_cap > args.spend_limit
         ):
             journal.log(
@@ -581,10 +606,19 @@ def advance_agenda(agenda_id: int, state: dict, journal: Journal, args) -> None:
     )
     for insight in unregistered:
         try:
+            proposal_pending = str(insight.get("status") or "") == "proposal_pending"
             outcome = record_prediction(
                 agenda_id=agenda_id,
                 idea_id=int(insight["id"]),
-                record=draft_preregistration(insight),
+                record=draft_preregistration(
+                    insight,
+                    token_cap=(
+                        args.proposal_token_cap
+                        if proposal_pending
+                        else args.grant_token_cap
+                    ),
+                    gpu_hours=0.0 if proposal_pending else args.grant_gpu_hours,
+                ),
                 actor=ACTOR,
             )
             # record_prediction's dict already carries agenda_id/idea_id.
@@ -615,9 +649,12 @@ def advance_agenda(agenda_id: int, state: dict, journal: Journal, args) -> None:
 
     # c/d. decide + grant for waiting jobs
     waiting = _rows(
-        "SELECT id, deep_insight_id FROM auto_research_jobs"
-        " WHERE agenda_id=? AND status='queued' AND stage='awaiting_portfolio_decision'"
-        " ORDER BY updated_at ASC, id ASC LIMIT ?",
+        "SELECT arj.id, arj.deep_insight_id, di.status AS insight_status"
+        " FROM auto_research_jobs arj"
+        " JOIN deep_insights di ON di.id=arj.deep_insight_id"
+        " WHERE arj.agenda_id=? AND arj.status='queued'"
+        " AND arj.stage='awaiting_portfolio_decision'"
+        " ORDER BY arj.updated_at ASC, arj.id ASC LIMIT ?",
         (agenda_id, args.max_new_grants),
     )
     if not waiting:
@@ -628,14 +665,50 @@ def advance_agenda(agenda_id: int, state: dict, journal: Journal, args) -> None:
         journal.log("no_frontier_packet", agenda_id=agenda_id)
         return
     repo = MetaHarnessRepository()
+    try:
+        portfolio = decide_portfolio(
+            [
+                build_packet(
+                    agenda_id,
+                    int(job["deep_insight_id"]),
+                    packet_id,
+                )
+                for job in waiting
+            ]
+        )
+    except Exception as exc:
+        db.rollback()
+        journal.log(
+            "portfolio_refused",
+            agenda_id=agenda_id,
+            candidate_ids=[int(job["deep_insight_id"]) for job in waiting],
+            reason=f"{type(exc).__name__}: {exc}",
+        )
+        return
+    decision_by_idea = {int(item.idea_id): item for item in portfolio}
     for job in waiting:
-        if _spent_delta(state, args.agenda) + int(args.grant_token_cap) > args.spend_limit:
+        proposal_pending = str(job.get("insight_status") or "") == "proposal_pending"
+        requested_token_cap = (
+            int(args.proposal_token_cap)
+            if proposal_pending
+            else int(args.grant_token_cap)
+        )
+        if (
+            args.spend_limit > 0
+            and _spent_delta(state, args.agenda) + requested_token_cap > args.spend_limit
+        ):
             journal.log("spend_limit_reached", agenda_id=agenda_id, limit=args.spend_limit)
             return
         idea_id = int(job["deep_insight_id"])
+        decision = decision_by_idea.get(idea_id)
+        if decision is None:
+            journal.log(
+                "decision_missing",
+                agenda_id=agenda_id,
+                idea_id=idea_id,
+            )
+            continue
         try:
-            decisions = decide_portfolio([build_packet(agenda_id, idea_id, packet_id)])
-            decision = decisions[0]
             repo.save_decision(decision)
         except Exception as exc:
             db.rollback()
@@ -646,6 +719,48 @@ def advance_agenda(agenda_id: int, state: dict, journal: Journal, args) -> None:
                     decision=decision.decision, reason_codes=decision.reason_codes,
                     decision_packet_id=decision.decision_packet_id)
         if decision.decision not in {"promote", "revisit"}:
+            continue
+        agenda_backends = json.loads(dict(db.fetchone(
+            "SELECT backend_allowlist_json FROM research_agendas WHERE id=?", (agenda_id,)
+        ))["backend_allowlist_json"])
+        if proposal_pending:
+            if "llm" not in agenda_backends:
+                journal.log(
+                    "proposal_grant_deferred",
+                    agenda_id=agenda_id,
+                    idea_id=idea_id,
+                    reason="agenda_llm_backend_unavailable",
+                )
+                continue
+            try:
+                grant = issue_resource_grant(
+                    decision,
+                    stage="proposal",
+                    token_cap=requested_token_cap,
+                    gpu_class="none",
+                    max_gpu_hours=0.0,
+                    backend_allowlist=["llm"],
+                    artifact_requirements=["candidate_design"],
+                    expires_at=(_now() + timedelta(hours=4)).isoformat(),
+                    idempotency_key=_grant_key(agenda_id, idea_id, "proposal"),
+                )
+                grant_id = repo.issue_grant(grant)
+            except Exception as exc:
+                db.rollback()
+                journal.log(
+                    "proposal_grant_refused",
+                    agenda_id=agenda_id,
+                    idea_id=idea_id,
+                    reason=f"{type(exc).__name__}: {exc}",
+                )
+                continue
+            journal.log(
+                "proposal_granted",
+                agenda_id=agenda_id,
+                idea_id=idea_id,
+                resource_grant_id=grant_id,
+                token_cap=requested_token_cap,
+            )
             continue
         preflight = CandidatePreflightRepository().run_candidate(
             agenda_id=agenda_id,
@@ -676,9 +791,6 @@ def advance_agenda(agenda_id: int, state: dict, journal: Journal, args) -> None:
                 ),
             )
             continue
-        agenda_backends = json.loads(dict(db.fetchone(
-            "SELECT backend_allowlist_json FROM research_agendas WHERE id=?", (agenda_id,)
-        ))["backend_allowlist_json"])
         if preflight.selected_backend not in agenda_backends:
             journal.log(
                 "preflight_backend_not_in_agenda",
@@ -730,16 +842,17 @@ def advance_agenda(agenda_id: int, state: dict, journal: Journal, args) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--agenda", type=int, action="append",
-                        help="repeatable; default 10 and 11")
+                        help="repeatable; default: every active budgeted agenda")
     parser.add_argument("--state", default="/home/ec2-user/deepgraph-reports/auto_advance_state.json")
     parser.add_argument("--log", default="/home/ec2-user/deepgraph-reports/auto_advance_log.jsonl")
-    parser.add_argument("--spend-limit", type=int, default=120000,
-                        help="cumulative token delta across target agendas before new spend stops")
+    parser.add_argument("--spend-limit", type=int, default=0,
+                        help="optional extra process cap; 0 relies on each agenda ledger")
     parser.add_argument("--max-new-grants", type=int, default=2, help="per agenda per pass")
     # One forge pass measured 2026-08-07: repair 12626 + code scout 1976 +
     # benchmark design ~8400 = ~23000. A 15000 cap left 398 for the design
     # call, so the pass died one step from a runnable plan.
     parser.add_argument("--grant-token-cap", type=int, default=40000)
+    parser.add_argument("--proposal-token-cap", type=int, default=32000)
     parser.add_argument("--grant-gpu-hours", type=float, default=2.0)
     parser.add_argument("--gpu-class", default="NVIDIA A100-PCIE-40GB")
     # Contract max is 20000; cycle-1's real evaluator consumed 13717 and a
@@ -751,7 +864,7 @@ def main() -> int:
     parser.add_argument("--proposer-provider", default="sora2_gemini")
     parser.add_argument("--proposer-family", default="gemini")
     args = parser.parse_args()
-    args.agenda = args.agenda or [10, 11]
+    args.agenda = args.agenda or active_agenda_ids()
 
     journal = Journal(Path(args.log))
     state_path = Path(args.state)
@@ -760,10 +873,33 @@ def main() -> int:
 
     try:
         repo = MetaHarnessRepository()
+        finalized = finalize_terminal_outcomes().to_dict()
+        if finalized.get("attempted") or finalized.get("finalized"):
+            journal.log("outcome_finalization", **finalized)
         reconciled = repo.reconcile_expired_grants()
         if reconciled:
             journal.log("reconciled_expired_grants", count=reconciled)
         for agenda_id in args.agenda:
+            try:
+                from orchestrator.discovery_scheduler import run_tier2_discovery
+
+                generated = run_tier2_discovery(
+                    max_problems=2,
+                    max_papers=2,
+                    agenda_id=agenda_id,
+                )
+                journal.log(
+                    "candidate_generation_pass",
+                    agenda_id=agenda_id,
+                    generated=generated,
+                )
+            except Exception as exc:
+                db.rollback()
+                journal.log(
+                    "candidate_generation_failed",
+                    agenda_id=agenda_id,
+                    reason=f"{type(exc).__name__}: {exc}",
+                )
             for job in _rows(
                 "SELECT deep_insight_id, stage FROM auto_research_jobs WHERE agenda_id=?"
                 " AND stage IN ('resource_grant_expired','resource_grant_revoked')",
@@ -783,7 +919,7 @@ def main() -> int:
                                 idea_id=job["deep_insight_id"],
                                 reason=f"{type(exc).__name__}: {exc}")
             spent = _spent_delta(state, args.agenda)
-            if spent >= args.spend_limit:
+            if args.spend_limit > 0 and spent >= args.spend_limit:
                 journal.log("spend_limit_reached", spent=spent, limit=args.spend_limit)
                 break
             recycle_stranded(agenda_id, state, journal, args)

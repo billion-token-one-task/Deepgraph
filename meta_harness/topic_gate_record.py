@@ -31,6 +31,7 @@ prediction has to be readable from the same JSON the gate reads.
 from __future__ import annotations
 
 import json
+import hashlib
 from datetime import datetime, timezone
 from typing import Any, Mapping
 
@@ -234,6 +235,28 @@ def record_prediction(
         if int(getattr(cursor, "rowcount", 0) or 0) != 1:
             db.rollback()
             raise TopicGateRecordError("candidate scope changed during the write")
+        if db._use_pg():  # noqa: SLF001 - durable stage history is PostgreSQL-only.
+            stage = (
+                "proposal"
+                if str(candidate.get("status") or "") == "proposal_pending"
+                else "experiment"
+            )
+            db.execute(
+                """
+                INSERT INTO candidate_stage_gate_records_v1
+                    (agenda_id, idea_id, stage, record_json, content_hash, actor)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT (agenda_id, idea_id, stage, content_hash) DO NOTHING
+                """,
+                (
+                    int(agenda_id),
+                    int(idea_id),
+                    stage,
+                    payload,
+                    hashlib.sha256(payload.encode("utf-8")).hexdigest(),
+                    str(actor).strip(),
+                ),
+            )
         db.commit()
     except Exception:
         db.rollback()

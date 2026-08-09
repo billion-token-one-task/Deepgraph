@@ -27,6 +27,7 @@ from config import (
     PIPELINE_EVENT_POLL_SECONDS,
 )
 from db import database as db
+from meta_harness.repository import MetaHarnessRepository
 from orchestrator.pipeline import log_event
 
 _discovery_thread = None
@@ -176,8 +177,19 @@ def run_tier2_discovery(
                 method = json.loads(ins.get("proposed_method", "{}"))
             except Exception:
                 pass
-            stored.append({"id": insight_id, "title": ins["title"],
-                           "method_name": method.get("name", "")})
+            proposal_grant_id = int(ins.get("resource_grant_id") or 0)
+            if proposal_grant_id > 0:
+                MetaHarnessRepository().complete_proposal_generation(
+                    grant_id=proposal_grant_id,
+                    agenda_id=agenda_id,
+                    idea_id=int(insight_id),
+                )
+            stored.append({
+                "id": insight_id,
+                "title": ins["title"],
+                "method_name": method.get("name", ""),
+                "proposal_grant_id": proposal_grant_id or None,
+            })
             log_event("deep_insight", {
                 "tier": 2,
                 "agenda_id": agenda_id,
