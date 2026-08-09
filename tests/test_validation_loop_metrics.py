@@ -3,6 +3,7 @@ import sys
 import tempfile
 import textwrap
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -31,6 +32,53 @@ class ValidationTimeoutPolicyTests(unittest.TestCase):
 
 
 class ValidationMetricParsingTests(unittest.TestCase):
+    def test_remaining_grant_gpu_seconds_charges_failed_attempt_wall_time(self):
+        now = datetime.now(timezone.utc)
+
+        def fetchone(sql, _params):
+            if "FROM experiment_runs" in sql:
+                return {"resource_grant_id": 18}
+            if "FROM resource_grants" in sql:
+                return {"max_gpu_hours": 2}
+            self.fail(sql)
+
+        with (
+            mock.patch.object(validation_loop.db, "fetchone", side_effect=fetchone),
+            mock.patch.object(
+                validation_loop.db,
+                "fetchall",
+                return_value=[
+                    {"started_at": now - timedelta(hours=2), "completed_at": now},
+                ],
+            ),
+        ):
+            remaining = validation_loop._remaining_grant_gpu_seconds(131)
+
+        self.assertEqual(remaining, 0.0)
+
+    def test_exhausted_gpu_grant_refuses_remote_execution(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workdir = Path(tmpdir)
+            code_dir = workdir / "code"
+            code_dir.mkdir()
+            (code_dir / "train.py").write_text("print('not reached')\n", encoding="utf-8")
+            with (
+                mock.patch.object(validation_loop.db, "fetchone", return_value=None),
+                mock.patch.object(validation_loop.ssh_gpu_backend, "is_ssh_worker", return_value=True),
+                mock.patch.object(validation_loop, "_remaining_grant_gpu_seconds", return_value=0.0),
+                mock.patch.object(validation_loop.ssh_gpu_backend, "run_remote_experiment") as remote_run,
+            ):
+                result = validation_loop._run_experiment(
+                    workdir,
+                    code_dir,
+                    30,
+                    run_id=131,
+                    execution_context={"worker": {"id": "ssh-test"}},
+                )
+
+        self.assertEqual(result["failure_type"], "grant_gpu_hours_exhausted")
+        remote_run.assert_not_called()
+
     def test_remote_experiment_closes_metadata_transaction_before_gpu_wait(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             workdir = Path(tmpdir)

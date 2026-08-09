@@ -20,6 +20,7 @@ import subprocess
 import sys
 import textwrap
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from agents.benchmark_audit import (
@@ -1299,6 +1300,62 @@ def _run_experiment_model_matrix(
         "final_results_present": bool(merged),
     }
 
+def _as_utc_datetime(value) -> datetime | None:
+    if isinstance(value, datetime):
+        parsed = value
+    elif value:
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _remaining_grant_gpu_seconds(run_id: int) -> float | None:
+    """Return cumulative SSH GPU time left on this run's grant.
+
+    Failed attempts are real GPU spend too.  Durable compute settlement can
+    lag stale-job recovery, so admission uses the legacy jobs' persisted wall
+    timestamps as the conservative source of truth.
+    """
+    scope = db.fetchone(
+        """
+        SELECT resource_grant_id FROM experiment_runs
+        WHERE id=?
+        """,
+        (int(run_id),),
+    )
+    grant_id = int((scope or {}).get("resource_grant_id") or 0)
+    if grant_id <= 0:
+        return None
+    grant = db.fetchone(
+        "SELECT max_gpu_hours FROM resource_grants WHERE id=?",
+        (grant_id,),
+    )
+    cap_seconds = float((grant or {}).get("max_gpu_hours") or 0.0) * 3600.0
+    if cap_seconds <= 0:
+        return 0.0
+    rows = db.fetchall(
+        """
+        SELECT started_at, completed_at FROM gpu_jobs
+        WHERE resource_grant_id=? AND experiment_run_id<>?
+          AND started_at IS NOT NULL AND completed_at IS NOT NULL
+        """,
+        (grant_id, int(run_id)),
+    )
+    used_seconds = 0.0
+    for row in rows:
+        started = _as_utc_datetime(row.get("started_at"))
+        completed = _as_utc_datetime(row.get("completed_at"))
+        if started is not None and completed is not None:
+            used_seconds += max(0.0, (completed - started).total_seconds())
+    return cap_seconds - used_seconds
+
+
 def _run_experiment(
     workdir: Path,
     code_dir: Path,
@@ -1386,6 +1443,24 @@ def _run_experiment(
         )
     try:
         if run_id is not None and ssh_gpu_backend.is_ssh_worker(worker):
+            remaining_gpu_seconds = _remaining_grant_gpu_seconds(run_id)
+            if remaining_gpu_seconds is not None and remaining_gpu_seconds <= 0:
+                return {
+                    "status": "crash",
+                    "duration": time.time() - start,
+                    "error": "resource grant cumulative GPU-hour cap is exhausted",
+                    "failure_type": "grant_gpu_hours_exhausted",
+                    "final_results_present": False,
+                    "command_tokens": command_tokens,
+                    "log_path": str(log_path),
+                    "backend": "ssh",
+                    "benchmark_env": benchmark_env,
+                }
+            remote_time_budget = time_budget
+            if remaining_gpu_seconds is not None:
+                bounded_seconds = max(1, int(remaining_gpu_seconds))
+                if remote_time_budget <= 0 or remote_time_budget > bounded_seconds:
+                    remote_time_budget = bounded_seconds
             # _run_experiment performs metadata reads while preparing the remote
             # command.  With psycopg those reads open a transaction; leaving it
             # open across a model download/GPU run lets the session-side idle
@@ -1397,7 +1472,7 @@ def _run_experiment(
                 run_id=run_id,
                 local_workdir=workdir,
                 local_code_dir=code_dir,
-                time_budget=time_budget,
+                time_budget=remote_time_budget,
                 command_tokens=command_tokens,
                 local_python=python_bin,
                 benchmark_env=benchmark_env,
