@@ -9,6 +9,7 @@ import socket
 import subprocess
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from agents.knowledge_loop import process_completed_run
@@ -230,13 +231,7 @@ def _local_run_has_live_process(job: dict) -> bool:
     return any(_pid_matches_run(pid, workdir) for pid in pids)
 
 def recover_stale_local_running_jobs(workers: list[dict] | None = None) -> int:
-    """Requeue local GPU jobs left running by a controller restart.
-
-    Background worker threads are in-process, so after a fresh scheduler start
-    any local ``gpu_jobs.status='running'`` row owned by this host has no live
-    Python thread behind it. Requeue it and let ``run_validation_loop`` resume
-    from saved iteration state.
-    """
+    """Settle local GPU attempts whose in-process controller was lost."""
     local_ids = _local_worker_ids(workers)
     if not local_ids:
         return 0
@@ -254,6 +249,7 @@ def recover_stale_local_running_jobs(workers: list[dict] | None = None) -> int:
         tuple(local_ids),
     )
     recovered = 0
+    terminal_attempts: list[tuple[int, int, datetime, str]] = []
     for job in stale_jobs:
         agenda_id = int(job.get("agenda_id") or 0)
         if agenda_id <= 0:
@@ -293,17 +289,25 @@ def recover_stale_local_running_jobs(workers: list[dict] | None = None) -> int:
                     agenda_id,
                 ),
             )
+            terminal_attempts.append(
+                (
+                    int(job.get("gpu_attempt_reservation_id") or 0),
+                    int(job_id),
+                    datetime.now(timezone.utc),
+                    "controller_lost_after_completion",
+                )
+            )
         else:
             db.execute(
                 """
                 UPDATE gpu_jobs
-                SET status='queued', assigned_worker=NULL, started_at=NULL,
-                    completed_at=NULL, error_message=?
+                SET status='failed', assigned_worker=NULL,
+                    completed_at=CURRENT_TIMESTAMP, error_message=?
                 WHERE id=? AND agenda_id=?
                 """,
                 (
-                    "Recovered stale local running job after scheduler restart; "
-                    "validation will resume from saved run state.",
+                    "Recovered stale local running job after controller restart; "
+                    "the lost attempt was settled before any retry.",
                     job_id,
                     agenda_id,
                 ),
@@ -311,7 +315,7 @@ def recover_stale_local_running_jobs(workers: list[dict] | None = None) -> int:
             db.execute(
                 """
                 UPDATE auto_research_jobs
-                SET status='queued_gpu', stage='gpu_scheduler',
+                SET status='queued', stage='retry_failed_run',
                     assigned_worker=NULL, experiment_run_id=?,
                     last_note=?, last_error=NULL,
                     updated_at=CURRENT_TIMESTAMP, last_checked_at=CURRENT_TIMESTAMP
@@ -319,10 +323,18 @@ def recover_stale_local_running_jobs(workers: list[dict] | None = None) -> int:
                 """,
                 (
                     run_id,
-                    f"Recovered stale GPU job {job_id}; queued it for automatic resume.",
+                    f"Recovered and settled stale GPU attempt {job_id}; a retry requires a fresh attempt reservation.",
                     insight_id,
                     agenda_id,
                 ),
+            )
+            terminal_attempts.append(
+                (
+                    int(job.get("gpu_attempt_reservation_id") or 0),
+                    int(job_id),
+                    datetime.now(timezone.utc),
+                    "controller_lost",
+                )
             )
         if job.get("assigned_worker"):
             db.execute(
@@ -332,6 +344,21 @@ def recover_stale_local_running_jobs(workers: list[dict] | None = None) -> int:
         recovered += 1
     if recovered:
         db.commit()
+    for reservation_id, job_id, completed_at, reason_code in terminal_attempts:
+        if reservation_id <= 0:
+            continue
+        try:
+            from meta_harness.attempt_gpu_usage import GrantGPUUsageControl
+            from orchestrator.meta_compute_runtime import settle_legacy_job
+
+            GrantGPUUsageControl().settle_attempt(
+                reservation_id,
+                completed_at=completed_at,
+                reason_code=reason_code,
+            )
+            settle_legacy_job(job_id)
+        except Exception:
+            db.rollback()
     return recovered
 
 
@@ -381,6 +408,7 @@ def recover_stale_ssh_running_jobs() -> int:
         ('%"backend": "ssh"%',),
     )
     recovered = 0
+    terminal_attempts: list[tuple[int, int, object, str]] = []
     for job in stale_jobs:
         agenda_id = int(job.get("agenda_id") or 0)
         if agenda_id <= 0:
@@ -424,17 +452,25 @@ def recover_stale_ssh_running_jobs() -> int:
                 """,
                 (message, insight_id, agenda_id),
             )
+            terminal_attempts.append(
+                (
+                    int(job.get("gpu_attempt_reservation_id") or 0),
+                    job_id,
+                    datetime.now(timezone.utc),
+                    "controller_lost_after_completion",
+                )
+            )
         elif _current_run_is_successful(run_id):
             db.execute(
                 """
                 UPDATE gpu_jobs
-                SET status='queued', assigned_worker=NULL, started_at=NULL,
-                    completed_at=NULL, error_message=?
+                SET status='completed', assigned_worker=NULL,
+                    completed_at=CURRENT_TIMESTAMP, error_message=?
                 WHERE id=? AND agenda_id=?
                 """,
                 (
-                    "Recovered stale SSH GPU job after the remote process exited, but post-run "
-                    "manuscript/submission-bundle work is not closed; queued automatic resume.",
+                    "Recovered successful SSH execution after controller loss; GPU usage was "
+                    "settled and only post-run scientific work remains.",
                     job_id,
                     agenda_id,
                 ),
@@ -442,7 +478,7 @@ def recover_stale_ssh_running_jobs() -> int:
             db.execute(
                 """
                 UPDATE auto_research_jobs
-                SET status='queued_gpu', stage='gpu_scheduler',
+                SET status='review_pending', stage='scientific_decision_required',
                     assigned_worker=NULL, experiment_run_id=?,
                     last_note=?, last_error=NULL,
                     updated_at=CURRENT_TIMESTAMP, last_checked_at=CURRENT_TIMESTAMP
@@ -450,10 +486,18 @@ def recover_stale_ssh_running_jobs() -> int:
                 """,
                 (
                     run_id,
-                    f"Recovered stale SSH GPU job {job_id}; queued it to finish post-run manuscript work.",
+                    f"Recovered successful SSH attempt {job_id}; GPU use is settled and post-run review will resume without rerunning compute.",
                     insight_id,
                     agenda_id,
                 ),
+            )
+            terminal_attempts.append(
+                (
+                    int(job.get("gpu_attempt_reservation_id") or 0),
+                    job_id,
+                    datetime.now(timezone.utc),
+                    "controller_lost_after_success",
+                )
             )
         else:
             db.execute(
@@ -484,6 +528,14 @@ def recover_stale_ssh_running_jobs() -> int:
                 """,
                 (run_id, message, insight_id, agenda_id),
             )
+            terminal_attempts.append(
+                (
+                    int(job.get("gpu_attempt_reservation_id") or 0),
+                    job_id,
+                    datetime.now(timezone.utc),
+                    "controller_lost",
+                )
+            )
         if job.get("assigned_worker"):
             db.execute(
                 "UPDATE gpu_workers SET status='idle', heartbeat_at=CURRENT_TIMESTAMP WHERE id=?",
@@ -492,6 +544,21 @@ def recover_stale_ssh_running_jobs() -> int:
         recovered += 1
     if recovered:
         db.commit()
+    for reservation_id, job_id, completed_at, reason_code in terminal_attempts:
+        if reservation_id <= 0:
+            continue
+        try:
+            from meta_harness.attempt_gpu_usage import GrantGPUUsageControl
+            from orchestrator.meta_compute_runtime import settle_legacy_job
+
+            GrantGPUUsageControl().settle_attempt(
+                reservation_id,
+                completed_at=completed_at,
+                reason_code=reason_code,
+            )
+            settle_legacy_job(job_id)
+        except Exception:
+            db.rollback()
     return recovered
 
 
@@ -888,6 +955,7 @@ def queue_run(
     }:
         raise RuntimeError("GPU queue requires an active pilot/full_benchmark ResourceGrant")
     durable_key = str(meta_harness_idempotency_key or "").strip()
+    claim = None
     if db._use_pg():  # noqa: SLF001
         if not durable_key:
             raise RuntimeError(
@@ -895,7 +963,7 @@ def queue_run(
             )
         claim = db.fetchone(
             """
-            SELECT id FROM compute_jobs_v1
+            SELECT id, gpu_attempt_reservation_id FROM compute_jobs_v1
             WHERE agenda_id=? AND idea_id=? AND resource_grant_id=?
               AND idempotency_key=? AND command_ref=?
               AND backend_kind IN ('local_gpu', 'ssh_gpu')
@@ -912,6 +980,10 @@ def queue_run(
         if not claim:
             raise RuntimeError(
                 "GPU queue durable compute claim is missing or out of scope"
+            )
+        if int(claim.get("gpu_attempt_reservation_id") or 0) <= 0:
+            raise RuntimeError(
+                "GPU queue canonical attempt reservation is missing"
             )
     if timeout_s is not None and int(timeout_s) <= 0:
         raise ValueError("GPU job timeout must be a positive hard limit")
@@ -939,6 +1011,14 @@ def queue_run(
             durable_key or None,
         ),
     )
+    if durable_key and claim:
+        from meta_harness.attempt_gpu_usage import GrantGPUUsageControl
+
+        GrantGPUUsageControl().bind_gpu_job(
+            int(claim["gpu_attempt_reservation_id"]),
+            int(jid),
+            commit=False,
+        )
     db.commit()
     db.emit_pipeline_event(
         "gpu_job_queued",
@@ -1316,6 +1396,13 @@ def _run_job(job: dict, worker: dict) -> None:
     agenda_id = int(job.get("agenda_id") or 0)
     if agenda_id <= 0:
         raise ValueError("GPU execution requires agenda scope")
+    attempt_reservation_id = int(job.get("gpu_attempt_reservation_id") or 0)
+    if attempt_reservation_id <= 0:
+        reason = "canonical GPU attempt reservation is required before launch"
+        _fail_blocked_queued_job(job, reason)
+        _release_worker_if_no_running_jobs(worker_id, finished_job_id=int(job_id))
+        db.commit()
+        return
     _mark_job_active(int(job_id))
     if not _try_mark_run_active(int(run_id)):
         _mark_run_inactive(int(run_id))
@@ -1336,6 +1423,36 @@ def _run_job(job: dict, worker: dict) -> None:
             db.commit()
             _mark_job_inactive(int(job_id))
             return
+    try:
+        from meta_harness.attempt_gpu_usage import GrantGPUUsageControl
+
+        attempt = GrantGPUUsageControl().start_attempt(
+            attempt_reservation_id,
+            commit=False,
+        )
+    except Exception as exc:
+        reason = f"GPU attempt admission failed:{exc}"
+        try:
+            GrantGPUUsageControl().release_unstarted(
+                attempt_reservation_id,
+                reason_code="attempt_start_refused",
+            )
+        except Exception:
+            db.rollback()
+        _fail_blocked_queued_job(job, reason)
+        _mark_job_inactive(int(job_id))
+        _mark_run_inactive(int(run_id))
+        _release_worker_if_no_running_jobs(worker_id, finished_job_id=int(job_id))
+        db.commit()
+        return
+    job["timeout_s"] = min(
+        int(job.get("timeout_s") or attempt.timeout_seconds),
+        int(attempt.timeout_seconds),
+    )
+    db.execute(
+        "UPDATE gpu_jobs SET timeout_s=? WHERE id=? AND agenda_id=? AND status='queued'",
+        (int(job["timeout_s"]), int(job_id), agenda_id),
+    )
     auto_job = db.fetchone(
         "SELECT stage FROM auto_research_jobs WHERE deep_insight_id=? AND agenda_id=?",
         (insight_id, agenda_id),
@@ -1588,6 +1705,46 @@ def _run_job(job: dict, worker: dict) -> None:
         )
     finally:
         try:
+            from meta_harness.attempt_gpu_usage import GrantGPUUsageControl
+
+            terminal = db.fetchone(
+                """
+                SELECT status, completed_at, error_message
+                FROM gpu_jobs WHERE id=? AND agenda_id=?
+                """,
+                (int(job_id), agenda_id),
+            ) or {}
+            terminal_status = str(terminal.get("status") or "failed")
+            reason_code = {
+                "completed": "attempt_completed",
+                "timed_out": "attempt_timed_out",
+                "cancelled": "attempt_cancelled",
+            }.get(terminal_status, "attempt_failed")
+            GrantGPUUsageControl().settle_attempt(
+                attempt_reservation_id,
+                completed_at=terminal.get("completed_at"),
+                reason_code=reason_code,
+            )
+        except Exception as exc:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            try:
+                from orchestrator.pipeline import log_event
+
+                log_event(
+                    "error",
+                    {
+                        "step": "attempt_gpu_settlement",
+                        "gpu_job_id": int(job_id),
+                        "attempt_reservation_id": attempt_reservation_id,
+                        "error": str(exc),
+                    },
+                )
+            except Exception:
+                pass
+        try:
             from orchestrator.meta_compute_runtime import settle_legacy_job
 
             settle_legacy_job(int(job_id))
@@ -1636,11 +1793,20 @@ def _maybe_recover_stale_jobs() -> int:
         return 0
     _last_recovery_check = now
     workers = register_default_workers()
-    return (
+    recovered = (
         recover_stale_local_running_jobs(workers)
         + recover_stale_ssh_running_jobs()
         + recover_busy_workers_without_running_jobs()
     )
+    if db._use_pg():  # noqa: SLF001
+        from meta_harness.attempt_gpu_usage import GrantGPUUsageControl
+        from orchestrator.meta_compute_runtime import settle_legacy_job
+
+        durable_job_ids = GrantGPUUsageControl().reconcile_terminal_attempts()
+        for gpu_job_id in durable_job_ids:
+            settle_legacy_job(gpu_job_id)
+        recovered += len(durable_job_ids)
+    return recovered
 
 
 def _loop() -> None:
@@ -1672,13 +1838,6 @@ def start() -> dict:
             return {"status": "already_running_elsewhere", "workers": list_workers()}
         durable_recovery: dict[str, int] = {}
         try:
-            # Only the process holding the scheduler lock may quarantine or
-            # settle durable work. A second web process must not reinterpret
-            # the active worker's running jobs as restart residue.
-            if db._use_pg():  # noqa: SLF001
-                from orchestrator.meta_compute_runtime import reconcile_on_startup
-
-                durable_recovery = reconcile_on_startup()
             try:
                 workers = register_default_workers()
             except Exception as exc:  # pragma: no cover - SQLite compatibility
@@ -1707,6 +1866,14 @@ def start() -> dict:
             + recover_stale_ssh_running_jobs()
             + recover_busy_workers_without_running_jobs()
         )
+        # Backend-aware stale recovery must run before generic durable timeout
+        # quarantine.  It can prove that an SSH process ended and settle the
+        # canonical attempt; doing this in the opposite order loses usage as
+        # ``usage_unknown`` during a controller restart.
+        if db._use_pg():  # noqa: SLF001
+            from orchestrator.meta_compute_runtime import reconcile_on_startup
+
+            durable_recovery = reconcile_on_startup()
         _stop_event.clear()
         _scheduler_thread = threading.Thread(target=_loop, daemon=True, name="deepgraph-gpu-scheduler")
         _scheduler_thread.start()

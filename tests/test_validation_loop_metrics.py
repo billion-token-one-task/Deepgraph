@@ -33,28 +33,16 @@ class ValidationTimeoutPolicyTests(unittest.TestCase):
 
 class ValidationMetricParsingTests(unittest.TestCase):
     def test_remaining_grant_gpu_seconds_charges_failed_attempt_wall_time(self):
-        now = datetime.now(timezone.utc)
-
-        def fetchone(sql, _params):
-            if "FROM experiment_runs" in sql:
-                return {"resource_grant_id": 18}
-            if "FROM resource_grants" in sql:
-                return {"max_gpu_hours": 2}
-            self.fail(sql)
-
-        with (
-            mock.patch.object(validation_loop.db, "fetchone", side_effect=fetchone),
-            mock.patch.object(
-                validation_loop.db,
-                "fetchall",
-                return_value=[
-                    {"started_at": now - timedelta(hours=2), "completed_at": now},
-                ],
-            ),
-        ):
+        with mock.patch.object(
+            validation_loop.db, "fetchone", return_value={"id": 44}
+        ), mock.patch(
+            "meta_harness.attempt_gpu_usage.GrantGPUUsageControl.remaining_attempt_wall_seconds",
+            return_value=0.0,
+        ) as remaining_control:
             remaining = validation_loop._remaining_grant_gpu_seconds(131)
 
         self.assertEqual(remaining, 0.0)
+        remaining_control.assert_called_once_with(44)
 
     def test_exhausted_gpu_grant_refuses_remote_execution(self):
         with tempfile.TemporaryDirectory() as tmpdir:

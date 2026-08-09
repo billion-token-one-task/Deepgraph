@@ -1316,44 +1316,22 @@ def _as_utc_datetime(value) -> datetime | None:
 
 
 def _remaining_grant_gpu_seconds(run_id: int) -> float | None:
-    """Return cumulative SSH GPU time left on this run's grant.
-
-    Failed attempts are real GPU spend too.  Durable compute settlement can
-    lag stale-job recovery, so admission uses the legacy jobs' persisted wall
-    timestamps as the conservative source of truth.
-    """
-    scope = db.fetchone(
+    """Read this run's allowance from the canonical attempt control plane."""
+    attempt = db.fetchone(
         """
-        SELECT resource_grant_id FROM experiment_runs
-        WHERE id=?
+        SELECT id FROM experiment_attempt_gpu_reservations_v1
+        WHERE experiment_run_id=? AND status IN ('reserved','running')
+        ORDER BY id DESC LIMIT 1
         """,
         (int(run_id),),
     )
-    grant_id = int((scope or {}).get("resource_grant_id") or 0)
-    if grant_id <= 0:
+    if not attempt:
         return None
-    grant = db.fetchone(
-        "SELECT max_gpu_hours FROM resource_grants WHERE id=?",
-        (grant_id,),
+    from meta_harness.attempt_gpu_usage import GrantGPUUsageControl
+
+    return GrantGPUUsageControl().remaining_attempt_wall_seconds(
+        int(attempt["id"])
     )
-    cap_seconds = float((grant or {}).get("max_gpu_hours") or 0.0) * 3600.0
-    if cap_seconds <= 0:
-        return 0.0
-    rows = db.fetchall(
-        """
-        SELECT started_at, completed_at FROM gpu_jobs
-        WHERE resource_grant_id=? AND experiment_run_id<>?
-          AND started_at IS NOT NULL AND completed_at IS NOT NULL
-        """,
-        (grant_id, int(run_id)),
-    )
-    used_seconds = 0.0
-    for row in rows:
-        started = _as_utc_datetime(row.get("started_at"))
-        completed = _as_utc_datetime(row.get("completed_at"))
-        if started is not None and completed is not None:
-            used_seconds += max(0.0, (completed - started).total_seconds())
-    return cap_seconds - used_seconds
 
 
 def _run_experiment(
