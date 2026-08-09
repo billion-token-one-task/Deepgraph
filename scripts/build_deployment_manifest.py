@@ -7,8 +7,9 @@ source commit, SHA256, owner/mode expectation, backup path, and the health
 check that must pass afterwards.
 
 It is read-only: it hashes source files in this repository, asks Git for path
-status in the runtime tree without taking a lock, and prints JSON. It never
-copies, writes, restarts, or reads production file contents.
+status in the runtime tree without taking a lock, and prints JSON.  A spec may
+also request SHA256-only predeployment target snapshots; target bytes are
+hashed locally and are never printed.  It never copies, writes, or restarts.
 
     build_deployment_manifest.py --spec deploy/manifest/recovery_2026-08-03.spec.json
     build_deployment_manifest.py --spec ... --out deploy/manifest/recovery_2026-08-03.json
@@ -102,6 +103,7 @@ def build(spec_path: Path) -> dict:
     runtime_root = str(spec.get("runtime_root") or "")
     backup_root = str(spec.get("backup_root") or "/home/ec2-user/deepgraph-rollback")
     manifest_key = str(spec["manifest_key"])
+    capture_predeploy = bool(spec.get("capture_target_predeploy_sha256"))
     local_changes = _runtime_local_changes(runtime_root) if runtime_root else set()
 
     batches = []
@@ -113,6 +115,13 @@ def build(spec_path: Path) -> dict:
                 raise SystemExit(f"manifest source is missing:{entry['source']}")
             target = str(entry["target"]).replace("{runtime_root}", runtime_root)
             relative = str(entry["source"])
+            target_path = Path(target)
+            target_present = target_path.is_file() if target_path.is_absolute() else False
+            target_predeploy_sha256 = (
+                _sha256(target_path)
+                if capture_predeploy and target_present
+                else None
+            )
             files.append(
                 {
                     "source": relative,
@@ -131,6 +140,14 @@ def build(spec_path: Path) -> dict:
                         if entry.get("kind", "file") == "file"
                         else None
                     ),
+                    "target_predeploy_state": (
+                        "present"
+                        if target_present
+                        else "absent"
+                        if target_path.is_absolute()
+                        else "not_a_file_target"
+                    ),
+                    "target_predeploy_sha256": target_predeploy_sha256,
                 }
             )
         batches.append(
@@ -175,7 +192,7 @@ def build(spec_path: Path) -> dict:
             ],
         },
         "production_tree_modified_by_this_command": False,
-        "file_contents_read_from_production": False,
+        "file_contents_read_from_production": capture_predeploy,
     }
 
 
