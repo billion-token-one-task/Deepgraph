@@ -310,6 +310,7 @@ class ResourceGrant(ContractRecord):
     status: str = "active"
     grant_id: int | None = None
     reservation_id: int | None = None
+    preflight_result_id: int | None = None
 
     def validate(self) -> None:
         super().validate()
@@ -334,6 +335,10 @@ class ResourceGrant(ContractRecord):
         _utc(self.expires_at, "expires_at")
         require_non_empty("grant_reason", self.grant_reason)
         require_non_empty("idempotency_key", self.idempotency_key)
+        if self.preflight_result_id is not None:
+            self.preflight_result_id = _positive_id(
+                "preflight_result_id", self.preflight_result_id
+            )
         if self.status not in GRANT_STATES:
             raise ContractValidationError("invalid ResourceGrant status")
 

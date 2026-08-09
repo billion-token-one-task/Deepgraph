@@ -917,4 +917,9 @@ def grant_from_row(row: Mapping[str, Any]) -> ResourceGrant:
         status=str(row["grant_status"]),
         grant_id=int(row["resource_grant_id"]),
         reservation_id=int(row["reservation_id"]),
+        preflight_result_id=(
+            int(row["preflight_result_id"])
+            if row.get("preflight_result_id")
+            else None
+        ),
     )

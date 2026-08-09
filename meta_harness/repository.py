@@ -139,6 +139,38 @@ def _require_schedulable_backends(grant: ResourceGrant) -> None:
         ) from exc
 
 
+def _require_execution_preflight(grant: ResourceGrant) -> None:
+    """Bind compute authority to one passed, revision-resolved preflight."""
+    compute_backends = tuple(
+        backend
+        for backend in grant.backend_allowlist
+        if backend in {"cpu", "local_gpu", "ssh_gpu", "colab_gpu"}
+    )
+    if not compute_backends:
+        return
+    if not db._use_pg():  # noqa: SLF001 - SQLite remains a unit-test backend.
+        return
+    if int(grant.preflight_result_id or 0) <= 0:
+        raise MetaHarnessPersistenceError(
+            "ResourceGrant compute authority requires passed candidate preflight"
+        )
+    from meta_harness.preflight_repository import (
+        CandidatePreflightRepository,
+        PreflightPersistenceError,
+    )
+
+    try:
+        CandidatePreflightRepository().require_passed(
+            preflight_result_id=int(grant.preflight_result_id),
+            agenda_id=grant.agenda_id,
+            idea_id=grant.idea_id,
+            allowed_backends=compute_backends,
+            required_artifacts=tuple(grant.artifact_requirements),
+        )
+    except PreflightPersistenceError as exc:
+        raise MetaHarnessPersistenceError(str(exc)) from exc
+
+
 def _canonical_hash(value: str) -> str:
     text = str(value or "").strip().lower()
     return text.removeprefix("sha256:")
@@ -773,6 +805,7 @@ class MetaHarnessRepository:
                     "ResourceGrant backend exceeds agenda allowlist"
                 )
             _require_schedulable_backends(grant)
+            _require_execution_preflight(grant)
             reservation_id = db.insert_returning_id(
                 """
                 INSERT INTO agenda_resource_ledger
@@ -804,8 +837,9 @@ class MetaHarnessRepository:
                     (agenda_id, idea_id, decision_packet_id, stage, token_cap,
                      gpu_class, max_gpu_hours, backend_allowlist_json,
                      artifact_requirements_json, expires_at, grant_reason,
-                     reservation_id, status, idempotency_key)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     reservation_id, status, idempotency_key,
+                     preflight_result_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 RETURNING id
                 """,
                 (
@@ -823,6 +857,7 @@ class MetaHarnessRepository:
                     reservation_id,
                     grant.status,
                     grant.idempotency_key,
+                    grant.preflight_result_id,
                 ),
             )
             db.execute(

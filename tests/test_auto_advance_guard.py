@@ -41,13 +41,12 @@ class AutoAdvanceGuardTests(unittest.TestCase):
             ),
             mock.patch.object(auto_advance, "_requeue_for_consumer") as requeue,
         ):
-            with mock.patch.object(auto_advance, "_audited_gpu_probe_recovery", return_value=False):
-                auto_advance.recycle_stranded(11, state, journal, args)
+            auto_advance.recycle_stranded(11, state, journal, args)
 
         requeue.assert_called_once_with(11, 105, 17, journal, args, 2, token_cap=40000)
         self.assertEqual(state["recycles"]["105"], 2)
 
-    def test_expired_audited_gpu_probe_gets_zero_token_recovery_grant(self):
+    def test_expired_gpu_job_regrant_uses_structured_preflight(self):
         job = {
             "id": 99,
             "deep_insight_id": 105,
@@ -79,10 +78,18 @@ class AutoAdvanceGuardTests(unittest.TestCase):
 
         with (
             mock.patch.object(auto_advance, "_rows", return_value=[job]),
-            mock.patch.object(auto_advance, "_audited_gpu_probe_recovery", return_value=True),
-            mock.patch.object(auto_advance, "_spent_delta", return_value=113718),
+            mock.patch.object(auto_advance, "_spent_delta", return_value=0),
             mock.patch.object(auto_advance.db, "fetchone", side_effect=fetchone),
             mock.patch.object(auto_advance, "_rebuild_decision", return_value=mock.Mock()),
+            mock.patch.object(
+                auto_advance.CandidatePreflightRepository,
+                "run_candidate",
+                return_value=mock.Mock(
+                    passed=True,
+                    selected_backend="ssh_gpu",
+                    preflight_result_id=9,
+                ),
+            ),
             mock.patch.object(auto_advance, "_grant_key", return_value="recovery-key"),
             mock.patch.object(auto_advance, "issue_resource_grant", return_value=issued) as issue,
             mock.patch.object(auto_advance.MetaHarnessRepository, "issue_grant", return_value=18),
@@ -90,9 +97,15 @@ class AutoAdvanceGuardTests(unittest.TestCase):
         ):
             auto_advance.recycle_stranded(11, state, journal, args)
 
-        self.assertEqual(issue.call_args.kwargs["token_cap"], 0)
-        self.assertNotIn("llm", issue.call_args.kwargs["backend_allowlist"])
-        requeue.assert_called_once_with(11, 105, 18, journal, args, 1, token_cap=0)
+        self.assertEqual(issue.call_args.kwargs["token_cap"], 40000)
+        self.assertEqual(issue.call_args.kwargs["preflight_result_id"], 9)
+        self.assertEqual(
+            issue.call_args.kwargs["backend_allowlist"],
+            ["ssh_gpu", "llm"],
+        )
+        requeue.assert_called_once_with(
+            11, 105, 18, journal, args, 1, token_cap=40000
+        )
 
     def test_live_exhausted_gpu_grant_is_not_recycled(self):
         job = {
@@ -102,7 +115,7 @@ class AutoAdvanceGuardTests(unittest.TestCase):
             "stage": "gpu_failed",
             "resource_grant_id": 18,
             "last_error": "reproduction failure",
-            "token_cap": 0,
+            "token_cap": 40000,
             "max_gpu_hours": 2.0,
             "grant_status": "active",
             "grant_live": True,
@@ -117,7 +130,6 @@ class AutoAdvanceGuardTests(unittest.TestCase):
 
         with (
             mock.patch.object(auto_advance, "_rows", return_value=[job]),
-            mock.patch.object(auto_advance, "_audited_gpu_probe_recovery", return_value=True),
             mock.patch.object(
                 auto_advance,
                 "_grant_gpu_usage",
