@@ -1,0 +1,47 @@
+{
+  "backup_root": "/home/ec2-user/deepgraph-rollback/autonomy-public-hub-timeout-2026-08-09",
+  "batches": [
+    {
+      "acceptance": "The next timer-owned audited probe resumes the public Qwen3.5 download and persists real baseline/candidate metrics plus an outcome_record.",
+      "authorization": "user-approved-production-repair-and-restart",
+      "batch": "public-hub-timeout-repair",
+      "files": [
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/autonomy-public-hub-timeout-2026-08-09/experiment_forge.py.bak",
+          "kind": "file",
+          "mode": "0664",
+          "owner": "billion-token:billion-token",
+          "source": "agents/experiment_forge.py",
+          "source_bytes": 161065,
+          "source_sha256": "60366235803679a10c559a2aaebaa126a89df1a4d1e8ab20b42c88b178207c87",
+          "target": "/home/billion-token/Deepgraph/agents/experiment_forge.py",
+          "target_predeploy_sha256": "bec6c51a806e82746e527217a3d61d1421d4a88d1bd88673297d8065fb05fb6f"
+        }
+      ],
+      "health_check": "Observe autonomous retry only after R8 reaches zero active runs/GPU jobs; verify FINAL_RESULTS, persisted metrics, grant settlement, and outcome.",
+      "purpose": "Raise bounded Hugging Face Hub CDN read/TLS timeouts for multi-GB public model shards while preserving resumable real-model downloads.",
+      "restart_required": [
+        "deepgraph-auto-execute.service"
+      ],
+      "systemd_reload_required": false
+    }
+  ],
+  "description": "Repair the HTTP CDN timeout exposed by autonomous run 126 after Xet CAS authentication was successfully disabled.",
+  "environment_keys": [],
+  "manifest_key": "autonomy-public-hub-timeout-2026-08-09",
+  "operator_diff_required": [
+    "agents/experiment_forge.py"
+  ],
+  "production_tree_modified_by_this_command": false,
+  "rollback": {
+    "order": "reverse file order",
+    "steps": [
+      "restore experiment_forge.py.bak and verify SHA256",
+      "restart deepgraph-auto-execute.service"
+    ]
+  },
+  "runtime_root": "/home/billion-token/Deepgraph",
+  "source_commit": "95caac5b1619e847e4879fa527908cd76145e31b",
+  "source_worktree_clean_except_preserved_untracked_docs_tasks": true,
+  "tests": "py_compile plus 11 focused unit tests passed"
+}
