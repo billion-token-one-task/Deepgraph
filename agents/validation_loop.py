@@ -1386,6 +1386,12 @@ def _run_experiment(
         )
     try:
         if run_id is not None and ssh_gpu_backend.is_ssh_worker(worker):
+            # _run_experiment performs metadata reads while preparing the remote
+            # command.  With psycopg those reads open a transaction; leaving it
+            # open across a model download/GPU run lets the session-side idle
+            # transaction guard close the connection before settlement.  End
+            # the read-only transaction before crossing the long remote boundary.
+            db.commit()
             remote = ssh_gpu_backend.run_remote_experiment(
                 worker=worker,
                 run_id=run_id,

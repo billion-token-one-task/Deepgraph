@@ -4,6 +4,7 @@ import tempfile
 import textwrap
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from agents.benchmark_audit import (
     benchmark_diagnostic_notes,
@@ -30,6 +31,49 @@ class ValidationTimeoutPolicyTests(unittest.TestCase):
 
 
 class ValidationMetricParsingTests(unittest.TestCase):
+    def test_remote_experiment_closes_metadata_transaction_before_gpu_wait(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workdir = Path(tmpdir)
+            code_dir = workdir / "code"
+            code_dir.mkdir()
+            (code_dir / "train.py").write_text(
+                "print('FINAL_RESULTS: {\"metric\": 1.0}')\n",
+                encoding="utf-8",
+            )
+            committed = False
+
+            def record_commit():
+                nonlocal committed
+                committed = True
+
+            def remote_run(**_kwargs):
+                self.assertTrue(committed)
+                return {
+                    "stdout": 'FINAL_RESULTS: {"metric": 1.0}\n',
+                    "stderr": "",
+                    "returncode": 0,
+                    "worker_id": "ssh-test",
+                    "visible_device": "0",
+                }
+
+            with (
+                mock.patch.object(validation_loop.db, "fetchone", return_value=None),
+                mock.patch.object(validation_loop.db, "commit", side_effect=record_commit),
+                mock.patch.object(validation_loop.ssh_gpu_backend, "is_ssh_worker", return_value=True),
+                mock.patch.object(validation_loop.ssh_gpu_backend, "run_remote_experiment", side_effect=remote_run),
+            ):
+                result = validation_loop._run_experiment(
+                    workdir,
+                    code_dir,
+                    30,
+                    metric_name="metric",
+                    run_id=131,
+                    execution_context={"worker": {"id": "ssh-test"}},
+                )
+
+        self.assertEqual(result["status"], "ok")
+        self.assertAlmostEqual(result["metric"], 1.0)
+
     def test_parse_metric_from_final_results_line(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             log_path = Path(tmpdir) / "run.log"
