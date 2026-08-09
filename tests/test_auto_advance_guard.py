@@ -40,10 +40,58 @@ class AutoAdvanceGuardTests(unittest.TestCase):
             ),
             mock.patch.object(auto_advance, "_requeue_for_consumer") as requeue,
         ):
+            with mock.patch.object(auto_advance, "_audited_gpu_probe_recovery", return_value=False):
+                auto_advance.recycle_stranded(11, state, journal, args)
+
+        requeue.assert_called_once_with(11, 105, 17, journal, args, 2, token_cap=40000)
+        self.assertEqual(state["recycles"]["105"], 2)
+
+    def test_expired_audited_gpu_probe_gets_zero_token_recovery_grant(self):
+        job = {
+            "id": 99,
+            "deep_insight_id": 105,
+            "status": "failed",
+            "stage": "gpu_failed",
+            "resource_grant_id": 17,
+            "last_error": "reproduction failure",
+            "token_cap": 40000,
+            "grant_status": "expired",
+            "grant_live": False,
+        }
+        args = mock.Mock(
+            agenda=[10, 11],
+            grant_token_cap=40000,
+            grant_gpu_hours=2.0,
+            gpu_class="a100",
+            spend_limit=120000,
+        )
+        journal = mock.Mock()
+        state = {"recycles": {}}
+        issued = mock.Mock(id=18)
+
+        def fetchone(sql, params=()):
+            if "FROM idea_decision_packets" in sql:
+                return {"id": 7}
+            if "backend_allowlist_json" in sql:
+                return {"backend_allowlist_json": '["cpu","llm","ssh_gpu"]'}
+            raise AssertionError(sql)
+
+        with (
+            mock.patch.object(auto_advance, "_rows", return_value=[job]),
+            mock.patch.object(auto_advance, "_audited_gpu_probe_recovery", return_value=True),
+            mock.patch.object(auto_advance, "_spent_delta", return_value=113718),
+            mock.patch.object(auto_advance.db, "fetchone", side_effect=fetchone),
+            mock.patch.object(auto_advance, "_rebuild_decision", return_value=mock.Mock()),
+            mock.patch.object(auto_advance, "_grant_key", return_value="recovery-key"),
+            mock.patch.object(auto_advance, "issue_resource_grant", return_value=issued) as issue,
+            mock.patch.object(auto_advance.MetaHarnessRepository, "issue_grant", return_value=18),
+            mock.patch.object(auto_advance, "_requeue_for_consumer") as requeue,
+        ):
             auto_advance.recycle_stranded(11, state, journal, args)
 
-        requeue.assert_called_once_with(11, 105, 17, journal, args, 2)
-        self.assertEqual(state["recycles"]["105"], 2)
+        self.assertEqual(issue.call_args.kwargs["token_cap"], 0)
+        self.assertNotIn("llm", issue.call_args.kwargs["backend_allowlist"])
+        requeue.assert_called_once_with(11, 105, 18, journal, args, 1, token_cap=0)
 
     def test_deployed_recycle_epoch_resets_old_operational_retry_count(self):
         with tempfile.TemporaryDirectory() as tmpdir:
