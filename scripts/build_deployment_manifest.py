@@ -179,16 +179,19 @@ def build(spec_path: Path) -> dict:
         "runtime_root": runtime_root,
         "backup_root": backup_root,
         "environment_keys": spec.get("environment_keys", []),
+        "preconditions": spec.get("preconditions", []),
+        "deployment_steps": spec.get("deployment_steps", []),
+        "tests": spec.get("tests", ""),
         "batches": batches,
         "operator_diff_required": needs_review,
-        "rollback": {
+        "rollback": spec.get("rollback")
+        or {
             "order": "reverse batch order",
             "steps": [
-                "systemctl stop deepgraph-selfheal.timer",
                 "restore each backup_artifact over its target and verify SHA256",
-                "systemctl daemon-reload",
-                "systemctl restart deepgraph-web.service if batch 3 was applied",
-                "schema batch 2 is additive: leave the tables in place, they are unused by the previous code",
+                "systemctl daemon-reload when a unit file changed",
+                "restart only the services listed by the applied batches",
+                "additive schema migrations remain in place and are unused by previous code",
             ],
         },
         "production_tree_modified_by_this_command": False,
