@@ -392,6 +392,37 @@ def _audited_gpu_probe_recovery(agenda_id: int, idea_id: int) -> bool:
     )
 
 
+def _completed_grant_gpu_seconds(resource_grant_id: int) -> float:
+    rows = db.fetchall(
+        """
+        SELECT started_at, completed_at FROM gpu_jobs
+        WHERE resource_grant_id=?
+          AND started_at IS NOT NULL AND completed_at IS NOT NULL
+        """,
+        (int(resource_grant_id),),
+    )
+    total = 0.0
+    for row in rows:
+        started = row.get("started_at")
+        completed = row.get("completed_at")
+        if not isinstance(started, datetime):
+            try:
+                started = datetime.fromisoformat(
+                    str(started or "").replace("Z", "+00:00")
+                )
+            except ValueError:
+                continue
+        if not isinstance(completed, datetime):
+            try:
+                completed = datetime.fromisoformat(
+                    str(completed or "").replace("Z", "+00:00")
+                )
+            except ValueError:
+                continue
+        total += max(0.0, (completed - started).total_seconds())
+    return total
+
+
 def recycle_stranded(agenda_id: int, state: dict, journal: Journal, args) -> None:
     """Give a stranded candidate a live grant and a state someone reads.
 
@@ -406,7 +437,7 @@ def recycle_stranded(agenda_id: int, state: dict, journal: Journal, args) -> Non
     counts = state.setdefault("recycles", {})
     rows = _rows(
         "SELECT arj.id, arj.deep_insight_id, arj.status, arj.stage, arj.resource_grant_id,"
-        "       arj.last_error, rg.token_cap, rg.status AS grant_status,"
+        "       arj.last_error, rg.token_cap, rg.max_gpu_hours, rg.status AS grant_status,"
         "       (rg.expires_at > CURRENT_TIMESTAMP) AS grant_live"
         "  FROM auto_research_jobs arj"
         "  LEFT JOIN resource_grants rg ON rg.id = arj.resource_grant_id"
@@ -434,6 +465,22 @@ def recycle_stranded(agenda_id: int, state: dict, journal: Journal, args) -> Non
             and bool(job["grant_live"])
             and int(job["token_cap"] or 0) >= required_token_cap
         )
+        if gpu_only_recovery and grant_ok:
+            gpu_cap_seconds = float(job.get("max_gpu_hours") or 0.0) * 3600.0
+            gpu_used_seconds = _completed_grant_gpu_seconds(
+                int(job["resource_grant_id"])
+            )
+            if gpu_cap_seconds <= 0 or gpu_used_seconds >= gpu_cap_seconds:
+                journal.log(
+                    "gpu_budget_exhausted",
+                    agenda_id=agenda_id,
+                    idea_id=idea_id,
+                    resource_grant_id=int(job["resource_grant_id"]),
+                    used_gpu_hours=gpu_used_seconds / 3600.0,
+                    max_gpu_hours=float(job.get("max_gpu_hours") or 0.0),
+                    reason="live grant cumulative GPU-hour cap is exhausted",
+                )
+                continue
         if (
             not grant_ok
             and _spent_delta(state, args.agenda) + required_token_cap > args.spend_limit

@@ -93,6 +93,40 @@ class AutoAdvanceGuardTests(unittest.TestCase):
         self.assertNotIn("llm", issue.call_args.kwargs["backend_allowlist"])
         requeue.assert_called_once_with(11, 105, 18, journal, args, 1, token_cap=0)
 
+    def test_live_exhausted_gpu_grant_is_not_recycled(self):
+        job = {
+            "id": 99,
+            "deep_insight_id": 105,
+            "status": "failed",
+            "stage": "gpu_failed",
+            "resource_grant_id": 18,
+            "last_error": "reproduction failure",
+            "token_cap": 0,
+            "max_gpu_hours": 2.0,
+            "grant_status": "active",
+            "grant_live": True,
+        }
+        args = mock.Mock(
+            agenda=[10, 11],
+            grant_token_cap=40000,
+            spend_limit=120000,
+        )
+        journal = mock.Mock()
+        state = {"recycles": {}}
+
+        with (
+            mock.patch.object(auto_advance, "_rows", return_value=[job]),
+            mock.patch.object(auto_advance, "_audited_gpu_probe_recovery", return_value=True),
+            mock.patch.object(auto_advance, "_completed_grant_gpu_seconds", return_value=7201.0),
+            mock.patch.object(auto_advance, "_requeue_for_consumer") as requeue,
+        ):
+            auto_advance.recycle_stranded(11, state, journal, args)
+
+        requeue.assert_not_called()
+        journal.log.assert_called_once()
+        self.assertEqual(journal.log.call_args.args[0], "gpu_budget_exhausted")
+        self.assertEqual(state["recycles"], {})
+
     def test_deployed_recycle_epoch_resets_old_operational_retry_count(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "state.json"
