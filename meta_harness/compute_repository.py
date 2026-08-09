@@ -21,6 +21,7 @@ from meta_harness.compute import (
     ComputeSubmission,
     UsageAccounting,
 )
+from meta_harness.attempt_gpu_usage import GrantGPUUsageControl
 
 
 _BACKENDS = {"cpu", "local_gpu", "ssh_gpu", "colab_gpu"}
@@ -257,6 +258,32 @@ class ComputeJobRepository:
                 db.commit()
                 return self._claim_from_row(concurrent, is_new=False)
             record_id = int(inserted["id"])
+            if backend_kind != "cpu":
+                attempt = db.fetchone(
+                    """
+                    SELECT id, reserved_gpu_seconds, timeout_seconds, status
+                    FROM experiment_attempt_gpu_reservations_v1
+                    WHERE resource_grant_id=? AND attempt_key=?
+                    """,
+                    (request.resource_grant_id, request.idempotency_key),
+                )
+                if (
+                    not attempt
+                    or str(attempt.get("status")) not in {"reserved", "running"}
+                    or int(attempt.get("timeout_seconds") or 0)
+                    != request.timeout_seconds
+                    or abs(
+                        float(attempt.get("reserved_gpu_seconds") or 0.0)
+                        - request.requested_gpu_hours * 3600.0
+                    )
+                    > 1e-6
+                ):
+                    raise ComputeBackendError(
+                        "canonical GPU attempt reservation is missing or mismatched"
+                    )
+                GrantGPUUsageControl().bind_compute_job(
+                    int(attempt["id"]), record_id, commit=False
+                )
             db.commit()
             return ComputeClaim(
                 record_id=record_id,
@@ -556,6 +583,12 @@ class ComputeJobRepository:
                                  'collecting')
                   AND agenda_id=?
                   AND timeout_at <= CURRENT_TIMESTAMP
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM experiment_attempt_gpu_reservations_v1 AS ar
+                      WHERE ar.compute_job_id=compute_jobs_v1.id
+                        AND ar.status='running'
+                  )
                 """
                 ,
                 (int(agenda_id),),

@@ -28,7 +28,16 @@ def _worker_id() -> str:
 
 def run_one() -> dict:
     """Claim and settle at most one request; safe for a scheduler loop or CI."""
-    from orchestrator.meta_compute_runtime import build_scheduler
+    from meta_harness.attempt_gpu_usage import GrantGPUUsageControl
+    from orchestrator.meta_compute_runtime import (
+        build_scheduler,
+        settle_colab_request,
+    )
+
+    for pending_request_id in (
+        GrantGPUUsageControl().reconcile_terminal_colab_attempts()
+    ):
+        settle_colab_request(pending_request_id)
 
     repository = ColabWorkRepository()
     row = repository.claim_next(worker_id=_worker_id())
@@ -66,6 +75,25 @@ def run_one() -> dict:
             grant=grant_from_row(grant_row),
         )
         repository.save_result(int(row["id"]), result=result)
+        persisted = db.fetchone(
+            """
+            SELECT cwr.completed_at, cj.gpu_attempt_reservation_id
+            FROM colab_work_requests_v1 cwr
+            JOIN compute_jobs_v1 cj ON cj.id=cwr.compute_job_id
+            WHERE cwr.id=?
+            """,
+            (int(row["id"]),),
+        ) or {}
+        db.commit()
+        reason_code = {
+            "succeeded": "attempt_completed",
+            "timed_out": "attempt_timed_out",
+        }.get(result.status, "attempt_failed")
+        GrantGPUUsageControl().settle_attempt(
+            int(persisted.get("gpu_attempt_reservation_id") or 0),
+            completed_at=persisted.get("completed_at"),
+            reason_code=reason_code,
+        )
         observed = scheduler.refresh_and_settle(
             ComputeJob(
                 backend_kind="colab_gpu",

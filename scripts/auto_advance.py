@@ -392,35 +392,14 @@ def _audited_gpu_probe_recovery(agenda_id: int, idea_id: int) -> bool:
     )
 
 
-def _completed_grant_gpu_seconds(resource_grant_id: int) -> float:
-    rows = db.fetchall(
-        """
-        SELECT started_at, completed_at FROM gpu_jobs
-        WHERE resource_grant_id=?
-          AND started_at IS NOT NULL AND completed_at IS NOT NULL
-        """,
-        (int(resource_grant_id),),
-    )
-    total = 0.0
-    for row in rows:
-        started = row.get("started_at")
-        completed = row.get("completed_at")
-        if not isinstance(started, datetime):
-            try:
-                started = datetime.fromisoformat(
-                    str(started or "").replace("Z", "+00:00")
-                )
-            except ValueError:
-                continue
-        if not isinstance(completed, datetime):
-            try:
-                completed = datetime.fromisoformat(
-                    str(completed or "").replace("Z", "+00:00")
-                )
-            except ValueError:
-                continue
-        total += max(0.0, (completed - started).total_seconds())
-    return total
+def _grant_gpu_usage(resource_grant_id: int):
+    from meta_harness.attempt_gpu_usage import GrantGPUUsageControl
+
+    control = GrantGPUUsageControl()
+    usage = control.grant_usage(int(resource_grant_id))
+    if usage.exhausted and usage.grant_status == "active":
+        usage = control.reconcile_exhausted_grant(int(resource_grant_id))
+    return usage
 
 
 def recycle_stranded(agenda_id: int, state: dict, journal: Journal, args) -> None:
@@ -466,19 +445,27 @@ def recycle_stranded(agenda_id: int, state: dict, journal: Journal, args) -> Non
             and int(job["token_cap"] or 0) >= required_token_cap
         )
         if gpu_only_recovery and grant_ok:
-            gpu_cap_seconds = float(job.get("max_gpu_hours") or 0.0) * 3600.0
-            gpu_used_seconds = _completed_grant_gpu_seconds(
-                int(job["resource_grant_id"])
-            )
-            if gpu_cap_seconds <= 0 or gpu_used_seconds >= gpu_cap_seconds:
+            gpu_usage = _grant_gpu_usage(int(job["resource_grant_id"]))
+            if gpu_usage.remaining_gpu_seconds <= 0:
                 journal.log(
-                    "gpu_budget_exhausted",
+                    (
+                        "gpu_budget_exhausted"
+                        if gpu_usage.exhausted
+                        else "gpu_budget_fully_reserved"
+                    ),
                     agenda_id=agenda_id,
                     idea_id=idea_id,
                     resource_grant_id=int(job["resource_grant_id"]),
-                    used_gpu_hours=gpu_used_seconds / 3600.0,
-                    max_gpu_hours=float(job.get("max_gpu_hours") or 0.0),
-                    reason="live grant cumulative GPU-hour cap is exhausted",
+                    settled_gpu_hours=gpu_usage.settled_gpu_seconds / 3600.0,
+                    active_reserved_gpu_hours=(
+                        gpu_usage.active_reserved_gpu_seconds / 3600.0
+                    ),
+                    max_gpu_hours=gpu_usage.cap_gpu_seconds / 3600.0,
+                    reason=(
+                        "canonical grant GPU remainder is exhausted"
+                        if gpu_usage.exhausted
+                        else "canonical grant GPU remainder is held by an active attempt"
+                    ),
                 )
                 continue
         if (

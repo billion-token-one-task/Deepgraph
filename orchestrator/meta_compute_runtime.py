@@ -46,6 +46,10 @@ from meta_harness.backend_capability import (
     require_schedulable,
 )
 from meta_harness.compute_repository import ComputeJobRepository
+from meta_harness.attempt_gpu_usage import (
+    AttemptGPUUsageError,
+    GrantGPUUsageControl,
+)
 from meta_harness.backends.colab_durable import (
     ColabWorkRepository,
     ColabWorkSpec,
@@ -565,25 +569,31 @@ class LegacyGPUQueueTransport:
 
     def usage(self, backend_job_id: str) -> UsageAccounting:
         row = self._row(backend_job_id)
-        run_id = int(row.get("experiment_run_id") or 0)
-        usage = db.fetchone(
-            """
-            SELECT COALESCE(SUM(duration_seconds), 0) AS measured_seconds,
-                   COALESCE(MAX(peak_memory_mb), 0) AS peak_memory_mb
-            FROM experiment_iterations
-            WHERE agenda_id=? AND run_id=?
-            """,
-            (int(row.get("agenda_id") or 0), run_id),
-        ) or {}
-        measured_seconds = float(usage.get("measured_seconds") or 0)
-        gpu_count = max(1, int(row.get("gpu_count") or 1))
+        compute_job = db.fetchone(
+            "SELECT id FROM compute_jobs_v1 WHERE backend_kind=? AND backend_job_id=?",
+            (self.backend_kind, str(backend_job_id)),
+        )
+        if not compute_job:
+            raise ComputeBackendError(
+                "canonical durable compute job is missing for GPU usage"
+            )
+        try:
+            measured = GrantGPUUsageControl().usage_for_compute_job(
+                int(compute_job["id"])
+            )
+        except AttemptGPUUsageError as exc:
+            raise ComputeBackendError(str(exc)) from exc
         return UsageAccounting(
-            wall_seconds=measured_seconds,
-            gpu_hours=measured_seconds * gpu_count / 3600.0,
+            wall_seconds=float(measured["wall_seconds"]),
+            gpu_hours=float(measured["gpu_hours"]),
             cpu_core_hours=0.0,
             backend_report={
-                "source": "experiment_iterations.duration_seconds",
-                "peak_memory_mb": float(usage.get("peak_memory_mb") or 0),
+                "source": "experiment_attempt_gpu_reservations_v1",
+                "attempt_reservation_id": int(
+                    measured["attempt_reservation_id"]
+                ),
+                "gpu_count": int(measured["gpu_count"]),
+                "reason_code": measured.get("reason_code"),
                 "legacy_gpu_job_id": int(row["id"]),
             },
         )
@@ -711,29 +721,62 @@ def submit_experiment_run(
         require_schedulable(backend_kind, reports_from_config())
     except BackendCapabilityError as exc:
         raise ComputeBackendError(str(exc)) from exc
+    attempt_key = (
+        f"experiment-run:{agenda_id}:{idea_id}:{experiment_run_id}:"
+        f"{grant.stage}"
+    )
+    effective_timeout_seconds = int(timeout_seconds)
+    requested_gpu_hours = 0.0
+    attempt_reservation = None
+    if backend_kind != "cpu":
+        try:
+            attempt_reservation = GrantGPUUsageControl().reserve_attempt(
+                agenda_id=int(agenda_id),
+                idea_id=int(idea_id),
+                resource_grant_id=int(resource_grant_id),
+                attempt_key=attempt_key,
+                backend_kind=backend_kind,
+                requested_timeout_seconds=int(timeout_seconds),
+                gpu_count=1,
+                experiment_run_id=int(experiment_run_id),
+            )
+        except AttemptGPUUsageError as exc:
+            raise ComputeBackendError(str(exc)) from exc
+        effective_timeout_seconds = attempt_reservation.timeout_seconds
+        requested_gpu_hours = attempt_reservation.reserved_gpu_seconds / 3600.0
     request = ComputeSubmission(
         agenda_id=int(agenda_id),
         idea_id=int(idea_id),
         stage=grant.stage,
         resource_grant_id=int(resource_grant_id),
-        idempotency_key=(
-            f"experiment-run:{agenda_id}:{idea_id}:{experiment_run_id}:"
-            f"{grant.stage}"
-        ),
+        idempotency_key=attempt_key,
         command_ref=f"experiment-run:{int(experiment_run_id)}",
         artifact_namespace=(
             f"agenda-{agenda_id}/idea-{idea_id}/run-{experiment_run_id}"
         ),
-        timeout_seconds=int(timeout_seconds),
-        requested_gpu_hours=(
-            0.0 if backend_kind == "cpu" else float(grant.max_gpu_hours)
-        ),
+        timeout_seconds=effective_timeout_seconds,
+        requested_gpu_hours=requested_gpu_hours,
     )
-    return build_scheduler().submit(
-        request,
-        grant=grant,
-        preferred_backends=[backend_kind],
-    )
+    try:
+        return build_scheduler().submit(
+            request,
+            grant=grant,
+            preferred_backends=[backend_kind],
+        )
+    except Exception as exc:
+        # A transport exception after submission is deliberately quarantined
+        # as submission_unknown; its reservation may correspond to a live GPU
+        # process and must survive recovery.  Failures known to precede a
+        # backend submission release the unstarted reservation immediately.
+        if (
+            attempt_reservation is not None
+            and "backend_submission_outcome_unknown" not in str(exc)
+        ):
+            GrantGPUUsageControl().release_unstarted(
+                attempt_reservation.reservation_id,
+                reason_code="compute_submission_failed_before_backend_start",
+            )
+        raise
 
 
 def submit_colab_work(spec: ColabWorkSpec) -> ComputeJob:
@@ -756,24 +799,48 @@ def submit_colab_work(spec: ColabWorkSpec) -> ComputeJob:
             "active scoped ResourceGrant is required for Colab work"
         )
     grant = _grant_from_row(grant_row)
-    job = build_scheduler().submit(
-        ComputeSubmission(
+    try:
+        attempt_reservation = GrantGPUUsageControl().reserve_attempt(
             agenda_id=spec.agenda_id,
             idea_id=spec.idea_id,
-            stage=spec.stage,
             resource_grant_id=spec.resource_grant_id,
-            idempotency_key=spec.idempotency_key,
-            command_ref=f"colab-work-request:{request_id}",
-            artifact_namespace=(
-                f"agenda-{spec.agenda_id}/idea-{spec.idea_id}/"
-                f"colab-{request_id}"
-            ),
-            timeout_seconds=spec.timeout_seconds,
-            requested_gpu_hours=spec.timeout_seconds / 3600.0,
+            attempt_key=spec.idempotency_key,
+            backend_kind="colab_gpu",
+            requested_timeout_seconds=spec.timeout_seconds,
+            gpu_count=1,
+            experiment_run_id=spec.experiment_run_id,
+        )
+    except AttemptGPUUsageError as exc:
+        raise ComputeBackendError(str(exc)) from exc
+    request = ComputeSubmission(
+        agenda_id=spec.agenda_id,
+        idea_id=spec.idea_id,
+        stage=spec.stage,
+        resource_grant_id=spec.resource_grant_id,
+        idempotency_key=spec.idempotency_key,
+        command_ref=f"colab-work-request:{request_id}",
+        artifact_namespace=(
+            f"agenda-{spec.agenda_id}/idea-{spec.idea_id}/"
+            f"colab-{request_id}"
         ),
-        grant=grant,
-        preferred_backends=["colab_gpu"],
+        timeout_seconds=attempt_reservation.timeout_seconds,
+        requested_gpu_hours=(
+            attempt_reservation.reserved_gpu_seconds / 3600.0
+        ),
     )
+    try:
+        job = build_scheduler().submit(
+            request,
+            grant=grant,
+            preferred_backends=["colab_gpu"],
+        )
+    except Exception as exc:
+        if "backend_submission_outcome_unknown" not in str(exc):
+            GrantGPUUsageControl().release_unstarted(
+                attempt_reservation.reservation_id,
+                reason_code="colab_submission_failed_before_backend_start",
+            )
+        raise
     repository.bind_compute_job(request_id)
     return job
 
@@ -971,7 +1038,19 @@ def reconcile_on_startup() -> dict[str, int]:
         "colab_restart_quarantined": 0,
         "colab_admission_rebound": 0,
         "colab_uncertain_quarantined": 0,
+        "orphan_gpu_reservations_released": 0,
+        "legacy_terminal_attempts_imported": 0,
+        "terminal_attempts_settled": 0,
+        "terminal_colab_attempts_settled": 0,
     }
+    terminal_job_ids = GrantGPUUsageControl().reconcile_terminal_attempts()
+    totals["terminal_attempts_settled"] = len(terminal_job_ids)
+    totals["legacy_terminal_attempts_imported"] = (
+        GrantGPUUsageControl().import_legacy_terminal_attempts()
+    )
+    totals["orphan_gpu_reservations_released"] = (
+        GrantGPUUsageControl().release_orphaned_reservations()
+    )
     colab_recovery = ColabWorkRepository().reconcile_on_startup()
     totals["colab_restart_quarantined"] = colab_recovery[
         "running_quarantined"
@@ -980,6 +1059,14 @@ def reconcile_on_startup() -> dict[str, int]:
     totals["colab_uncertain_quarantined"] = colab_recovery[
         "uncertain_quarantined"
     ]
+    terminal_colab_request_ids = (
+        GrantGPUUsageControl().reconcile_terminal_colab_attempts()
+    )
+    totals["terminal_colab_attempts_settled"] = len(
+        terminal_colab_request_ids
+    )
+    for request_id in terminal_colab_request_ids:
+        settle_colab_request(request_id)
     agendas = db.fetchall(
         """
         SELECT DISTINCT agenda_id

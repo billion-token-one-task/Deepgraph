@@ -34,6 +34,7 @@ from meta_harness.compute import (
     ComputeSubmission,
     UsageAccounting,
 )
+from meta_harness.attempt_gpu_usage import GrantGPUUsageControl
 
 
 _BACKEND_PREFIX = "colab-work-request:"
@@ -266,7 +267,8 @@ class ColabWorkRepository:
             row = db.fetchone(
                 """
                 SELECT cwr.*, cj.id AS durable_compute_job_id,
-                       cj.status AS compute_status
+                       cj.status AS compute_status,
+                       cj.timeout_seconds AS durable_timeout_seconds
                 FROM colab_work_requests_v1 AS cwr
                 JOIN compute_jobs_v1 AS cj
                   ON cj.agenda_id=cwr.agenda_id
@@ -287,10 +289,16 @@ class ColabWorkRepository:
                     """
                     UPDATE colab_work_requests_v1
                     SET compute_job_id=?, status='queued',
+                        timeout_seconds=LEAST(timeout_seconds, ?),
                         updated_at=CURRENT_TIMESTAMP
                     WHERE id=? AND agenda_id=? AND status='admitting'
                     """,
-                    (compute_job_id, int(request_id), int(row["agenda_id"])),
+                    (
+                        compute_job_id,
+                        int(row["durable_timeout_seconds"]),
+                        int(request_id),
+                        int(row["agenda_id"]),
+                    ),
                 )
             elif str(row.get("status") or "") not in _WORK_STATES:
                 raise ColabCLIError("Colab request has an invalid persisted state")
@@ -308,7 +316,8 @@ class ColabWorkRepository:
         try:
             row = db.fetchone(
                 """
-                SELECT cwr.*, cj.backend_job_id, cj.status AS compute_status
+                SELECT cwr.*, cj.backend_job_id, cj.status AS compute_status,
+                       cj.gpu_attempt_reservation_id
                 FROM colab_work_requests_v1 AS cwr
                 JOIN compute_jobs_v1 AS cj ON cj.id=cwr.compute_job_id
                 JOIN resource_grants AS rg ON rg.id=cwr.resource_grant_id
@@ -323,6 +332,18 @@ class ColabWorkRepository:
                 db.commit()
                 return None
             now = datetime.now(timezone.utc).isoformat()
+            attempt_reservation_id = int(
+                row.get("gpu_attempt_reservation_id") or 0
+            )
+            if attempt_reservation_id <= 0:
+                raise ColabCLIError(
+                    "Colab canonical GPU attempt reservation is missing"
+                )
+            GrantGPUUsageControl().start_attempt(
+                attempt_reservation_id,
+                started_at=datetime.fromisoformat(now),
+                commit=False,
+            )
             changed = db.execute(
                 """
                 UPDATE colab_work_requests_v1
@@ -432,8 +453,8 @@ class ColabWorkRepository:
                 db.execute(
                     """
                     UPDATE colab_work_requests_v1
-                    SET status='manual_reconciliation',
-                        failure_reason='worker_restarted_remote_usage_unknown',
+                    SET status='failed', completed_at=CURRENT_TIMESTAMP,
+                        failure_reason='controller_lost',
                         updated_at=CURRENT_TIMESTAMP
                     WHERE id=? AND agenda_id=? AND status='running'
                     """,
@@ -442,8 +463,7 @@ class ColabWorkRepository:
                 db.execute(
                     """
                     UPDATE compute_jobs_v1
-                    SET status='usage_unknown',
-                        failure_reason='colab_worker_restarted_remote_usage_unknown',
+                    SET failure_reason='controller_lost',
                         updated_at=CURRENT_TIMESTAMP
                     WHERE id=? AND agenda_id=?
                       AND status IN ('running', 'collecting')
@@ -527,7 +547,8 @@ class ColabWorkRepository:
             db.execute(
                 """
                 UPDATE colab_work_requests_v1
-                SET status='manual_reconciliation', failure_reason=?,
+                SET status='failed', failure_reason=?,
+                    completed_at=CURRENT_TIMESTAMP,
                     updated_at=CURRENT_TIMESTAMP
                 WHERE id=? AND agenda_id=? AND status='running'
                 """,
@@ -536,7 +557,7 @@ class ColabWorkRepository:
             db.execute(
                 """
                 UPDATE compute_jobs_v1
-                SET status='usage_unknown', failure_reason=?,
+                SET failure_reason=?,
                     updated_at=CURRENT_TIMESTAMP
                 WHERE id=? AND agenda_id=? AND status='running'
                 """,
@@ -661,7 +682,20 @@ class DurableColabTransport:
         if int(getattr(changed, "rowcount", 0) or 0) != 1:
             db.rollback()
             raise ColabCLIError("Colab cancellation race")
+        attempt = db.fetchone(
+            """
+            SELECT gpu_attempt_reservation_id
+            FROM compute_jobs_v1 WHERE id=?
+            """,
+            (int(row.get("compute_job_id") or 0),),
+        ) or {}
         db.commit()
+        reservation_id = int(attempt.get("gpu_attempt_reservation_id") or 0)
+        if reservation_id > 0:
+            GrantGPUUsageControl().release_unstarted(
+                reservation_id,
+                reason_code="attempt_cancelled_before_start",
+            )
         return self.status(backend_job_id)
 
     def collect_artifacts(
@@ -708,13 +742,27 @@ class DurableColabTransport:
 
     def usage(self, backend_job_id: str) -> UsageAccounting:
         row = self._row(backend_job_id)
-        wall_seconds = float(row.get("wall_seconds") or 0)
+        compute_job_id = int(row.get("compute_job_id") or 0)
+        if compute_job_id <= 0:
+            raise ColabCLIError("Colab durable compute binding is missing")
+        try:
+            measured = GrantGPUUsageControl().usage_for_compute_job(
+                compute_job_id
+            )
+        except Exception as exc:
+            raise ColabCLIError(str(exc)) from exc
         return UsageAccounting(
-            wall_seconds=wall_seconds,
-            gpu_hours=wall_seconds / 3600.0,
+            wall_seconds=float(measured["wall_seconds"]),
+            gpu_hours=float(measured["gpu_hours"]),
             cpu_core_hours=0.0,
             backend_report={
-                "source": "colab_cli_monotonic_wall_time",
+                "source": "experiment_attempt_gpu_reservations_v1",
+                "attempt_reservation_id": int(
+                    measured["attempt_reservation_id"]
+                ),
+                "executor_reported_wall_seconds": float(
+                    row.get("wall_seconds") or 0
+                ),
                 "account_ref": row.get("account_ref"),
                 "session_ref": row.get("session_ref"),
                 "attempt_count": int(row.get("attempt_count") or 0),

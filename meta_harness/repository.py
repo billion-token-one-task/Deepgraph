@@ -1392,7 +1392,7 @@ class MetaHarnessRepository:
                     db.commit()
                     outcome.outcome_record_id = int(existing["id"])
                     return outcome.outcome_record_id
-            if grant.get("status") != "active":
+            if grant.get("status") not in {"active", "consumed"}:
                 raise MetaHarnessPersistenceError("grant is not active")
             if outcome.actual_tokens > int(grant.get("token_cap") or 0):
                 raise MetaHarnessPersistenceError("actual tokens exceed ResourceGrant")
@@ -1419,13 +1419,54 @@ class MetaHarnessRepository:
                 raise MetaHarnessPersistenceError(
                     "OutcomeRecord token usage does not match metered grant usage"
                 )
+            gpu_usage = db.fetchone(
+                """
+                SELECT
+                    COALESCE(SUM(CASE WHEN status='settled'
+                                      THEN actual_gpu_seconds ELSE 0 END), 0)
+                        AS settled_gpu_seconds,
+                    COALESCE(SUM(CASE WHEN status IN ('reserved','running')
+                                      THEN 1 ELSE 0 END), 0)
+                        AS open_reservations
+                FROM experiment_attempt_gpu_reservations_v1
+                WHERE resource_grant_id=?
+                """,
+                (outcome.resource_grant_id,),
+            ) or {}
+            if int(gpu_usage.get("open_reservations") or 0):
+                raise MetaHarnessPersistenceError(
+                    "OutcomeRecord cannot close a grant with open GPU attempts"
+                )
+            metered_gpu_hours = float(
+                gpu_usage.get("settled_gpu_seconds") or 0.0
+            ) / 3600.0
+            if abs(metered_gpu_hours - outcome.actual_gpu_hours) > 1e-9:
+                raise MetaHarnessPersistenceError(
+                    "OutcomeRecord GPU usage does not match metered attempts"
+                )
             reservation_id = int(grant["reservation_id"])
             ledger = db.fetchone(
                 f"SELECT * FROM agenda_resource_ledger WHERE id=?{lock}",
                 (reservation_id,),
             )
-            if not ledger or ledger.get("status") != "reserved":
-                raise MetaHarnessPersistenceError("grant reservation is not active")
+            if not ledger or ledger.get("status") not in {"reserved", "settled"}:
+                raise MetaHarnessPersistenceError("grant reservation is not settleable")
+            if grant.get("status") == "consumed":
+                if ledger.get("status") != "settled":
+                    raise MetaHarnessPersistenceError(
+                        "consumed grant ledger is not settled"
+                    )
+                if (
+                    int(ledger.get("tokens_used") or 0) != outcome.actual_tokens
+                    or abs(
+                        float(ledger.get("gpu_hours_used") or 0.0)
+                        - outcome.actual_gpu_hours
+                    )
+                    > 1e-9
+                ):
+                    raise MetaHarnessPersistenceError(
+                        "consumed grant ledger does not match OutcomeRecord usage"
+                    )
             outcome_id = db.insert_returning_id(
                 """
                 INSERT INTO outcome_records
@@ -1455,39 +1496,44 @@ class MetaHarnessRepository:
                     _dump(outcome.artifact_manifest),
                 ),
             )
-            token_reserved = int(ledger.get("token_reserved") or 0)
-            gpu_reserved = float(ledger.get("gpu_hours_reserved") or 0)
-            db.execute(
-                """
-                UPDATE research_agendas
-                SET token_reserved=token_reserved-?,
-                    gpu_hours_reserved=gpu_hours_reserved-?,
-                    token_spent=token_spent+?,
-                    gpu_hours_spent=gpu_hours_spent+?,
-                    updated_at=CURRENT_TIMESTAMP
-                WHERE id=?
-                """,
-                (
-                    token_reserved,
-                    gpu_reserved,
-                    outcome.actual_tokens,
-                    outcome.actual_gpu_hours,
-                    outcome.agenda_id,
-                ),
-            )
-            db.execute(
-                """
-                UPDATE agenda_resource_ledger
-                SET tokens_used=?, gpu_hours_used=?, status='settled',
-                    settled_at=CURRENT_TIMESTAMP
-                WHERE id=?
-                """,
-                (outcome.actual_tokens, outcome.actual_gpu_hours, reservation_id),
-            )
-            db.execute(
-                "UPDATE resource_grants SET status='consumed' WHERE id=? AND agenda_id=?",
-                (outcome.resource_grant_id, outcome.agenda_id),
-            )
+            if grant.get("status") == "active":
+                token_reserved = int(ledger.get("token_reserved") or 0)
+                gpu_reserved = float(ledger.get("gpu_hours_reserved") or 0)
+                gpu_already_spent = float(ledger.get("gpu_hours_used") or 0.0)
+                if abs(gpu_already_spent - outcome.actual_gpu_hours) > 1e-9:
+                    raise MetaHarnessPersistenceError(
+                        "grant ledger GPU usage does not match metered attempts"
+                    )
+                gpu_outstanding = max(0.0, gpu_reserved - gpu_already_spent)
+                db.execute(
+                    """
+                    UPDATE research_agendas
+                    SET token_reserved=token_reserved-?,
+                        gpu_hours_reserved=gpu_hours_reserved-?,
+                        token_spent=token_spent+?,
+                        updated_at=CURRENT_TIMESTAMP
+                    WHERE id=?
+                    """,
+                    (
+                        token_reserved,
+                        gpu_outstanding,
+                        outcome.actual_tokens,
+                        outcome.agenda_id,
+                    ),
+                )
+                db.execute(
+                    """
+                    UPDATE agenda_resource_ledger
+                    SET tokens_used=?, gpu_hours_used=?, status='settled',
+                        settled_at=CURRENT_TIMESTAMP
+                    WHERE id=?
+                    """,
+                    (outcome.actual_tokens, outcome.actual_gpu_hours, reservation_id),
+                )
+                db.execute(
+                    "UPDATE resource_grants SET status='consumed' WHERE id=? AND agenda_id=?",
+                    (outcome.resource_grant_id, outcome.agenda_id),
+                )
             db.commit()
             outcome.outcome_record_id = outcome_id
             return outcome_id

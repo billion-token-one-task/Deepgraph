@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest import mock
 
 from scripts import auto_advance
+from meta_harness.attempt_gpu_usage import GrantGPUUsage
 
 
 class AutoAdvanceGuardTests(unittest.TestCase):
@@ -117,7 +118,18 @@ class AutoAdvanceGuardTests(unittest.TestCase):
         with (
             mock.patch.object(auto_advance, "_rows", return_value=[job]),
             mock.patch.object(auto_advance, "_audited_gpu_probe_recovery", return_value=True),
-            mock.patch.object(auto_advance, "_completed_grant_gpu_seconds", return_value=7201.0),
+            mock.patch.object(
+                auto_advance,
+                "_grant_gpu_usage",
+                return_value=GrantGPUUsage(
+                    resource_grant_id=18,
+                    cap_gpu_seconds=7200.0,
+                    settled_gpu_seconds=7201.0,
+                    active_reserved_gpu_seconds=0.0,
+                    active_reservations=0,
+                    grant_status="active",
+                ),
+            ),
             mock.patch.object(auto_advance, "_requeue_for_consumer") as requeue,
         ):
             auto_advance.recycle_stranded(11, state, journal, args)
