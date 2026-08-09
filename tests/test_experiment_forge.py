@@ -547,6 +547,8 @@ class GenerateScaffoldTests(unittest.TestCase):
         self.assertIn('"full_benchmark_completed": False', train_py)
         self.assertIn("is_torchvision_available = lambda: False", train_py)
         self.assertIn('os.environ.setdefault("HF_HUB_DISABLE_XET", "1")', train_py)
+        self.assertIn('os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", "300")', train_py)
+        self.assertIn('os.environ.setdefault("HF_HUB_ETAG_TIMEOUT", "60")', train_py)
         self.assertNotIn("prediction = target", train_py)
         self.assertNotIn("extract_gsm8k_answer(row[\"answer\"])", train_py)
 
