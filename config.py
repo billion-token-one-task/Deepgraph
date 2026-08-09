@@ -369,12 +369,12 @@ TOPIC_GATE_MIN_STATEMENT_CHARS = _env_int(
 )
 TOPIC_GATE_MAX_PILOT_TOKENS = _env_int(
     "DEEPGRAPH_TOPIC_GATE_MAX_PILOT_TOKENS",
-    20_000,
+    40_000,
     "topic_gate.max_pilot_tokens",
 )
 TOPIC_GATE_MAX_PILOT_GPU_HOURS = _env_float(
     "DEEPGRAPH_TOPIC_GATE_MAX_PILOT_GPU_HOURS",
-    0.0,
+    2.0,
     "topic_gate.max_pilot_gpu_hours",
 )
 TOPIC_GATE_MAX_PILOT_WALL_HOURS = _env_float(

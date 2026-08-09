@@ -58,6 +58,7 @@ from config import (
 )
 from db import database as db
 from meta_harness.scientific_authority import positive_decision_authorized
+from meta_harness.failure_repository import FailureRecoveryRepository
 from db.insight_outcomes import (
     OUTCOME_EXPERIMENT_FAILED_RUN,
     OUTCOME_EXPERIMENT_FAILED_SETUP,
@@ -902,9 +903,8 @@ def process_benchmark_harness_jobs(limit: int = 10) -> int:
     """Consume harness_required rows that already contain a runnable subset.
 
     The dedicated custom-harness path remains explicit for unsupported targets,
-    but supported probes such as GSM8K/MBPP/MATH-500 should not sit forever in
-    benchmark_harness_jobs just because the full formal target needs a custom
-    harness later.
+    but capability-supported probes should not sit forever in harness work just
+    because a broader formal target needs a custom adapter later.
     """
     rows = db.fetchall(
         """
@@ -1539,6 +1539,37 @@ def _retry_failed_run_with_repair(insight_id: int, run: dict, resource_class: st
     if next_attempt > max_attempts:
         return False
     error = str(run.get("error_message") or "Experiment run failed without an error message.").strip()
+    try:
+        recovery, fingerprint, _record_id = FailureRecoveryRepository().decide_for_run(
+            experiment_run_id=int(run["id"]),
+            execution_result={
+                "error": error,
+                "failure_type": error,
+                "final_results_present": False,
+            },
+            retry_count=previous_attempt,
+        )
+    except Exception:
+        db.rollback()
+        recovery = None
+        fingerprint = "unavailable"
+    if recovery is not None and not recovery.invoke_llm_repair:
+        _upsert_job(
+            insight_id,
+            status="blocked",
+            stage=f"execution_{recovery.action}",
+            experiment_run_id=run.get("id"),
+            resource_class=resource_class,
+            last_error=(
+                f"reason_code={recovery.reason_code}; action={recovery.action}; "
+                f"fingerprint={fingerprint}; {error}"
+            )[:4000],
+            last_note=(
+                "Generic failure policy suppressed LLM repair because this "
+                "failure does not require a code change."
+            ),
+        )
+        return True
     tag = _repair_tag("failed_run", next_attempt, max_attempts)
     repair = repair_experiment_plan_from_review(
         insight_id,
@@ -2159,9 +2190,9 @@ def _manuscript_retry_blocker(run: dict | None) -> str | None:
             "A persisted supported scientific decision is required before "
             "manuscript retry."
         )
-    legacy_blocker = gpu_scheduler._legacy_benchmark_manifest_blocker(run)
-    if legacy_blocker:
-        return legacy_blocker
+    preflight_blocker = gpu_scheduler._capability_preflight_blocker(run)
+    if preflight_blocker:
+        return preflight_blocker
     if _run_has_automation_failure(run):
         return run.get("error_message") or "Automation failure blocks manuscript retry."
     return None
@@ -2397,36 +2428,20 @@ def _json_object(value) -> dict:
     return {}
 
 
-def _requires_llm_real_benchmark_route(insight: dict) -> bool:
+def _requires_accelerated_runner(insight: dict) -> bool:
     plan = _json_object(insight.get("experimental_plan"))
-    if bool(plan.get("real_benchmark_required") or plan.get("benchmark_targets") or plan.get("model_targets")):
-        return True
-    contract = plan.get("publication_evidence_contract") if isinstance(plan.get("publication_evidence_contract"), dict) else {}
-    if contract.get("required_real_benchmarks") or contract.get("benchmark_manifest"):
-        return True
-    corpus = " ".join(
-        str(part or "")
-        for part in (
-            insight.get("title"),
-            insight.get("problem_statement"),
-            insight.get("existing_weakness"),
-            json.dumps(plan.get("datasets", []), ensure_ascii=False),
-            json.dumps(plan.get("baselines", []), ensure_ascii=False),
-            json.dumps(plan.get("metrics", {}), ensure_ascii=False),
-        )
-    ).lower()
-    benchmark_terms = ("gsm8k", "mmlu", "bbh", "math", "humaneval", "mbpp", "arc-challenge", "truthfulqa")
-    llm_terms = (
-        "qwen",
-        "llama",
-        "mistral",
-        "transformers",
-        "direct answering",
-        "chain-of-thought",
-        "self-consistency",
-        "prompting",
+    requirements = plan.get("execution_requirements")
+    if not isinstance(requirements, dict):
+        return False
+    model = requirements.get("model")
+    model = model if isinstance(model, dict) else {}
+    preferred = {
+        str(value).strip()
+        for value in requirements.get("preferred_backends") or []
+    }
+    return bool(model.get("requires_cuda")) or bool(
+        preferred.intersection({"local_gpu", "ssh_gpu", "colab_gpu"})
     )
-    return any(term in corpus for term in benchmark_terms) and any(term in corpus for term in llm_terms)
 
 
 def assess_experiment_route(insight: dict) -> tuple[str, str]:
@@ -2434,9 +2449,9 @@ def assess_experiment_route(insight: dict) -> tuple[str, str]:
     inferred_resource = str(insight.get("resource_class") or "").strip() or infer_resource_class(insight)
     resource_class = inferred_resource
     route_note = ""
-    if resource_class == "cpu" and _requires_llm_real_benchmark_route(insight):
+    if resource_class == "cpu" and _requires_accelerated_runner(insight):
         resource_class = "gpu_large"
-        route_note = " real LLM benchmark detected; upgraded cpu route to gpu_large."
+        route_note = " structured runner requirements request an accelerated backend."
     experimentability = infer_experimentability({**insight, "resource_class": resource_class})
     allowed, block_reason = gpu_resource_allowed(resource_class)
     if not allowed:
@@ -4219,8 +4234,8 @@ def _process_candidate(insight: dict) -> None:
         )
         return
 
-    legacy_blocker = gpu_scheduler._legacy_benchmark_manifest_blocker(existing_run)
-    if legacy_blocker:
+    preflight_blocker = gpu_scheduler._capability_preflight_blocker(existing_run)
+    if preflight_blocker:
         db.execute(
             """
             UPDATE experiment_runs
@@ -4229,7 +4244,7 @@ def _process_candidate(insight: dict) -> None:
             WHERE id=? AND agenda_id=?
             """,
             (
-                legacy_blocker,
+                preflight_blocker,
                 existing_run["id"],
                 int(insight["agenda_id"]),
             ),
@@ -4238,17 +4253,17 @@ def _process_candidate(insight: dict) -> None:
         _upsert_job(
             insight_id,
             status="failed",
-            stage="benchmark_design_blocked",
+            stage="capability_preflight_blocked",
             experiment_run_id=existing_run["id"],
             resource_class=resource_class,
-            last_error=legacy_blocker,
-            last_note="Legacy experiment run blocked before CPU/GPU execution because its benchmark manifest is not semantically aligned.",
+            last_error=preflight_blocker,
+            last_note="Compute blocked because its grant is not bound to a passed structured capability preflight.",
         )
         set_outcome(
             "deep_insights",
             insight_id,
             OUTCOME_EXPERIMENT_FAILED_RUN,
-            reason=legacy_blocker,
+            reason=preflight_blocker,
             triggered_by="experiment",
         )
         return

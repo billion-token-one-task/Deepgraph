@@ -32,6 +32,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from db import database as db  # noqa: E402
+from meta_harness.outcome_finalizer import finalize_terminal_outcomes  # noqa: E402
 from orchestrator.auto_research import _launch_candidates_to_capacity  # noqa: E402
 
 _stop = False
@@ -80,12 +81,15 @@ def main() -> int:
             # and repairs benchmark-harness jobs, and those states are not in
             # the queued set - gating on "queued" work would strand them.
             granted = _granted_jobs()
+            before = finalize_terminal_outcomes().to_dict()
             result = _launch_candidates_to_capacity()
+            after = finalize_terminal_outcomes().to_dict()
             scheduled = result.get("scheduled") if isinstance(result, dict) else None
             detail = {k: v for k, v in (result or {}).items()
                       if k != "scheduled" and v not in (0, {}, [], None)}
             _log(log_path, "launch_pass", granted_jobs=granted,
-                 scheduled=scheduled, detail=detail)
+                 scheduled=scheduled, detail=detail,
+                 outcomes_before=before, outcomes_after=after)
         except Exception as exc:
             try:
                 db.rollback()

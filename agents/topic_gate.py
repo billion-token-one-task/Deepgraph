@@ -108,8 +108,8 @@ class TopicGatePolicy:
     surprise_bits: float = 1.0
     min_expected_bits: float = 0.25
     min_statement_chars: int = 40
-    max_pilot_tokens: int = 20_000
-    max_pilot_gpu_hours: float = 0.0
+    max_pilot_tokens: int = 40_000
+    max_pilot_gpu_hours: float = 2.0
     max_pilot_wall_hours: float = 24.0
 
     def validate(self) -> None:

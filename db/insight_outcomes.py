@@ -16,6 +16,7 @@ OUTCOME_EXPERIMENT_QUEUED = "experiment_queued"
 OUTCOME_EXPERIMENT_FAILED_SETUP = "experiment_failed_setup"
 OUTCOME_EXPERIMENT_FAILED_RUN = "experiment_failed_run"
 OUTCOME_EXPERIMENT_INCONCLUSIVE = "experiment_inconclusive"
+OUTCOME_EXPERIMENT_REFUTED = "experiment_refuted"
 OUTCOME_EXPERIMENT_SUCCEEDED = "experiment_succeeded"
 OUTCOME_HUMAN_UPVOTED = "human_upvoted"
 OUTCOME_HUMAN_DOWNVOTED = "human_downvoted"
@@ -32,6 +33,7 @@ ALL_OUTCOMES = frozenset(
         OUTCOME_EXPERIMENT_FAILED_SETUP,
         OUTCOME_EXPERIMENT_FAILED_RUN,
         OUTCOME_EXPERIMENT_INCONCLUSIVE,
+        OUTCOME_EXPERIMENT_REFUTED,
         OUTCOME_EXPERIMENT_SUCCEEDED,
         OUTCOME_HUMAN_UPVOTED,
         OUTCOME_HUMAN_DOWNVOTED,
@@ -224,7 +226,16 @@ def apply_experiment_finished_deep(
     success: bool,
     inconclusive: bool = False,
 ) -> None:
-    if inconclusive or (verdict or "").lower() == "inconclusive":
+    normalized = (verdict or "").lower()
+    if normalized == "refuted":
+        set_outcome(
+            "deep_insights",
+            insight_id,
+            OUTCOME_EXPERIMENT_REFUTED,
+            reason=f"hypothesis_verdict={verdict}",
+            triggered_by="experiment",
+        )
+    elif inconclusive or normalized == "inconclusive":
         set_outcome(
             "deep_insights",
             insight_id,

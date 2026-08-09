@@ -100,6 +100,49 @@ class ProblemFirstTests(TempDbTestCase):
         stored = database.fetchone("SELECT * FROM research_problems WHERE id=?", (problem["id"],))
         self.assertIsNotNone(stored)
 
+    def test_empty_scoped_signal_pool_seeds_problem_from_agenda_direction(self):
+        agenda_row = {
+            "id": 9,
+            "version": "v1",
+            "name": "Robust clinical sequence classification",
+            "description": "Study calibration under hospital distribution shift",
+            "focus_json": '["clinical calibration", "distribution shift"]',
+            "prefer_json": "{}",
+            "reject_json": "{}",
+            "required_output_json": "{}",
+            "raw_config_json": "{}",
+            "is_active": 1,
+            "submitter": "test",
+            "token_budget": 1000,
+            "token_spent": 0,
+            "token_reserved": 0,
+            "gpu_hours_budget": 1,
+            "gpu_hours_spent": 0,
+            "gpu_hours_reserved": 0,
+            "max_concurrency": 1,
+            "backend_allowlist_json": '["cpu","llm"]',
+            "backlog_policy": "new_only",
+            "status": "active",
+        }
+        with (
+            mock.patch("agents.problem_first.get_problem_signals", return_value=[]),
+            mock.patch.object(database, "table_exists", return_value=True),
+            mock.patch.object(database, "fetchone", return_value=agenda_row),
+        ):
+            problems = discover_research_problems(
+                limit=2, agenda_id=9, persist=False
+            )
+
+        self.assertEqual(len(problems), 2)
+        self.assertIn("hospital distribution shift", problems[0]["problem_statement"])
+        self.assertEqual(
+            problems[0]["source_signal_ref"]["kind"], "agenda_direction"
+        )
+        self.assertNotEqual(
+            problems[0]["source_signal_ref"]["axis"],
+            problems[1]["source_signal_ref"]["axis"],
+        )
+
     def test_problem_first_cycle_records_inconclusive_attempts(self):
         problem = discover_research_problems(limit=1, agenda_id=1, persist=True)[0]
 
@@ -223,7 +266,7 @@ class ProblemFirstTests(TempDbTestCase):
         edge_count = database.fetchone("SELECT COUNT(*) AS c FROM experimental_evidence_edges")
         self.assertGreaterEqual(edge_count["c"], 2)
 
-    def test_discover_paper_ideas_prefers_problem_first_pool(self):
+    def test_discover_paper_ideas_uses_agenda_problem_without_harvested_signals(self):
         problem = {
             "id": 7,
             "research_problem_id": 7,
@@ -252,7 +295,7 @@ class ProblemFirstTests(TempDbTestCase):
             "limitation_clusters": [],
             "high_potential_insights": [],
             "mechanism_mismatches": [],
-            "protocol_artifacts": [{"id": 1, "summary": "protocol artifact"}],
+            "protocol_artifacts": [],
             "negative_space_gaps": [],
             "hidden_variable_bridges": [],
             "claim_method_gaps": [],

@@ -139,12 +139,13 @@ Return JSON:
     "execution_requirements": {
       "schema_version": "experiment_requirements_v1",
       "task_protocol": "explicit protocol",
+      "candidate_hook": "candidate_prompt or candidate_text",
       "dataset": {"repository_id": "...", "revision": "...", "config": "", "split": "...", "field_mapping": {}},
       "model": {"repository_id": "...", "revision": "...", "framework": "...", "task": "...", "min_vram_gb": 0, "requires_cuda": false, "quantization": "none"},
       "metric": {"name": "...", "direction": "higher", "required_prediction_fields": ["prediction", "target"]},
       "dependencies": [], "network_required": true, "min_disk_gb": 1,
       "seeds": [0], "sample_cap": 32,
-      "artifact_contract": ["final_results", "raw_predictions", "environment_manifest"],
+      "artifact_contract": ["final_results", "raw_predictions", "environment_manifest", "dataset_manifest", "model_manifest"],
       "preferred_backends": ["cpu"]
     },
     "risks": ["..."]

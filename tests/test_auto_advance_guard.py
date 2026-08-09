@@ -190,6 +190,39 @@ class AutoAdvanceGuardTests(unittest.TestCase):
 
         self.assertEqual(spent, 118985)
 
+    def test_waiting_candidates_are_decided_as_one_portfolio(self):
+        waiting = [
+            {"id": 1, "deep_insight_id": 101, "insight_status": "candidate"},
+            {"id": 2, "deep_insight_id": 102, "insight_status": "candidate"},
+        ]
+        packets = [mock.Mock(idea_id=101), mock.Mock(idea_id=102)]
+        decisions = [
+            mock.Mock(idea_id=101, decision="park", reason_codes=["correlated"], decision_packet_id=11),
+            mock.Mock(idea_id=102, decision="park", reason_codes=["lower_value"], decision_packet_id=12),
+        ]
+        args = mock.Mock(
+            max_new_grants=2,
+            proposal_token_cap=32000,
+            grant_token_cap=40000,
+            spend_limit=0,
+            agenda=[9],
+        )
+        journal = mock.Mock()
+        repository = mock.Mock()
+
+        with (
+            mock.patch.object(auto_advance, "_rows", side_effect=[[], waiting]),
+            mock.patch.object(auto_advance, "select_next", return_value=None),
+            mock.patch.object(auto_advance, "ensure_frontier_packet", return_value=7),
+            mock.patch.object(auto_advance, "build_packet", side_effect=packets),
+            mock.patch.object(auto_advance, "decide_portfolio", return_value=decisions) as decide,
+            mock.patch.object(auto_advance, "MetaHarnessRepository", return_value=repository),
+        ):
+            auto_advance.advance_agenda(9, {}, journal, args)
+
+        self.assertEqual(len(decide.call_args.args[0]), 2)
+        self.assertEqual(repository.save_decision.call_count, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

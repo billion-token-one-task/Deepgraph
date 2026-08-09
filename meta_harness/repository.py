@@ -19,6 +19,7 @@ from db import database as db
 from meta_harness.llm_routing import ProviderRoute, RouteObservation
 from meta_harness.evidence_state import EvidenceTransitionContext, advance
 from meta_harness.frontier import evaluate_frontier
+from meta_harness.failure_policy import classify_failure
 from meta_harness.reviewer_approval import (
     ReviewerApproval,
     ReviewerApprovalVerifier,
@@ -860,20 +861,150 @@ class MetaHarnessRepository:
                     grant.preflight_result_id,
                 ),
             )
-            db.execute(
-                """
-                UPDATE auto_research_jobs
-                SET resource_grant_id=?, status='queued',
-                    stage='portfolio_granted', updated_at=CURRENT_TIMESTAMP
-                WHERE agenda_id=? AND deep_insight_id=?
-                  AND stage='awaiting_portfolio_decision'
-                """,
-                (grant_id, grant.agenda_id, grant.idea_id),
-            )
+            if grant.stage == "proposal":
+                db.execute(
+                    """
+                    UPDATE auto_research_jobs
+                    SET resource_grant_id=?, status='deferred',
+                        stage='proposal_generation_granted',
+                        updated_at=CURRENT_TIMESTAMP
+                    WHERE agenda_id=? AND deep_insight_id=?
+                      AND stage='awaiting_portfolio_decision'
+                    """,
+                    (grant_id, grant.agenda_id, grant.idea_id),
+                )
+            else:
+                db.execute(
+                    """
+                    UPDATE auto_research_jobs
+                    SET resource_grant_id=?, status='queued',
+                        stage='portfolio_granted', updated_at=CURRENT_TIMESTAMP
+                    WHERE agenda_id=? AND deep_insight_id=?
+                      AND stage='awaiting_portfolio_decision'
+                    """,
+                    (grant_id, grant.agenda_id, grant.idea_id),
+                )
             db.commit()
             grant.grant_id = grant_id
             grant.reservation_id = reservation_id
             return grant_id
+        except Exception:
+            db.rollback()
+            raise
+
+    def complete_proposal_generation(
+        self,
+        *,
+        grant_id: int,
+        agenda_id: int,
+        idea_id: int,
+    ) -> int:
+        """Settle a token-only proposal grant and queue the realized candidate.
+
+        Candidate generation is a resource-bearing stage but not a scientific
+        outcome. Its unused reservation is released here; the realized design
+        must pass portfolio and preflight again before compute can be granted.
+        """
+
+        try:
+            lock = " FOR UPDATE" if db._use_pg() else ""  # noqa: SLF001
+            grant = db.fetchone(
+                f"""
+                SELECT * FROM resource_grants
+                WHERE id=? AND agenda_id=? AND idea_id=?{lock}
+                """,
+                (int(grant_id), int(agenda_id), int(idea_id)),
+            )
+            if not grant or str(grant.get("stage") or "") != "proposal":
+                raise MetaHarnessPersistenceError("proposal grant scope mismatch")
+            usage = db.fetchone(
+                """
+                SELECT
+                    COALESCE(SUM(CASE WHEN status='settled'
+                                      THEN tokens_used ELSE 0 END), 0)
+                        AS tokens_used,
+                    COALESCE(SUM(CASE WHEN status='reserved' THEN 1 ELSE 0 END), 0)
+                        AS open_reservations
+                FROM resource_grant_usage_reservations
+                WHERE resource_grant_id=? AND agenda_id=?
+                """,
+                (int(grant_id), int(agenda_id)),
+            ) or {}
+            if int(usage.get("open_reservations") or 0):
+                raise MetaHarnessPersistenceError(
+                    "proposal grant has open LLM reservations"
+                )
+            actual_tokens = int(usage.get("tokens_used") or 0)
+            if grant.get("status") == "consumed":
+                db.commit()
+                return actual_tokens
+            if grant.get("status") != "active":
+                raise MetaHarnessPersistenceError("proposal grant is not active")
+            ledger = db.fetchone(
+                f"SELECT * FROM agenda_resource_ledger WHERE id=?{lock}",
+                (int(grant["reservation_id"]),),
+            )
+            if not ledger or ledger.get("status") != "reserved":
+                raise MetaHarnessPersistenceError(
+                    "proposal grant reservation is not settleable"
+                )
+            db.execute(
+                """
+                UPDATE research_agendas
+                SET token_reserved=token_reserved-?, token_spent=token_spent+?,
+                    updated_at=CURRENT_TIMESTAMP
+                WHERE id=?
+                """,
+                (
+                    int(ledger.get("token_reserved") or 0),
+                    actual_tokens,
+                    int(agenda_id),
+                ),
+            )
+            db.execute(
+                """
+                UPDATE agenda_resource_ledger
+                SET tokens_used=?, gpu_hours_used=0, status='settled',
+                    settled_at=CURRENT_TIMESTAMP
+                WHERE id=? AND status='reserved'
+                """,
+                (actual_tokens, int(grant["reservation_id"])),
+            )
+            db.execute(
+                """
+                UPDATE resource_grants SET status='consumed'
+                WHERE id=? AND agenda_id=? AND status='active'
+                """,
+                (int(grant_id), int(agenda_id)),
+            )
+            db.execute(
+                """
+                UPDATE auto_research_jobs
+                SET resource_grant_id=NULL, status='queued',
+                    stage='awaiting_portfolio_decision',
+                    last_error=NULL,
+                    last_note='proposal generation completed; full candidate awaits portfolio',
+                    updated_at=CURRENT_TIMESTAMP
+                WHERE agenda_id=? AND deep_insight_id=?
+                  AND resource_grant_id=?
+                """,
+                (int(agenda_id), int(idea_id), int(grant_id)),
+            )
+            # The proposal-stage prediction only governs the LLM design call.
+            # The realized candidate must make a fresh, experiment-specific
+            # falsification commitment before a compute portfolio decision.
+            # Its immutable proposal record remains in
+            # candidate_stage_gate_records_v1.
+            db.execute(
+                """
+                UPDATE deep_insights SET topic_gate_json=NULL,
+                    updated_at=CURRENT_TIMESTAMP
+                WHERE id=? AND agenda_id=?
+                """,
+                (int(idea_id), int(agenda_id)),
+            )
+            db.commit()
+            return actual_tokens
         except Exception:
             db.rollback()
             raise
@@ -1206,7 +1337,8 @@ class MetaHarnessRepository:
             """
             SELECT id, agenda_id, deep_insight_id, status,
                    scientific_evidence_state, baseline_metric_value,
-                   effect_size, hypothesis_verdict
+                   best_metric_value, effect_size, hypothesis_verdict,
+                   error_message
             FROM experiment_runs
             WHERE id=? AND resource_grant_id=?
             """,
@@ -1307,6 +1439,27 @@ class MetaHarnessRepository:
             """,
             (int(grant["agenda_id"]), experiment_run_id),
         )
+        if str(run.get("status") or "") == "completed":
+            missing_metrics = [
+                name
+                for name in ("baseline_metric_value", "best_metric_value")
+                if run.get(name) is None
+            ]
+            artifact_types = {
+                str(row.get("artifact_type") or "")
+                for row in experiment_artifacts
+            }
+            if missing_metrics:
+                raise MetaHarnessPersistenceError(
+                    "completed run is missing trusted metrics:"
+                    + ",".join(missing_metrics)
+                )
+            if "final_results" not in artifact_types:
+                raise MetaHarnessPersistenceError(
+                    "completed run is missing validated final_results artifact"
+                )
+        if str(run.get("status") or "") in {"failed", "cancelled"}:
+            verdict = "invalid"
         route_observations = db.fetchall(
             """
             SELECT lro.id, lro.role, lro.provider, lro.model,
@@ -1331,6 +1484,16 @@ class MetaHarnessRepository:
                 return None
 
         actual_tokens = int(llm_usage.get("tokens_used") or 0)
+        execution_reason_code = (
+            "scientific_negative_result"
+            if verdict == "refuted"
+            else "attempt_completed"
+            if str(run.get("status") or "") == "completed"
+            else classify_failure(
+                message=str(run.get("error_message") or run.get("status") or ""),
+                final_results_present=False,
+            )
+        )
         observed_success = 1.0 if verdict == "supported" else 0.0
         prediction_error = {
             "success_probability": (
@@ -1384,6 +1547,7 @@ class MetaHarnessRepository:
                     int(decision["id"]) if decision else None
                 ),
                 "decision_reason_codes": decision_reason_codes,
+                "execution_reason_code": execution_reason_code,
                 "compute_job_statuses": [
                     str(row.get("status") or "") for row in compute_rows
                 ],

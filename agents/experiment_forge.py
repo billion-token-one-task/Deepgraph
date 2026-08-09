@@ -74,6 +74,11 @@ from config import (
 from contracts import DeepInsightSpec, ExperimentSpec
 from db import database as db
 from db.insight_outcomes import apply_experiment_queued_deep
+from meta_harness.preflight_repository import CandidatePreflightRepository
+from meta_harness.runner_materialization import (
+    RunnerMaterializationError,
+    materialize_runner_bundle,
+)
 
 
 SCAFFOLD_SYSTEM = prompt_block(
@@ -82,18 +87,19 @@ SCAFFOLD_SYSTEM = prompt_block(
     "full_benchmark_compiler",
 ) + """
 
-You are an expert ML engineer. Given a research hypothesis with a proposed method, you produce THREE files that enable an autonomous coding agent to run experiments.
+You are an expert ML engineer. Given a research hypothesis with a proposed method, you produce a structured experiment scaffold and candidate adapter.
 
 You will receive:
 1. A proposed method (name, type, definition, pseudocode, properties)
 2. An experimental plan (baselines, datasets, metrics, ablations)
 3. A codebase description (what repo was cloned, its structure)
 
-You must output JSON with three keys:
+You must output JSON with these keys:
 
 {
   "program_md": "Complete program.md content in Markdown (instructions for the coding agent)",
   "evaluate_py": "Complete evaluate.py Python script (metric computation)",
+  "candidate_adapter_py": "A complete Python module with CANDIDATE_METHOD and the declared candidate hook",
   "success_criteria": {
     "metric_name": "primary metric name",
     "metric_direction": "lower|higher",
@@ -127,6 +133,17 @@ You must output JSON with three keys:
     }
   }
 }
+
+## candidate_adapter.py Requirements
+- Set a non-empty `CANDIDATE_METHOD` string naming the proposed method.
+- For task_protocol=generative_qa, implement
+  `candidate_prompt(example, baseline_prompt) -> str`.
+- For task_protocol=sequence_classification, implement
+  `candidate_text(example, baseline_text) -> str`.
+- Implement the proposed scientific intervention, not an identity transform.
+- Do not read or derive the target/label field and do not synthesize labels.
+- Do not load the dataset/model, compute metrics, or change revisions. The
+  capability-selected runner owns those lifecycle stages.
 
 ## program.md Requirements
 - Must follow the autoresearch format: setup, experimentation loop, output format, logging
@@ -2430,6 +2447,7 @@ def generate_scaffold(
     workdir: Path,
     *,
     llm_scope: dict | None = None,
+    runner_capability_bound: bool = False,
 ) -> dict:
     """Generate program.md, evaluate.py, and success_criteria.json using LLM."""
     parsed = _parse_insight_fields(insight)
@@ -2528,7 +2546,19 @@ def generate_scaffold(
     llm_route = None
     real_runner_required = bool(EXPERIMENT_REQUIRE_REAL_BENCHMARK and not EXPERIMENT_ALLOW_SYNTHETIC_FALLBACK)
     recipe_blocked = False
-    if _plan_uses_executable_probe(plan):
+    if runner_capability_bound:
+        if llm_scope is None:
+            raise PermissionError(
+                "candidate adapter generation requires a ResourceGrant-backed LLM scope"
+            )
+        result, tokens, llm_route = _resource_granted_proposer_json(
+            SCAFFOLD_SYSTEM,
+            prompt,
+            llm_scope=llm_scope,
+            operation="experiment_forge.capability_scaffold",
+            max_tokens=12000,
+        )
+    elif _plan_uses_executable_probe(plan):
         print("[FORGE] Executable benchmark probe detected; using deterministic scaffold.", flush=True)
         result = _fallback_scaffold(method, plan, codebase)
         used_fallback = True
@@ -2558,7 +2588,11 @@ def generate_scaffold(
         success = success or fallback.get("success_criteria", {})
         used_fallback = True
 
-    if real_runner_required and not _train_py_is_real_benchmark_runner(train_py):
+    if (
+        not runner_capability_bound
+        and real_runner_required
+        and not _train_py_is_real_benchmark_runner(train_py)
+    ):
         metric_name = _metric_name_from_success_or_plan(success, plan)
         try:
             train_py = _real_llm_benchmark_train_py(
@@ -2583,7 +2617,11 @@ def generate_scaffold(
         used_fallback = True
         print("[FORGE] Real-benchmark guard injected Hugging Face benchmark runner", flush=True)
 
-    if resource_class != "cpu" and not _train_py_uses_cuda(train_py):
+    if (
+        not runner_capability_bound
+        and resource_class != "cpu"
+        and not _train_py_uses_cuda(train_py)
+    ):
         metric_name = _metric_name_from_success_or_plan(success, plan)
         if real_runner_required:
             try:
@@ -2619,12 +2657,17 @@ def generate_scaffold(
         baseline_command_override = "python train.py"
         used_fallback = True
 
-    if real_runner_required and _train_py_is_real_benchmark_runner(train_py):
+    if (
+        not runner_capability_bound
+        and real_runner_required
+        and _train_py_is_real_benchmark_runner(train_py)
+    ):
         baseline_command_override = "python train.py"
 
     scaffold_kind = (
         "real_benchmark_recipe_blocked"
         if recipe_blocked
+        else "capability_bound_runner" if runner_capability_bound
         else "full_benchmark_compiled" if (used_fallback and real_runner_required)
         else "bootstrap_probe" if used_fallback
         else "planned"
@@ -2658,7 +2701,7 @@ def generate_scaffold(
 
     code_dir = workdir / "code"
     code_dir.mkdir(parents=True, exist_ok=True)
-    if train_py and len(train_py) > 50:
+    if not runner_capability_bound and train_py and len(train_py) > 50:
         (code_dir / "train.py").write_text(train_py, encoding="utf-8")
         if real_runner_required:
             (code_dir / "requirements.txt").write_text(_real_llm_requirements_txt(), encoding="utf-8")
@@ -2675,6 +2718,7 @@ def generate_scaffold(
         "benchmark_protocol": benchmark_protocol,
         "claim_route": publication_contract.get("claim_route", {}),
         "train_py_written": bool(train_py and len(train_py) > 50),
+        "candidate_adapter_py": str(result.get("candidate_adapter_py") or ""),
         "baseline_command_override": baseline_command_override,
         "tokens": tokens,
         "llm_route": llm_route,
@@ -3466,7 +3510,8 @@ def forge_experiment(insight_id: int, *, resource_grant_id: int | None = None) -
         resource_grant_id = 0
     grant = db.fetchone(
         """
-        SELECT id, agenda_id, idea_id, stage, status, expires_at
+        SELECT id, agenda_id, idea_id, stage, status, expires_at,
+               preflight_result_id
         FROM resource_grants
         WHERE id=? AND agenda_id=? AND idea_id=?
           AND status='active' AND expires_at > CURRENT_TIMESTAMP
@@ -3485,14 +3530,43 @@ def forge_experiment(insight_id: int, *, resource_grant_id: int | None = None) -
         "stage": str(grant["stage"]),
     }
 
+    preflight_row = None
+    if grant.get("preflight_result_id"):
+        try:
+            preflight_row = CandidatePreflightRepository().require_passed(
+                preflight_result_id=int(grant["preflight_result_id"]),
+                agenda_id=agenda_id,
+                idea_id=insight_id,
+                allowed_backends=("cpu", "ssh_gpu", "local_gpu", "colab_gpu"),
+                required_artifacts=(
+                    "final_results",
+                    "raw_predictions",
+                    "environment_manifest",
+                    "dataset_manifest",
+                    "model_manifest",
+                ),
+            )
+            db.commit()
+        except Exception as exc:
+            db.rollback()
+            return {
+                "error": f"runner preflight binding invalid: {exc}",
+                "reason_code": "runner_contract_violation",
+                "route": "blocked",
+            }
+
     gate = evosci_strict_gate_insight(dict(insight))
     if gate:
         print(f"[FORGE] Blocked by EvoScientist strict gate: {gate.get('error')}", flush=True)
         return gate
 
-    parsed = _autofill_experiment_contracts(
-        dict(insight),
-        llm_scope=llm_scope,
+    parsed = (
+        dict(insight)
+        if preflight_row
+        else _autofill_experiment_contracts(
+            dict(insight),
+            llm_scope=llm_scope,
+        )
     )
     _persist_enriched_insight(insight_id, parsed)
     spec = DeepInsightSpec.from_raw(parsed)
@@ -3501,7 +3575,15 @@ def forge_experiment(insight_id: int, *, resource_grant_id: int | None = None) -
     layout = get_idea_workspace(insight_id, insight=parsed, create=True, sync_db=True)
 
     # Step 1: Scout codebase
-    if _plan_uses_executable_probe(plan):
+    if preflight_row:
+        codebase = _scratch_codebase(
+            "passed capability preflight selects a portable generic runner"
+        )
+        print(
+            "[FORGE] Using capability-selected portable runner; codebase scout skipped.",
+            flush=True,
+        )
+    elif _plan_uses_executable_probe(plan):
         codebase = _scratch_codebase("executable benchmark probe uses generated runner; deferred formal target remains in benchmark_harness_jobs")
         print("[FORGE] Skipping codebase scout for executable benchmark probe; using scratch runner.", flush=True)
     else:
@@ -3648,6 +3730,7 @@ def forge_experiment(insight_id: int, *, resource_grant_id: int | None = None) -
             codebase,
             workdir,
             llm_scope=llm_scope,
+            runner_capability_bound=bool(preflight_row),
         )
     except Exception as exc:
         db.execute(
@@ -3672,8 +3755,39 @@ def forge_experiment(insight_id: int, *, resource_grant_id: int | None = None) -
             "run_id": run_id,
         }
 
+    runner_bundle = None
+    if preflight_row:
+        try:
+            runner_bundle = materialize_runner_bundle(
+                workdir=workdir,
+                preflight_row=preflight_row,
+                candidate_adapter_source=scaffold.get("candidate_adapter_py") or "",
+            )
+        except RunnerMaterializationError as exc:
+            error = f"runner_contract_violation:{exc}"
+            db.execute(
+                """
+                UPDATE experiment_runs
+                SET status='failed', phase='runner_materialization_failed',
+                    error_message=?, completed_at=CURRENT_TIMESTAMP
+                WHERE id=? AND agenda_id=?
+                """,
+                (error, run_id, agenda_id),
+            )
+            db.commit()
+            return {
+                "error": error,
+                "reason_code": "runner_contract_violation",
+                "route": "repair_code",
+                "run_id": run_id,
+            }
+
     # Step 4: Build proxy config
     success = scaffold.get("success_criteria", {})
+    if runner_bundle:
+        success = dict(success or {})
+        success["metric_name"] = runner_bundle["metric_name"]
+        success["metric_direction"] = runner_bundle["metric_direction"]
     if scaffold.get("publication_evidence_contract"):
         proxy["publication_evidence_contract"] = scaffold["publication_evidence_contract"]
         proxy["benchmark_manifest"] = scaffold["publication_evidence_contract"].get("benchmark_manifest", {})
@@ -3689,6 +3803,12 @@ def forge_experiment(insight_id: int, *, resource_grant_id: int | None = None) -
         proxy["baseline_command"] = scaffold["baseline_command_override"]
         proxy["main_train_file"] = "train.py"
         codebase["main_eval_command"] = scaffold["baseline_command_override"]
+        codebase["main_train_file"] = "train.py"
+    if runner_bundle:
+        proxy["baseline_command"] = runner_bundle["baseline_command"]
+        proxy["main_train_file"] = "train.py"
+        proxy["runner_contract"] = runner_bundle
+        codebase["main_eval_command"] = runner_bundle["baseline_command"]
         codebase["main_train_file"] = "train.py"
     plan_paths = write_plan_files(
         insight_id,
@@ -3823,4 +3943,5 @@ def forge_experiment(insight_id: int, *, resource_grant_id: int | None = None) -
         "scaffold_tokens": scaffold.get("tokens", 0),
         "scout_llm_route": codebase.get("llm_route"),
         "scaffold_llm_route": scaffold.get("llm_route"),
+        "runner_bundle": runner_bundle,
     }
