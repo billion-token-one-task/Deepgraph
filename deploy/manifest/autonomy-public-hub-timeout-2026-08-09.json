@@ -21,6 +21,7 @@
       "health_check": "Observe autonomous retry only after R8 reaches zero active runs/GPU jobs; verify FINAL_RESULTS, persisted metrics, grant settlement, and outcome.",
       "purpose": "Raise bounded Hugging Face Hub CDN read/TLS timeouts for multi-GB public model shards while preserving resumable real-model downloads.",
       "restart_required": [
+        "deepgraph-web.service",
         "deepgraph-auto-execute.service"
       ],
       "systemd_reload_required": false
@@ -37,7 +38,7 @@
     "order": "reverse file order",
     "steps": [
       "restore experiment_forge.py.bak and verify SHA256",
-      "restart deepgraph-auto-execute.service"
+      "restart deepgraph-web.service and deepgraph-auto-execute.service after R8 reaches zero"
     ]
   },
   "runtime_root": "/home/billion-token/Deepgraph",
