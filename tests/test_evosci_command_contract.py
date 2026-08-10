@@ -109,6 +109,10 @@ class EvosciRouteSelectionTests(unittest.TestCase):
             mock.patch.object(novelty_verifier, "LLM_SECONDARY_BASE_URL", "https://secondary.invalid"),
             mock.patch.object(novelty_verifier, "LLM_SECONDARY_MODEL", "secondary-model"),
             mock.patch.object(novelty_verifier, "LLM_SECONDARY_PROTOCOL", "chat_completions"),
+            # This test is about which slot is chosen, not about streaming
+            # capability; treat the chosen route as usable so the
+            # streaming fall-through stays out of the way.
+            mock.patch.object(novelty_verifier, "_supports_streaming", return_value=True),
             mock.patch.object(novelty_verifier, "_write_evosci_config", return_value="/tmp/xdg"),
         ):
             return novelty_verifier._build_evosci_env(Path("/tmp/wd"))
@@ -120,6 +124,104 @@ class EvosciRouteSelectionTests(unittest.TestCase):
     def test_enabled_primary_is_still_preferred(self):
         env = self._route(use_tabcode=True)
         self.assertEqual(env["CUSTOM_OPENAI_BASE_URL"], "https://primary.invalid")
+
+class StreamingCapabilityTests(unittest.TestCase):
+    """EvoScientist needs a route that streams; nothing checked that it did.
+
+    LangChain streams unconditionally and raises "No generations found in
+    stream" on an empty one. Measured 2026-08-10: the sora2 relay answers a
+    streaming request with Content-Type text/event-stream and a zero-byte body
+    for every model it serves, while returning correct non-streaming
+    completions - so reachability, model availability and a successful
+    handshake all looked fine and the review still could not run. A third
+    configured provider did stream and was never offered.
+    """
+
+    def test_an_empty_event_stream_is_not_streaming_support(self):
+        from unittest import mock
+
+        from agents import novelty_verifier
+
+        class Empty:
+            def read(self): return b""
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        with mock.patch.object(novelty_verifier.urllib.request, "urlopen", return_value=Empty()):
+            self.assertFalse(
+                novelty_verifier._supports_streaming(
+                    {"base_url": "https://relay.invalid", "api_key": "k", "model": "m"}
+                )
+            )
+
+    def test_real_sse_chunks_count_as_streaming_support(self):
+        from unittest import mock
+
+        from agents import novelty_verifier
+
+        class Chunks:
+            def read(self): return b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n'
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+
+        with mock.patch.object(novelty_verifier.urllib.request, "urlopen", return_value=Chunks()):
+            self.assertTrue(
+                novelty_verifier._supports_streaming(
+                    {"base_url": "https://relay.invalid", "api_key": "k", "model": "m"}
+                )
+            )
+
+    def test_a_route_without_credentials_is_not_probed(self):
+        from agents import novelty_verifier
+
+        self.assertFalse(novelty_verifier._supports_streaming(None))
+        self.assertFalse(novelty_verifier._supports_streaming({"base_url": "", "api_key": ""}))
+
+    def test_builder_falls_through_to_a_streaming_provider(self):
+        from unittest import mock
+
+        from agents import novelty_verifier
+
+        working = {
+            "api_key": "novita-key",
+            "base_url": "https://works.invalid",
+            "model": "streams",
+            "protocol": "chat_completions",
+        }
+        with (
+            mock.patch.object(novelty_verifier, "LLM_USE_TABCODE", False),
+            mock.patch.object(novelty_verifier, "LLM_SECONDARY_API_KEY", "k"),
+            mock.patch.object(novelty_verifier, "LLM_SECONDARY_BASE_URL", "https://silent.invalid"),
+            mock.patch.object(novelty_verifier, "LLM_SECONDARY_MODEL", "m"),
+            mock.patch.object(novelty_verifier, "LLM_SECONDARY_PROTOCOL", "chat_completions"),
+            mock.patch.object(novelty_verifier, "_supports_streaming", side_effect=lambda r, **k: r == working),
+            mock.patch.object(novelty_verifier, "_configured_streaming_routes", return_value=[working]),
+            mock.patch.object(novelty_verifier, "_write_evosci_config", return_value="/tmp/xdg"),
+        ):
+            env = novelty_verifier._build_evosci_env(Path("/tmp/wd"))
+        self.assertEqual(env["CUSTOM_OPENAI_BASE_URL"], "https://works.invalid")
+
+    def test_a_streaming_secondary_is_left_alone(self):
+        """Fall-through only happens when the configured route cannot stream."""
+
+        from unittest import mock
+
+        from agents import novelty_verifier
+
+        with (
+            mock.patch.object(novelty_verifier, "LLM_USE_TABCODE", False),
+            mock.patch.object(novelty_verifier, "LLM_SECONDARY_API_KEY", "k"),
+            mock.patch.object(novelty_verifier, "LLM_SECONDARY_BASE_URL", "https://secondary.invalid"),
+            mock.patch.object(novelty_verifier, "LLM_SECONDARY_MODEL", "m"),
+            mock.patch.object(novelty_verifier, "LLM_SECONDARY_PROTOCOL", "chat_completions"),
+            mock.patch.object(novelty_verifier, "_supports_streaming", return_value=True),
+            mock.patch.object(novelty_verifier, "_configured_streaming_routes",
+                              side_effect=AssertionError("must not fall through")),
+            mock.patch.object(novelty_verifier, "_write_evosci_config", return_value="/tmp/xdg"),
+        ):
+            env = novelty_verifier._build_evosci_env(Path("/tmp/wd"))
+        self.assertEqual(env["CUSTOM_OPENAI_BASE_URL"], "https://secondary.invalid")
+
 
 if __name__ == "__main__":
     unittest.main()
