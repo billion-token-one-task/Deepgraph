@@ -13,6 +13,7 @@ from meta_harness.frontier_authority import (
     FrontierEvaluationRequest,
     authorize,
 )
+from meta_harness import frontier_bootstrap
 from meta_harness.frontier_bootstrap import (
     BootstrapUsage,
     FrontierBootstrapError,
@@ -562,3 +563,26 @@ class ReservationLifecycleTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProviderFailureDetailTests(unittest.TestCase):
+    """A recorded provider failure must say which failure it was.
+
+    Every frontier attempt on 2026-08-10 recorded the bare string
+    `provider_unavailable:HTTPStatusError`. Establishing that it was a 429 from
+    a saturated relay - transient - rather than a 401 on an exhausted key took
+    a live probe against the paid endpoint.
+    """
+
+    def test_http_status_is_recorded_when_present(self):
+        response = mock.Mock(status_code=429)
+        exc = RuntimeError("saturated")
+        exc.response = response
+        self.assertEqual(
+            frontier_bootstrap._provider_failure_detail(exc), "RuntimeError:429"
+        )
+
+    def test_detail_falls_back_to_the_exception_type(self):
+        self.assertEqual(
+            frontier_bootstrap._provider_failure_detail(ValueError("x")), "ValueError"
+        )

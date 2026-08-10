@@ -126,6 +126,19 @@ def default_executor(call: BootstrapCall) -> tuple[Any, BootstrapUsage]:
     return parsed, BootstrapUsage(output_tokens=int(tokens))
 
 
+def _provider_failure_detail(exc: Exception) -> str:
+    """Name the failure precisely enough to act on without re-probing the API.
+
+    ``HTTPStatusError`` alone cost a debugging pass: a 429 from a saturated
+    relay and a 401 from an exhausted key need opposite responses, and the
+    recorded reason could not tell them apart.
+    """
+
+    name = type(exc).__name__
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    return f"{name}:{status}" if status is not None else name
+
+
 def _assessment_from_output(output: Any, authority) -> FrontierAssessment:
     """Malformed output is a closed failure, never a partially filled packet.
 
@@ -248,7 +261,11 @@ def run_bootstrap_evaluation(
     try:
         output, usage = run_executor(call)
     except Exception as exc:
-        _fail(f"provider_unavailable:{type(exc).__name__}", BootstrapUsage(), query_ref)
+        _fail(
+            f"provider_unavailable:{_provider_failure_detail(exc)}",
+            BootstrapUsage(),
+            query_ref,
+        )
         raise FrontierBootstrapError(
             "frontier evaluator route is unavailable; no fallback is permitted",
             transient=True,
