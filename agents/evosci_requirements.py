@@ -29,6 +29,38 @@ def evosci_installed() -> bool:
     return evosci_binary_path().exists()
 
 
+# Flags every headless EvoScientist invocation needs: approve tool calls
+# without a prompt, no thinking display, plain CLI rendering. The workdir and
+# the prompt are per-call and are appended by evosci_command.
+#
+# These are hard-coded against a CLI this repository does not own, and they
+# drifted: three call sites each passed a `--auto-mode` that the installed
+# EvoScientist no longer accepts, so from some upgrade onwards *every*
+# pre-insert Tier-2 review died on a usage error before doing any work, and
+# reported only "evoscientist_review_failed". Keeping the command in one place
+# means the next drift breaks one function, and test_evosci_command_contract
+# checks these flags against the installed binary's own help output.
+EVOSCI_HEADLESS_FLAGS: tuple[str, ...] = (
+    "--auto-approve",
+    "--no-thinking",
+    "--ui",
+    "cli",
+)
+
+
+def evosci_command(*, workdir: str | Path, prompt: str) -> list[str]:
+    """Build one headless EvoScientist invocation."""
+
+    return [
+        str(evosci_binary_path()),
+        "--workdir",
+        str(workdir),
+        *EVOSCI_HEADLESS_FLAGS,
+        "-p",
+        prompt,
+    ]
+
+
 def final_report_ready(insight: dict[str, Any] | None) -> bool:
     if not insight:
         return False

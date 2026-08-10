@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 
 from agents.insight_validation import get_evosci_input_issue
-from agents.evosci_requirements import evosci_binary_path
+from agents.evosci_requirements import evosci_binary_path, evosci_command
 from agents.research_bridge import active_research_session, get_research_status, write_session_pid
 from config import (
     LLM_API_KEY,
@@ -372,15 +372,7 @@ def launch_verification(insight_id: int, timeout_minutes: int = None) -> dict:
 
     log_file = open(Path(workdir) / "evoscientist.log", "w", encoding="utf-8", errors="replace")
     proc = subprocess.Popen(
-        [
-            evosci_bin,
-            "--workdir", workdir,
-            "--auto-approve",
-            "--auto-mode",
-            "--no-thinking",
-            "--ui", "cli",
-            "-p", prompt,
-        ],
+        evosci_command(workdir=workdir, prompt=prompt),
         stdout=log_file,
         stderr=subprocess.STDOUT,
         cwd=workdir,
@@ -598,15 +590,7 @@ Write your findings to final_report.md."""
 
     log_file = open(Path(workdir) / "evoscientist.log", "w")
     proc = subprocess.Popen(
-        [
-            evosci_bin,
-            "--workdir", workdir,
-            "--auto-approve",
-            "--auto-mode",
-            "--no-thinking",
-            "--ui", "cli",
-            "-p", prompt,
-        ],
+        evosci_command(workdir=workdir, prompt=prompt),
         stdout=log_file,
         stderr=subprocess.STDOUT,
         cwd=workdir,
