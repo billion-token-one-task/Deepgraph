@@ -1,0 +1,144 @@
+{
+  "backup_root": "/home/ec2-user/deepgraph-rollback",
+  "batches": [
+    {
+      "acceptance": "Every deployed SHA256 equals this manifest; no live attempt or GPU job crosses the deployment boundary.",
+      "authorization": "required-before-deploy",
+      "batch": "1-states-and-evosci",
+      "files": [
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/v1-states-and-evosci-2026-08-10/job_states.py.bak",
+          "kind": "file",
+          "mode": "0644",
+          "owner": "billion-token:billion-token",
+          "replaces": null,
+          "runtime_locally_modified": false,
+          "source": "meta_harness/job_states.py",
+          "source_bytes": 5126,
+          "source_sha256": "b722741ecac91e2191fa5725c3c3ab48b6cf3444e468a8b4123923c65a746331",
+          "target": "/home/billion-token/Deepgraph/meta_harness/job_states.py",
+          "target_predeploy_sha256": null,
+          "target_predeploy_state": "absent"
+        },
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/v1-states-and-evosci-2026-08-10/auto_research.py.bak",
+          "kind": "file",
+          "mode": "0644",
+          "owner": "billion-token:billion-token",
+          "replaces": null,
+          "runtime_locally_modified": true,
+          "source": "orchestrator/auto_research.py",
+          "source_bytes": 179388,
+          "source_sha256": "0b56f42fa680c227a98dcb4495f1c1bb115c6f18d3c249476c1491219cf729e6",
+          "target": "/home/billion-token/Deepgraph/orchestrator/auto_research.py",
+          "target_predeploy_sha256": "4396a42bd05055b858f310d3a8c60cc390763a6925ea95d6214d68191acf1633",
+          "target_predeploy_state": "present"
+        },
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/v1-states-and-evosci-2026-08-10/auto_advance.py.bak",
+          "kind": "file",
+          "mode": "0644",
+          "owner": "billion-token:billion-token",
+          "replaces": null,
+          "runtime_locally_modified": true,
+          "source": "scripts/auto_advance.py",
+          "source_bytes": 41582,
+          "source_sha256": "93d67139fb391b8539e1e4a992ca31a42da67c08fa6ddf2b95f2a41135a3d466",
+          "target": "/home/billion-token/Deepgraph/scripts/auto_advance.py",
+          "target_predeploy_sha256": "65d16929e0fc4bd1e63ab55c7dd9c500cb83abd31da8185c672b8a7e620dcb5d",
+          "target_predeploy_state": "present"
+        },
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/v1-states-and-evosci-2026-08-10/evosci_requirements.py.bak",
+          "kind": "file",
+          "mode": "0644",
+          "owner": "billion-token:billion-token",
+          "replaces": null,
+          "runtime_locally_modified": false,
+          "source": "agents/evosci_requirements.py",
+          "source_bytes": 4266,
+          "source_sha256": "bd0e5ff1d97f475345a9459beccf1fee03b9de4427c8795daeb3999dd3a31b88",
+          "target": "/home/billion-token/Deepgraph/agents/evosci_requirements.py",
+          "target_predeploy_sha256": "fa3155eda27403d9deccea2eb3a18b2a34337cf96c134820ac3311d878d03d45",
+          "target_predeploy_state": "present"
+        },
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/v1-states-and-evosci-2026-08-10/tier2_review_refine.py.bak",
+          "kind": "file",
+          "mode": "0644",
+          "owner": "billion-token:billion-token",
+          "replaces": null,
+          "runtime_locally_modified": true,
+          "source": "agents/tier2_review_refine.py",
+          "source_bytes": 25183,
+          "source_sha256": "edd7d1969c57f86ae60de0def56fecff8bd244f3abaa17ff603ca1727fc81286",
+          "target": "/home/billion-token/Deepgraph/agents/tier2_review_refine.py",
+          "target_predeploy_sha256": "a35368c39a6501d38083a000f649626ab72fb1a94651982ee6ea4cca8c0f8e77",
+          "target_predeploy_state": "present"
+        },
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/v1-states-and-evosci-2026-08-10/novelty_verifier.py.bak",
+          "kind": "file",
+          "mode": "0644",
+          "owner": "billion-token:billion-token",
+          "replaces": null,
+          "runtime_locally_modified": true,
+          "source": "agents/novelty_verifier.py",
+          "source_bytes": 22651,
+          "source_sha256": "f3777b6ed8c4d301d3efdb7ff96103766711cdffcaeac6c2658e5168d1d3b513",
+          "target": "/home/billion-token/Deepgraph/agents/novelty_verifier.py",
+          "target_predeploy_sha256": "1ad7ce23604897ec03b1461d3ae0a19dea053aa4198d7426695d7b713398a1cd",
+          "target_predeploy_state": "present"
+        }
+      ],
+      "health_check": "Re-hash every deployed target, py_compile the six runtime modules, confirm GET / returns 200 on 8080 with no /home/ paths in /api/stats, and confirm the installed EvoSci accepts the deployed flag set.",
+      "purpose": "Deploy the job-state declaration and the corrected EvoScientist invocation at R8 zero.",
+      "restart_required": [
+        "deepgraph-web.service",
+        "deepgraph-auto-execute.service",
+        "deepgraph-observe@10.service",
+        "deepgraph-observe@11.service"
+      ],
+      "systemd_reload_required": false
+    }
+  ],
+  "deployment_steps": [
+    "Stop deepgraph-auto-advance.timer, deepgraph-auto-execute.service, deepgraph-observe@10, deepgraph-observe@11, and deepgraph-web.service only after R8 is zero. The observers are included because their idle-in-transaction AccessShareLock blocked the previous batch.",
+    "Apply batch 1 through scripts/deploy_manifest_batch.py and verify every deployed SHA256.",
+    "py_compile the four runtime modules in the live tree.",
+    "Restart web, observers, auto-execute, then the auto-advance timer.",
+    "Append every production action, backup path, checksum, restart, and health result to OPERATORS.log.",
+    "After restart, make no manual business-state calls; observe only normal services/timer."
+  ],
+  "description": "Two independent unblocks. (1) Declare every auto_research_jobs state disposition in meta_harness/job_states.py and generate the candidate-pool claim predicate and the advancer's recycle set from it. (2) Build the EvoScientist invocation from one definition and drop the --auto-mode flag the installed CLI no longer accepts, which was failing every pre-insert Tier-2 review before it did any work.",
+  "environment_keys": [],
+  "file_contents_read_from_production": true,
+  "manifest_key": "v1-states-and-evosci-2026-08-10",
+  "operator_diff_required": [
+    "agents/novelty_verifier.py",
+    "agents/tier2_review_refine.py",
+    "orchestrator/auto_research.py",
+    "scripts/auto_advance.py"
+  ],
+  "preconditions": [
+    "Explicit grouped production-write and service-restart authorization is recorded for this batch.",
+    "R8 snapshot shows zero active Deepgraph experiment runs, attempt reservations, queued/running GPU jobs, and Colab requests.",
+    "A PostgreSQL custom-format backup and the OPERATORS.log predeployment snapshot are recorded before services stop.",
+    "Unrelated GPU workloads on the two A100 hosts are not stopped or modified."
+  ],
+  "production_tree_modified_by_this_command": false,
+  "rollback": {
+    "data_impact": "None. No schema, column, or state value changes. The generated claim predicate selects exactly the same rows as the hand-written one it replaces, and the EvoScientist change alters only an argv list. job_states.py is a new file; rollback removes it after confirming the ledger hashes.",
+    "order": "stop services after R8 zero, then reverse batch 1",
+    "steps": [
+      "Use deploy_manifest_batch.py --rollback for 1-states-and-evosci; each restored file must match its recorded predeployment SHA256.",
+      "No schema change, no .env change, and no systemd unit change is part of this batch, so nothing else needs reversing.",
+      "Restart deepgraph-web.service, the observers, and deepgraph-auto-execute.service, then enable/start deepgraph-auto-advance.timer.",
+      "Record rollback commands, restored hashes, service states, and health results in OPERATORS.log."
+    ]
+  },
+  "runtime_root": "/home/billion-token/Deepgraph",
+  "source_commit": "224c60e2bef72256f853f66e8aeb03e73f13bdd8",
+  "source_worktree_clean": true,
+  "tests": "Full suite 72 failed / 772 passed / 3 collection errors, identical failure count to the pre-change baseline; all six meta-harness audits pass; the 5 EvoScientist contract tests pass against the installed binary."
+}
