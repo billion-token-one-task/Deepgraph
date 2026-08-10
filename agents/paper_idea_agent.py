@@ -490,10 +490,22 @@ def _node_family_jaccard(a, b) -> float:
     return len(left & right) / max(1, len(left | right))
 
 
-def _find_existing_tier2_duplicate(candidate: dict) -> dict | None:
+def _find_existing_tier2_duplicate(
+    candidate: dict, *, exclude_id: int | None = None
+) -> dict | None:
+    """Find a prior idea this candidate duplicates.
+
+    ``exclude_id`` is the candidate's own pre-idea identity row. That
+    placeholder is seeded from the research problem, so it carries the same
+    source_node_ids and mechanism_type as the idea being realized from it and
+    matches itself on every threshold below. Comparing a candidate against its
+    own placeholder rejected every proposal the grant had already paid for.
+    """
+
     title = str(candidate.get("title") or "")
     nodes = candidate.get("source_node_ids")
     mechanism = str(candidate.get("mechanism_type") or "")
+    skip = int(exclude_id or 0)
     try:
         rows = db.fetchall(
             "SELECT id, title, source_node_ids, mechanism_type, status, novelty_status, outcome "
@@ -502,6 +514,8 @@ def _find_existing_tier2_duplicate(candidate: dict) -> dict | None:
     except Exception:
         return None
     for row in rows:
+        if skip and int(row.get("id") or 0) == skip:
+            continue
         title_score = _token_jaccard(title, row.get("title") or "")
         node_score = _node_jaccard(nodes, row.get("source_node_ids"))
         family_score = _node_family_jaccard(nodes, row.get("source_node_ids"))
@@ -892,6 +906,14 @@ def _llm_temporarily_unavailable(exc: Exception) -> bool:
     return is_llm_auth_error(exc) or is_llm_provider_unavailable_error(exc)
 
 
+class ProposalProblemUnavailable(Exception):
+    """This research problem cannot yield a proposal candidate right now.
+
+    Raised instead of aborting discovery: the remaining problems in the pass
+    are unaffected and must still be attempted.
+    """
+
+
 def _proposal_candidate_and_grant(
     *,
     agenda_id: int,
@@ -952,21 +974,32 @@ def _proposal_candidate_and_grant(
             candidate_id = int(inserted["id"])
             db.commit()
         else:
-            concurrent = db.fetchone(
+            # The insert collided with idx_deep_insights_pending_proposal, so
+            # look up the row that actually owns that key rather than
+            # re-running the usable-candidate query that just missed it. A
+            # candidate left at status='proposal_pending' with a terminal
+            # outcome owns the key without being usable; that is a spent
+            # problem, not a race, and it must not abort the whole pass.
+            holder = db.fetchone(
                 """
-                SELECT id FROM deep_insights
+                SELECT id, outcome FROM deep_insights
                 WHERE agenda_id=? AND research_problem_id=?
-                  AND COALESCE(outcome, 'pending')='pending'
-                  AND COALESCE(status, 'candidate') NOT IN ('archived', 'exists')
+                  AND status='proposal_pending'
                 ORDER BY id DESC LIMIT 1
                 """,
                 (agenda_id, problem_id),
             )
-            if not concurrent:
+            if not holder:
                 db.rollback()
                 raise RuntimeError("proposal candidate identity race")
-            candidate_id = int(concurrent["id"])
             db.commit()
+            if str(holder.get("outcome") or "pending") != "pending":
+                raise ProposalProblemUnavailable(
+                    f"research problem {problem_id} is held by spent proposal "
+                    f"candidate {int(holder['id'])} "
+                    f"(outcome={holder.get('outcome')})"
+                )
+            candidate_id = int(holder["id"])
     grant = db.fetchone(
         """
         SELECT id, token_cap
@@ -1066,10 +1099,14 @@ def discover_paper_ideas(
 
         title = problem.get("title", f"Problem {i+1}")
         print(f"[PAPER_IDEA] Processing problem {i+1}/{len(problems)}: {title[:80]}", flush=True)
-        proposal_candidate_id, proposal_grant = _proposal_candidate_and_grant(
-            agenda_id=agenda_id,
-            problem=problem,
-        )
+        try:
+            proposal_candidate_id, proposal_grant = _proposal_candidate_and_grant(
+                agenda_id=agenda_id,
+                problem=problem,
+            )
+        except ProposalProblemUnavailable as exc:
+            print(f"[PAPER_IDEA] Skipping problem: {exc}", flush=True)
+            continue
         if not proposal_grant:
             print(
                 "[PAPER_IDEA] Proposal candidate "
@@ -1320,7 +1357,9 @@ def discover_paper_ideas(
             "proposer_route": experiment_route or method_route,
         }
 
-        duplicate = _find_existing_tier2_duplicate(deep_insight)
+        duplicate = _find_existing_tier2_duplicate(
+            deep_insight, exclude_id=proposal_candidate_id
+        )
         if duplicate:
             print(
                 f"[PAPER_IDEA] Rejected duplicate of idea {duplicate['id']} "
@@ -1350,7 +1389,9 @@ def discover_paper_ideas(
                 )
                 continue
             refined_insight = review_result.get("insight") or deep_insight
-            duplicate = _find_existing_tier2_duplicate(refined_insight)
+            duplicate = _find_existing_tier2_duplicate(
+                refined_insight, exclude_id=proposal_candidate_id
+            )
             if duplicate:
                 print(
                     f"[PAPER_IDEA] Rejected duplicate after review/refine of idea {duplicate['id']} "
