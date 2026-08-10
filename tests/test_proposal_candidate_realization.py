@@ -127,6 +127,67 @@ class ProposalIdentityTests(unittest.TestCase):
         self.assertNotIsInstance(caught.exception, ProposalProblemUnavailable)
 
 
+class SpentProblemSeedingTests(unittest.TestCase):
+    """Freeing a problem must not restart the burn it was retired for.
+
+    Archiving a spent candidate releases its research problem, which is the
+    point -- but the problem is only worth seeding again if it can still be
+    funded. Without this guard problem 49 would seed a fresh row, be refused at
+    grant time, be archived, and seed again: no tokens, but one dead
+    deep_insights row every ten minutes forever.
+    """
+
+    problem = {"research_problem_id": 49, "title": "p", "problem_statement": "s"}
+
+    def _run(self, over_budget, inserted):
+        """Returns the call result; ``inserted`` counts INSERTs either way."""
+
+        def fetchone(sql, params=()):
+            text = " ".join(str(sql).split())
+            if "INSERT INTO deep_insights" in text:
+                inserted.append(params)
+                return {"id": 140}
+            if "FROM deep_insights" in text:
+                return None
+            if "FROM resource_grants" in text:
+                return {"id": 31, "token_cap": 32000}
+            return None
+
+        with mock.patch.object(paper_idea_agent.db, "fetchone", side_effect=fetchone), \
+                mock.patch.object(paper_idea_agent.db, "commit"), \
+                mock.patch.object(paper_idea_agent.db, "rollback"), \
+                mock.patch.object(
+                    paper_idea_agent,
+                    "_proposal_problem_is_over_budget",
+                    return_value=over_budget,
+                ):
+            return _proposal_candidate_and_grant(agenda_id=10, problem=self.problem)
+
+    def test_a_problem_over_its_budget_is_not_seeded_again(self):
+        inserted: list = []
+        with self.assertRaises(ProposalProblemUnavailable) as caught:
+            self._run(True, inserted)
+        self.assertIn("49", str(caught.exception))
+        # The guard runs before the INSERT, so no candidate row is spent on it.
+        self.assertEqual(inserted, [])
+
+    def test_a_problem_with_headroom_is_still_seeded(self):
+        inserted: list = []
+        candidate_id, grant = self._run(False, inserted)
+        self.assertEqual(candidate_id, 140)
+        self.assertEqual(grant["id"], 31)
+        self.assertEqual(len(inserted), 1)
+
+    def test_the_guard_consults_the_grant_time_ceiling(self):
+        """One rule: a second copy of the arithmetic would drift."""
+
+        import inspect
+
+        source = inspect.getsource(paper_idea_agent._proposal_problem_is_over_budget)
+        self.assertIn("from meta_harness.repository import", source)
+        self.assertIn("proposal_problem_is_over_budget", source)
+
+
 class DiscoveryResilienceTests(unittest.TestCase):
     def test_unavailable_problem_does_not_abort_the_remaining_problems(self):
         """One spent problem must cost one problem, not the whole pass."""

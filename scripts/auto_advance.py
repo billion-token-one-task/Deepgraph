@@ -803,11 +803,31 @@ def advance_agenda(agenda_id: int, state: dict, journal: Journal, args) -> None:
                             reason=str(exc)[:500],
                             triggered_by=ACTOR,
                         )
+                        # The outcome alone did not retire anything. Selection
+                        # keys on status, so idea 125 was promoted, refused and
+                        # "retired" once per pass on 2026-08-10 at 21:10, 21:22
+                        # and 21:51; and because the row stayed
+                        # status='proposal_pending' it kept owning
+                        # idx_deep_insights_pending_proposal, so research
+                        # problem 49 could never be worked again. 'archived' is
+                        # the status the live candidate queries already exclude
+                        # (paper_idea_agent.py:974, agenda_repository.py:151,
+                        # this script's pre-registration sweep), so it both
+                        # stops the churn and releases the problem.
+                        db.execute(
+                            "UPDATE deep_insights SET status='archived',"
+                            " updated_at=CURRENT_TIMESTAMP"
+                            " WHERE id=? AND agenda_id=?"
+                            " AND status='proposal_pending'",
+                            (idea_id, agenda_id),
+                        )
+                        db.commit()
                         journal.log(
                             "proposal_candidate_retired",
                             agenda_id=agenda_id,
                             idea_id=idea_id,
                             outcome=OUTCOME_PROPOSAL_UNREALIZED,
+                            status="archived",
                         )
                     except Exception as retire_exc:
                         db.rollback()
