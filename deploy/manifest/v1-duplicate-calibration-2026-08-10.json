@@ -1,0 +1,71 @@
+{
+  "backup_root": "/home/ec2-user/deepgraph-rollback",
+  "batches": [
+    {
+      "acceptance": "Every deployed SHA256 equals this manifest; no live attempt or GPU job crosses the deployment boundary.",
+      "authorization": "required-before-deploy",
+      "batch": "1-duplicate-calibration",
+      "files": [
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/v1-duplicate-calibration-2026-08-10/paper_idea_agent.py.bak",
+          "kind": "file",
+          "mode": "0644",
+          "owner": "billion-token:billion-token",
+          "replaces": null,
+          "runtime_locally_modified": true,
+          "source": "agents/paper_idea_agent.py",
+          "source_bytes": 61847,
+          "source_sha256": "6c5dda2457595b0f7881d4d3c523f4c8468e771d4aadb33f1372016f24f5005d",
+          "target": "/home/billion-token/Deepgraph/agents/paper_idea_agent.py",
+          "target_predeploy_sha256": "7361d2eae053aadcf24f0edc9ce05adff0344ced5c9bfea001d96ffce891c933",
+          "target_predeploy_state": "present"
+        }
+      ],
+      "health_check": "Re-hash the deployed target, py_compile it, confirm GET / returns 200 on 8080 with no /home/ paths in /api/stats.",
+      "purpose": "Deploy the duplicate-gate provenance calibration at R8 zero.",
+      "restart_required": [
+        "deepgraph-web.service",
+        "deepgraph-auto-execute.service",
+        "deepgraph-observe@10.service",
+        "deepgraph-observe@11.service"
+      ],
+      "systemd_reload_required": false
+    }
+  ],
+  "deployment_steps": [
+    "Stop deepgraph-auto-advance.timer, deepgraph-auto-execute.service, deepgraph-observe@10, deepgraph-observe@11, and deepgraph-web.service only after R8 is zero. The observers are included because their idle-in-transaction AccessShareLock blocked the previous batch.",
+    "Apply batch 1 through scripts/deploy_manifest_batch.py and verify every deployed SHA256.",
+    "py_compile the four runtime modules in the live tree.",
+    "Restart web, observers, auto-execute, then the auto-advance timer.",
+    "Append every production action, backup path, checksum, restart, and health result to OPERATORS.log.",
+    "After restart, make no manual business-state calls; observe only normal services/timer."
+  ],
+  "description": "Let node/family overlap decide duplicate rejection only between node sets of at least two nodes. Jaccard over singletons is 1.0 whenever the node matches, which permitted one idea per taxonomy node system-wide and rejected agenda 11's paid-for HOCSU candidate against agenda 10's idea 99 on a single shared node.",
+  "environment_keys": [],
+  "file_contents_read_from_production": true,
+  "manifest_key": "v1-duplicate-calibration-2026-08-10",
+  "operator_diff_required": [
+    "agents/paper_idea_agent.py"
+  ],
+  "preconditions": [
+    "Explicit grouped production-write and service-restart authorization is recorded for this batch.",
+    "R8 snapshot shows zero active Deepgraph experiment runs, attempt reservations, queued/running GPU jobs, and Colab requests.",
+    "A PostgreSQL custom-format backup and the OPERATORS.log predeployment snapshot are recorded before services stop.",
+    "Unrelated GPU workloads on the two A100 hosts are not stopped or modified."
+  ],
+  "production_tree_modified_by_this_command": false,
+  "rollback": {
+    "data_impact": "None. In-process gate logic only; no schema, state, or business-table effect.",
+    "order": "stop services after R8 zero, then reverse batch 1",
+    "steps": [
+      "Use deploy_manifest_batch.py --rollback for 1-duplicate-calibration; the restored file must match its recorded predeployment SHA256.",
+      "No schema change, no .env change, and no systemd unit change is part of this batch, so nothing else needs reversing.",
+      "Restart deepgraph-web.service, the observers, and deepgraph-auto-execute.service, then enable/start deepgraph-auto-advance.timer.",
+      "Record rollback commands, restored hashes, service states, and health results in OPERATORS.log."
+    ]
+  },
+  "runtime_root": "/home/billion-token/Deepgraph",
+  "source_commit": "8316ddd1dbf22107f20e3d1c2b7799fc47359664",
+  "source_worktree_clean": true,
+  "tests": "Full suite 72 failed / 796 passed / 3 collection errors, identical failure count to baseline; all six audits pass; replaying the live rejection against the new predicate accepts the candidate."
+}
