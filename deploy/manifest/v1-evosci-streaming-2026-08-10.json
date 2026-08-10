@@ -1,0 +1,71 @@
+{
+  "backup_root": "/home/ec2-user/deepgraph-rollback",
+  "batches": [
+    {
+      "acceptance": "Every deployed SHA256 equals this manifest; no live attempt or GPU job crosses the deployment boundary.",
+      "authorization": "required-before-deploy",
+      "batch": "1-evosci-streaming",
+      "files": [
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/v1-evosci-streaming-2026-08-10/novelty_verifier.py.bak",
+          "kind": "file",
+          "mode": "0644",
+          "owner": "billion-token:billion-token",
+          "replaces": null,
+          "runtime_locally_modified": true,
+          "source": "agents/novelty_verifier.py",
+          "source_bytes": 26343,
+          "source_sha256": "2980905f66bf2d9eb5b996ab5ad2e4bf3f2bce26ed9df3c92c2e3e967edfd516",
+          "target": "/home/billion-token/Deepgraph/agents/novelty_verifier.py",
+          "target_predeploy_sha256": "e6ca89601ceb5fe874be8bda0bd692436b5d401429420263012a11644f3fdcca",
+          "target_predeploy_state": "present"
+        }
+      ],
+      "health_check": "Re-hash the deployed target, py_compile it, confirm GET / returns 200 on 8080 with no /home/ paths in /api/stats.",
+      "purpose": "Deploy capability-based EvoScientist route selection at R8 zero.",
+      "restart_required": [
+        "deepgraph-web.service",
+        "deepgraph-auto-execute.service",
+        "deepgraph-observe@10.service",
+        "deepgraph-observe@11.service"
+      ],
+      "systemd_reload_required": false
+    }
+  ],
+  "deployment_steps": [
+    "Stop deepgraph-auto-advance.timer, deepgraph-auto-execute.service, deepgraph-observe@10, deepgraph-observe@11, and deepgraph-web.service only after R8 is zero. The observers are included because their idle-in-transaction AccessShareLock blocked the previous batch.",
+    "Apply batch 1 through scripts/deploy_manifest_batch.py and verify every deployed SHA256.",
+    "py_compile the four runtime modules in the live tree.",
+    "Restart web, observers, auto-execute, then the auto-advance timer.",
+    "Append every production action, backup path, checksum, restart, and health result to OPERATORS.log.",
+    "After restart, make no manual business-state calls; observe only normal services/timer."
+  ],
+  "description": "Choose the EvoScientist LLM route by capability: probe whether the configured route can stream and fall through to a configured provider that can. The sora2 relay returns an empty event-stream for every model, and EvoScientist streams unconditionally, so the pre-insert review could not run at all. Owner accepted that this routes the novelty gate to novita/deepseek while sora2 streaming is broken.",
+  "environment_keys": [],
+  "file_contents_read_from_production": true,
+  "manifest_key": "v1-evosci-streaming-2026-08-10",
+  "operator_diff_required": [
+    "agents/novelty_verifier.py"
+  ],
+  "preconditions": [
+    "Explicit grouped production-write and service-restart authorization is recorded for this batch.",
+    "R8 snapshot shows zero active Deepgraph experiment runs, attempt reservations, queued/running GPU jobs, and Colab requests.",
+    "A PostgreSQL custom-format backup and the OPERATORS.log predeployment snapshot are recorded before services stop.",
+    "Unrelated GPU workloads on the two A100 hosts are not stopped or modified."
+  ],
+  "production_tree_modified_by_this_command": false,
+  "rollback": {
+    "data_impact": "None. Selects which configured LLM route a subprocess is given. Novelty verdicts already produced under the fallback route stay in the review record with their provider fields intact.",
+    "order": "stop services after R8 zero, then reverse batch 1",
+    "steps": [
+      "Use deploy_manifest_batch.py --rollback for 1-evosci-streaming; the restored file must match its recorded predeployment SHA256.",
+      "No schema change, no .env change, and no systemd unit change is part of this batch, so nothing else needs reversing.",
+      "Restart deepgraph-web.service, the observers, and deepgraph-auto-execute.service, then enable/start deepgraph-auto-advance.timer.",
+      "Record rollback commands, restored hashes, service states, and health results in OPERATORS.log."
+    ]
+  },
+  "runtime_root": "/home/billion-token/Deepgraph",
+  "source_commit": "7a96af2ec9f16aad60a5f1745143c5d22a2c65f5",
+  "source_worktree_clean": true,
+  "tests": "Full suite 72 failed / 792 passed / 3 collection errors, identical failure count to baseline; all six audits pass; verified end to end - the same review returns status=complete on the streaming-capable route."
+}
