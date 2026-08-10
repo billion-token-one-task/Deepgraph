@@ -262,5 +262,73 @@ class ComputePreflightGuardTests(unittest.TestCase):
         self.assertIn("lacks a capability preflight", reason)
 
 
+class MetricVocabularyTests(unittest.TestCase):
+    """A candidate inside a runner's capabilities must not be refused over the
+    spelling of its metric.
+
+    Agenda 11 / idea 110 declared `exact_match_accuracy` on gsm8k with a
+    causal_lm model - fully inside `transformers_causal_lm_qa_v1` - and was
+    deferred because the registry spells the same measurement `exact_match`.
+    """
+
+    def test_metric_synonym_is_folded_onto_the_registry_vocabulary(self):
+        plan = dict(
+            qa_requirements().to_dict(),
+            metric={"name": "exact_match_accuracy", "direction": "higher",
+                    "required_prediction_fields": ["prediction", "target"]},
+        )
+        requirements = ExperimentRequirements.from_dict(plan)
+        self.assertEqual(requirements.metric.name, "exact_match")
+        self.assertEqual(
+            [item.adapter_id for item in RunnerRegistry().matches(requirements)],
+            ["transformers_causal_lm_qa_v1"],
+        )
+
+    def test_a_different_measurement_is_not_folded(self):
+        """Only exact synonyms may be normalized; a real gap must still fail."""
+
+        plan = dict(
+            qa_requirements().to_dict(),
+            metric={"name": "pass_at_1", "direction": "higher",
+                    "required_prediction_fields": ["prediction", "target"]},
+        )
+        requirements = ExperimentRequirements.from_dict(plan)
+        self.assertEqual(requirements.metric.name, "pass_at_1")
+        self.assertEqual(RunnerRegistry().matches(requirements), ())
+
+
+class PreflightDiagnosticsTests(unittest.TestCase):
+    """Deferral reasons must point at the adapter that nearly matched.
+
+    Unioning blockers across every adapter made a one-field metric mismatch
+    look like five independent capability gaps - including
+    `unsupported_task_protocol` for a protocol that did match - and sent a
+    previous debugging pass after a runner-coverage problem that did not exist.
+    """
+
+    def test_deferral_reports_the_nearest_adapter_not_the_union(self):
+        requirements = ExperimentRequirements.from_dict(
+            dict(
+                qa_requirements().to_dict(),
+                metric={"name": "bleu", "direction": "higher",
+                        "required_prediction_fields": ["prediction", "target"]},
+            )
+        )
+        engine = PreflightEngine(
+            registry=RunnerRegistry(),
+            probe=Probe(datasets={}, models={}),
+        )
+        result = engine.run(requirements, ENVIRONMENT)
+
+        self.assertEqual(result.reason_codes, ("metric_contract_unsupported",))
+        self.assertEqual(result.checks["nearest_adapter"], "transformers_causal_lm_qa_v1")
+        self.assertNotIn("unsupported_task_protocol", result.reason_codes)
+        # The full picture stays available for auditing, just not as the verdict.
+        self.assertIn(
+            "unsupported_task_protocol",
+            result.checks["adapter_blockers"]["transformers_sequence_classification_v1"],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

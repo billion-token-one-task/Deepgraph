@@ -37,7 +37,18 @@ OPERATION = "frontier_assessment"
 
 
 class FrontierBootstrapError(RuntimeError):
-    """Raised when a bootstrap evaluation cannot produce a usable packet."""
+    """Raised when a bootstrap evaluation cannot produce a usable packet.
+
+    ``transient`` marks a failure that says nothing about the candidate or the
+    research problem - the evaluator route was simply unreachable. Callers that
+    ration attempts per problem must not spend that ration on these.
+    """
+
+    transient: bool = False
+
+    def __init__(self, *args, transient: bool = False):
+        super().__init__(*args)
+        self.transient = bool(transient)
 
 
 @dataclass(frozen=True)
@@ -239,7 +250,8 @@ def run_bootstrap_evaluation(
     except Exception as exc:
         _fail(f"provider_unavailable:{type(exc).__name__}", BootstrapUsage(), query_ref)
         raise FrontierBootstrapError(
-            "frontier evaluator route is unavailable; no fallback is permitted"
+            "frontier evaluator route is unavailable; no fallback is permitted",
+            transient=True,
         ) from exc
 
     if not isinstance(usage, BootstrapUsage):

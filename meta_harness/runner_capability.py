@@ -27,6 +27,34 @@ class CapabilityContractError(ValueError):
     pass
 
 
+# Plan generators and the runner registry grew their metric vocabularies
+# independently, so a candidate that is fully inside a runner's capabilities
+# gets refused over spelling alone. Only exact synonyms belong here: each key
+# must denote the *same* measurement as its value, never a related one. A
+# rename that changes what is measured (pass@k, bleu, rouge, ...) is a real
+# capability gap and must keep failing preflight.
+METRIC_NAME_ALIASES: Mapping[str, str] = {
+    "acc": "accuracy",
+    "accuracy_score": "accuracy",
+    "em": "exact_match",
+    "exact_match_accuracy": "exact_match",
+    "exact_match_rate": "exact_match",
+    "exact_match_score": "exact_match",
+    "f1_macro": "macro_f1",
+    "f1_score": "f1",
+    "macro_f1_score": "macro_f1",
+    "numeric_accuracy_score": "numeric_accuracy",
+}
+
+
+def canonical_metric_name(name: str) -> str:
+    """Fold a metric name onto the registry's vocabulary. Unknown names pass
+    through untouched so a genuine capability gap still surfaces."""
+
+    normalized = str(name or "").strip().lower()
+    return METRIC_NAME_ALIASES.get(normalized, normalized)
+
+
 @dataclass(frozen=True)
 class DatasetRequirement:
     repository_id: str
@@ -162,7 +190,7 @@ class ExperimentRequirements:
                 quantization=str(model.get("quantization") or "none"),
             ),
             metric=MetricRequirement(
-                name=str(metric.get("name") or ""),
+                name=canonical_metric_name(str(metric.get("name") or "")),
                 direction=str(metric.get("direction") or "higher").lower(),
                 required_prediction_fields=tuple(
                     str(item)
@@ -478,17 +506,29 @@ class PreflightEngine:
             )
         matches = self.registry.matches(requirements)
         if not matches:
-            blockers = sorted(
-                {
-                    reason
+            # Report the closest adapter's blockers, not the union across every
+            # adapter. The union mixes in reasons from adapters that were never
+            # applicable - a generative_qa candidate collected
+            # `unsupported_task_protocol` from the classification adapter - and
+            # reads as a capability gap when the real gap is one field.
+            ranked = sorted(
+                (
+                    (capability.adapter_id, capability.structural_blockers(requirements))
                     for capability in self.registry.all()
-                    for reason in capability.structural_blockers(requirements)
-                }
+                ),
+                key=lambda item: (len(item[1]), item[0]),
             )
+            nearest_id, nearest = ranked[0] if ranked else ("", ())
             return PreflightResult(
                 PREFLIGHT_DEFERRED,
-                tuple(blockers or ["runner_unavailable"]),
-                {"runner_match": False},
+                tuple(sorted(nearest) or ["runner_unavailable"]),
+                {
+                    "runner_match": False,
+                    "nearest_adapter": nearest_id,
+                    "adapter_blockers": {
+                        adapter_id: sorted(reasons) for adapter_id, reasons in ranked
+                    },
+                },
             )
         dataset = self.probe.dataset(
             requirements.dataset.repository_id,

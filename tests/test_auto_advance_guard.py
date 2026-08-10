@@ -6,6 +6,7 @@ from unittest import mock
 
 from scripts import auto_advance
 from meta_harness.attempt_gpu_usage import GrantGPUUsage
+from meta_harness.frontier_bootstrap import FrontierBootstrapError
 
 
 class AutoAdvanceGuardTests(unittest.TestCase):
@@ -222,6 +223,141 @@ class AutoAdvanceGuardTests(unittest.TestCase):
 
         self.assertEqual(len(decide.call_args.args[0]), 2)
         self.assertEqual(repository.save_decision.call_count, 2)
+
+
+class FrontierRationTests(unittest.TestCase):
+    """An agenda must not lose its frontier ring to three spent problems or to
+    a provider outage.
+
+    Measured 2026-08-10: agendas 1,2,3,4,5,7,10 could no longer obtain a
+    frontier packet - and so never reached portfolio or grant despite 14
+    waiting candidates - because the pool stopped at the top 3 problems and a
+    permanent 4-try counter had been burned on them. On agendas 1 and 10 every
+    one of those tries died on `provider_unavailable:HTTPStatusError`, a
+    transient evaluator outage that says nothing about the problem.
+    """
+
+    def _args(self):
+        return mock.Mock(
+            authority_token_cap=20000,
+            evaluator_provider="p", evaluator_model="m", evaluator_family="f",
+            proposer_provider="pp", proposer_family="pf",
+        )
+
+    def _problems(self, count):
+        return [{"id": 100 + i, "problem_statement": f"s{i}"} for i in range(count)]
+
+    def test_pool_rotates_past_the_problems_whose_ration_is_spent(self):
+        state = {
+            "frontier_packets": {},
+            "frontier_attempts": {f"9:{100 + i}": 4 for i in range(3)},
+        }
+        journal = mock.Mock()
+        with (
+            mock.patch.object(auto_advance, "_rows", return_value=self._problems(6)),
+            mock.patch.object(auto_advance, "FrontierAuthorityRepository") as repo,
+            mock.patch.object(auto_advance, "run_bootstrap_evaluation",
+                              return_value={"frontier_packet_id": 42, "gate_allowed": True}),
+            mock.patch.object(auto_advance.db, "fetchone", return_value=None),
+        ):
+            repo.return_value.issue.return_value = 5
+            packet = auto_advance.ensure_frontier_packet(9, state, journal, self._args())
+
+        self.assertEqual(packet, 42, "an untried problem was available and unused")
+        self.assertEqual(state["frontier_attempts"]["9:103"], 1)
+
+    def test_pool_query_is_not_capped_at_three(self):
+        state = {"frontier_packets": {}, "frontier_attempts": {}}
+        with (
+            mock.patch.object(auto_advance, "_rows", return_value=[]) as rows,
+            mock.patch.object(auto_advance, "FrontierAuthorityRepository"),
+        ):
+            auto_advance.ensure_frontier_packet(9, state, mock.Mock(), self._args())
+        self.assertEqual(rows.call_args.args[1][-1], auto_advance.FRONTIER_PROBLEM_POOL)
+        self.assertGreater(auto_advance.FRONTIER_PROBLEM_POOL, 3)
+
+    def test_transient_provider_failure_refunds_the_ration_and_stops_the_pass(self):
+        state = {"frontier_packets": {}, "frontier_attempts": {}}
+        journal = mock.Mock()
+        outage = FrontierBootstrapError("evaluator route unavailable", transient=True)
+
+        with (
+            mock.patch.object(auto_advance, "_rows", return_value=self._problems(4)),
+            mock.patch.object(auto_advance, "FrontierAuthorityRepository") as repo,
+            mock.patch.object(auto_advance, "run_bootstrap_evaluation", side_effect=outage) as run,
+            mock.patch.object(auto_advance.db, "rollback"),
+        ):
+            repo.return_value.issue.return_value = 5
+            packet = auto_advance.ensure_frontier_packet(9, state, journal, self._args())
+
+        self.assertIsNone(packet)
+        self.assertEqual(state["frontier_attempts"]["9:100"], 0,
+                         "an outage consumed a problem's non-renewable ration")
+        self.assertEqual(run.call_count, 1,
+                         "the pass kept calling a route it already knew was down")
+        steps = [call.args[0] for call in journal.log.call_args_list]
+        self.assertIn("frontier_bootstrap_transient", steps)
+
+    def test_a_structural_refusal_still_consumes_the_ration(self):
+        """Refunding must be limited to transient failures."""
+
+        state = {"frontier_packets": {}, "frontier_attempts": {}}
+        refusal = FrontierBootstrapError("linked evidence is unusable")
+
+        with (
+            mock.patch.object(auto_advance, "_rows", return_value=self._problems(1)),
+            mock.patch.object(auto_advance, "FrontierAuthorityRepository") as repo,
+            mock.patch.object(auto_advance, "run_bootstrap_evaluation", side_effect=refusal),
+            mock.patch.object(auto_advance.db, "rollback"),
+        ):
+            repo.return_value.issue.return_value = 5
+            auto_advance.ensure_frontier_packet(9, state, mock.Mock(), self._args())
+
+        self.assertEqual(state["frontier_attempts"]["9:100"], 1)
+
+    def test_retry_after_a_refund_uses_a_fresh_authority_key(self):
+        """A failed authority burns its idempotency key, so the serial that
+        builds the key must advance even when the ration is refunded."""
+
+        state = {"frontier_packets": {}, "frontier_attempts": {}, "frontier_issues": {}}
+        outage = FrontierBootstrapError("evaluator route unavailable", transient=True)
+        keys = []
+
+        def issue(authority):
+            keys.append(authority.idempotency_key)
+            return 5
+
+        for _ in range(2):
+            with (
+                mock.patch.object(auto_advance, "_rows", return_value=self._problems(1)),
+                mock.patch.object(auto_advance, "FrontierAuthorityRepository") as repo,
+                mock.patch.object(auto_advance, "run_bootstrap_evaluation", side_effect=outage),
+                mock.patch.object(auto_advance.db, "rollback"),
+            ):
+                repo.return_value.issue.side_effect = issue
+                auto_advance.ensure_frontier_packet(9, state, mock.Mock(), self._args())
+
+        self.assertEqual(len(keys), 2)
+        self.assertNotEqual(keys[0], keys[1])
+
+    def test_attempts_per_pass_stay_below_the_previous_behaviour(self):
+        """Widening the pool must not widen the spend: each attempt is one real
+        evaluator call."""
+
+        self.assertLessEqual(auto_advance.FRONTIER_ATTEMPTS_PER_PASS, 3)
+        state = {"frontier_packets": {}, "frontier_attempts": {}}
+        refusal = FrontierBootstrapError("linked evidence is unusable")
+
+        with (
+            mock.patch.object(auto_advance, "_rows", return_value=self._problems(10)),
+            mock.patch.object(auto_advance, "FrontierAuthorityRepository") as repo,
+            mock.patch.object(auto_advance, "run_bootstrap_evaluation", side_effect=refusal) as run,
+            mock.patch.object(auto_advance.db, "rollback"),
+        ):
+            repo.return_value.issue.return_value = 5
+            auto_advance.ensure_frontier_packet(9, state, mock.Mock(), self._args())
+
+        self.assertEqual(run.call_count, auto_advance.FRONTIER_ATTEMPTS_PER_PASS)
 
 
 if __name__ == "__main__":

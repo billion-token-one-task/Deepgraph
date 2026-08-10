@@ -63,6 +63,15 @@ ARTIFACT_REQUIREMENTS = [
 ]
 RECYCLE_EPOCH = "public-hub-download-recovery-v3"
 
+# Frontier rationing. The ration per problem is unchanged; what changes is that
+# the pool no longer stops at the top 3, so spending a problem's ration retires
+# that problem instead of the whole agenda. Attempts per pass are capped below
+# the previous effective 3 so widening the pool cannot raise the burn rate:
+# each attempt is one real evaluator call (~14k tokens under a 20k authority).
+FRONTIER_PROBLEM_POOL = 24
+FRONTIER_MAX_TRIES = 4
+FRONTIER_ATTEMPTS_PER_PASS = 2
+
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
@@ -290,28 +299,44 @@ def ensure_frontier_packet(
         if row:
             return int(cached)
         journal.log("frontier_cache_stale", agenda_id=agenda_id, cached=cached)
+    # Ration attempts per problem, but keep rotating: an agenda can hold
+    # dozens of open problems, and capping the pool at the top 3 meant that
+    # once those three were spent the agenda could never obtain a packet again
+    # no matter how many untried problems it still had.
     problems = _rows(
         "SELECT id, problem_statement FROM research_problems"
         " WHERE agenda_id=? AND COALESCE(status,'open')='open'"
-        " ORDER BY problem_quality_score DESC NULLS LAST, id ASC LIMIT 3",
-        (agenda_id,),
+        " ORDER BY problem_quality_score DESC NULLS LAST, id ASC LIMIT ?",
+        (agenda_id, FRONTIER_PROBLEM_POOL),
     )
     if not problems:
         journal.log("frontier_no_problems", agenda_id=agenda_id)
         return None
     repo = FrontierAuthorityRepository()
     attempts = state.setdefault("frontier_attempts", {})
+    # Authority idempotency keys are burned on failure, so key uniqueness needs
+    # its own monotonic counter - it must keep advancing even on attempts that
+    # deliberately do not consume the per-problem ration.
+    issues = state.setdefault("frontier_issues", {})
+    considered = 0
     for problem in problems:
         akey = f"{agenda_id}:{problem['id']}"
         tries = int(attempts.get(akey, 0))
-        if tries >= 4:
+        if tries >= FRONTIER_MAX_TRIES:
             journal.log("frontier_attempts_exhausted", agenda_id=agenda_id,
                         problem_id=problem["id"], tries=tries)
             continue
+        considered += 1
+        if considered > FRONTIER_ATTEMPTS_PER_PASS:
+            journal.log("frontier_pass_budget_reached", agenda_id=agenda_id,
+                        attempted=FRONTIER_ATTEMPTS_PER_PASS)
+            return None
         attempts[akey] = tries + 1
+        serial = int(issues.get(akey, 0)) + 1
+        issues[akey] = serial
         # A failed authority is settled+revoked and its idempotency key is
         # burned forever, so every attempt needs a fresh key.
-        key = f"auto-advance-v1:agenda{agenda_id}:problem{problem['id']}:t{tries + 1}"
+        key = f"auto-advance-v1:agenda{agenda_id}:problem{problem['id']}:t{serial}"
         issued = _now()
         try:
             authority_id = repo.issue(
@@ -340,6 +365,19 @@ def ensure_frontier_packet(
             )
         except Exception as exc:
             db.rollback()
+            # An unreachable evaluator says nothing about this problem. Refund
+            # the ration and stop the pass: hammering the remaining problems
+            # would burn their rations against the same dead route.
+            if getattr(exc, "transient", False):
+                attempts[akey] = tries
+                journal.log(
+                    "frontier_bootstrap_transient",
+                    agenda_id=agenda_id,
+                    problem_id=problem["id"],
+                    tries_preserved=tries,
+                    reason=f"{type(exc).__name__}: {exc}",
+                )
+                return None
             journal.log(
                 "frontier_bootstrap_refused",
                 agenda_id=agenda_id,
