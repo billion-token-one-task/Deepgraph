@@ -23,6 +23,7 @@ from config import (
     LLM_BASE_URL,
     LLM_MODEL,
     LLM_PROTOCOL,
+    LLM_USE_TABCODE,
     LLM_REASONING_EFFORT,
     LLM_SECONDARY_API_KEY,
     LLM_SECONDARY_BASE_URL,
@@ -122,12 +123,22 @@ def _evosci_reasoning_effort(route: dict[str, str]) -> str:
 
 
 def _build_evosci_env(workdir: Path) -> dict[str, str]:
-    custom_openai_route = _evosci_compatible_route(_openai_compatible_route(
-        api_key=LLM_API_KEY,
-        base_url=LLM_BASE_URL,
-        model=LLM_MODEL,
-        protocol=LLM_PROTOCOL,
-    ) or _openai_compatible_route(
+    # Only offer EvoScientist a route this deployment actually uses. The
+    # primary slot is gated behind LLM_USE_TABCODE, and llm_client's own
+    # provider list drops it when that flag is off - but this builder preferred
+    # it unconditionally, so EvoScientist was handed a base_url that answers
+    # 502 and every review died on APIConnectionError after starting up.
+    primary_route = (
+        _openai_compatible_route(
+            api_key=LLM_API_KEY,
+            base_url=LLM_BASE_URL,
+            model=LLM_MODEL,
+            protocol=LLM_PROTOCOL,
+        )
+        if LLM_USE_TABCODE
+        else None
+    )
+    custom_openai_route = _evosci_compatible_route(primary_route or _openai_compatible_route(
         api_key=LLM_SECONDARY_API_KEY,
         base_url=LLM_SECONDARY_BASE_URL,
         model=LLM_SECONDARY_MODEL,

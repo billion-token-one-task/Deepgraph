@@ -84,6 +84,42 @@ class EvosciInstalledContractTests(unittest.TestCase):
         for flag in ("--workdir", "-p", *(f for f in EVOSCI_HEADLESS_FLAGS if f.startswith("-"))):
             self.assertIn(flag, help_text, f"{flag} is gone from the installed CLI")
 
+class EvosciRouteSelectionTests(unittest.TestCase):
+    """EvoScientist must be handed a route this deployment actually uses.
+
+    The primary LLM slot is gated behind LLM_USE_TABCODE and llm_client drops it
+    from its provider list when that flag is off. _build_evosci_env preferred it
+    anyway, so EvoScientist received a base_url that answers 502 and every
+    review died on APIConnectionError - after starting up, so the failure looked
+    like a review verdict rather than a misconfiguration.
+    """
+
+    def _route(self, *, use_tabcode):
+        from unittest import mock
+
+        from agents import novelty_verifier
+
+        with (
+            mock.patch.object(novelty_verifier, "LLM_USE_TABCODE", use_tabcode),
+            mock.patch.object(novelty_verifier, "LLM_API_KEY", "primary-key"),
+            mock.patch.object(novelty_verifier, "LLM_BASE_URL", "https://primary.invalid"),
+            mock.patch.object(novelty_verifier, "LLM_MODEL", "primary-model"),
+            mock.patch.object(novelty_verifier, "LLM_PROTOCOL", "chat_completions"),
+            mock.patch.object(novelty_verifier, "LLM_SECONDARY_API_KEY", "secondary-key"),
+            mock.patch.object(novelty_verifier, "LLM_SECONDARY_BASE_URL", "https://secondary.invalid"),
+            mock.patch.object(novelty_verifier, "LLM_SECONDARY_MODEL", "secondary-model"),
+            mock.patch.object(novelty_verifier, "LLM_SECONDARY_PROTOCOL", "chat_completions"),
+            mock.patch.object(novelty_verifier, "_write_evosci_config", return_value="/tmp/xdg"),
+        ):
+            return novelty_verifier._build_evosci_env(Path("/tmp/wd"))
+
+    def test_disabled_primary_is_not_offered(self):
+        env = self._route(use_tabcode=False)
+        self.assertEqual(env["CUSTOM_OPENAI_BASE_URL"], "https://secondary.invalid")
+
+    def test_enabled_primary_is_still_preferred(self):
+        env = self._route(use_tabcode=True)
+        self.assertEqual(env["CUSTOM_OPENAI_BASE_URL"], "https://primary.invalid")
 
 if __name__ == "__main__":
     unittest.main()
