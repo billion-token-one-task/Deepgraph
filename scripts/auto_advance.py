@@ -47,6 +47,7 @@ from contracts.meta_harness import (  # noqa: E402
 from db import database as db  # noqa: E402
 from meta_harness.frontier_authority import FrontierAuthorityRepository  # noqa: E402
 from meta_harness.frontier_bootstrap import run_bootstrap_evaluation  # noqa: E402
+from meta_harness.job_states import RECYCLABLE  # noqa: E402
 from meta_harness.outcome_finalizer import finalize_terminal_outcomes  # noqa: E402
 from meta_harness.portfolio import decide_portfolio, issue_resource_grant  # noqa: E402
 from meta_harness.preflight_repository import CandidatePreflightRepository  # noqa: E402
@@ -411,17 +412,10 @@ def ensure_frontier_packet(
 
 _STARVED = "provider_usage_exceeded_reserved_cap"
 
-# Stages a failure lands in that no consumer ever claims. The candidate pool
-# accepts status='queued' unconditionally and status='failed' only for a short
-# allowlist of stages, so anything else is a terminal parking spot in practice.
-DEAD_END = {
-    ("failed", "forge_failed"),
-    ("failed", "gpu_failed"),
-    ("failed", "experiment_failed_repair_failed"),
-    ("failed", "exception"),
-    ("review_pending", "benchmark_harness_design_repair"),
-    ("blocked", "experiment_review_blocked_final"),
-}
+# Declared in meta_harness.job_states alongside the claim predicate, so the
+# recycler and the candidate pool cannot drift apart. Kept as a module name
+# because the recycler and its tests read it.
+DEAD_END = RECYCLABLE
 MAX_RECYCLES = 3
 
 
