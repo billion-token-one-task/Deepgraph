@@ -98,23 +98,80 @@ UNDELIVERED_PROPOSAL_BUDGET_SHARE = 0.10
 
 
 def _undelivered_proposal_spend(agenda_id: int, idea_id: int) -> int:
-    """Tokens already charged for proposals for this idea that never delivered.
+    """Tokens already charged for proposals that never delivered.
 
     A realized proposal settles its grant to 'consumed', so any metered spend
     under a proposal grant that ended in another state bought nothing.
+
+    Scoped to the research problem, not the candidate row. A pre-idea candidate
+    is a slot seeded from a problem, and retiring one frees that problem to be
+    seeded again under a new row id. Counting per idea_id meant the new row
+    started at zero, so the ceiling that stopped grants 20-28 would have been
+    handed a fresh 10% of the agenda budget every time a dead candidate was
+    archived. What proved unproductive is the problem; the bill follows it.
+    Candidates with no research problem still fall back to their own id.
     """
 
+    problem = db.fetchone(
+        "SELECT research_problem_id FROM deep_insights WHERE id=? AND agenda_id=?",
+        (int(idea_id), int(agenda_id)),
+    )
+    problem_id = int((problem or {}).get("research_problem_id") or 0)
+    if problem_id:
+        row = db.fetchone(
+            """
+            SELECT COALESCE(SUM(u.tokens_used), 0) AS spent
+            FROM resource_grant_usage_reservations u
+            JOIN resource_grants g ON g.id = u.resource_grant_id
+            JOIN deep_insights d ON d.id = g.idea_id
+            WHERE g.agenda_id=? AND d.research_problem_id=? AND g.stage='proposal'
+              AND g.status <> 'consumed' AND u.status='settled'
+            """,
+            (int(agenda_id), problem_id),
+        )
+    else:
+        row = db.fetchone(
+            """
+            SELECT COALESCE(SUM(u.tokens_used), 0) AS spent
+            FROM resource_grant_usage_reservations u
+            JOIN resource_grants g ON g.id = u.resource_grant_id
+            WHERE g.agenda_id=? AND g.idea_id=? AND g.stage='proposal'
+              AND g.status <> 'consumed' AND u.status='settled'
+            """,
+            (int(agenda_id), int(idea_id)),
+        )
+    return int((row or {}).get("spent") or 0)
+
+
+def proposal_problem_is_over_budget(agenda_id: int, problem_id: int) -> bool:
+    """Has this research problem already spent its undelivered-proposal share?
+
+    The same rule ``_require_proposal_funding_headroom`` enforces at grant time,
+    exposed so the seeding path can decline to create a candidate it could never
+    fund. One rule, two callers -- a second copy of the arithmetic would drift.
+    """
+
+    if int(problem_id or 0) <= 0:
+        return False
+    agenda = db.fetchone(
+        "SELECT token_budget FROM research_agendas WHERE id=?", (int(agenda_id),)
+    )
+    token_budget = int((agenda or {}).get("token_budget") or 0)
+    ceiling = int(token_budget * UNDELIVERED_PROPOSAL_BUDGET_SHARE)
+    if ceiling <= 0:
+        return False
     row = db.fetchone(
         """
         SELECT COALESCE(SUM(u.tokens_used), 0) AS spent
         FROM resource_grant_usage_reservations u
         JOIN resource_grants g ON g.id = u.resource_grant_id
-        WHERE g.agenda_id=? AND g.idea_id=? AND g.stage='proposal'
+        JOIN deep_insights d ON d.id = g.idea_id
+        WHERE g.agenda_id=? AND d.research_problem_id=? AND g.stage='proposal'
           AND g.status <> 'consumed' AND u.status='settled'
         """,
-        (int(agenda_id), int(idea_id)),
+        (int(agenda_id), int(problem_id)),
     )
-    return int((row or {}).get("spent") or 0)
+    return int((row or {}).get("spent") or 0) >= ceiling
 
 
 def _require_proposal_funding_headroom(grant: ResourceGrant, token_budget: int) -> None:

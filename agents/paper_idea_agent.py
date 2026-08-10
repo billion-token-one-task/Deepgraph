@@ -957,6 +957,15 @@ class ProposalProblemUnavailable(Exception):
     """
 
 
+def _proposal_problem_is_over_budget(agenda_id: int, problem_id: int) -> bool:
+    """Thin wrapper so the grant-time ceiling stays the single definition."""
+
+    # Imported lazily: meta_harness.repository imports this module's agents.
+    from meta_harness.repository import proposal_problem_is_over_budget
+
+    return proposal_problem_is_over_budget(agenda_id, problem_id)
+
+
 def _proposal_candidate_and_grant(
     *,
     agenda_id: int,
@@ -981,6 +990,18 @@ def _proposal_candidate_and_grant(
         if str(existing.get("status") or "") != "proposal_pending":
             return candidate_id, None
     else:
+        # Archiving a spent candidate frees its problem, which is the point --
+        # but the problem is only worth re-seeding if it can still be funded.
+        # Its undelivered spend is charged to the problem, so a problem already
+        # over the ceiling would seed a fresh row, get refused at grant time,
+        # be archived, and seed again on the next pass: no tokens, but one dead
+        # deep_insights row every ten minutes forever. Skip it the same way a
+        # spent candidate is skipped.
+        if _proposal_problem_is_over_budget(agenda_id, problem_id):
+            raise ProposalProblemUnavailable(
+                f"research problem {problem_id} has spent its proposal budget "
+                f"share without delivering a candidate"
+            )
         inserted = db.fetchone(
             """
             INSERT INTO deep_insights

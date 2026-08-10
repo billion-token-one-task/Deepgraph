@@ -84,25 +84,87 @@ class ProposalFundingHeadroomTests(unittest.TestCase):
 
 
 class UndeliveredSpendQueryTests(unittest.TestCase):
-    def test_only_counts_proposal_grants_that_never_delivered(self):
-        captured = {}
+    def _spend(self, rows):
+        """Run the query with ``rows`` as successive fetchone results."""
+
+        calls = []
 
         def fetchone(sql, params=()):
-            captured["sql"] = " ".join(str(sql).split())
-            captured["params"] = params
-            return {"spent": 1234}
+            calls.append({"sql": " ".join(str(sql).split()), "params": params})
+            return rows[len(calls) - 1]
 
         with mock.patch.object(repository.db, "fetchone", side_effect=fetchone):
             spent = repository._undelivered_proposal_spend(10, 125)
+        return spent, calls
+
+    def test_only_counts_proposal_grants_that_never_delivered(self):
+        spent, calls = self._spend([{"research_problem_id": 49}, {"spent": 1234}])
 
         self.assertEqual(spent, 1234)
-        sql = captured["sql"]
+        sql = calls[-1]["sql"]
         # A realized proposal settles its grant to 'consumed'; that spend bought
         # something and must not count against the ceiling.
         self.assertIn("g.status <> 'consumed'", sql)
         self.assertIn("g.stage='proposal'", sql)
         self.assertIn("u.status='settled'", sql)
-        self.assertEqual(captured["params"], (10, 125))
+
+    def test_the_bill_follows_the_research_problem_not_the_row(self):
+        """Archiving a spent candidate must not hand its problem a fresh budget.
+
+        Retirement frees the problem to be seeded again under a new row id. If
+        the ceiling counted per idea_id, that new row would start at zero and
+        the burn the ceiling exists to stop would simply repeat, one row id at
+        a time.
+        """
+
+        spent, calls = self._spend([{"research_problem_id": 49}, {"spent": 58590}])
+
+        self.assertEqual(spent, 58590)
+        self.assertIn("d.research_problem_id=?", calls[-1]["sql"])
+        self.assertEqual(calls[-1]["params"], (10, 49))
+        self.assertNotIn("g.idea_id=?", calls[-1]["sql"])
+
+    def test_a_candidate_with_no_problem_still_bills_itself(self):
+        spent, calls = self._spend([{"research_problem_id": None}, {"spent": 77}])
+
+        self.assertEqual(spent, 77)
+        self.assertIn("g.idea_id=?", calls[-1]["sql"])
+        self.assertEqual(calls[-1]["params"], (10, 125))
+
+
+class ProblemOverBudgetTests(unittest.TestCase):
+    """The seeding path and the grant gate must agree on one rule."""
+
+    def _over(self, *, budget, spent, problem_id=49):
+        rows = [{"token_budget": budget}, {"spent": spent}]
+        calls = []
+
+        def fetchone(sql, params=()):
+            calls.append(params)
+            return rows[len(calls) - 1]
+
+        with mock.patch.object(repository.db, "fetchone", side_effect=fetchone):
+            return repository.proposal_problem_is_over_budget(10, problem_id)
+
+    def test_a_problem_that_burned_its_share_is_over_budget(self):
+        # The real numbers: problem 49 burned 58590 against a 50000 ceiling.
+        self.assertTrue(self._over(budget=500_000, spent=58_590))
+
+    def test_a_problem_with_headroom_is_not(self):
+        self.assertFalse(self._over(budget=500_000, spent=43_847))
+
+    def test_no_problem_id_is_never_over_budget(self):
+        with mock.patch.object(repository.db, "fetchone", side_effect=AssertionError):
+            self.assertFalse(repository.proposal_problem_is_over_budget(10, 0))
+
+    def test_a_zero_budget_agenda_is_left_to_the_hard_cap(self):
+        self.assertFalse(self._over(budget=0, spent=10**9))
+
+    def test_it_uses_the_same_share_as_the_grant_gate(self):
+        budget = 500_000
+        ceiling = int(budget * UNDELIVERED_PROPOSAL_BUDGET_SHARE)
+        self.assertFalse(self._over(budget=budget, spent=ceiling - 1))
+        self.assertTrue(self._over(budget=budget, spent=ceiling))
 
 
 class RetirementWiringTests(unittest.TestCase):
@@ -124,12 +186,55 @@ class RetirementWiringTests(unittest.TestCase):
         self.assertIn(OUTCOME_PROPOSAL_UNREALIZED, ALL_OUTCOMES)
 
     def test_a_retired_candidate_stops_holding_its_research_problem(self):
-        """Retirement has to be visible to the pre-idea identity lookup, which
-        selects only candidates whose outcome is still pending."""
+        """Retirement must move status, not just outcome.
 
-        from db.insight_outcomes import OUTCOME_PROPOSAL_UNREALIZED
+        This test used to assert only that the outcome enum differs from
+        'pending', which it does -- and production was broken the whole time it
+        passed. Selection keys on status, so writing the outcome alone left
+        idea 125 to be promoted, refused and "retired" once per pass (observed
+        2026-08-10 at 21:10:45, 21:22:17 and 21:51:24), while the row went on
+        owning idx_deep_insights_pending_proposal and research problem 49 could
+        never be worked again.
+        """
 
-        self.assertNotEqual(OUTCOME_PROPOSAL_UNREALIZED, "pending")
+        import inspect
+
+        from scripts import auto_advance
+
+        source = inspect.getsource(auto_advance.advance_agenda)
+        retire = source.split("without delivering a candidate", 1)[1]
+        retire = retire.split("continue", 1)[0]
+
+        statement = " ".join(retire.split())
+        self.assertIn("UPDATE deep_insights SET status='archived'", statement)
+        # The unique index is partial on status='proposal_pending'; leaving the
+        # row in that status is what held the problem.
+        self.assertIn("status='proposal_pending'", statement)
+        # Agenda-owned tables are only ever mutated with agenda_id in the WHERE.
+        self.assertIn("WHERE id=? AND agenda_id=?", statement)
+
+    def test_archived_is_a_status_the_candidate_queries_already_exclude(self):
+        """'archived' must be read, not merely written.
+
+        A retirement status nobody selects on would be one more write-only
+        state -- the defect class this repository has hit four times.
+        """
+
+        import pathlib
+
+        root = pathlib.Path(repository.__file__).resolve().parent.parent
+        readers = [
+            root / "agents" / "paper_idea_agent.py",
+            root / "agents" / "agenda_repository.py",
+            root / "scripts" / "auto_advance.py",
+        ]
+        for path in readers:
+            text = path.read_text()
+            self.assertIn(
+                "'archived'",
+                text,
+                f"{path.name} no longer excludes archived candidates",
+            )
 
 
 if __name__ == "__main__":
