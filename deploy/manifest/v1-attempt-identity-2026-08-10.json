@@ -1,0 +1,101 @@
+{
+  "backup_root": "/home/ec2-user/deepgraph-rollback",
+  "batches": [
+    {
+      "acceptance": "Every deployed SHA256 equals this manifest; no live attempt or GPU job crosses the deployment boundary.",
+      "authorization": "required-before-deploy",
+      "batch": "1-attempt-identity",
+      "files": [
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/v1-attempt-identity-2026-08-10/paper_idea_agent.py.bak",
+          "kind": "file",
+          "mode": "0644",
+          "owner": "billion-token:billion-token",
+          "replaces": null,
+          "runtime_locally_modified": true,
+          "source": "agents/paper_idea_agent.py",
+          "source_bytes": 59603,
+          "source_sha256": "dca74ca9be8dd640be80666908867b1c0f5aaee505d14f5a999b28cd99463f1e",
+          "target": "/home/billion-token/Deepgraph/agents/paper_idea_agent.py",
+          "target_predeploy_sha256": "40d462b027188175672919b4811b3bd4968fed9f781bebbbbcdea64eae00e6e5",
+          "target_predeploy_state": "present"
+        },
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/v1-attempt-identity-2026-08-10/experiment_forge.py.bak",
+          "kind": "file",
+          "mode": "0644",
+          "owner": "billion-token:billion-token",
+          "replaces": null,
+          "runtime_locally_modified": true,
+          "source": "agents/experiment_forge.py",
+          "source_bytes": 165652,
+          "source_sha256": "4da1f69182ca212f2f7b4c15c6fb349573cb781d92fe1e08d71845271bf3233a",
+          "target": "/home/billion-token/Deepgraph/agents/experiment_forge.py",
+          "target_predeploy_sha256": "19bdff634b9823f06fe40d6a6001014609b3ad567417ec8e85e5ded3b39a451b",
+          "target_predeploy_state": "present"
+        },
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/v1-attempt-identity-2026-08-10/grant_usage.py.bak",
+          "kind": "file",
+          "mode": "0644",
+          "owner": "billion-token:billion-token",
+          "replaces": null,
+          "runtime_locally_modified": true,
+          "source": "meta_harness/grant_usage.py",
+          "source_bytes": 9736,
+          "source_sha256": "823d2914340f3a44d386826d06c8902c20f6202340288a2404fa8d1639fea1a3",
+          "target": "/home/billion-token/Deepgraph/meta_harness/grant_usage.py",
+          "target_predeploy_sha256": "e67814e54a8bcfbc879434d138ee1eb00d832ce2b92559216ace237b00cb8f51",
+          "target_predeploy_state": "present"
+        }
+      ],
+      "health_check": "Re-hash every deployed target, py_compile the four runtime modules, confirm GET / returns 200 on 8080 and /api/stats returns real numbers with no /home/ paths.",
+      "purpose": "Deploy the attempt-identity fix while all Deepgraph attempts and GPU jobs are at R8 zero.",
+      "restart_required": [
+        "deepgraph-web.service",
+        "deepgraph-auto-execute.service",
+        "deepgraph-observe@10.service",
+        "deepgraph-observe@11.service"
+      ],
+      "systemd_reload_required": false
+    }
+  ],
+  "deployment_steps": [
+    "Stop deepgraph-auto-advance.timer, deepgraph-auto-execute.service, deepgraph-observe@10, deepgraph-observe@11, and deepgraph-web.service only after R8 is zero. The observers are included because their idle-in-transaction AccessShareLock blocked the previous batch.",
+    "Apply batch 1 through scripts/deploy_manifest_batch.py and verify every deployed SHA256.",
+    "py_compile the four runtime modules in the live tree.",
+    "Restart web, observers, auto-execute, then the auto-advance timer.",
+    "Append every production action, backup path, checksum, restart, and health result to OPERATORS.log.",
+    "After restart, make no manual business-state calls; observe only normal services/timer."
+  ],
+  "description": "Separate LLM attempt identity from operation identity: the grant usage ledger allocates attempt keys so one unusable provider response no longer retires an operation permanently and strands its candidate and grant. Both resource-granted rings allocate from the ledger; the forge ring's private copy is removed and gains the attempt bound it lacked.",
+  "environment_keys": [],
+  "file_contents_read_from_production": true,
+  "manifest_key": "v1-attempt-identity-2026-08-10",
+  "operator_diff_required": [
+    "agents/experiment_forge.py",
+    "agents/paper_idea_agent.py",
+    "meta_harness/grant_usage.py"
+  ],
+  "preconditions": [
+    "Explicit grouped production-write and service-restart authorization is recorded for this batch.",
+    "R8 snapshot shows zero active Deepgraph experiment runs, attempt reservations, queued/running GPU jobs, and Colab requests.",
+    "A PostgreSQL custom-format backup and the OPERATORS.log predeployment snapshot are recorded before services stop.",
+    "Unrelated GPU workloads on the two A100 hosts are not stopped or modified."
+  ],
+  "production_tree_modified_by_this_command": false,
+  "rollback": {
+    "data_impact": "None. No schema, column, or state value changes. New reservation rows carry a ':tN' suffix on their idempotency key; the previous code neither writes nor parses that suffix, and reads the rows only through SUM aggregates, so rolling back leaves the ledger arithmetic intact.",
+    "order": "stop services after R8 zero, then reverse batch 1",
+    "steps": [
+      "Use deploy_manifest_batch.py --rollback for 1-attempt-identity; each restored file must match its recorded predeployment SHA256.",
+      "No schema change, no .env change, and no systemd unit change is part of this batch, so nothing else needs reversing.",
+      "Restart deepgraph-web.service, the observers, and deepgraph-auto-execute.service, then enable/start deepgraph-auto-advance.timer.",
+      "Record rollback commands, restored hashes, service states, and health results in OPERATORS.log."
+    ]
+  },
+  "runtime_root": "/home/billion-token/Deepgraph",
+  "source_commit": "b0965cdd360c68452a35adbf2d04a912411a9c52",
+  "source_worktree_clean": true,
+  "tests": "Full suite 72 failed / 766 passed / 3 collection errors, identical failure count to the pre-change baseline; 9 new attempt-key tests; all six meta-harness audits pass."
+}
