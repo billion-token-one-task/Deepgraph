@@ -87,10 +87,16 @@ class AutoResearchSchedulingTests(unittest.TestCase):
             auto_research._candidate_pool()
 
         sql = fetchall.call_args.args[0]
+        # The property under test is that a blocked job is claimed for its
+        # specific stage and never for the blanket cpu_eligible flag. The
+        # predicate is now rendered from meta_harness.job_states, which spells
+        # every stage-scoped rule as one IN list, so pin the stage rather than
+        # the syntax that carried it.
         self.assertNotIn("arj.cpu_eligible=1", sql)
-        self.assertIn("arj.stage='cpu_ineligible'", sql)
+        self.assertIn("'cpu_ineligible'", sql)
         self.assertIn("'verification_input_missing'", sql)
         self.assertIn("'experiment_review_blocked'", sql)
+        self.assertIn("arj.status='blocked'", sql)
 
     def test_candidate_pool_prioritizes_manuscript_retries_before_new_forge(self):
         with mock.patch.object(auto_research.db, "fetchall", return_value=[] ) as fetchall:

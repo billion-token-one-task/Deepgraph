@@ -59,6 +59,7 @@ from config import (
 from db import database as db
 from meta_harness.scientific_authority import positive_decision_authorized
 from meta_harness.failure_repository import FailureRecoveryRepository
+from meta_harness.job_states import claim_predicate_sql
 from db.insight_outcomes import (
     OUTCOME_EXPERIMENT_FAILED_RUN,
     OUTCOME_EXPERIMENT_FAILED_SETUP,
@@ -2938,41 +2939,7 @@ def _candidate_pool() -> list[dict]:
              AND COALESCE(di.outcome, 'pending') NOT IN ('cleaned', 'archived')
              AND COALESCE(di.novelty_status, '') NOT IN ('cleaned_similar_duplicate', 'exists')
              AND COALESCE(di.submission_status, 'not_started') NOT IN ('stale')
-             AND (
-               arj.status IS NULL
-               OR arj.status IN ('queued', 'eligible', 'queued_cpu', 'queued_gpu')
-               OR (
-                    arj.status='failed'
-                    AND arj.stage IN (
-                        'manual_reforge_unfinished',
-                        'manual_requeue_unfinished',
-                        'retry_failed_run',
-                        'manual_rerun_completed',
-                        'reset_completed_experiments'
-                    )
-                  )
-               OR (
-                    arj.status='completed'
-                    AND arj.stage='tier1_research_complete'
-                    AND NOT EXISTS (
-                        SELECT 1 FROM experiment_runs er
-                        WHERE er.deep_insight_id = di.id
-                    )
-                  )
-               OR (
-                    arj.status='blocked'
-                    AND (
-                      arj.stage='cpu_ineligible'
-                      OR arj.stage IN (
-                        'verification_input_missing',
-                        'research_input_missing',
-                        'experiment_review_blocked',
-                        'experiment_review_repair_failed',
-                        'experiment_review_blocked_final'
-                      )
-                    )
-                  )
-             )
+             AND """ + claim_predicate_sql() + """
            ORDER BY
              CASE
                WHEN arj.status='queued' AND arj.stage IN (

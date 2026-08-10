@@ -25,6 +25,8 @@ import re
 import unittest
 from pathlib import Path
 
+from meta_harness import job_states
+
 ROOT = Path(__file__).resolve().parents[1]
 SKIP_DIRS = {".git", "__pycache__", ".venv", "venv", "node_modules", "static",
              "plugins", "tests"}
@@ -151,45 +153,18 @@ def writable_pairs() -> dict[tuple[str, str], list[str]]:
     return pairs
 
 
-def _candidate_pool_sql() -> str:
-    text = (ROOT / "orchestrator" / "auto_research.py").read_text(encoding="utf-8")
-    tree = ast.parse(text)
-    for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name == "_candidate_pool":
-            return ast.get_source_segment(text, node) or ""
-    raise AssertionError("_candidate_pool not found; the claim predicate moved")
-
-
 def pool_predicate() -> tuple[set[str], dict[str, set[str]]]:
-    """Read the claimable statuses and per-status stage allowlists out of the
-    live candidate-pool SQL, so this test tracks the real predicate."""
+    """The claimable statuses and per-status stage allowlists, as declared.
 
-    sql = _candidate_pool_sql()
-    where = sql.split("WHERE di.agenda_id", 1)[-1].split("ORDER BY", 1)[0]
+    This used to regex the SQL out of ``_candidate_pool``. It now reads the
+    declaration that generates that SQL, which is the point of the declaration:
+    the query, the recycler, and this test share one source instead of three
+    copies that have to be kept in step by hand.
+    """
 
-    statuses = set()
-    match = re.search(r"arj\.status\s+IN\s*\(([^)]*)\)", where, re.I)
-    if match:
-        statuses = set(re.findall(r"'([a-z0-9_]+)'", match.group(1)))
-
-    # Each `arj.status='X'` opens a branch that runs until the next one; take
-    # every stage literal inside that span. Nesting the equality and IN forms
-    # under an inner AND ( ... ) makes bracket matching unreliable, and this
-    # span rule tolerates both.
-    stage_allowlists: dict[str, set[str]] = {}
-    marks = [
-        (m.group(1), m.start())
-        for m in re.finditer(r"arj\.status\s*=\s*'([a-z0-9_]+)'", where, re.I)
-    ]
-    for index, (status, start) in enumerate(marks):
-        end = marks[index + 1][1] if index + 1 < len(marks) else len(where)
-        block = where[start:end]
-        stages = set(re.findall(r"arj\.stage\s*=\s*'([a-z0-9_]+)'", block, re.I))
-        for group in re.findall(r"arj\.stage\s+IN\s*\(([^)]*)\)", block, re.S | re.I):
-            stages |= set(re.findall(r"'([a-z0-9_]+)'", group))
-        if stages:
-            stage_allowlists.setdefault(status, set()).update(stages)
-    return statuses, stage_allowlists
+    return set(job_states.CLAIMABLE_STATUSES), {
+        rule.status: set(rule.stages) for rule in job_states.CLAIM_RULES
+    }
 
 
 _SELECT_JOBS = re.compile(
@@ -230,16 +205,7 @@ def selected_stages() -> set[str]:
 def dead_end_recycled() -> set[tuple[str, str]]:
     """The advancer's bounded recycler is a real, if rationed, consumer."""
 
-    text = (ROOT / "scripts" / "auto_advance.py").read_text(encoding="utf-8")
-    block = re.search(r"DEAD_END\s*=\s*\{(.*?)\n\}", text, re.S)
-    if not block:
-        raise AssertionError("DEAD_END set not found in auto_advance.py")
-    return {
-        (status, stage)
-        for status, stage in re.findall(
-            r"\(\s*\"([a-z0-9_]+)\"\s*,\s*\"([a-z0-9_]+)\"\s*\)", block.group(1)
-        )
-    }
+    return set(job_states.RECYCLABLE)
 
 
 class JobStateConsumerTest(unittest.TestCase):
@@ -260,11 +226,49 @@ class JobStateConsumerTest(unittest.TestCase):
         )
 
     def test_claim_predicate_parses(self) -> None:
-        """Guard the guard: a restructured SQL must not silently pass everything."""
+        """Guard the guard: an emptied declaration must not pass everything."""
 
         self.assertIn("queued", self.statuses)
-        self.assertTrue(self.stage_allowlists, "no per-status stage allowlist parsed")
-        self.assertTrue(self.recycled, "no DEAD_END recycle pairs parsed")
+        self.assertTrue(self.stage_allowlists, "no per-status stage allowlist declared")
+        self.assertTrue(self.recycled, "no recyclable pairs declared")
+
+    def test_claim_query_is_generated_from_the_declaration(self) -> None:
+        """A hand-written predicate must not creep back into the claim query.
+
+        The declaration is only a single source of truth while the query
+        actually renders from it.
+        """
+
+        text = (ROOT / "orchestrator" / "auto_research.py").read_text(encoding="utf-8")
+        tree = ast.parse(text)
+        pool = next(
+            (
+                node
+                for node in ast.walk(tree)
+                if isinstance(node, ast.FunctionDef) and node.name == "_candidate_pool"
+            ),
+            None,
+        )
+        self.assertIsNotNone(pool, "_candidate_pool moved; the claim predicate moved")
+        source = ast.get_source_segment(text, pool) or ""
+        self.assertIn("claim_predicate_sql()", source)
+        self.assertNotIn("arj.status IN (", source)
+
+    def test_recycler_uses_the_declaration(self) -> None:
+        from scripts import auto_advance
+
+        self.assertIs(auto_advance.DEAD_END, job_states.RECYCLABLE)
+
+    def test_rendered_predicate_covers_every_declared_rule(self) -> None:
+        sql = job_states.claim_predicate_sql()
+        for status in job_states.CLAIMABLE_STATUSES:
+            self.assertIn(f"'{status}'", sql)
+        for rule in job_states.CLAIM_RULES:
+            self.assertIn(f"arj.status='{rule.status}'", sql)
+            for stage in rule.stages:
+                self.assertIn(f"'{stage}'", sql)
+        # The tier-1 rule is only safe while the insight has no run yet.
+        self.assertIn("NOT EXISTS", sql)
 
     def test_every_writable_state_has_a_consumer(self) -> None:
         orphans: list[str] = []
