@@ -388,8 +388,18 @@ class GrantGPUUsageControl:
                 UPDATE compute_jobs_v1 SET gpu_attempt_reservation_id=?
                 WHERE id=? AND (gpu_attempt_reservation_id IS NULL
                                 OR gpu_attempt_reservation_id=?)
+                  AND agenda_id=(
+                      SELECT agenda_id
+                      FROM experiment_attempt_gpu_reservations_v1
+                      WHERE id=?
+                  )
                 """,
-                (int(reservation_id), int(compute_job_id), int(reservation_id)),
+                (
+                    int(reservation_id),
+                    int(compute_job_id),
+                    int(reservation_id),
+                    int(reservation_id),
+                ),
             )
             if commit:
                 db.commit()
@@ -422,8 +432,18 @@ class GrantGPUUsageControl:
                 UPDATE gpu_jobs SET gpu_attempt_reservation_id=?
                 WHERE id=? AND (gpu_attempt_reservation_id IS NULL
                                 OR gpu_attempt_reservation_id=?)
+                  AND agenda_id=(
+                      SELECT agenda_id
+                      FROM experiment_attempt_gpu_reservations_v1
+                      WHERE id=?
+                  )
                 """,
-                (int(reservation_id), int(gpu_job_id), int(reservation_id)),
+                (
+                    int(reservation_id),
+                    int(gpu_job_id),
+                    int(reservation_id),
+                    int(reservation_id),
+                ),
             )
             if commit:
                 db.commit()
@@ -837,8 +857,11 @@ class GrantGPUUsageControl:
             ),
         )
         db.execute(
-            "UPDATE resource_grants SET status='consumed' WHERE id=? AND status='active'",
-            (int(grant["id"]),),
+            """
+            UPDATE resource_grants SET status='consumed'
+            WHERE id=? AND status='active' AND agenda_id=?
+            """,
+            (int(grant["id"]), int(grant["agenda_id"])),
         )
 
     def usage_for_compute_job(self, compute_job_id: int) -> dict[str, Any]:
@@ -1038,8 +1061,15 @@ class GrantGPUUsageControl:
                         ),
                     )
                     db.execute(
-                        "UPDATE gpu_jobs SET gpu_attempt_reservation_id=? WHERE id=?",
-                        (reservation_id, int(job["id"])),
+                        """
+                        UPDATE gpu_jobs SET gpu_attempt_reservation_id=?
+                        WHERE id=? AND agenda_id=?
+                        """,
+                        (
+                            reservation_id,
+                            int(job["id"]),
+                            int(grant["agenda_id"]),
+                        ),
                     )
                     if job.get("compute_job_id"):
                         usage_json = json.dumps(
@@ -1067,12 +1097,13 @@ class GrantGPUUsageControl:
                             UPDATE compute_jobs_v1
                             SET gpu_attempt_reservation_id=?, usage_json=?,
                                 updated_at=CURRENT_TIMESTAMP
-                            WHERE id=?
+                            WHERE id=? AND agenda_id=?
                             """,
                             (
                                 reservation_id,
                                 usage_json,
                                 int(job["compute_job_id"]),
+                                int(grant["agenda_id"]),
                             ),
                         )
                     imported += 1
