@@ -1119,6 +1119,27 @@ def discover_paper_ideas(
             min(16_000, int(proposal_grant.get("token_cap") or 0) // 2),
         )
         prompt_version = configured_role_prompt_version("proposer")
+        # Reaching here proves no earlier attempt delivered an idea: a realized
+        # proposal settles its grant to 'consumed', and the grant lookup above
+        # accepts only an active one. So a fresh attempt cannot recharge the
+        # agenda for work it already has.
+        from meta_harness.grant_usage import GrantUsageError, GrantUsageLedger
+
+        attempts = GrantUsageLedger(int(proposal_grant["id"]))
+        try:
+            method_key = attempts.next_attempt_key(
+                f"proposal-method:{agenda_id}:{proposal_candidate_id}"
+            )
+            experiment_key = attempts.next_attempt_key(
+                f"proposal-experiment:{agenda_id}:{proposal_candidate_id}"
+            )
+        except GrantUsageError as exc:
+            print(
+                f"[PAPER_IDEA] Proposal candidate {proposal_candidate_id} "
+                f"is out of attempts: {exc}",
+                flush=True,
+            )
+            continue
 
         # Stage 2: Method Invention
         print(f"[PAPER_IDEA] Call 2/3: Inventing method for '{title[:50]}'...", flush=True)
@@ -1163,9 +1184,7 @@ def discover_paper_ideas(
                 stage="proposal",
                 resource_grant_id=int(proposal_grant["id"]),
                 operation="proposal_method_invention",
-                idempotency_key=(
-                    f"proposal-method:{agenda_id}:{proposal_candidate_id}"
-                ),
+                idempotency_key=method_key,
                 prompt_version=prompt_version,
                 max_tokens=proposal_token_cap,
             )
@@ -1218,9 +1237,7 @@ def discover_paper_ideas(
                 stage="proposal",
                 resource_grant_id=int(proposal_grant["id"]),
                 operation="proposal_experiment_design",
-                idempotency_key=(
-                    f"proposal-experiment:{agenda_id}:{proposal_candidate_id}"
-                ),
+                idempotency_key=experiment_key,
                 prompt_version=prompt_version,
                 max_tokens=proposal_token_cap,
             )
