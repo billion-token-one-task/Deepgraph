@@ -45,6 +45,10 @@ from contracts.meta_harness import (  # noqa: E402
     IdeaDecisionPacket,
 )
 from db import database as db  # noqa: E402
+from db.insight_outcomes import (  # noqa: E402
+    OUTCOME_PROPOSAL_UNREALIZED,
+    set_outcome,
+)
 from meta_harness.frontier_authority import FrontierAuthorityRepository  # noqa: E402
 from meta_harness.frontier_bootstrap import run_bootstrap_evaluation  # noqa: E402
 from meta_harness.job_states import RECYCLABLE  # noqa: E402
@@ -785,6 +789,34 @@ def advance_agenda(agenda_id: int, state: dict, journal: Journal, args) -> None:
                     idea_id=idea_id,
                     reason=f"{type(exc).__name__}: {exc}",
                 )
+                # Refusing to re-fund is only half the fix. Left queued, the
+                # candidate is reselected every pass and refused every pass,
+                # and it holds one of the agenda's portfolio slots forever.
+                # Retire it through the reviewed outcome writer so the agenda
+                # moves on to a problem that can still produce something.
+                if "without delivering a candidate" in str(exc):
+                    try:
+                        set_outcome(
+                            "deep_insights",
+                            idea_id,
+                            OUTCOME_PROPOSAL_UNREALIZED,
+                            reason=str(exc)[:500],
+                            triggered_by=ACTOR,
+                        )
+                        journal.log(
+                            "proposal_candidate_retired",
+                            agenda_id=agenda_id,
+                            idea_id=idea_id,
+                            outcome=OUTCOME_PROPOSAL_UNREALIZED,
+                        )
+                    except Exception as retire_exc:
+                        db.rollback()
+                        journal.log(
+                            "proposal_retire_failed",
+                            agenda_id=agenda_id,
+                            idea_id=idea_id,
+                            reason=f"{type(retire_exc).__name__}: {retire_exc}",
+                        )
                 continue
             journal.log(
                 "proposal_granted",

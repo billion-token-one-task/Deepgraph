@@ -23,6 +23,8 @@ OUTCOME_HUMAN_DOWNVOTED = "human_downvoted"
 OUTCOME_BECAME_MANUSCRIPT = "became_manuscript"
 OUTCOME_SUBMITTED = "submitted"
 OUTCOME_SCOOPED = "scooped"
+# Proposal generation was funded repeatedly and never produced a candidate.
+OUTCOME_PROPOSAL_UNREALIZED = "proposal_unrealized"
 
 ALL_OUTCOMES = frozenset(
     {
@@ -40,6 +42,7 @@ ALL_OUTCOMES = frozenset(
         OUTCOME_BECAME_MANUSCRIPT,
         OUTCOME_SUBMITTED,
         OUTCOME_SCOOPED,
+        OUTCOME_PROPOSAL_UNREALIZED,
     }
 )
 
