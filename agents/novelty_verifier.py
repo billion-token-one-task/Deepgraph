@@ -12,6 +12,7 @@ For each candidate:
 import json
 import os
 import subprocess
+import urllib.request
 import time
 from pathlib import Path
 
@@ -122,6 +123,73 @@ def _evosci_reasoning_effort(route: dict[str, str]) -> str:
     return (LLM_REASONING_EFFORT or "").strip()
 
 
+def _supports_streaming(route: dict[str, str] | None, *, timeout: float = 30.0) -> bool:
+    """Can this route actually stream? EvoScientist has no other mode.
+
+    EvoScientist drives LangChain, which streams unconditionally and raises
+    "No generations found in stream" on an empty one. The sora2 relay answers a
+    streaming request with Content-Type: text/event-stream and a zero-byte
+    body, for every model it serves - so a route can be reachable, serve the
+    configured model, return correct non-streaming completions, and still be
+    useless here. Detecting the capability beats maintaining a list of which
+    relays are currently broken, and it self-corrects when one is fixed.
+    """
+
+    if not route:
+        return False
+    base = (route.get("base_url") or "").rstrip("/")
+    key = route.get("api_key") or ""
+    if not base or not key:
+        return False
+    payload = json.dumps(
+        {
+            "model": route.get("model"),
+            "stream": True,
+            "max_tokens": 1,
+            "messages": [{"role": "user", "content": "ok"}],
+        }
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        f"{base}/chat/completions",
+        data=payload,
+        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            body = response.read().decode("utf-8", "replace")
+    except Exception:
+        return False
+    return any(
+        line.startswith("data:") and "[DONE]" not in line
+        for line in body.splitlines()
+    )
+
+
+def _configured_streaming_routes() -> list[dict[str, str]]:
+    """Every configured provider that can actually stream, in configured order.
+
+    Read from llm_client's own provider list rather than from the two config
+    slots, so a route the rest of the system already uses is not invisible here.
+    """
+
+    from agents.llm_client import _init_providers, _providers
+
+    _init_providers()
+    usable: list[dict[str, str]] = []
+    for provider in list(_providers):
+        route = _evosci_compatible_route(
+            _openai_compatible_route(
+                api_key=str(provider.get("api_key") or ""),
+                base_url=str(provider.get("base_url") or ""),
+                model=str(provider.get("model") or ""),
+                protocol=str(provider.get("protocol") or "chat_completions"),
+            )
+        )
+        if route and _supports_streaming(route):
+            usable.append(route)
+    return usable
+
+
 def _build_evosci_env(workdir: Path) -> dict[str, str]:
     # Only offer EvoScientist a route this deployment actually uses. The
     # primary slot is gated behind LLM_USE_TABCODE, and llm_client's own
@@ -138,14 +206,25 @@ def _build_evosci_env(workdir: Path) -> dict[str, str]:
         if LLM_USE_TABCODE
         else None
     )
-    custom_openai_route = _evosci_compatible_route(primary_route or _openai_compatible_route(
+    secondary_configured = _openai_compatible_route(
         api_key=LLM_SECONDARY_API_KEY,
         base_url=LLM_SECONDARY_BASE_URL,
         model=LLM_SECONDARY_MODEL,
         protocol=LLM_SECONDARY_PROTOCOL,
-    ))
+    )
+    custom_openai_route = _evosci_compatible_route(primary_route or secondary_configured)
     if not custom_openai_route:
         raise RuntimeError("No OpenAI-compatible EvoScientist credentials are configured.")
+    # These two slots are the only ones this builder ever considered, and
+    # neither could stream: the primary is disabled and the secondary's relay
+    # returns empty event-streams. Meanwhile a third configured provider does
+    # stream and was never offered. Fall through to whatever the system has
+    # rather than to a fixed pair.
+    if not _supports_streaming(custom_openai_route):
+        for candidate in _configured_streaming_routes():
+            if candidate != custom_openai_route:
+                custom_openai_route = candidate
+                break
 
     secondary_openai_route = _evosci_compatible_route(_openai_compatible_route(
         api_key=LLM_SECONDARY_API_KEY,
