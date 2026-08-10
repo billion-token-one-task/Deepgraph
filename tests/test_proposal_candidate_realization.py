@@ -138,6 +138,52 @@ class DiscoveryResilienceTests(unittest.TestCase):
         skip = source.index("except ProposalProblemUnavailable")
         self.assertIn("continue", source[skip:skip + 300])
 
+class SiblingProvenanceTests(unittest.TestCase):
+    """Provenance shared by construction is not evidence of duplication.
+
+    Ideas raised from the same research problem inherit that problem's
+    source_node_ids verbatim, so their node overlap is 1.0 whatever the ideas
+    say. Scoring it meant a research problem could yield exactly one idea, ever:
+    agenda 11's second idea on problem 8 was rejected as a duplicate of its
+    first at node_overlap 1.0, title_sim 0.095.
+    """
+
+    SIBLING = {
+        "id": 105,
+        "title": "Test the missing mechanism behind strong claims in ml.theory",
+        "source_node_ids": '["ml.theory.interpretability"]',
+        "mechanism_type": "mechanism_mismatch",
+        "research_problem_id": 8,
+    }
+
+    def _candidate(self, title="Polyadic Cumulant Spectral Alignment"):
+        return {
+            "title": title,
+            "source_node_ids": '["ml.theory.interpretability"]',
+            "mechanism_type": "mechanism_mismatch",
+            "research_problem_id": 8,
+        }
+
+    def test_a_second_idea_on_the_same_problem_is_allowed(self):
+        with mock.patch.object(paper_idea_agent.db, "fetchall", return_value=[self.SIBLING]):
+            self.assertIsNone(_find_existing_tier2_duplicate(self._candidate()))
+
+    def test_a_genuinely_similar_title_is_still_caught_between_siblings(self):
+        """Only provenance is discounted; content signals still apply."""
+
+        with mock.patch.object(paper_idea_agent.db, "fetchall", return_value=[self.SIBLING]):
+            duplicate = _find_existing_tier2_duplicate(
+                self._candidate(title=self.SIBLING["title"])
+            )
+        self.assertIsNotNone(duplicate)
+        self.assertEqual(duplicate["id"], 105)
+
+    def test_node_overlap_still_counts_across_different_problems(self):
+        other = dict(self.SIBLING, id=27, research_problem_id=41)
+        with mock.patch.object(paper_idea_agent.db, "fetchall", return_value=[other]):
+            duplicate = _find_existing_tier2_duplicate(self._candidate())
+        self.assertIsNotNone(duplicate, "cross-problem duplicate detection was weakened")
+        self.assertEqual(duplicate["id"], 27)
 
 if __name__ == "__main__":
     unittest.main()

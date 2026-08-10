@@ -88,6 +88,64 @@ def _agenda_per_grant_gpu_cap(agenda: dict[str, Any]) -> float:
     return min(cap, SYSTEM_MAX_GPU_HOURS_PER_GRANT)
 
 
+# A candidate may be funded for proposal generation more than once - a provider
+# outage is not the candidate's fault - but not without limit. Expressed as a
+# share of the agenda's own budget rather than a retry count, because a count
+# bounds attempts while the thing that actually needs bounding is money: a
+# "3 attempts" rule permitted three 32k grants, then three more after the next
+# expiry, and so on.
+UNDELIVERED_PROPOSAL_BUDGET_SHARE = 0.10
+
+
+def _undelivered_proposal_spend(agenda_id: int, idea_id: int) -> int:
+    """Tokens already charged for proposals for this idea that never delivered.
+
+    A realized proposal settles its grant to 'consumed', so any metered spend
+    under a proposal grant that ended in another state bought nothing.
+    """
+
+    row = db.fetchone(
+        """
+        SELECT COALESCE(SUM(u.tokens_used), 0) AS spent
+        FROM resource_grant_usage_reservations u
+        JOIN resource_grants g ON g.id = u.resource_grant_id
+        WHERE g.agenda_id=? AND g.idea_id=? AND g.stage='proposal'
+          AND g.status <> 'consumed' AND u.status='settled'
+        """,
+        (int(agenda_id), int(idea_id)),
+    )
+    return int((row or {}).get("spent") or 0)
+
+
+def _require_proposal_funding_headroom(grant: ResourceGrant, token_budget: int) -> None:
+    """Refuse to re-fund proposal generation that keeps delivering nothing.
+
+    Separating attempt identity from operation identity stopped one unusable
+    provider response from retiring a candidate for good, but the attempt bound
+    that came with it counts per grant. When a grant expired the candidate was
+    requeued and handed an identical new one, so the bound reset and the cycle
+    repeated: grants 20-28 on 2026-08-10 consumed 205393 tokens across nine
+    grants and produced no idea at all.
+
+    The same principle as the reservation ledger, one level up - do not pay
+    again for an operation that has already been paid for and delivered
+    nothing - but bounded by budget so a candidate cannot starve its agenda.
+    """
+
+    if grant.stage != "proposal":
+        return
+    ceiling = int(token_budget * UNDELIVERED_PROPOSAL_BUDGET_SHARE)
+    if ceiling <= 0:
+        return
+    spent = _undelivered_proposal_spend(grant.agenda_id, grant.idea_id)
+    if spent >= ceiling:
+        raise MetaHarnessPersistenceError(
+            f"proposal generation for idea {grant.idea_id} has consumed {spent} "
+            f"tokens across grants without delivering a candidate; refusing to "
+            f"fund another (ceiling {ceiling})"
+        )
+
+
 def _require_short_ttl(grant: ResourceGrant, *, now: datetime | None = None) -> None:
     """A grant is a short-lived authority, not a standing permission."""
     current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
@@ -796,6 +854,7 @@ class MetaHarnessRepository:
             )
             if token_budget <= 0 or token_total > token_budget:
                 raise MetaHarnessPersistenceError("agenda token hard cap exceeded")
+            _require_proposal_funding_headroom(grant, token_budget)
             if grant.max_gpu_hours > 0 and gpu_total > gpu_budget:
                 raise MetaHarnessPersistenceError("agenda GPU-hour hard cap exceeded")
             agenda_backends = set(

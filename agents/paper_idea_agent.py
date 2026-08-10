@@ -506,9 +506,11 @@ def _find_existing_tier2_duplicate(
     nodes = candidate.get("source_node_ids")
     mechanism = str(candidate.get("mechanism_type") or "")
     skip = int(exclude_id or 0)
+    own_problem = int(candidate.get("research_problem_id") or 0)
     try:
         rows = db.fetchall(
-            "SELECT id, title, source_node_ids, mechanism_type, status, novelty_status, outcome "
+            "SELECT id, title, source_node_ids, mechanism_type, status, novelty_status, "
+            "outcome, research_problem_id "
             "FROM deep_insights WHERE tier IN (1, 2) ORDER BY id DESC LIMIT 400"
         )
     except Exception:
@@ -520,11 +522,24 @@ def _find_existing_tier2_duplicate(
         node_score = _node_jaccard(nodes, row.get("source_node_ids"))
         family_score = _node_family_jaccard(nodes, row.get("source_node_ids"))
         same_mechanism = mechanism and mechanism == str(row.get("mechanism_type") or "")
+        # Two ideas raised from the same research problem inherit that
+        # problem's source_node_ids verbatim, so their node overlap is 1.0 by
+        # construction and carries no information about whether the ideas are
+        # the same. Scoring it anyway meant a problem could yield exactly one
+        # idea ever: agenda 11's second idea on problem 8 was rejected as a
+        # duplicate of its first at node_overlap 1.0 and title_sim 0.095.
+        # Content signals still apply between siblings; provenance does not.
+        siblings = bool(own_problem) and int(row.get("research_problem_id") or 0) == own_problem
         too_close = (
             title_score >= 0.32
-            or (node_score >= 0.50 and same_mechanism)
-            or (node_score >= 0.62 and title_score >= 0.04)
-            or (family_score >= 0.42 and same_mechanism and title_score >= 0.02)
+            or (not siblings and node_score >= 0.50 and same_mechanism)
+            or (not siblings and node_score >= 0.62 and title_score >= 0.04)
+            or (
+                not siblings
+                and family_score >= 0.42
+                and same_mechanism
+                and title_score >= 0.02
+            )
             or (same_mechanism and title_score >= 0.18)
         )
         if too_close:
