@@ -196,8 +196,8 @@
           "replaces": null,
           "runtime_locally_modified": false,
           "source": "meta_harness/attempt_gpu_usage.py",
-          "source_bytes": 46612,
-          "source_sha256": "316d92a8e21884271d593594901bad1267cca775290e0a76e81d938630899faf",
+          "source_bytes": 47621,
+          "source_sha256": "6865efc59ff2068285534056214509b9ed3d3c98402b3e34b286871156808d25",
           "target": "/home/billion-token/Deepgraph/meta_harness/attempt_gpu_usage.py",
           "target_predeploy_sha256": null,
           "target_predeploy_state": "absent"
@@ -682,7 +682,7 @@
     ]
   },
   "runtime_root": "/home/billion-token/Deepgraph",
-  "source_commit": "a5536b34358f23c5be04c66787e6d1e52f03fb12",
+  "source_commit": "c9a362eedf33bf51f1707d22bf447d1852a07737",
   "source_worktree_clean": true,
   "tests": "77 focused unit/service tests, 20 migration/runner tests, and 10 isolated PostgreSQL fault/accounting tests passed; py_compile and git diff --check passed."
 }
