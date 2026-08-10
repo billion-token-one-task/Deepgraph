@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from agents.evosci_requirements import evosci_binary_path
+from agents.evosci_requirements import evosci_binary_path, evosci_command
 from agents.llm_client import (
     call_llm_json_for_role,
     configured_role_prompt_version,
@@ -350,18 +350,7 @@ def run_evosci_tier2_review(insight: dict, *, timeout_seconds: int | None = None
     with log_path.open("w", encoding="utf-8", errors="replace") as log_file:
         try:
             completed = subprocess.run(
-                [
-                    str(evosci_bin),
-                    "--workdir",
-                    str(workdir),
-                    "--auto-approve",
-                    "--auto-mode",
-                    "--no-thinking",
-                    "--ui",
-                    "cli",
-                    "-p",
-                    cli_prompt,
-                ],
+                evosci_command(workdir=workdir, prompt=cli_prompt),
                 stdout=log_file,
                 stderr=subprocess.STDOUT,
                 cwd=workdir,
