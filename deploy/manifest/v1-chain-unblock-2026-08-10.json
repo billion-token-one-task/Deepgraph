@@ -1,0 +1,116 @@
+{
+  "backup_root": "/home/ec2-user/deepgraph-rollback",
+  "batches": [
+    {
+      "acceptance": "Every deployed SHA256 equals this manifest; no live attempt or GPU job crosses the deployment boundary.",
+      "authorization": "required-before-deploy",
+      "batch": "1-chain-unblock",
+      "files": [
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/v1-chain-unblock-2026-08-10/paper_idea_agent.py.bak",
+          "kind": "file",
+          "mode": "0644",
+          "owner": "billion-token:billion-token",
+          "replaces": null,
+          "runtime_locally_modified": true,
+          "source": "agents/paper_idea_agent.py",
+          "source_bytes": 58812,
+          "source_sha256": "40d462b027188175672919b4811b3bd4968fed9f781bebbbbcdea64eae00e6e5",
+          "target": "/home/billion-token/Deepgraph/agents/paper_idea_agent.py",
+          "target_predeploy_sha256": "eca13ed6cf93540eead8847905835f76c3bd3383c86d9200bd8506066f286f88",
+          "target_predeploy_state": "present"
+        },
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/v1-chain-unblock-2026-08-10/frontier_bootstrap.py.bak",
+          "kind": "file",
+          "mode": "0644",
+          "owner": "billion-token:billion-token",
+          "replaces": null,
+          "runtime_locally_modified": true,
+          "source": "meta_harness/frontier_bootstrap.py",
+          "source_bytes": 11661,
+          "source_sha256": "551ac6c6ec03907be90eb9984055e1afc09cde5b20b0ae731805e9bd5fc24ef4",
+          "target": "/home/billion-token/Deepgraph/meta_harness/frontier_bootstrap.py",
+          "target_predeploy_sha256": "056f45bb983089356893e3a029e7d977654a8fc3aaa6f3cdcd67fa566f85acb4",
+          "target_predeploy_state": "present"
+        },
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/v1-chain-unblock-2026-08-10/runner_capability.py.bak",
+          "kind": "file",
+          "mode": "0644",
+          "owner": "billion-token:billion-token",
+          "replaces": null,
+          "runtime_locally_modified": true,
+          "source": "meta_harness/runner_capability.py",
+          "source_bytes": 31440,
+          "source_sha256": "97c37b18c4ab58e61def397cd1c23e5118b60542d72412d3ee41a16334c747d8",
+          "target": "/home/billion-token/Deepgraph/meta_harness/runner_capability.py",
+          "target_predeploy_sha256": "7a254f08e84258d8437a9cc2c0d11d4f54628732f69df3373881351555b4af5b",
+          "target_predeploy_state": "present"
+        },
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/v1-chain-unblock-2026-08-10/auto_advance.py.bak",
+          "kind": "file",
+          "mode": "0644",
+          "owner": "billion-token:billion-token",
+          "replaces": null,
+          "runtime_locally_modified": true,
+          "source": "scripts/auto_advance.py",
+          "source_bytes": 41805,
+          "source_sha256": "65d16929e0fc4bd1e63ab55c7dd9c500cb83abd31da8185c672b8a7e620dcb5d",
+          "target": "/home/billion-token/Deepgraph/scripts/auto_advance.py",
+          "target_predeploy_sha256": "58ecbef6cfe38ab8a012c5428950dfaa89a5e9935fcb773675ac7140da6657b3",
+          "target_predeploy_state": "present"
+        }
+      ],
+      "health_check": "Re-hash every deployed target, py_compile the four runtime modules, confirm GET / returns 200 on 8080 and /api/stats returns real numbers with no /home/ paths.",
+      "purpose": "Deploy the four reviewed control-flow fixes while all Deepgraph attempts and GPU jobs are at R8 zero.",
+      "restart_required": [
+        "deepgraph-web.service",
+        "deepgraph-auto-execute.service",
+        "deepgraph-observe@10.service",
+        "deepgraph-observe@11.service"
+      ],
+      "systemd_reload_required": false
+    }
+  ],
+  "deployment_steps": [
+    "Stop deepgraph-auto-advance.timer, deepgraph-auto-execute.service, deepgraph-observe@10, deepgraph-observe@11, and deepgraph-web.service only after R8 is zero. The observers are included because their idle-in-transaction AccessShareLock blocked the previous batch.",
+    "Apply batch 1 through scripts/deploy_manifest_batch.py and verify every deployed SHA256.",
+    "py_compile the four runtime modules in the live tree.",
+    "Restart web, observers, auto-execute, then the auto-advance timer.",
+    "Append every production action, backup path, checksum, restart, and health result to OPERATORS.log.",
+    "After restart, make no manual business-state calls; observe only normal services/timer."
+  ],
+  "description": "Unblock the ideation-to-grant chain: stop a realized proposal from being rejected as a duplicate of its own placeholder row, stop one spent research problem from aborting an agenda's whole Tier-2 pass, fold exact metric synonyms onto the runner vocabulary, report the nearest adapter's blockers instead of the union across all adapters, and let the frontier ring rotate past spent problems without burning rations on transient provider 429s.",
+  "environment_keys": [],
+  "file_contents_read_from_production": true,
+  "manifest_key": "v1-chain-unblock-2026-08-10",
+  "operator_diff_required": [
+    "agents/paper_idea_agent.py",
+    "meta_harness/frontier_bootstrap.py",
+    "meta_harness/runner_capability.py",
+    "scripts/auto_advance.py"
+  ],
+  "preconditions": [
+    "Explicit grouped production-write and service-restart authorization is recorded for this batch.",
+    "R8 snapshot shows zero active Deepgraph experiment runs, attempt reservations, queued/running GPU jobs, and Colab requests.",
+    "A PostgreSQL custom-format backup and the OPERATORS.log predeployment snapshot are recorded before services stop.",
+    "Unrelated GPU workloads on the two A100 hosts are not stopped or modified."
+  ],
+  "production_tree_modified_by_this_command": false,
+  "rollback": {
+    "data_impact": "None. The batch changes only in-process control flow. It writes no new tables, no new columns, and no new state values; the state values it causes to be written (awaiting_portfolio_decision via complete_proposal_generation) are ones the previous code already wrote and read.",
+    "order": "stop services after R8 zero, then reverse batch 1",
+    "steps": [
+      "Use deploy_manifest_batch.py --rollback for 1-chain-unblock; each restored file must match its recorded predeployment SHA256.",
+      "No schema change, no .env change, and no systemd unit change is part of this batch, so nothing else needs reversing.",
+      "Restart deepgraph-web.service, the observers, and deepgraph-auto-execute.service, then enable/start deepgraph-auto-advance.timer.",
+      "Record rollback commands, restored hashes, service states, and health results in OPERATORS.log."
+    ]
+  },
+  "runtime_root": "/home/billion-token/Deepgraph",
+  "source_commit": "31fa5d71b77dd4150aa60f3b72173d78fa1d761e",
+  "source_worktree_clean": true,
+  "tests": "Full suite 72 failed / 757 passed / 3 collection errors, identical failure count to the pre-change baseline on 8701ed9 (72 failed / 736 passed / 3 errors) with 21 new passing tests; all six meta-harness audits pass; py_compile and git diff --check pass."
+}
