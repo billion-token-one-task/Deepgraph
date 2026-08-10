@@ -462,6 +462,27 @@ def _token_jaccard(a: str, b: str) -> float:
     return len(left & right) / max(1, len(left | right))
 
 
+# Jaccard over very small node sets is degenerate: between two single-node
+# ideas it is 1.0 whenever the node matches, which says "same subfield", not
+# "same idea". 27 of the 128 tier-1/2 ideas carry exactly one node, so treating
+# that as near-conclusive evidence let one idea per taxonomy node exist across
+# the whole system - agenda 11's HOCSU candidate was rejected against agenda
+# 10's idea 99 on a single shared node at title similarity 0.143. Below this
+# size the overlap scores stay informative enough to report, but they may not
+# carry a rejection on their own.
+MIN_NODES_FOR_OVERLAP_EVIDENCE = 2
+
+
+def _node_overlap_is_decisive(a, b) -> bool:
+    """Are both node sets large enough for their overlap to mean anything?"""
+
+    left = {str(x).strip() for x in _json_list(a) if str(x).strip()}
+    right = {str(x).strip() for x in _json_list(b) if str(x).strip()}
+    return (
+        min(len(left), len(right)) >= MIN_NODES_FOR_OVERLAP_EVIDENCE
+    )
+
+
 def _node_jaccard(a, b) -> float:
     left = {str(x).strip() for x in _json_list(a) if str(x).strip()}
     right = {str(x).strip() for x in _json_list(b) if str(x).strip()}
@@ -530,12 +551,19 @@ def _find_existing_tier2_duplicate(
         # duplicate of its first at node_overlap 1.0 and title_sim 0.095.
         # Content signals still apply between siblings; provenance does not.
         siblings = bool(own_problem) and int(row.get("research_problem_id") or 0) == own_problem
+        # Provenance may decide only when it carries information: not between
+        # ideas raised from the same problem (identical by construction), and
+        # not between node sets too small for their overlap to distinguish
+        # "same idea" from "same subfield".
+        provenance_counts = not siblings and _node_overlap_is_decisive(
+            nodes, row.get("source_node_ids")
+        )
         too_close = (
             title_score >= 0.32
-            or (not siblings and node_score >= 0.50 and same_mechanism)
-            or (not siblings and node_score >= 0.62 and title_score >= 0.04)
+            or (provenance_counts and node_score >= 0.50 and same_mechanism)
+            or (provenance_counts and node_score >= 0.62 and title_score >= 0.04)
             or (
-                not siblings
+                provenance_counts
                 and family_score >= 0.42
                 and same_mechanism
                 and title_score >= 0.02
