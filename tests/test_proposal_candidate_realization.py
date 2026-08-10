@@ -179,11 +179,75 @@ class SiblingProvenanceTests(unittest.TestCase):
         self.assertEqual(duplicate["id"], 105)
 
     def test_node_overlap_still_counts_across_different_problems(self):
-        other = dict(self.SIBLING, id=27, research_problem_id=41)
+        """The sibling rule must not disable overlap for unrelated problems.
+
+        Uses informative node sets: overlap between singletons is separately
+        discounted, so a one-node fixture would pass this for the wrong reason.
+        """
+
+        nodes = '[\"ml.theory.interpretability\", \"ml.dl.nlp.lm\", \"ml.theory.optimization\"]'
+        other = dict(self.SIBLING, id=27, research_problem_id=41, source_node_ids=nodes)
+        candidate = dict(self._candidate(), source_node_ids=nodes)
         with mock.patch.object(paper_idea_agent.db, "fetchall", return_value=[other]):
-            duplicate = _find_existing_tier2_duplicate(self._candidate())
+            duplicate = _find_existing_tier2_duplicate(candidate)
         self.assertIsNotNone(duplicate, "cross-problem duplicate detection was weakened")
         self.assertEqual(duplicate["id"], 27)
+
+class SmallNodeSetTests(unittest.TestCase):
+    """Overlap between tiny node sets means "same subfield", not "same idea".
+
+    Jaccard over singletons is 1.0 whenever the node matches. 27 of the 128
+    tier-1/2 ideas carry exactly one node, so this let one idea per taxonomy
+    node exist across the whole system, across agendas: agenda 11's HOCSU
+    candidate was rejected against agenda 10's idea 99 on a single shared node
+    at title similarity 0.143, after its proposal had been paid for.
+    """
+
+    SINGLE = {
+        "id": 99,
+        "title": "Test the missing mechanism behind strong claims in ml.theory",
+        "source_node_ids": '["ml.theory.interpretability"]',
+        "mechanism_type": "mechanism_mismatch",
+        "research_problem_id": 4,
+    }
+
+    def _candidate(self, nodes='["ml.theory.interpretability"]'):
+        return {
+            "title": "Higher-Order Cumulant Spectral Unrolling",
+            "source_node_ids": nodes,
+            "mechanism_type": "mechanism_mismatch",
+            "research_problem_id": 8,
+        }
+
+    def test_one_shared_node_no_longer_decides(self):
+        with mock.patch.object(paper_idea_agent.db, "fetchall", return_value=[self.SINGLE]):
+            self.assertIsNone(_find_existing_tier2_duplicate(self._candidate()))
+
+    def test_overlap_still_decides_once_the_sets_are_informative(self):
+        rich = dict(
+            self.SINGLE,
+            source_node_ids='["ml.theory.interpretability", "ml.dl.nlp.lm", "ml.theory.optimization"]',
+        )
+        candidate = self._candidate(
+            nodes='["ml.theory.interpretability", "ml.dl.nlp.lm", "ml.theory.optimization"]'
+        )
+        with mock.patch.object(paper_idea_agent.db, "fetchall", return_value=[rich]):
+            duplicate = _find_existing_tier2_duplicate(candidate)
+        self.assertIsNotNone(duplicate, "cross-idea duplicate detection was weakened")
+        self.assertEqual(duplicate["id"], 99)
+
+    def test_a_near_identical_title_is_still_caught_on_one_node(self):
+        """Content evidence is untouched by the provenance rule."""
+
+        with mock.patch.object(paper_idea_agent.db, "fetchall", return_value=[self.SINGLE]):
+            duplicate = _find_existing_tier2_duplicate(
+                dict(self._candidate(), title=self.SINGLE["title"])
+            )
+        self.assertIsNotNone(duplicate)
+
+    def test_threshold_is_declared_not_inlined(self):
+        self.assertGreaterEqual(paper_idea_agent.MIN_NODES_FOR_OVERLAP_EVIDENCE, 2)
+
 
 if __name__ == "__main__":
     unittest.main()
