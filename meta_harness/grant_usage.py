@@ -58,6 +58,50 @@ class GrantUsageLedger:
             return 0
         return max(0, int(grant.get("token_cap") or 0) - self._committed_tokens())
 
+    def next_attempt_key(self, base_key: str, *, max_attempts: int = 3) -> str:
+        """Allocate the next attempt key for one logical operation.
+
+        An idempotency key exists so the same *delivered* work is never charged
+        twice. It was also, accidentally, the retry policy: a provider call that
+        succeeded but returned nothing usable still settled its key, so the
+        operation could never be attempted again and its grant and candidate
+        were stranded for good. Agenda 11 lost both of its candidates that way,
+        each one unusable provider response away from being permanently
+        unrealizable.
+
+        Attempt identity is therefore separate from operation identity. The
+        forge ring already worked around this at its own call site; keeping the
+        allocation here means a new call site cannot forget to, and gets a bound
+        the forge's copy never had.
+
+        The caller must ask for a further attempt only when the previous one
+        delivered nothing - this cannot know that, and re-attempting delivered
+        work would charge the agenda twice. ``reserve`` still refuses anything
+        the grant can no longer afford, so the grant's own cap remains the hard
+        ceiling on top of ``max_attempts``.
+        """
+
+        base = str(base_key or "").strip()
+        if not base:
+            raise GrantUsageError("attempt key requires a base operation key")
+        if max_attempts <= 0:
+            raise GrantUsageError("max_attempts must be positive")
+        row = db.fetchone(
+            """
+            SELECT COUNT(*) AS c FROM resource_grant_usage_reservations
+            WHERE resource_grant_id=?
+              AND (idempotency_key=? OR idempotency_key LIKE ?)
+            """,
+            (self.resource_grant_id, base, f"{base}:t%"),
+        )
+        used = int((row or {}).get("c") or 0)
+        if used >= max_attempts:
+            raise GrantUsageError(
+                f"operation {base} has used all {max_attempts} attempts "
+                f"on this grant"
+            )
+        return f"{base}:t{used + 1}"
+
     def reserve(
         self,
         *,

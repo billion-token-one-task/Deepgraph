@@ -55,6 +55,27 @@ class TempDbTestCase(unittest.TestCase):
             )
             """
         )
+        # The proposal ring allocates its LLM attempt keys from the grant usage
+        # ledger, so discovery touches this table before it ever calls a model.
+        database.execute(
+            """
+            CREATE TABLE IF NOT EXISTS resource_grant_usage_reservations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                agenda_id INTEGER NOT NULL,
+                resource_grant_id INTEGER NOT NULL,
+                operation TEXT NOT NULL,
+                idempotency_key TEXT NOT NULL,
+                token_reserved INTEGER NOT NULL,
+                tokens_used INTEGER,
+                cost_usd REAL,
+                status TEXT NOT NULL DEFAULT 'reserved',
+                release_reason TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                settled_at TIMESTAMP,
+                UNIQUE (resource_grant_id, idempotency_key)
+            )
+            """
+        )
         database.commit()
 
     def tearDown(self):
