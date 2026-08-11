@@ -27,6 +27,7 @@ from agents.benchmark_audit import (
     benchmark_diagnostic_notes,
     benchmark_fairness_warnings_from_diff,
     benchmark_semantic_warnings,
+    comparison_validity_blockers,
     full_benchmark_evidence_blockers,
 )
 from agents import codex_executor
@@ -1962,6 +1963,18 @@ def _determine_final_verdict(
         return "inconclusive"
 
     summary = benchmark_summary or {}
+    # An unequally budgeted or fully truncated comparison does not mean what it
+    # appears to mean, so it cannot carry a direction -- not confirmation and
+    # not refutation either. Checked before the effect is scored, because the
+    # effect itself is the thing being contaminated.
+    validity_blockers = comparison_validity_blockers(summary)
+    if validity_blockers:
+        print(
+            "[LOOP] Comparison is not valid; verdict withheld: "
+            + "; ".join(validity_blockers),
+            flush=True,
+        )
+        return "inconclusive"
     metric_name, candidate_method, candidate_value, best_other, num_seeds = (
         _benchmark_scores(summary) if summary else ("", "", None, None, 0)
     )

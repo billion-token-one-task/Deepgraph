@@ -195,6 +195,16 @@ If the codebase is "scratch" or empty, you MUST also output a "train_py" key con
 When Resource class is gpu_small or gpu_large:
 - train_py MUST use PyTorch CUDA (torch.cuda.is_available, tensors/models on cuda)
 - train_py MUST print peak_vram_mb and a FINAL_RESULTS JSON line
+- Every compared method MUST get the SAME generation budget (same
+  max_new_tokens / step count / wall-clock allowance). Giving the candidate a
+  larger budget than the baseline measures compute, not the method, and the
+  run will be rejected as an invalid comparison.
+- Each entry in FINAL_RESULTS per_method MUST report its own max_new_tokens
+  alongside avg_new_tokens, so budget parity is checkable from the results.
+- The budget MUST be large enough for the task: if avg_new_tokens comes out
+  equal to max_new_tokens the answers were cut off mid-way and the run is
+  rejected. For chain-of-thought style benchmarks budget for the full
+  derivation, not just the final line.
 - train_py MUST NOT be a numpy/scipy-only toy script
 - gpu_large scripts should run the actual model/benchmark path. If the full
   model cannot fit or dependencies are missing, fail with an actionable error;
