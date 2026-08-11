@@ -188,7 +188,17 @@ no LLM, no database lookup, and no on/off switch to disable it
 (`agents/topic_gate.py`). Candidates that fail are parked or killed *with
 recorded reasons*, so a rejection is auditable rather than silent.
 
-#### 3.4 Grant economics: reserve, measure, settle
+#### 3.4 A comparison that was not fair carries no verdict
+
+An effect is only attributable to the method if every arm was measured under
+the same budget. Unequal generation budgets between the compared methods, or an
+arm whose generations all stopped at their cap, withhold the verdict before the
+effect is scored -- the effect is the thing being contaminated
+(`agents/benchmark_audit.py`). The result is `inconclusive` and never
+`refuted`: refutation is a claim too, and an invalid measurement cannot support
+one either.
+
+#### 3.5 Grant economics: reserve, measure, settle
 
 ```mermaid
 flowchart LR
@@ -204,7 +214,7 @@ Nothing runs grantless, and failures settle as honestly as successes -- a
 system that only ever settles its wins cannot be trusted to account for
 anything.
 
-#### 3.5 Manuscript gates that can say no
+#### 3.6 Manuscript gates that can say no
 
 A paper claim must trace to a frozen contract, a complete evidence manifest,
 multi-seed statistics and a signed reviewer approval before `manuscript_allowed`
@@ -212,7 +222,7 @@ multi-seed statistics and a signed reviewer approval before `manuscript_allowed`
 that fails its quality gates is stamped `DO_NOT_SUBMIT.md` with a concrete
 repair list instead of being shipped.
 
-#### 3.6 Operations as part of the contract
+#### 3.7 Operations as part of the contract
 
 SHA-pinned deployment manifests, additive-only migrations, a self-heal
 watchdog that takes at most one action per tick, and read-only audit scripts
