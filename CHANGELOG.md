@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased — 2026-08-11 comparison validity and candidate retirement
+
+- Withheld the verdict from a method comparison that was not fair
+  (`comparison_validity_blockers` in `agents/benchmark_audit.py`, applied in
+  `_determine_final_verdict` before the effect is scored). Measured on a real
+  run, the candidate arm had been given 3.3x the baseline's generation budget
+  and every sample in both arms stopped at its cap; the candidate "won" only
+  because the baseline was starved harder, and under an equal budget the
+  baseline improved 16x and beat it 8x. An invalid comparison now yields
+  `inconclusive` and never `refuted`, since refutation is a claim too. Forged
+  experiments must now equalise budgets and report per-method `max_new_tokens`.
+- Made proposal-candidate retirement actually retire. The refusal path wrote
+  the outcome but not the status, so a spent candidate was re-promoted and
+  re-refused every pass while its row went on owning
+  `idx_deep_insights_pending_proposal`, which left its research problem
+  permanently unworkable. Retirement now also archives the row.
+- Charged undelivered proposal spend to the research problem rather than the
+  candidate row, so releasing a problem cannot hand it a fresh share of the
+  agenda budget, and declined to seed a problem already over that ceiling
+  instead of creating a candidate it could never fund.
+
 ## Unreleased — 2026-08-03 bounded-autonomy recovery
 
 See `docs/runbooks/RECOVERY_2026-08-03.md` for the full record.
