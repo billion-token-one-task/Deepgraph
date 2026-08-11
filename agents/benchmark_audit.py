@@ -683,6 +683,95 @@ def full_benchmark_evidence_blockers(summary: dict[str, Any] | None, criteria: d
                 blockers.append(f"statistical significance failed: p={p_value:.4g} >= 0.05")
     return blockers
 
+
+# A generation that stops because it ran out of budget did not answer the
+# question; it was interrupted. Measured 2026-08-11 on idea 105's own forged
+# train.py: the candidate arm was given max_new_tokens=160 and the baseline 48,
+# and every sample in both arms hit its cap, so neither ever emitted the
+# "#### <answer>" the prompt asked for and exact_match degraded to scraping a
+# digit out of half-finished reasoning. Re-run with an equal 512 budget the
+# baseline went 0.0156 -> 0.25 and beat the candidate 8x. The run as forged
+# would have recorded a CONFIRMED result for a method that is worse than its
+# own baseline.
+_TRUNCATION_MIN_EXAMPLES = 8
+
+
+def _method_generation_budget(row: dict[str, Any]) -> float | None:
+    for key in ("max_new_tokens", "generation_budget", "max_tokens"):
+        try:
+            value = row.get(key)
+            if value is not None:
+                return float(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def comparison_validity_blockers(summary: dict[str, Any] | None) -> list[str]:
+    """Reasons this run's method comparison cannot support any verdict.
+
+    These are not quality thresholds -- they say the measurement does not mean
+    what it appears to mean, so it cannot carry a direction. An unequally
+    budgeted comparison attributes to the method a difference produced by
+    compute, and a fully truncated arm did not produce answers at all. Either
+    way the honest verdict is inconclusive, including when the numbers happen
+    to look like a refutation.
+    """
+
+    if not isinstance(summary, dict) or not summary:
+        return []
+    per_method = summary.get("per_method")
+    if not isinstance(per_method, dict) or len(per_method) < 2:
+        return []
+
+    blockers: list[str] = []
+    budgets: dict[str, float] = {}
+    for name, row in per_method.items():
+        if not isinstance(row, dict):
+            continue
+        budget = _method_generation_budget(row)
+        if budget is not None and budget > 0:
+            budgets[str(name)] = budget
+
+    # Declared budgets are authoritative when present.
+    if len(budgets) >= 2 and len(set(budgets.values())) > 1:
+        detail = ", ".join(f"{name}={int(value)}" for name, value in sorted(budgets.items()))
+        blockers.append(
+            "compared methods were given unequal generation budgets "
+            f"({detail}); the difference cannot be attributed to the method"
+        )
+
+    for name, row in per_method.items():
+        if not isinstance(row, dict):
+            continue
+        try:
+            avg = float(row.get("avg_new_tokens"))
+        except (TypeError, ValueError):
+            continue
+        try:
+            examples = int(row.get("num_examples") or 0)
+        except (TypeError, ValueError):
+            examples = 0
+        budget = budgets.get(str(name))
+        if budget is not None:
+            if avg >= budget * 0.995:
+                blockers.append(
+                    f"method {name} averaged {avg:g} of its {int(budget)} token budget; "
+                    "its generations were cut off rather than completed"
+                )
+            continue
+        # No declared budget: an average that is exactly an integer across many
+        # samples means every sample stopped at the same cap. A genuine
+        # distribution of completion lengths practically never averages flat.
+        if examples >= _TRUNCATION_MIN_EXAMPLES and avg > 0 and float(avg).is_integer():
+            blockers.append(
+                f"method {name} averaged exactly {int(avg)} new tokens over {examples} "
+                "examples, which means every generation stopped at the same cap; "
+                "declare max_new_tokens per method to measure this directly"
+            )
+    return blockers
+
+
 def best_iteration_benchmark_summary(
     workdir: str | Path | None,
     *,
