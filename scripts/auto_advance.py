@@ -22,8 +22,8 @@ One pass per invocation (a systemd timer supplies the cadence). Each pass:
 
 Everything goes through reviewed module entry points; the only raw SQL is
 read-only SELECTs. Every action and refusal is appended as one JSON line to
---log. A cumulative token-spend guard refuses to issue new authorities or
-grants past --spend-limit (delta over the baseline captured on first run).
+--log. An optional token-spend guard refuses to issue new authorities or
+grants past --spend-limit (delta over the baseline captured for that process).
 
 V1 glue; retired in V2 by the meta-harness workers (docs/upgrade-plan-v1-v2.md).
 """
@@ -66,15 +66,12 @@ ARTIFACT_REQUIREMENTS = [
     "dataset_manifest",
     "model_manifest",
 ]
-# Bumped 2026-08-11 after the model weights became fetchable again. Runs 129-134
-# all died in reproduction because Qwen3.5-4B could not be downloaded: the HF Xet
-# CDN dropped the connection repeatedly (8 MB of a 3.9 GB shard), and Xet bypasses
-# HF_ENDPOINT, so the configured hf-mirror never applied -- and hf-mirror serves
-# that shard at 23.9 kB/s anyway, which is 4.5 days for the model. The weights now
-# sit in the HF cache on both A100 hosts, fetched from ModelScope at 40 MB/s, and
-# load offline in 8s. The candidates that spent their retries on that fault get
-# one fresh autonomous attempt against a host that can actually run them.
-RECYCLE_EPOCH = "modelscope-weight-cache-2026-08-11"
+# Bumped after discovering that the old recycler incremented its counter before
+# checking packet/preflight/grant eligibility. Three preflight deferrals could
+# therefore manufacture ``recycle_exhausted`` without a single requeue. Counts
+# now mean successful requeues only; one epoch reset discards the polluted
+# operational counters without editing any business row.
+RECYCLE_EPOCH = "successful-requeue-counting-2026-08-12"
 
 # Frontier rationing. The ration per problem is unchanged; what changes is that
 # the pool no longer stops at the top 3, so spending a problem's ration retires
@@ -120,6 +117,28 @@ def active_agenda_ids() -> list[int]:
     ]
 
 
+def _next_discovery_agenda(agenda_ids: list[int], state: dict) -> int | None:
+    """Choose one agenda per pass, rotating across the active ordered set.
+
+    Tier-2 discovery reads a global signal bundle.  Running it once for every
+    agenda multiplied the same large-relation reads by the active agenda
+    count.  Advancement still visits every agenda; only candidate discovery
+    is rate-limited and rotated here.  An explicit single ``--agenda`` keeps
+    the targeted-pass behavior unchanged.
+    """
+    ordered = [int(agenda_id) for agenda_id in agenda_ids]
+    if not ordered:
+        return None
+    previous = state.get("discovery_agenda_last")
+    try:
+        index = (ordered.index(int(previous)) + 1) % len(ordered)
+    except (TypeError, ValueError):
+        index = 0
+    selected = ordered[index]
+    state["discovery_agenda_last"] = selected
+    return selected
+
+
 def _load_state(path: Path) -> dict:
     if path.exists():
         state = json.loads(path.read_text(encoding="utf-8"))
@@ -138,7 +157,52 @@ def _save_state(path: Path, state: dict) -> None:
     path.write_text(json.dumps(state, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
-def _spent_delta(state: dict, agenda_ids: list[int]) -> int:
+def _agenda_committed_spend(agenda_id: int) -> int | None:
+    """Return spent plus metered or live-reserved tokens for one agenda."""
+    row = db.fetchone(
+        "SELECT COALESCE(token_spent,0) AS s FROM research_agendas WHERE id=?",
+        (agenda_id,),
+    )
+    if not row:
+        return None
+    spent = int(dict(row)["s"])
+    metered = db.fetchone(
+        "SELECT COALESCE(SUM(u.tokens_used),0) AS s"
+        "  FROM resource_grant_usage_reservations u"
+        "  JOIN resource_grants g ON g.id = u.resource_grant_id"
+        " WHERE u.agenda_id=? AND u.status='settled'"
+        "   AND g.status <> 'consumed'"
+        # A live grant's full cap is counted below. Its settled calls are
+        # already inside that cap and must not be added a second time.
+        "   AND NOT (g.status='active' AND g.expires_at > CURRENT_TIMESTAMP)",
+        (agenda_id,),
+    )
+    spent += int(dict(metered or {}).get("s") or 0)
+    live_reservations = db.fetchone(
+        "SELECT COALESCE(SUM(token_cap),0) AS s"
+        "  FROM resource_grants"
+        " WHERE agenda_id=? AND status='active'"
+        "   AND expires_at > CURRENT_TIMESTAMP",
+        (agenda_id,),
+    )
+    return spent + int(dict(live_reservations or {}).get("s") or 0)
+
+
+def _capture_spend_baseline(agenda_ids: list[int]) -> dict[str, int]:
+    """Capture a per-process baseline for an explicitly bounded invocation."""
+    baseline: dict[str, int] = {}
+    for agenda_id in agenda_ids:
+        spent = _agenda_committed_spend(agenda_id)
+        if spent is not None:
+            baseline[str(agenda_id)] = spent
+    return baseline
+
+
+def _spent_delta(
+    state: dict,
+    agenda_ids: list[int],
+    process_baseline: dict[str, int] | None = None,
+) -> int:
     """Tokens consumed or irrevocably reserved since this driver started.
 
     research_agendas.token_spent alone undercounts badly: it only moves when a
@@ -150,36 +214,25 @@ def _spent_delta(state: dict, agenda_ids: list[int]) -> int:
     budget.
     """
     total = 0
+    durable_baseline = state.setdefault("spend_baseline", {})
     for aid in agenda_ids:
-        row = db.fetchone(
-            "SELECT COALESCE(token_spent,0) AS s FROM research_agendas WHERE id=?", (aid,)
-        )
-        if not row:
+        spent = _agenda_committed_spend(aid)
+        if spent is None:
             continue
-        spent = int(dict(row)["s"])
-        metered = db.fetchone(
-            "SELECT COALESCE(SUM(u.tokens_used),0) AS s"
-            "  FROM resource_grant_usage_reservations u"
-            "  JOIN resource_grants g ON g.id = u.resource_grant_id"
-            " WHERE u.agenda_id=? AND u.status='settled'"
-            "   AND g.status <> 'consumed'"
-            # A live grant's full cap is counted below. Its settled calls are
-            # already inside that cap and must not be added a second time.
-            "   AND NOT (g.status='active' AND g.expires_at > CURRENT_TIMESTAMP)",
-            (aid,),
-        )
-        spent += int(dict(metered or {}).get("s") or 0)
-        live_reservations = db.fetchone(
-            "SELECT COALESCE(SUM(token_cap),0) AS s"
-            "  FROM resource_grants"
-            " WHERE agenda_id=? AND status='active'"
-            "   AND expires_at > CURRENT_TIMESTAMP",
-            (aid,),
-        )
-        spent += int(dict(live_reservations or {}).get("s") or 0)
-        baseline = state["spend_baseline"].setdefault(str(aid), spent)
+        if process_baseline is None:
+            baseline = durable_baseline.setdefault(str(aid), spent)
+        else:
+            baseline = process_baseline.get(str(aid), spent)
         total += max(0, spent - int(baseline))
     return total
+
+
+def _guard_spent_delta(state: dict, args) -> int:
+    return _spent_delta(
+        state,
+        args.agenda,
+        getattr(args, "process_spend_baseline", None),
+    )
 
 
 def _grant_key(agenda_id: int, idea_id: int, suffix: str) -> str:
@@ -506,17 +559,16 @@ def recycle_stranded(agenda_id: int, state: dict, journal: Journal, args) -> Non
         if (
             not grant_ok
             and args.spend_limit > 0
-            and _spent_delta(state, args.agenda) + required_token_cap > args.spend_limit
+            and _guard_spent_delta(state, args) + required_token_cap > args.spend_limit
         ):
             journal.log(
                 "spend_limit_reached",
                 agenda_id=agenda_id,
                 idea_id=idea_id,
                 limit=args.spend_limit,
-                reason="fresh grant would exceed the cumulative pilot guard",
+                reason="fresh grant would exceed the process pilot guard",
             )
             continue
-        counts[str(idea_id)] = used + 1
         if grant_ok:
             grant_id = int(job["resource_grant_id"])
             journal.log("recycle_keeps_grant", agenda_id=agenda_id, idea_id=idea_id,
@@ -525,6 +577,7 @@ def recycle_stranded(agenda_id: int, state: dict, journal: Journal, args) -> Non
                 agenda_id, idea_id, grant_id, journal, args, used + 1,
                 token_cap=int(job["token_cap"] or 0),
             )
+            counts[str(idea_id)] = used + 1
             continue
         packet_row = db.fetchone(
             "SELECT id FROM idea_decision_packets WHERE agenda_id=? AND idea_id=?"
@@ -589,6 +642,7 @@ def recycle_stranded(agenda_id: int, state: dict, journal: Journal, args) -> Non
             agenda_id, idea_id, grant_id, journal, args, used + 1,
             token_cap=required_token_cap,
         )
+        counts[str(idea_id)] = used + 1
 
 
 def _requeue_for_consumer(agenda_id: int, idea_id: int, grant_id: int,
@@ -739,7 +793,7 @@ def advance_agenda(agenda_id: int, state: dict, journal: Journal, args) -> None:
         )
         if (
             args.spend_limit > 0
-            and _spent_delta(state, args.agenda) + requested_token_cap > args.spend_limit
+            and _guard_spent_delta(state, args) + requested_token_cap > args.spend_limit
         ):
             journal.log("spend_limit_reached", agenda_id=agenda_id, limit=args.spend_limit)
             return
@@ -961,6 +1015,9 @@ def main() -> int:
     journal = Journal(Path(args.log))
     state_path = Path(args.state)
     state = _load_state(state_path)
+    args.process_spend_baseline = (
+        _capture_spend_baseline(args.agenda) if args.spend_limit > 0 else None
+    )
     journal.log("pass_start", agendas=args.agenda, backend=db.describe_backend())
 
     try:
@@ -971,27 +1028,29 @@ def main() -> int:
         reconciled = repo.reconcile_expired_grants()
         if reconciled:
             journal.log("reconciled_expired_grants", count=reconciled)
-        for agenda_id in args.agenda:
+        discovery_agenda_id = _next_discovery_agenda(args.agenda, state)
+        if discovery_agenda_id is not None:
             try:
                 from orchestrator.discovery_scheduler import run_tier2_discovery
 
                 generated = run_tier2_discovery(
                     max_problems=2,
                     max_papers=2,
-                    agenda_id=agenda_id,
+                    agenda_id=discovery_agenda_id,
                 )
                 journal.log(
                     "candidate_generation_pass",
-                    agenda_id=agenda_id,
+                    agenda_id=discovery_agenda_id,
                     generated=generated,
                 )
             except Exception as exc:
                 db.rollback()
                 journal.log(
                     "candidate_generation_failed",
-                    agenda_id=agenda_id,
+                    agenda_id=discovery_agenda_id,
                     reason=f"{type(exc).__name__}: {exc}",
                 )
+        for agenda_id in args.agenda:
             for job in _rows(
                 "SELECT deep_insight_id, stage FROM auto_research_jobs WHERE agenda_id=?"
                 " AND stage IN ('resource_grant_expired','resource_grant_revoked')",
@@ -1010,7 +1069,7 @@ def main() -> int:
                     journal.log("requeue_refused", agenda_id=agenda_id,
                                 idea_id=job["deep_insight_id"],
                                 reason=f"{type(exc).__name__}: {exc}")
-            spent = _spent_delta(state, args.agenda)
+            spent = _guard_spent_delta(state, args)
             if args.spend_limit > 0 and spent >= args.spend_limit:
                 journal.log("spend_limit_reached", spent=spent, limit=args.spend_limit)
                 break
@@ -1022,7 +1081,7 @@ def main() -> int:
             db.rollback()  # never leave an idle-in-transaction session behind
         except Exception:
             pass
-    journal.log("pass_end", spent_delta=_spent_delta(state, args.agenda))
+    journal.log("pass_end", spent_delta=_guard_spent_delta(state, args))
     _save_state(state_path, state)
     return 0
 

@@ -91,11 +91,15 @@ def main() -> int:
                  scheduled=scheduled, detail=detail,
                  outcomes_before=before, outcomes_after=after)
         except Exception as exc:
+            _log(log_path, "launch_failed", reason=f"{type(exc).__name__}: {exc}")
+        finally:
+            # Successful read-only passes also start a PostgreSQL transaction.
+            # Close the main loop's transaction before the two-minute sleep;
+            # worker threads use their own thread-local connections.
             try:
                 db.rollback()
             except Exception:
                 pass
-            _log(log_path, "launch_failed", reason=f"{type(exc).__name__}: {exc}")
         if args.once:
             break
         for _ in range(max(1, args.interval)):

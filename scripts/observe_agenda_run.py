@@ -120,13 +120,20 @@ def main() -> int:
             record = snapshot(args.agenda)
             record["tick"] = tick
         except Exception as exc:  # a failed tick must not end the window
-            db.rollback()
             record = {
                 "at": datetime.now(timezone.utc).isoformat(),
                 "tick": tick,
                 "agenda_id": args.agenda,
                 "error": f"{type(exc).__name__}: {exc}",
             }
+        finally:
+            # PostgreSQL SELECTs open a transaction even for this read-only
+            # observer.  End it after every tick instead of holding catalog
+            # and relation locks through the sleep interval.
+            try:
+                db.rollback()
+            except Exception:
+                pass
         with out.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
         print(f"[observe] tick {tick} written at {record['at']}", flush=True)

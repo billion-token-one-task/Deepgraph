@@ -107,6 +107,59 @@ class AutoAdvanceGuardTests(unittest.TestCase):
         requeue.assert_called_once_with(
             11, 105, 18, journal, args, 1, token_cap=40000
         )
+        self.assertEqual(state["recycles"]["105"], 1)
+
+    def test_preflight_deferral_does_not_consume_recycle(self):
+        job = {
+            "id": 99,
+            "deep_insight_id": 105,
+            "status": "failed",
+            "stage": "gpu_failed",
+            "resource_grant_id": 17,
+            "last_error": "reproduction failure",
+            "token_cap": 40000,
+            "grant_status": "expired",
+            "grant_live": False,
+        }
+        args = mock.Mock(
+            agenda=[11],
+            grant_token_cap=40000,
+            grant_gpu_hours=2.0,
+            gpu_class="a100",
+            spend_limit=40000,
+            process_spend_baseline={"11": 205452},
+        )
+        journal = mock.Mock()
+        state = {"recycles": {}}
+
+        def fetchone(sql, params=()):
+            if "FROM idea_decision_packets" in sql:
+                return {"id": 7}
+            if "backend_allowlist_json" in sql:
+                return {"backend_allowlist_json": '["llm","ssh_gpu"]'}
+            raise AssertionError(sql)
+
+        with (
+            mock.patch.object(auto_advance, "_rows", return_value=[job]),
+            mock.patch.object(auto_advance, "_guard_spent_delta", return_value=0),
+            mock.patch.object(auto_advance.db, "fetchone", side_effect=fetchone),
+            mock.patch.object(auto_advance, "_rebuild_decision", return_value=mock.Mock()),
+            mock.patch.object(
+                auto_advance.CandidatePreflightRepository,
+                "run_candidate",
+                return_value=mock.Mock(
+                    passed=False,
+                    selected_backend=None,
+                    status="deferred",
+                    reason_codes=["model_task_mismatch"],
+                ),
+            ),
+            mock.patch.object(auto_advance, "_requeue_for_consumer") as requeue,
+        ):
+            auto_advance.recycle_stranded(11, state, journal, args)
+
+        requeue.assert_not_called()
+        self.assertEqual(state["recycles"], {})
 
     def test_live_exhausted_gpu_grant_is_not_recycled(self):
         job = {
@@ -190,6 +243,21 @@ class AutoAdvanceGuardTests(unittest.TestCase):
             spent = auto_advance._spent_delta(state, [11])
 
         self.assertEqual(spent, 118985)
+
+    def test_explicit_spend_limit_uses_process_not_stale_durable_baseline(self):
+        state = {"spend_baseline": {"11": 65879}}
+        args = mock.Mock(
+            agenda=[11],
+            process_spend_baseline={"11": 205452},
+        )
+
+        with mock.patch.object(
+            auto_advance, "_agenda_committed_spend", return_value=225452
+        ):
+            spent = auto_advance._guard_spent_delta(state, args)
+
+        self.assertEqual(spent, 20000)
+        self.assertEqual(state["spend_baseline"], {"11": 65879})
 
     def test_waiting_candidates_are_decided_as_one_portfolio(self):
         waiting = [

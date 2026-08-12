@@ -5,7 +5,13 @@ from unittest import mock
 
 from agents.paradigm_agent import store_deep_insight
 from agents import discovery_supervisor
-from agents.signal_harvester import get_tier2_signals, harvest_protocol_artifacts
+from agents.signal_harvester import (
+    get_solution_signals,
+    get_tier1_signals,
+    get_tier2_signals,
+    harvest_protocol_artifacts,
+)
+from agents import signal_harvester
 from db import database
 from orchestrator import discovery_scheduler
 
@@ -41,6 +47,36 @@ class TempDbTestCase(unittest.TestCase):
 
 
 class Tier2SignalCompatibilityTests(TempDbTestCase):
+    def test_hidden_bridge_readers_use_the_existing_score_index_shape(self):
+        queries = []
+
+        def fetchall(sql, params=()):  # noqa: ARG001
+            queries.append(" ".join(str(sql).split()))
+            return []
+
+        with (
+            mock.patch.object(signal_harvester, "ensure_harvest_signal_schema"),
+            mock.patch.object(signal_harvester.db, "fetchall", side_effect=fetchall),
+            mock.patch.object(signal_harvester.db, "column_names", return_value={"paradigm_score"}),
+            mock.patch.object(signal_harvester.db, "table_exists", return_value=False),
+        ):
+            get_tier1_signals()
+            get_tier2_signals()
+            get_solution_signals()
+
+        hidden_queries = [
+            query for query in queries if "FROM hidden_variable_bridges" in query
+        ]
+        self.assertEqual(len(hidden_queries), 3)
+        self.assertTrue(
+            all("ORDER BY score DESC" in query for query in hidden_queries),
+            hidden_queries,
+        )
+        self.assertTrue(
+            all("COALESCE(empirical_posterior, score)" not in query for query in hidden_queries),
+            hidden_queries,
+        )
+
     def test_get_tier2_signals_falls_back_without_paradigm_score(self):
         database.execute(
             "INSERT INTO deep_insights (tier, title, adversarial_score, mechanism_type) VALUES (1, ?, ?, ?)",
