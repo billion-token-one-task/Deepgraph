@@ -66,7 +66,15 @@ ARTIFACT_REQUIREMENTS = [
     "dataset_manifest",
     "model_manifest",
 ]
-RECYCLE_EPOCH = "public-hub-download-recovery-v3"
+# Bumped 2026-08-11 after the model weights became fetchable again. Runs 129-134
+# all died in reproduction because Qwen3.5-4B could not be downloaded: the HF Xet
+# CDN dropped the connection repeatedly (8 MB of a 3.9 GB shard), and Xet bypasses
+# HF_ENDPOINT, so the configured hf-mirror never applied -- and hf-mirror serves
+# that shard at 23.9 kB/s anyway, which is 4.5 days for the model. The weights now
+# sit in the HF cache on both A100 hosts, fetched from ModelScope at 40 MB/s, and
+# load offline in 8s. The candidates that spent their retries on that fault get
+# one fresh autonomous attempt against a host that can actually run them.
+RECYCLE_EPOCH = "modelscope-weight-cache-2026-08-11"
 
 # Frontier rationing. The ration per problem is unchanged; what changes is that
 # the pool no longer stops at the top 3, so spending a problem's ration retires
