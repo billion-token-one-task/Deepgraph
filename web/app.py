@@ -32,19 +32,27 @@ from web.stats_cache import StatsCache
 app.register_blueprint(meta_harness_blueprint)
 app.register_blueprint(provenance_blueprint)
 
-# In-process TTL cache for the heavy /api/stats query (issue #34). The lambda
-# resolves get_stats_dict at call time so it stays patchable in tests; the
-# cache is lazy — constructing it here does NOT run the heavy query at import.
-STATS_CACHE_TTL_SECONDS = 30.0
-_stats_cache = StatsCache(lambda: get_stats_dict(), ttl=STATS_CACHE_TTL_SECONDS)
+# ``get_stats_dict`` runs exact aggregates over several large relations.  It
+# must be a process snapshot, not a periodic poll: on the production database
+# a 30-second refresh loop kept PostgreSQL in parallel sequential scans and
+# saturated the instance's EBS volume.  The snapshot is refreshed once on web
+# startup; a later design can replace it with incrementally maintained stats.
+def _compute_stats_snapshot():
+    try:
+        return get_stats_dict()
+    finally:
+        # Read-only PostgreSQL calls still open a transaction.  Do not leave
+        # the cache thread idle-in-transaction for the lifetime of the web
+        # process after its one snapshot completes.
+        db.rollback()
+
+
+_stats_cache = StatsCache(_compute_stats_snapshot)
 
 
 def prewarm_stats_cache():
-    """Warm the stats cache once and start its background refresher. Call from
-    server startup (in a thread) so the first browser paint is served from a
-    warm cache, not a cold ~30-COUNT(*) query, and stays fresh thereafter."""
+    """Warm one process-lifetime snapshot without a periodic full-table scan."""
     _stats_cache.prewarm()
-    _stats_cache.start_background_refresh()
 
 
 _pipeline_running = False

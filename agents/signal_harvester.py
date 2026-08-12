@@ -1878,7 +1878,11 @@ def get_tier1_signals(top_overlaps: int = 20, top_patterns: int = 15) -> Discove
         "protocol_artifacts": db.fetchall(
             "SELECT * FROM protocol_artifacts ORDER BY COALESCE(empirical_posterior, support_count) DESC LIMIT 10"),
         "hidden_variable_bridges": db.fetchall(
-            "SELECT * FROM hidden_variable_bridges ORDER BY COALESCE(empirical_posterior, score) DESC LIMIT 10"),
+            # This table has millions of rows and an existing score index.
+            # COALESCE(empirical_posterior, score) cannot use that index (the
+            # posterior is currently unpopulated), so it caused a parallel
+            # full-table scan for every discovery call.
+            "SELECT * FROM hidden_variable_bridges ORDER BY score DESC LIMIT 10"),
         "claim_method_gaps": db.fetchall(
             "SELECT * FROM claim_method_gaps ORDER BY COALESCE(empirical_posterior, support_count) DESC LIMIT 10"),
         "taxonomy_map": taxonomy,
@@ -2039,7 +2043,7 @@ def get_tier2_signals(
         "negative_space_gaps": db.fetchall(
             "SELECT * FROM negative_space_gaps ORDER BY COALESCE(empirical_posterior, support_count) DESC LIMIT 15"),
         "hidden_variable_bridges": db.fetchall(
-            "SELECT * FROM hidden_variable_bridges ORDER BY COALESCE(empirical_posterior, score) DESC LIMIT 15"),
+            "SELECT * FROM hidden_variable_bridges ORDER BY score DESC LIMIT 15"),
         "claim_method_gaps": db.fetchall(
             "SELECT * FROM claim_method_gaps ORDER BY COALESCE(empirical_posterior, support_count) DESC LIMIT 15"),
     }
@@ -2142,7 +2146,7 @@ def get_solution_signals(problem_context: dict | None = None, limit: int = 50) -
         ),
         "hidden_variable_bridges": (
             "SELECT * FROM hidden_variable_bridges "
-            "ORDER BY COALESCE(empirical_posterior, score) DESC LIMIT ?"
+            "ORDER BY score DESC LIMIT ?"
         ),
     }.items():
         for row in db.fetchall(sql, (max(limit * 2, limit),)):

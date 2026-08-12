@@ -17,6 +17,15 @@ from scripts import auto_advance, auto_execute
 
 
 class AutonomousServiceE2ETests(unittest.TestCase):
+    def test_discovery_rotates_one_agenda_per_pass(self):
+        state = {}
+        agendas = [6, 5, 7]
+        self.assertEqual(auto_advance._next_discovery_agenda(agendas, state), 6)
+        self.assertEqual(auto_advance._next_discovery_agenda(agendas, state), 5)
+        self.assertEqual(auto_advance._next_discovery_agenda(agendas, state), 7)
+        self.assertEqual(auto_advance._next_discovery_agenda(agendas, state), 6)
+        self.assertEqual(auto_advance._next_discovery_agenda([], state), None)
+
     def test_normal_services_drive_direction_to_metric_and_outcome(self):
         trace: list[str] = []
 
@@ -80,6 +89,7 @@ class AutonomousServiceE2ETests(unittest.TestCase):
                 mock.Mock(to_dict=lambda: {"attempted": 1, "finalized": 1}),
             ]
             auto_execute._stop = False
+            rollback = mock.Mock()
             with (
                 mock.patch("sys.argv", execute_args),
                 mock.patch.object(auto_execute, "_granted_jobs", return_value={"queued": 1}),
@@ -93,9 +103,11 @@ class AutonomousServiceE2ETests(unittest.TestCase):
                     "finalize_terminal_outcomes",
                     side_effect=finalizations,
                 ),
+                mock.patch.object(auto_execute.db, "rollback", rollback),
                 mock.patch.object(auto_execute.signal, "signal"),
             ):
                 self.assertEqual(auto_execute.main(), 0)
+            rollback.assert_called_once_with()
 
         trace.append("outcome_recorded")
         self.assertEqual(
