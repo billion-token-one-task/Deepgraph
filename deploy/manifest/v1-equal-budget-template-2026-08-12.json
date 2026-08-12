@@ -1,0 +1,69 @@
+{
+  "backup_root": "/home/ec2-user/deepgraph-rollback",
+  "batches": [
+    {
+      "acceptance": "Every deployed SHA256 equals this manifest; no live attempt or GPU job crosses the deployment boundary.",
+      "authorization": "required-before-deploy",
+      "batch": "1-equal-budget-template",
+      "files": [
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/v1-equal-budget-template-2026-08-12/experiment_forge.py.bak",
+          "kind": "file",
+          "mode": "0644",
+          "owner": "billion-token:billion-token",
+          "replaces": null,
+          "runtime_locally_modified": true,
+          "source": "agents/experiment_forge.py",
+          "source_bytes": 166895,
+          "source_sha256": "cdcbc4b90fb0fdc253c5f6c30a3e1d228e22563f1b2c134418122999117ab965",
+          "target": "/home/billion-token/Deepgraph/agents/experiment_forge.py",
+          "target_predeploy_sha256": "3bd6879cf090fcc7ccce902c0fd2991d85578c9281fbb11ecccc97ee19f77cf3",
+          "target_predeploy_state": "present"
+        }
+      ],
+      "health_check": "Re-hash the deployed target, py_compile it, confirm a newly forged train.py contains MAX_NEW_TOKENS and no 160/48 split.",
+      "purpose": "Deploy the equal-budget generated runner at R8 zero so forged experiments can pass the comparison-validity gate.",
+      "restart_required": [
+        "deepgraph-auto-execute.service"
+      ],
+      "systemd_reload_required": false
+    }
+  ],
+  "deployment_steps": [
+    "Stop deepgraph-auto-advance.timer AND deepgraph-auto-advance.service, and deepgraph-auto-execute.service, only after R8 is zero.",
+    "Apply batch 1 through scripts/deploy_manifest_batch.py and verify the deployed SHA256.",
+    "py_compile the module in the live tree.",
+    "Restart auto-execute, then the auto-advance timer.",
+    "Append every production action, backup path, checksum, restart and health result to OPERATORS.log.",
+    "After restart, make no manual business-state calls; the retry must happen autonomously."
+  ],
+  "description": "Give every arm of the generated benchmark runner the same token budget and have each per_method entry report its own max_new_tokens.",
+  "environment_keys": [],
+  "file_contents_read_from_production": true,
+  "manifest_key": "v1-equal-budget-template-2026-08-12",
+  "operator_diff_required": [
+    "agents/experiment_forge.py"
+  ],
+  "preconditions": [
+    "Explicit grouped production-write and service-restart authorization is recorded for this batch.",
+    "R8 snapshot shows zero active Deepgraph experiment runs, attempt reservations, queued/running GPU jobs, and Colab requests.",
+    "A PostgreSQL custom-format backup and the OPERATORS.log predeployment snapshot are recorded before services stop.",
+    "Live agents/experiment_forge.py matches the previously deployed commit 15f394d; a mismatch means another session wrote the tree and the deploy stops.",
+    "Unrelated GPU workloads on the two A100 hosts are not stopped or modified."
+  ],
+  "production_tree_modified_by_this_command": false,
+  "rollback": {
+    "data_impact": "No schema change and no business-table write. Rolling back restores the 160/48 split, which the deployed comparison-validity gate rejects, so every template-generated run would then be withheld as an invalid comparison.",
+    "order": "stop services after R8 zero, then reverse batch 1",
+    "steps": [
+      "Use deploy_manifest_batch.py --rollback for 1-equal-budget-template; the restored file must match its recorded predeployment SHA256.",
+      "No schema change, no .env change, and no systemd unit change is part of this batch, so nothing else needs reversing.",
+      "Restart deepgraph-web.service, the observers, and deepgraph-auto-execute.service, then enable/start deepgraph-auto-advance.timer.",
+      "Record rollback commands, restored hashes, service states, and health results in OPERATORS.log."
+    ]
+  },
+  "runtime_root": "/home/billion-token/Deepgraph",
+  "source_commit": "3156bede84798773a1925660be8427962d681e30",
+  "source_worktree_clean": true,
+  "tests": "Full suite 72 failed / 818 passed / 18 skipped / 3 collection errors, identical to baseline; static/scope/sql audits passed."
+}
