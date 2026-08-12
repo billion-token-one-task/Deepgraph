@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,6 +9,67 @@ from agents.experiment_review import review_experiment_candidate
 
 
 class GenerateScaffoldTests(unittest.TestCase):
+    def test_preflight_forge_parses_frozen_json_fields_without_autofill(self):
+        plan = {"model_targets": [{"hf_model": "Qwen/Qwen3-4B-Instruct-2507"}]}
+        method = {"name": "CGGR", "definition": "Route reasoning selectively."}
+        evidence = {"main_table": {"enabled": True}}
+        insight = {
+            "id": 105,
+            "agenda_id": 11,
+            "experimental_plan": json.dumps(json.dumps(plan)),
+            "proposed_method": json.dumps(json.dumps(method)),
+            "evidence_plan": json.dumps(json.dumps(evidence)),
+        }
+
+        with mock.patch.object(
+            experiment_forge,
+            "_autofill_experiment_contracts",
+            side_effect=AssertionError("passed preflight must keep the frozen plan"),
+        ):
+            parsed = experiment_forge._prepare_forge_insight(
+                insight,
+                preflight_row={"status": "passed"},
+                llm_scope={"agenda_id": 11, "idea_id": 105},
+            )
+
+        self.assertEqual(parsed["experimental_plan"], plan)
+        self.assertEqual(parsed["proposed_method"], method)
+        self.assertEqual(parsed["evidence_plan"], evidence)
+        publication = experiment_forge._publication_evidence_contract(
+            parsed,
+            parsed["experimental_plan"],
+            evidence_plan=parsed["evidence_plan"],
+        )
+        self.assertEqual(
+            publication["required_models"],
+            ["Qwen/Qwen3-4B-Instruct-2507"],
+        )
+
+    def test_persist_enriched_insight_normalizes_serialized_json_fields(self):
+        plan = {"model_targets": [{"hf_model": "Qwen/Qwen3-4B-Instruct-2507"}]}
+        method = {"name": "CGGR"}
+        evidence = {"main_table": {"enabled": True}}
+        parsed = {
+            "agenda_id": 11,
+            "resource_class": "gpu_large",
+            "experimental_plan": json.dumps(json.dumps(plan)),
+            "proposed_method": json.dumps(method),
+            "evidence_plan": json.dumps(evidence),
+        }
+
+        with (
+            mock.patch.object(experiment_forge.db, "execute") as execute,
+            mock.patch.object(experiment_forge.db, "commit") as commit,
+        ):
+            experiment_forge._persist_enriched_insight(105, parsed)
+
+        params = execute.call_args.args[1]
+        self.assertEqual(json.loads(params[0]), method)
+        self.assertEqual(json.loads(params[1]), plan)
+        self.assertEqual(json.loads(params[2]), evidence)
+        self.assertEqual(params[3:], ("gpu_large", 105, 11))
+        commit.assert_called_once_with()
+
     def test_resource_granted_forge_llm_uses_scoped_role_route(self):
         scope = {
             "agenda_id": 11,
