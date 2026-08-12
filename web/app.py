@@ -19,7 +19,7 @@ from db import database as db
 from db import evidence_graph as graph
 from db import opportunity_engine as opp
 from db import taxonomy as tax
-from orchestrator.pipeline import get_events, log_event, get_stats_dict
+from orchestrator.pipeline import get_events, log_event
 
 app = Flask(__name__,
             template_folder="templates",
@@ -32,27 +32,19 @@ from web.stats_cache import StatsCache
 app.register_blueprint(meta_harness_blueprint)
 app.register_blueprint(provenance_blueprint)
 
-# ``get_stats_dict`` runs exact aggregates over several large relations.  It
-# must be a process snapshot, not a periodic poll: on the production database
-# a 30-second refresh loop kept PostgreSQL in parallel sequential scans and
-# saturated the instance's EBS volume.  The snapshot is refreshed once on web
-# startup; a later design can replace it with incrementally maintained stats.
-def _compute_stats_snapshot():
-    try:
-        return get_stats_dict()
-    finally:
-        # Read-only PostgreSQL calls still open a transaction.  Do not leave
-        # the cache thread idle-in-transaction for the lifetime of the web
-        # process after its one snapshot completes.
-        db.rollback()
-
-
-_stats_cache = StatsCache(_compute_stats_snapshot)
+# Exact aggregate statistics are deliberately unavailable through the web
+# process.  Even a single startup snapshot saturated production EBS at about
+# 128 MiB/s; making it non-periodic removed recurrence but not the restart
+# hazard.  Keep the route's honest ``{"warming": true}`` response until V1 is
+# complete and an incrementally maintained snapshot replaces the exact scan.
+# The harmless compute keeps the cache object patchable in route tests while
+# ensuring that an accidental direct prewarm cannot touch the database.
+_stats_cache = StatsCache(lambda: None)
 
 
 def prewarm_stats_cache():
-    """Warm one process-lifetime snapshot without a periodic full-table scan."""
-    _stats_cache.prewarm()
+    """Compatibility startup hook; exact automatic stats are safety-disabled."""
+    return None
 
 
 _pipeline_running = False

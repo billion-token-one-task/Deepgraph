@@ -246,20 +246,13 @@ class StatsCacheRouteTests(unittest.TestCase):
             self.client.get("/api/stats")
             self.assertEqual(cache.compute_count, 1)
 
-    def test_process_prewarm_is_one_shot_and_closes_its_transaction(self):
+    def test_process_prewarm_is_safety_disabled(self):
         cache = mock.Mock()
         with mock.patch.object(web_app, "_stats_cache", cache):
-            web_app.prewarm_stats_cache()
+            self.assertIsNone(web_app.prewarm_stats_cache())
 
-        cache.prewarm.assert_called_once_with()
+        cache.prewarm.assert_not_called()
         cache.start_background_refresh.assert_not_called()
-
-        with (
-            mock.patch.object(web_app, "get_stats_dict", return_value={"papers_total": 9}),
-            mock.patch.object(web_app.db, "rollback") as rollback,
-        ):
-            self.assertEqual(web_app._compute_stats_snapshot(), {"papers_total": 9})
-        rollback.assert_called_once_with()
 
 
 class LeakGuardTests(unittest.TestCase):
