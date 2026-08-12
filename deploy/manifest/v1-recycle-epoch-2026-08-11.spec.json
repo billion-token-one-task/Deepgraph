@@ -1,0 +1,54 @@
+{
+  "manifest_key": "v1-recycle-epoch-2026-08-11",
+  "description": "Bump RECYCLE_EPOCH so candidates whose retries were spent on the unfetchable model weights get one fresh autonomous attempt now that the weights load offline from the ModelScope-populated cache.",
+  "runtime_root": "/home/billion-token/Deepgraph",
+  "backup_root": "/home/ec2-user/deepgraph-rollback",
+  "capture_target_predeploy_sha256": true,
+  "preconditions": [
+    "Explicit grouped production-write and service-restart authorization is recorded for this batch.",
+    "R8 snapshot shows zero active Deepgraph experiment runs, attempt reservations, queued/running GPU jobs, and Colab requests.",
+    "A PostgreSQL custom-format backup and the OPERATORS.log predeployment snapshot are recorded before services stop.",
+    "Live scripts/auto_advance.py matches the previously deployed commit 675bc4a; a mismatch means another session wrote the tree and the deploy stops.",
+    "Unrelated GPU workloads on the two A100 hosts are not stopped or modified."
+  ],
+  "deployment_steps": [
+    "Stop deepgraph-auto-advance.timer AND deepgraph-auto-advance.service, and deepgraph-auto-execute.service, only after R8 is zero.",
+    "Apply batch 1 through scripts/deploy_manifest_batch.py and verify the deployed SHA256.",
+    "py_compile the module in the live tree.",
+    "Restart auto-execute, then the auto-advance timer.",
+    "Append every production action, backup path, checksum, restart and health result to OPERATORS.log.",
+    "After restart, make no manual business-state calls; the retry must happen autonomously."
+  ],
+  "tests": "Full suite 72 failed / 818 passed / 18 skipped / 3 collection errors, identical to baseline; static/scope/sql audits passed, state_authority authority_violations=0.",
+  "rollback": {
+    "order": "stop services after R8 zero, then reverse batch 1",
+    "steps": [
+      "Use deploy_manifest_batch.py --rollback for 1-recycle-epoch; the restored file must match its recorded predeployment SHA256.",
+      "No schema change, no .env change, and no systemd unit change is part of this batch, so nothing else needs reversing.",
+      "Restart deepgraph-web.service, the observers, and deepgraph-auto-execute.service, then enable/start deepgraph-auto-advance.timer.",
+      "Record rollback commands, restored hashes, service states, and health results in OPERATORS.log."
+    ],
+    "data_impact": "No schema change and no business-table write. The epoch string lives in source; on load it clears the operational recycle counters in auto_advance_state.json. Rolling back restores the old epoch string, which clears them again on the next load -- the counters are operational state by design, so neither direction loses business history."
+  },
+  "batches": [
+    {
+      "batch": "1-recycle-epoch",
+      "authorization": "required-before-deploy",
+      "purpose": "Deploy the recycle-epoch bump at R8 zero so the retry reset happens autonomously on the next pass.",
+      "restart_required": [
+        "deepgraph-auto-execute.service"
+      ],
+      "systemd_reload_required": false,
+      "health_check": "Re-hash the deployed target, py_compile it, confirm the next pass logs no recycle_exhausted for ideas 105/110/81/98.",
+      "acceptance": "Every deployed SHA256 equals this manifest; no live attempt or GPU job crosses the deployment boundary.",
+      "files": [
+        {
+          "source": "scripts/auto_advance.py",
+          "target": "{runtime_root}/scripts/auto_advance.py",
+          "owner": "billion-token:billion-token",
+          "mode": "0644"
+        }
+      ]
+    }
+  ]
+}
