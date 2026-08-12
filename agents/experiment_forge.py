@@ -2936,6 +2936,13 @@ def _executable_probe_train_py(*, method_name: str, metric_name: str, plan: dict
     DEFAULTS = json.loads(r'''{encoded}''')
     BASELINE_METHOD = "direct_answer_baseline"
     CANDIDATE_METHOD = "process_guided_candidate"
+    # One budget for every arm. This template used to give the candidate 160
+    # tokens and the baseline 48, which measured compute rather than method:
+    # measured 2026-08-11, both arms hit their cap on every sample and the
+    # candidate "won" 0.031 to 0.016, while at an equal budget the baseline
+    # reached 0.25 and beat it 8x. Chain-of-thought answers need room to finish,
+    # so this must stay large enough that avg_new_tokens lands below it.
+    MAX_NEW_TOKENS = int(os.getenv("DEEPGRAPH_BENCHMARK_MAX_NEW_TOKENS", "512"))
 
 
     def normalize_answer(value):
@@ -3028,7 +3035,7 @@ def _executable_probe_train_py(*, method_name: str, metric_name: str, plan: dict
                         generated = model.generate(
                             input_ids=input_ids,
                             attention_mask=attention_mask,
-                            max_new_tokens=160 if method == CANDIDATE_METHOD else 48,
+                            max_new_tokens=MAX_NEW_TOKENS,
                             do_sample=False,
                             pad_token_id=tokenizer.eos_token_id,
                         )
@@ -3062,6 +3069,7 @@ def _executable_probe_train_py(*, method_name: str, metric_name: str, plan: dict
                 "num_correct": correct[method],
                 "num_examples": totals[method],
                 "avg_new_tokens": token_totals[method] / totals[method],
+                "max_new_tokens": MAX_NEW_TOKENS,
             }}
         peak_vram_mb = torch.cuda.max_memory_allocated() / (1024 ** 2)
         summary = {{
