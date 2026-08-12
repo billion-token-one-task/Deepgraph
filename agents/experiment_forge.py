@@ -582,11 +582,17 @@ def _parse_insight_fields(insight: dict) -> dict:
                   "field_a", "field_b", "predictions", "falsification",
                   "supporting_papers", "source_node_ids", "adversarial_critique"):
         val = parsed.get(field)
-        if isinstance(val, str) and val.strip():
+        # Database JSON fields normally need one decode.  A historical forge
+        # path encoded already-serialized values a second time, so accept one
+        # additional layer here and normalize it on the next reviewed write.
+        for _decode_layer in range(2):
+            if not isinstance(val, str) or not val.strip():
+                break
             try:
-                parsed[field] = json.loads(val)
+                val = json.loads(val)
             except (json.JSONDecodeError, TypeError):
-                pass
+                break
+        parsed[field] = val
     for field in ("proposed_method", "experimental_plan", "related_work_positioning", "evidence_plan",
                   "field_a", "field_b", "falsification", "adversarial_critique"):
         if not isinstance(parsed.get(field), dict):
@@ -2222,7 +2228,24 @@ def _autofill_experiment_contracts(
     return parsed
 
 
+def _prepare_forge_insight(
+    insight: dict,
+    *,
+    preflight_row: dict | None,
+    llm_scope: dict,
+) -> dict:
+    if preflight_row:
+        # A passed preflight freezes the plan, but DB JSON fields still need
+        # parsing before downstream contracts consume or persist them.
+        return _parse_insight_fields(dict(insight))
+    return _autofill_experiment_contracts(
+        dict(insight),
+        llm_scope=llm_scope,
+    )
+
+
 def _persist_enriched_insight(insight_id: int, parsed: dict) -> None:
+    parsed = _parse_insight_fields(parsed)
     agenda_id = int(parsed.get("agenda_id") or 0)
     if agenda_id <= 0:
         raise ValueError("enriched insight persistence requires agenda scope")
@@ -3754,13 +3777,10 @@ def forge_experiment(insight_id: int, *, resource_grant_id: int | None = None) -
         print(f"[FORGE] Blocked by EvoScientist strict gate: {gate.get('error')}", flush=True)
         return gate
 
-    parsed = (
-        dict(insight)
-        if preflight_row
-        else _autofill_experiment_contracts(
-            dict(insight),
-            llm_scope=llm_scope,
-        )
+    parsed = _prepare_forge_insight(
+        dict(insight),
+        preflight_row=preflight_row,
+        llm_scope=llm_scope,
     )
     _persist_enriched_insight(insight_id, parsed)
     spec = DeepInsightSpec.from_raw(parsed)
