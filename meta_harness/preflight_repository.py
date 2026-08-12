@@ -231,7 +231,7 @@ class CandidatePreflightRepository:
     ) -> PreflightResult:
         row = db.fetchone(
             """
-            SELECT experimental_plan FROM deep_insights
+            SELECT * FROM deep_insights
             WHERE id=? AND agenda_id=?
             """,
             (idea_id, agenda_id),
@@ -239,13 +239,15 @@ class CandidatePreflightRepository:
         db.commit()
         if not row:
             raise PreflightPersistenceError("candidate_not_found")
+        raw_plan = str(row.get("experimental_plan") or "{}")
         try:
-            plan = json.loads(str(row.get("experimental_plan") or "{}"))
+            plan = json.loads(raw_plan)
         except (TypeError, json.JSONDecodeError):
             plan = {}
         if not isinstance(plan, dict):
             plan = {}
         environment = environment or runtime_preflight_environment()
+        selected_engine = engine or PreflightEngine()
         try:
             requirements = requirements_from_plan(plan)
             requirement_id = self.declare(
@@ -254,7 +256,7 @@ class CandidatePreflightRepository:
                 requirements=requirements,
                 source_plan_hash=_hash(plan),
             )
-            result = (engine or PreflightEngine()).run(requirements, environment)
+            result = selected_engine.run(requirements, environment)
         except CapabilityContractError as exc:
             requirement_id = self.declare_invalid(
                 agenda_id=agenda_id,
@@ -278,6 +280,96 @@ class CandidatePreflightRepository:
             environment=environment,
             idempotency_key=attempt_key,
         )
+        if tuple(result.reason_codes) == ("model_task_mismatch",):
+            # Import lazily: experiment_forge imports this repository for the
+            # post-preflight forge binding.  The renegotiator is deterministic
+            # and returns only an in-memory plan; it cannot grant or persist.
+            from agents.experiment_forge import renegotiate_stale_model_requirement
+
+            try:
+                candidate = renegotiate_stale_model_requirement(
+                    dict(row),
+                    reason_codes=result.reason_codes,
+                    checks=dict(result.checks),
+                )
+            except Exception:
+                # Renegotiation is an optional, fail-closed recovery path.  A
+                # malformed historical plan must retain its original audited
+                # preflight result rather than breaking candidate processing.
+                candidate = None
+            if candidate:
+                revised_plan = candidate["plan"]
+                try:
+                    revised_requirements = requirements_from_plan(revised_plan)
+                    revised_result = selected_engine.run(
+                        revised_requirements,
+                        environment,
+                    )
+                except Exception:
+                    revised_result = None
+                if revised_result is not None and revised_result.passed:
+                    revised_checks = dict(revised_result.checks)
+                    revised_checks["model_requirement_renegotiated"] = {
+                        "trigger_reason_codes": list(result.reason_codes),
+                        "observed_model_task": candidate["observed_model_task"],
+                        "previous_model": candidate["previous_model"],
+                        "replacement_model": candidate["replacement_model"],
+                    }
+                    revised_result = PreflightResult(
+                        status=revised_result.status,
+                        reason_codes=revised_result.reason_codes,
+                        checks=revised_checks,
+                        adapter_id=revised_result.adapter_id,
+                        adapter_version=revised_result.adapter_version,
+                        selected_backend=revised_result.selected_backend,
+                        dataset_revision=revised_result.dataset_revision,
+                        model_revision=revised_result.model_revision,
+                    )
+                    updated = db.execute(
+                        """
+                        UPDATE deep_insights
+                        SET experimental_plan=?, updated_at=CURRENT_TIMESTAMP
+                        WHERE id=? AND agenda_id=? AND experimental_plan=?
+                        """,
+                        (
+                            _dump(revised_plan),
+                            idea_id,
+                            agenda_id,
+                            raw_plan,
+                        ),
+                    )
+                    if int(updated.rowcount or 0) == 1:
+                        db.commit()
+                        revised_requirement_id = self.declare(
+                            agenda_id=agenda_id,
+                            idea_id=idea_id,
+                            requirements=revised_requirements,
+                            source_plan_hash=_hash(revised_plan),
+                        )
+                        revised_attempt_key = idempotency_key or (
+                            f"preflight:{revised_requirement_id}:"
+                            f"{datetime.now(timezone.utc).strftime('%Y%m%d%H')}"
+                        )
+                        revised_result_id = self.record(
+                            agenda_id=agenda_id,
+                            idea_id=idea_id,
+                            requirement_id=revised_requirement_id,
+                            result=revised_result,
+                            environment=environment,
+                            idempotency_key=revised_attempt_key,
+                        )
+                        return PreflightResult(
+                            status=revised_result.status,
+                            reason_codes=revised_result.reason_codes,
+                            checks=revised_result.checks,
+                            adapter_id=revised_result.adapter_id,
+                            adapter_version=revised_result.adapter_version,
+                            selected_backend=revised_result.selected_backend,
+                            dataset_revision=revised_result.dataset_revision,
+                            model_revision=revised_result.model_revision,
+                            preflight_result_id=revised_result_id,
+                        )
+                    db.rollback()
         return PreflightResult(
             status=result.status,
             reason_codes=result.reason_codes,

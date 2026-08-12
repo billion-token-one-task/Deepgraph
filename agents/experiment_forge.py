@@ -8,6 +8,7 @@ Three sub-components:
 This is the hardest layer: translating a structured method description
 into something an autonomous coding agent can actually run.
 """
+import copy
 import hashlib
 import json
 import os
@@ -1156,6 +1157,182 @@ def _model_target_names(plan: dict) -> list[str]:
         if isinstance(value, list):
             rows.extend(value)
     return _unique_non_empty(_named_values(rows, keys=("hf_model", "model", "name")))
+
+
+def renegotiate_stale_model_requirement(
+    insight: dict,
+    *,
+    reason_codes: tuple[str, ...] | list[str],
+    checks: dict,
+) -> dict | None:
+    """Deterministically replace one stale, system-managed model target.
+
+    This is deliberately narrower than experiment-plan repair.  It is invoked
+    only after the real preflight predicate has proved that an otherwise
+    runnable generated QA probe is bound to a model with the wrong task.  It
+    never calls an LLM, never relaxes runner capabilities, and only returns an
+    in-memory candidate plan.  The preflight repository must run the same
+    predicate against that candidate and may persist it only after it passes.
+    """
+
+    if tuple(reason_codes) != ("model_task_mismatch",):
+        return None
+    observed_task = _non_empty_text((checks or {}).get("model_task"))
+    if not observed_task:
+        return None
+
+    parsed = _parse_insight_fields(copy.deepcopy(dict(insight or {})))
+    plan = parsed.get("experimental_plan")
+    if not isinstance(plan, dict) or isinstance(plan.get("execution_requirements"), dict):
+        return None
+    design = plan.get("benchmark_design_contract")
+    if (
+        plan.get("benchmark_design_status") != DESIGN_STATUS_RESOLVED
+        or not isinstance(design, dict)
+        or design.get("status") != DESIGN_STATUS_RESOLVED
+    ):
+        return None
+    targets = plan.get("benchmark_targets")
+    if not isinstance(targets, list) or not any(
+        isinstance(target, dict) and target.get("benchmark_role") == "executable_probe"
+        for target in targets
+    ):
+        return None
+
+    models = plan.get("model_targets")
+    if not isinstance(models, list) or len(models) != 1 or not isinstance(models[0], dict):
+        return None
+    previous_target = dict(models[0])
+    previous_model = _non_empty_text(
+        previous_target.get("hf_model")
+        or previous_target.get("model")
+        or previous_target.get("name")
+    )
+    if (
+        not previous_model
+        or previous_target.get("role") != "candidate_base_model"
+        or _non_empty_text(previous_target.get("backend") or "transformers") != "transformers"
+        or _non_empty_text(previous_target.get("name")) != previous_model
+        or _non_empty_text(previous_target.get("hf_model")) != previous_model
+    ):
+        return None
+
+    configured_model = _non_empty_text(EXPERIMENT_REAL_LLM_MODEL)
+    if not configured_model or configured_model.lower() == previous_model.lower():
+        return None
+
+    protocol = plan.get("benchmark_protocol")
+    publication = plan.get("publication_evidence_contract")
+    execution = plan.get("benchmark_execution")
+    if not all(isinstance(value, dict) for value in (protocol, publication, execution)):
+        return None
+    protocol_models = (protocol.get("model_policy") or {}).get("required_models")
+    protocol_requirement_models = (
+        protocol.get("full_benchmark_requirements") or {}
+    ).get("required_model_names")
+    if (
+        protocol_models != [previous_model]
+        or protocol_requirement_models != [previous_model]
+        or publication.get("required_models") != [previous_model]
+        or execution.get("default_model") != previous_model
+    ):
+        return None
+
+    previous_plan_hash = hashlib.sha256(
+        json.dumps(
+            plan,
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    refreshed = copy.deepcopy(plan)
+    for key in (
+        "model_targets",
+        "models",
+        "benchmark_protocol",
+        "publication_evidence_contract",
+        "paper_intent",
+        "benchmark_execution",
+    ):
+        refreshed.pop(key, None)
+
+    method = _enrich_proposed_method(parsed, refreshed)
+    parsed["proposed_method"] = method
+    refreshed = _ensure_real_benchmark_plan(
+        parsed,
+        method,
+        refreshed,
+        parsed.get("resource_class") or infer_resource_class(parsed),
+        resolve_datasets=False,
+    )
+    replacement_models = refreshed.get("model_targets")
+    if (
+        not isinstance(replacement_models, list)
+        or len(replacement_models) != 1
+        or not isinstance(replacement_models[0], dict)
+    ):
+        return None
+    replacement_model = _non_empty_text(
+        replacement_models[0].get("hf_model")
+        or replacement_models[0].get("model")
+        or replacement_models[0].get("name")
+    )
+    if replacement_model.lower() != configured_model.lower():
+        return None
+
+    scaffold_kind = _non_empty_text(publication.get("scaffold_kind")) or "planned"
+    refreshed_publication = _publication_evidence_contract(
+        {**parsed, "experimental_plan": refreshed, "proposed_method": method},
+        refreshed,
+        evidence_plan=(
+            parsed.get("evidence_plan")
+            if isinstance(parsed.get("evidence_plan"), dict)
+            else {}
+        ),
+        scaffold_kind=scaffold_kind,
+    )
+    refreshed["publication_evidence_contract"] = refreshed_publication
+    refreshed["paper_intent"] = refreshed_publication.get("paper_intent", {})
+
+    refreshed_protocol = refreshed.get("benchmark_protocol") or {}
+    refreshed_protocol_models = (
+        refreshed_protocol.get("model_policy") or {}
+    ).get("required_models")
+    refreshed_requirement_models = (
+        refreshed_protocol.get("full_benchmark_requirements") or {}
+    ).get("required_model_names")
+    refreshed_execution = refreshed.get("benchmark_execution") or {}
+    if (
+        refreshed_protocol_models != [replacement_model]
+        or refreshed_requirement_models != [replacement_model]
+        or refreshed_publication.get("required_models") != [replacement_model]
+        or refreshed_execution.get("default_model") != replacement_model
+    ):
+        return None
+
+    history = refreshed.get("model_requirement_negotiation_history")
+    history = list(history) if isinstance(history, list) else []
+    history.append(
+        {
+            "schema_version": "model_requirement_negotiation_v1",
+            "trigger_reason_codes": ["model_task_mismatch"],
+            "observed_model_task": observed_task,
+            "previous_model_targets": [previous_target],
+            "replacement_model_targets": copy.deepcopy(replacement_models),
+            "previous_plan_hash": previous_plan_hash,
+            "renegotiated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+    )
+    refreshed["model_requirement_negotiation_history"] = history[-20:]
+    return {
+        "status": "candidate",
+        "plan": refreshed,
+        "previous_model": previous_model,
+        "replacement_model": replacement_model,
+        "observed_model_task": observed_task,
+    }
 
 
 def _ensure_real_benchmark_plan(
