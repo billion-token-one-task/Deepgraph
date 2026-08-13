@@ -617,6 +617,7 @@ class GenerateScaffoldTests(unittest.TestCase):
             self._write_resume_spec(root)
             row = {
                 "id": 137,
+                "resource_grant_id": 31,
                 "status": "failed",
                 "phase": "runner_materialization_failed",
                 "error_message": "runner_contract_violation:candidate_adapter_required",
@@ -659,6 +660,7 @@ class GenerateScaffoldTests(unittest.TestCase):
             self._write_resume_spec(root)
             row = {
                 "id": 137,
+                "resource_grant_id": 31,
                 "status": "failed",
                 "phase": "scaffold_route_unavailable",
                 "error_message": experiment_forge.CAPABILITY_SCAFFOLD_FAILED_REPAIR_ERROR,
@@ -685,6 +687,21 @@ class GenerateScaffoldTests(unittest.TestCase):
             self.assertEqual(initial["candidate_adapter_py"], "")
 
             with (
+                mock.patch.object(experiment_forge.db, "fetchone", return_value=None),
+                mock.patch.object(experiment_forge.db, "commit"),
+            ):
+                with self.assertRaisesRegex(
+                    experiment_forge.CapabilityScaffoldContractError,
+                    "capability_scaffold_resume_source_invalid",
+                ):
+                    experiment_forge._load_failed_capability_scaffold(
+                        run_id=137,
+                        agenda_id=11,
+                        insight_id=105,
+                        resource_grant_id=32,
+                    )
+
+            with (
                 mock.patch.object(
                     experiment_forge.db,
                     "fetchone",
@@ -703,22 +720,120 @@ class GenerateScaffoldTests(unittest.TestCase):
                         resource_grant_id=31,
                     )
 
-            row["id"] = 138
+    def test_expired_grant_handoff_allows_only_exact_clean_run137(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            state = {"previous_grant_id": 31}
+            clean_counts = [{"count": 0}] * 6
+            cursor = mock.Mock(rowcount=1)
             with (
-                mock.patch.object(experiment_forge.db, "fetchone", return_value=row),
+                mock.patch.object(experiment_forge.db, "_use_pg", return_value=False),
+                mock.patch.object(
+                    experiment_forge.db,
+                    "fetchone",
+                    side_effect=[state, *clean_counts, {"id": 99, "resource_grant_id": 31}],
+                ),
+                mock.patch.object(experiment_forge.db, "execute", return_value=cursor) as execute,
                 mock.patch.object(experiment_forge.db, "commit"),
+            ):
+                old_grant = experiment_forge._handoff_expired_capability_scaffold_grant(
+                    run_id=137,
+                    agenda_id=11,
+                    insight_id=105,
+                    resource_grant_id=32,
+                    preflight_result_id=20,
+                    workdir=root,
+                )
+            self.assertEqual(old_grant, 31)
+            self.assertEqual(execute.call_count, 2)
+
+            with (
+                mock.patch.object(experiment_forge.db, "_use_pg", return_value=False),
+                mock.patch.object(experiment_forge.db, "fetchone", return_value=None),
+                mock.patch.object(experiment_forge.db, "rollback"),
             ):
                 with self.assertRaisesRegex(
                     experiment_forge.CapabilityScaffoldContractError,
-                    "capability_scaffold_resume_source_invalid",
+                    "grant_handoff_source_invalid",
                 ):
-                    experiment_forge._load_failed_capability_scaffold(
-                        run_id=138,
+                    experiment_forge._handoff_expired_capability_scaffold_grant(
+                        run_id=137,
                         agenda_id=11,
                         insight_id=105,
-                        resource_grant_id=31,
+                        resource_grant_id=32,
+                        preflight_result_id=20,
+                        workdir=root,
                     )
 
+    def test_expired_grant_handoff_rejects_every_open_or_terminal_artifact(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            state = {"previous_grant_id": 31}
+            for index, reason in enumerate(
+                (
+                    "open_llm_usage",
+                    "tagged_attempt_already_used",
+                    "gpu_active",
+                    "compute_active",
+                    "colab_active",
+                    "outcome_exists",
+                )
+            ):
+                counts = [{"count": 0}] * 6
+                counts[index] = {"count": 1}
+                with (
+                    mock.patch.object(experiment_forge.db, "_use_pg", return_value=False),
+                    mock.patch.object(
+                        experiment_forge.db,
+                        "fetchone",
+                        side_effect=[state, *counts],
+                    ),
+                    mock.patch.object(experiment_forge.db, "execute") as execute,
+                    mock.patch.object(experiment_forge.db, "rollback"),
+                ):
+                    with self.assertRaisesRegex(
+                        experiment_forge.CapabilityScaffoldContractError,
+                        reason,
+                    ):
+                        experiment_forge._handoff_expired_capability_scaffold_grant(
+                            run_id=137,
+                            agenda_id=11,
+                            insight_id=105,
+                            resource_grant_id=32,
+                            preflight_result_id=20,
+                            workdir=root,
+                        )
+                execute.assert_not_called()
+
+    def test_expired_grant_handoff_rejects_job_split_or_preflight_drift(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            state = {"previous_grant_id": 31}
+            clean_counts = [{"count": 0}] * 6
+            for job in (None, {"id": 99, "resource_grant_id": 33}):
+                with (
+                    mock.patch.object(experiment_forge.db, "_use_pg", return_value=False),
+                    mock.patch.object(
+                        experiment_forge.db,
+                        "fetchone",
+                        side_effect=[state, *clean_counts, job],
+                    ),
+                    mock.patch.object(experiment_forge.db, "execute") as execute,
+                    mock.patch.object(experiment_forge.db, "rollback"),
+                ):
+                    with self.assertRaisesRegex(
+                        experiment_forge.CapabilityScaffoldContractError,
+                        "grant_handoff_job_invalid",
+                    ):
+                        experiment_forge._handoff_expired_capability_scaffold_grant(
+                            run_id=137,
+                            agenda_id=11,
+                            insight_id=105,
+                            resource_grant_id=32,
+                            preflight_result_id=20,
+                            workdir=root,
+                        )
+                execute.assert_not_called()
     def test_autofill_experiment_contracts_fills_missing_review_fields(self):
         llm_gate = {"status": "literature_review_required", "blockers": ["needs domain benchmark review"]}
         with mock.patch("agents.benchmark_design_agent.call_llm_json_for_role", return_value=(llm_gate, 0, {})):
