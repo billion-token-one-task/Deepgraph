@@ -1,0 +1,41 @@
+{
+  "manifest_key": "v1-runner-contract-guard-2026-08-13",
+  "description": "Fail closed before GPU when a generated capability adapter has an incompatible hook contract, and derive run resource class from the passed preflight backend.",
+  "runtime_root": "/home/billion-token/Deepgraph",
+  "backup_root": "/home/ec2-user/deepgraph-rollback",
+  "capture_target_predeploy_sha256": true,
+  "preconditions": [
+    "Owner authorized autonomous V1 completion, deployments, LLM use, and controlled GPU execution on 2026-08-13.",
+    "Sol, Terra, and the independent observer approved this fail-closed guard; all execution services remain stopped.",
+    "Run 137 remains held and must be rematerialized under this guard before any GPU work."
+  ],
+  "deployment_steps": [
+    "Build and verify this two-file manifest, apply it without restarting any service, then verify hashes and py_compile.",
+    "Run the existing run 137 adapter through materialization: its one-argument hook must fail with candidate_hook_signature_invalid.",
+    "Do not start GPU or reuse the rejected adapter; only a newly authorized generated adapter that passes subsequent scientific review may proceed."
+  ],
+  "tests": "Targeted materializer/resource-class tests: 9 passed; full materializer contract suite: 15 passed plus 9 subtests; py_compile and diff-check passed; Sol, Terra, and observer reviewed.",
+  "rollback": {
+    "order": "keep all execution services stopped, then roll back the single batch",
+    "steps": [
+      "Use deploy_manifest_batch.py --rollback for 1-runner-contract-guard and verify restored hashes.",
+      "Do not alter run, grant, reservation, or outcome records manually."
+    ],
+    "data_impact": "File-only deployment; no service restart, LLM call, GPU action, or database mutation."
+  },
+  "batches": [
+    {
+      "batch": "1-runner-contract-guard",
+      "authorization": "owner-autonomous-v1-completion-2026-08-13",
+      "purpose": "Reject malformed/untrusted adapter entrypoints before compute and normalize materialized execution class to passed preflight.",
+      "restart_required": [],
+      "systemd_reload_required": false,
+      "health_check": "Verify hashes and py_compile; retain all services/GPU stopped.",
+      "acceptance": "Existing one-argument run 137 adapter is rejected by materialization before GPU; no existing gate is weakened.",
+      "files": [
+        {"source": "agents/experiment_forge.py", "target": "{runtime_root}/agents/experiment_forge.py", "owner": "billion-token:billion-token", "mode": "0644"},
+        {"source": "meta_harness/runner_materialization.py", "target": "{runtime_root}/meta_harness/runner_materialization.py", "owner": "billion-token:billion-token", "mode": "0644"}
+      ]
+    }
+  ]
+}
