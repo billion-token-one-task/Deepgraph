@@ -1,0 +1,75 @@
+{
+  "backup_root": "/home/ec2-user/deepgraph-rollback",
+  "batches": [
+    {
+      "acceptance": "Existing one-argument run 137 adapter is rejected by materialization before GPU; no existing gate is weakened.",
+      "authorization": "owner-autonomous-v1-completion-2026-08-13",
+      "batch": "1-runner-contract-guard",
+      "files": [
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/v1-runner-contract-guard-2026-08-13/experiment_forge.py.bak",
+          "kind": "file",
+          "mode": "0644",
+          "owner": "billion-token:billion-token",
+          "replaces": null,
+          "runtime_locally_modified": true,
+          "source": "agents/experiment_forge.py",
+          "source_bytes": 205218,
+          "source_sha256": "7907113c25dc719a4cf9ca86463debd9ba352381663f61422dcfd43496195f98",
+          "target": "/home/billion-token/Deepgraph/agents/experiment_forge.py",
+          "target_predeploy_sha256": "e4c79a86a120d6d57f7d5273442fb3866a327f5c8b89b5b790d50afd99a8303a",
+          "target_predeploy_state": "present"
+        },
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/v1-runner-contract-guard-2026-08-13/runner_materialization.py.bak",
+          "kind": "file",
+          "mode": "0644",
+          "owner": "billion-token:billion-token",
+          "replaces": null,
+          "runtime_locally_modified": true,
+          "source": "meta_harness/runner_materialization.py",
+          "source_bytes": 9493,
+          "source_sha256": "5e67fe3ec3bcd983aafd5e0e0eb0c4e4b44903ae54c7e7e6962f142d7664dd7f",
+          "target": "/home/billion-token/Deepgraph/meta_harness/runner_materialization.py",
+          "target_predeploy_sha256": "fa4afaa375d44a8ea063bfd6a597139c14433926a205094cbd0841e6d919fd71",
+          "target_predeploy_state": "present"
+        }
+      ],
+      "health_check": "Verify hashes and py_compile; retain all services/GPU stopped.",
+      "purpose": "Reject malformed/untrusted adapter entrypoints before compute and normalize materialized execution class to passed preflight.",
+      "restart_required": [],
+      "systemd_reload_required": false
+    }
+  ],
+  "deployment_steps": [
+    "Build and verify this two-file manifest, apply it without restarting any service, then verify hashes and py_compile.",
+    "Run the existing run 137 adapter through materialization: its one-argument hook must fail with candidate_hook_signature_invalid.",
+    "Do not start GPU or reuse the rejected adapter; only a newly authorized generated adapter that passes subsequent scientific review may proceed."
+  ],
+  "description": "Fail closed before GPU when a generated capability adapter has an incompatible hook contract, and derive run resource class from the passed preflight backend.",
+  "environment_keys": [],
+  "file_contents_read_from_production": true,
+  "manifest_key": "v1-runner-contract-guard-2026-08-13",
+  "operator_diff_required": [
+    "agents/experiment_forge.py",
+    "meta_harness/runner_materialization.py"
+  ],
+  "preconditions": [
+    "Owner authorized autonomous V1 completion, deployments, LLM use, and controlled GPU execution on 2026-08-13.",
+    "Sol, Terra, and the independent observer approved this fail-closed guard; all execution services remain stopped.",
+    "Run 137 remains held and must be rematerialized under this guard before any GPU work."
+  ],
+  "production_tree_modified_by_this_command": false,
+  "rollback": {
+    "data_impact": "File-only deployment; no service restart, LLM call, GPU action, or database mutation.",
+    "order": "keep all execution services stopped, then roll back the single batch",
+    "steps": [
+      "Use deploy_manifest_batch.py --rollback for 1-runner-contract-guard and verify restored hashes.",
+      "Do not alter run, grant, reservation, or outcome records manually."
+    ]
+  },
+  "runtime_root": "/home/billion-token/Deepgraph",
+  "source_commit": "cd8416e375e6aaa2204900c3bfe2afbf737a0b2d",
+  "source_worktree_clean": true,
+  "tests": "Targeted materializer/resource-class tests: 9 passed; full materializer contract suite: 15 passed plus 9 subtests; py_compile and diff-check passed; Sol, Terra, and observer reviewed."
+}
