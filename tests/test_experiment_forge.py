@@ -9,6 +9,48 @@ from agents.experiment_review import review_experiment_candidate
 
 
 class GenerateScaffoldTests(unittest.TestCase):
+    @staticmethod
+    def _capability_requirements():
+        return {
+            "task_protocol": "generative_qa",
+            "candidate_hook": "candidate_prompt",
+            "dataset": {
+                "repository_id": "openai/gsm8k",
+                "revision": "dataset-revision",
+                "split": "test",
+                "field_mapping": {"input": "question", "target": "answer"},
+            },
+            "model": {
+                "repository_id": "Qwen/Qwen3-4B-Instruct-2507",
+                "revision": "model-revision",
+                "framework": "transformers",
+                "task": "causal_lm",
+            },
+            "metric": {"name": "exact_match", "direction": "higher"},
+            "artifact_contract": ["final_results", "raw_predictions"],
+            "preferred_backends": ["ssh_gpu"],
+        }
+
+    @staticmethod
+    def _capability_insight():
+        return {
+            "resource_class": "gpu_large",
+            "proposed_method": {
+                "name": "Counterfactual Gain-Gated Reasoning",
+                "type": "prompting",
+                "definition": (
+                    "Estimate whether another reasoning pass will improve the "
+                    "answer, and request it only when estimated gain is positive."
+                ),
+            },
+            "experimental_plan": {
+                "baselines": ["Direct", "Always-CoT"],
+                "datasets": [{"name": "GSM8K"}],
+                "metrics": {"primary": "exact_match"},
+                "procedure": "Compare equal-budget direct and gain-gated prompts.",
+            },
+        }
+
     def test_preflight_forge_parses_frozen_json_fields_without_autofill(self):
         plan = {"model_targets": [{"hf_model": "Qwen/Qwen3-4B-Instruct-2507"}]}
         method = {"name": "CGGR", "definition": "Route reasoning selectively."}
@@ -134,6 +176,245 @@ class GenerateScaffoldTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "provider outage"):
                 experiment_forge.scout_codebase({"id": 22}, llm_scope=scope)
         routed.assert_called_once_with({"id": 22}, llm_scope=scope)
+
+    def test_capability_scaffold_repairs_only_missing_top_level_fields(self):
+        initial = {
+            "success_criteria": {
+                "metric_name": "exact_match",
+                "metric_direction": "higher",
+                "exciting": 0.05,
+                "solid": 0.02,
+                "disappointing": 0.0,
+            }
+        }
+        adapter = (
+            "CANDIDATE_METHOD = 'counterfactual_gain_gate'\n\n"
+            "def candidate_prompt(example, baseline_prompt):\n"
+            "    return baseline_prompt + '\\nCheck whether one more derivation is useful.'\n"
+        )
+        repaired = {
+            "program_md": "# Program\nNEVER STOP until interrupted.",
+            "evaluate_py": "print(0.0)\n",
+            "candidate_adapter_py": adapter,
+        }
+        route = {"provider": "test", "model": "test-model"}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.object(
+                experiment_forge,
+                "_resource_granted_proposer_json",
+                side_effect=[(initial, 11, route), (repaired, 7, route)],
+            ) as proposer:
+                scaffold = experiment_forge.generate_scaffold(
+                    self._capability_insight(),
+                    {
+                        "url": "scratch",
+                        "name": "minimal",
+                        "main_train_file": "train.py",
+                        "main_eval_command": "python train.py",
+                    },
+                    Path(tmpdir),
+                    llm_scope={
+                        "agenda_id": 11,
+                        "idea_id": 105,
+                        "resource_grant_id": 31,
+                        "stage": "pilot",
+                    },
+                    runner_capability_bound=True,
+                    runner_requirements=self._capability_requirements(),
+                )
+
+        self.assertEqual(scaffold["tokens"], 18)
+        self.assertEqual(scaffold["candidate_adapter_py"], adapter)
+        self.assertEqual(
+            scaffold["capability_scaffold_repaired_fields"],
+            ["program_md", "evaluate_py", "candidate_adapter_py"],
+        )
+        self.assertEqual(proposer.call_count, 2)
+        self.assertEqual(
+            proposer.call_args_list[1].kwargs["operation"],
+            "experiment_forge.capability_scaffold_repair",
+        )
+        self.assertIn(
+            '"candidate_hook": "candidate_prompt"',
+            proposer.call_args_list[1].args[1],
+        )
+
+    def test_capability_scaffold_repair_fails_closed_before_writing_specs(self):
+        initial = {
+            "program_md": "# Program",
+            "evaluate_py": "print(0.0)",
+            "success_criteria": {"metric_name": "exact_match"},
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workdir = Path(tmpdir)
+            with mock.patch.object(
+                experiment_forge,
+                "_resource_granted_proposer_json",
+                side_effect=[(initial, 11, {}), ({}, 5, {})],
+            ):
+                with self.assertRaisesRegex(
+                    experiment_forge.CapabilityScaffoldContractError,
+                    "capability_scaffold_contract_missing:candidate_adapter_py",
+                ):
+                    experiment_forge.generate_scaffold(
+                        self._capability_insight(),
+                        {"url": "scratch", "name": "minimal"},
+                        workdir,
+                        llm_scope={
+                            "agenda_id": 11,
+                            "idea_id": 105,
+                            "resource_grant_id": 31,
+                            "stage": "pilot",
+                        },
+                        runner_capability_bound=True,
+                        runner_requirements=self._capability_requirements(),
+                    )
+            self.assertFalse((workdir / "spec").exists())
+
+    def test_capability_scaffold_requires_durable_runner_contract_before_llm(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.object(
+                experiment_forge,
+                "_resource_granted_proposer_json",
+            ) as proposer:
+                with self.assertRaisesRegex(
+                    experiment_forge.CapabilityScaffoldContractError,
+                    "capability_scaffold_runner_contract_required",
+                ):
+                    experiment_forge.generate_scaffold(
+                        self._capability_insight(),
+                        {"url": "scratch", "name": "minimal"},
+                        Path(tmpdir),
+                        llm_scope={
+                            "agenda_id": 11,
+                            "idea_id": 105,
+                            "resource_grant_id": 31,
+                            "stage": "pilot",
+                        },
+                        runner_capability_bound=True,
+                    )
+            proposer.assert_not_called()
+
+    def test_capability_scaffold_empty_success_criteria_requires_repair(self):
+        missing = experiment_forge._missing_capability_scaffold_fields(
+            {
+                "program_md": "# Program",
+                "evaluate_py": "print(0.0)",
+                "candidate_adapter_py": "CANDIDATE_METHOD = 'method'",
+                "success_criteria": {},
+            }
+        )
+
+        self.assertEqual(missing, ["success_criteria"])
+
+    def test_capability_scaffold_resume_uses_only_focused_repair(self):
+        initial = {
+            "program_md": "",
+            "evaluate_py": "",
+            "candidate_adapter_py": "",
+            "success_criteria": {
+                "metric_name": "exact_match",
+                "metric_direction": "higher",
+                "exciting": 0.05,
+                "solid": 0.02,
+                "disappointing": 0.0,
+            },
+        }
+        repaired = {
+            "program_md": "# Program\nNEVER STOP until interrupted.",
+            "evaluate_py": "print(0.0)",
+            "candidate_adapter_py": (
+                "CANDIDATE_METHOD = 'gain_gate'\n"
+                "def candidate_prompt(example, baseline_prompt):\n"
+                "    return baseline_prompt + '\\nVerify the derivation.'\n"
+            ),
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.object(
+                experiment_forge,
+                "_resource_granted_proposer_json",
+                return_value=(repaired, 7, {}),
+            ) as proposer:
+                scaffold = experiment_forge.generate_scaffold(
+                    self._capability_insight(),
+                    {"url": "scratch", "name": "minimal"},
+                    Path(tmpdir),
+                    llm_scope={
+                        "agenda_id": 11,
+                        "idea_id": 105,
+                        "resource_grant_id": 31,
+                        "stage": "pilot",
+                    },
+                    runner_capability_bound=True,
+                    runner_requirements=self._capability_requirements(),
+                    initial_result=initial,
+                )
+
+        self.assertEqual(scaffold["tokens"], 7)
+        proposer.assert_called_once()
+        self.assertEqual(
+            proposer.call_args.kwargs["operation"],
+            "experiment_forge.capability_scaffold_repair",
+        )
+
+    def test_failed_capability_scaffold_loader_requires_exact_original_error(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            spec = root / "spec"
+            spec.mkdir()
+            (spec / "program.md").write_text("", encoding="utf-8")
+            (spec / "evaluate.py").write_text("", encoding="utf-8")
+            (spec / "success_criteria.json").write_text(
+                json.dumps(
+                    {
+                        "metric_name": "exact_match",
+                        "metric_direction": "higher",
+                        "exciting": 0.05,
+                        "solid": 0.02,
+                        "disappointing": 0.0,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            row = {
+                "id": 137,
+                "status": "failed",
+                "phase": "runner_materialization_failed",
+                "error_message": "runner_contract_violation:candidate_adapter_required",
+                "workdir": str(root),
+            }
+            with (
+                mock.patch.object(experiment_forge.db, "fetchone", return_value=row),
+                mock.patch.object(experiment_forge.db, "commit"),
+            ):
+                loaded, workdir, initial = (
+                    experiment_forge._load_failed_capability_scaffold(
+                        run_id=137,
+                        agenda_id=11,
+                        insight_id=105,
+                        resource_grant_id=31,
+                    )
+                )
+            self.assertEqual(loaded["id"], 137)
+            self.assertEqual(workdir, root)
+            self.assertEqual(initial["candidate_adapter_py"], "")
+
+            row["error_message"] = "runner_contract_violation:other"
+            with (
+                mock.patch.object(experiment_forge.db, "fetchone", return_value=row),
+                mock.patch.object(experiment_forge.db, "commit"),
+            ):
+                with self.assertRaisesRegex(
+                    experiment_forge.CapabilityScaffoldContractError,
+                    "capability_scaffold_resume_source_invalid",
+                ):
+                    experiment_forge._load_failed_capability_scaffold(
+                        run_id=137,
+                        agenda_id=11,
+                        insight_id=105,
+                        resource_grant_id=31,
+                    )
 
     def test_autofill_experiment_contracts_fills_missing_review_fields(self):
         llm_gate = {"status": "literature_review_required", "blockers": ["needs domain benchmark review"]}
