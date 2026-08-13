@@ -74,6 +74,7 @@ class RouteRequest:
     operation: str
     idempotency_key: str
     proposer_route: ProviderRoute | None = None
+    max_attempts: int | None = None
 
     def validate(self) -> None:
         if min(self.agenda_id, self.idea_id, self.resource_grant_id) <= 0:
@@ -84,6 +85,8 @@ class RouteRequest:
             raise LLMRouteError("LLM route metadata is incomplete")
         if self.token_cap <= 0:
             raise LLMRouteError("token_cap must be positive")
+        if self.max_attempts is not None and self.max_attempts <= 0:
+            raise LLMRouteError("max_attempts must be positive")
 
 
 @dataclass(frozen=True)
@@ -265,6 +268,13 @@ class LLMRouter:
         try:
             for route in self.eligible_routes(request):
                 for _attempt in range(route.transient_retries + 1):
+                    if (
+                        request.max_attempts is not None
+                        and attempts >= request.max_attempts
+                    ):
+                        raise LLMRouteUnavailableError(
+                            "route_attempt_cap_exhausted;manual_review_required"
+                        )
                     if consumed_input + consumed_output >= request.token_cap:
                         raise LLMRouteError("reserved_token_cap_exhausted")
                     attempts += 1
@@ -275,6 +285,36 @@ class LLMRouter:
                             consumed_input + consumed_output + usage.total_tokens
                         )
                         if total_tokens > request.token_cap:
+                            consumed_input += usage.input_tokens
+                            consumed_output += usage.output_tokens
+                            if usage.cost_usd is not None:
+                                consumed_cost += usage.cost_usd
+                                has_cost = True
+                            self._ledger.settle(
+                                reservation.reservation_id,
+                                tokens_used=request.token_cap,
+                                cost_usd=consumed_cost if has_cost else None,
+                            )
+                            settled = True
+                            self._observation_sink(
+                                RouteObservation(
+                                    agenda_id=request.agenda_id,
+                                    idea_id=request.idea_id,
+                                    role=request.role,
+                                    provider=route.provider,
+                                    model=route.model,
+                                    model_family=route.model_family,
+                                    prompt_version=route.prompt_version,
+                                    input_tokens=usage.input_tokens,
+                                    output_tokens=usage.output_tokens,
+                                    cost_usd=usage.cost_usd,
+                                    status="failed",
+                                    failure_reason=(
+                                        "provider_usage_exceeded_reserved_cap"
+                                    ),
+                                    reservation_id=reservation.reservation_id,
+                                )
+                            )
                             raise LLMRouteError("provider_usage_exceeded_reserved_cap")
                         consumed_input += usage.input_tokens
                         consumed_output += usage.output_tokens
@@ -319,7 +359,37 @@ class LLMRouter:
                             + failed_usage.total_tokens
                             > request.token_cap
                         ):
+                            consumed_input += failed_usage.input_tokens
+                            consumed_output += failed_usage.output_tokens
+                            if failed_usage.cost_usd is not None:
+                                consumed_cost += failed_usage.cost_usd
+                                has_cost = True
+                            self._ledger.settle(
+                                reservation.reservation_id,
+                                tokens_used=request.token_cap,
+                                cost_usd=consumed_cost if has_cost else None,
+                            )
+                            settled = True
                             failures.append(f"{route.route_id}:hard_token_cap")
+                            self._observation_sink(
+                                RouteObservation(
+                                    agenda_id=request.agenda_id,
+                                    idea_id=request.idea_id,
+                                    role=request.role,
+                                    provider=route.provider,
+                                    model=route.model,
+                                    model_family=route.model_family,
+                                    prompt_version=route.prompt_version,
+                                    input_tokens=failed_usage.input_tokens,
+                                    output_tokens=failed_usage.output_tokens,
+                                    cost_usd=failed_usage.cost_usd,
+                                    status="failed",
+                                    failure_reason=(
+                                        "failed_attempt_usage_exceeded_reserved_cap"
+                                    ),
+                                    reservation_id=reservation.reservation_id,
+                                )
+                            )
                             raise LLMRouteError(
                                 "failed_attempt_usage_exceeded_reserved_cap"
                             ) from exc

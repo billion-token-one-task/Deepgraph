@@ -192,19 +192,38 @@ class GenerateScaffoldTests(unittest.TestCase):
             "def candidate_prompt(example, baseline_prompt):\n"
             "    return baseline_prompt + '\\nCheck whether one more derivation is useful.'\n"
         )
-        repaired = {
-            "program_md": "# Program\nNEVER STOP until interrupted.",
-            "evaluate_py": "print(0.0)\n",
-            "candidate_adapter_py": adapter,
+        repaired = "\n".join(
+            (
+                "<<<DEEPGRAPH_FIELD:program_md>>>",
+                "# Program\nNEVER STOP until interrupted.",
+                "<<<DEEPGRAPH_END:program_md>>>",
+                "<<<DEEPGRAPH_FIELD:evaluate_py>>>",
+                "print(0.0)",
+                "<<<DEEPGRAPH_END:evaluate_py>>>",
+                "<<<DEEPGRAPH_FIELD:candidate_adapter_py>>>",
+                adapter.rstrip(),
+                "<<<DEEPGRAPH_END:candidate_adapter_py>>>",
+            )
+        )
+        route = {
+            "provider": "test",
+            "model": "test-model",
+            "api_key": "must-not-be-retained",
         }
-        route = {"provider": "test", "model": "test-model"}
 
         with tempfile.TemporaryDirectory() as tmpdir:
-            with mock.patch.object(
-                experiment_forge,
-                "_resource_granted_proposer_json",
-                side_effect=[(initial, 11, route), (repaired, 7, route)],
-            ) as proposer:
+            with (
+                mock.patch.object(
+                    experiment_forge,
+                    "_resource_granted_proposer_json",
+                    return_value=(initial, 11, route),
+                ) as proposer,
+                mock.patch.object(
+                    experiment_forge,
+                    "_resource_granted_proposer_text",
+                    return_value=(repaired, 7, route),
+                ) as tagged,
+            ):
                 scaffold = experiment_forge.generate_scaffold(
                     self._capability_insight(),
                     {
@@ -223,22 +242,33 @@ class GenerateScaffoldTests(unittest.TestCase):
                     runner_capability_bound=True,
                     runner_requirements=self._capability_requirements(),
                 )
+            evidence = Path(tmpdir) / "codex" / experiment_forge.CAPABILITY_SCAFFOLD_TAGGED_RESPONSE_FILE
+            self.assertTrue(evidence.is_file())
+            self.assertEqual(evidence.stat().st_mode & 0o777, 0o600)
+            retained = json.loads(evidence.read_text(encoding="utf-8"))
 
         self.assertEqual(scaffold["tokens"], 18)
-        self.assertEqual(scaffold["candidate_adapter_py"], adapter)
+        self.assertEqual(scaffold["candidate_adapter_py"], adapter.rstrip())
         self.assertEqual(
             scaffold["capability_scaffold_repaired_fields"],
             ["program_md", "evaluate_py", "candidate_adapter_py"],
         )
-        self.assertEqual(proposer.call_count, 2)
+        proposer.assert_called_once()
+        tagged.assert_called_once()
         self.assertEqual(
-            proposer.call_args_list[1].kwargs["operation"],
-            "experiment_forge.capability_scaffold_repair",
+            tagged.call_args.kwargs["operation"],
+            experiment_forge.CAPABILITY_SCAFFOLD_TAGGED_OPERATION,
         )
         self.assertIn(
             '"candidate_hook": "candidate_prompt"',
-            proposer.call_args_list[1].args[1],
+            tagged.call_args.args[1],
         )
+        self.assertEqual(retained["raw_response"], repaired)
+        self.assertEqual(
+            retained["response_sha256"],
+            experiment_forge.hashlib.sha256(repaired.encode("utf-8")).hexdigest(),
+        )
+        self.assertNotIn("api_key", retained["route"])
 
     def test_capability_scaffold_repair_fails_closed_before_writing_specs(self):
         initial = {
@@ -248,14 +278,21 @@ class GenerateScaffoldTests(unittest.TestCase):
         }
         with tempfile.TemporaryDirectory() as tmpdir:
             workdir = Path(tmpdir)
-            with mock.patch.object(
-                experiment_forge,
-                "_resource_granted_proposer_json",
-                side_effect=[(initial, 11, {}), ({}, 5, {})],
+            with (
+                mock.patch.object(
+                    experiment_forge,
+                    "_resource_granted_proposer_json",
+                    return_value=(initial, 11, {}),
+                ),
+                mock.patch.object(
+                    experiment_forge,
+                    "_resource_granted_proposer_text",
+                    return_value=("{}", 5, {}),
+                ),
             ):
                 with self.assertRaisesRegex(
                     experiment_forge.CapabilityScaffoldContractError,
-                    "capability_scaffold_contract_missing:candidate_adapter_py",
+                    "capability_scaffold_tagged_text_outside_fields",
                 ):
                     experiment_forge.generate_scaffold(
                         self._capability_insight(),
@@ -271,6 +308,10 @@ class GenerateScaffoldTests(unittest.TestCase):
                         runner_requirements=self._capability_requirements(),
                     )
             self.assertFalse((workdir / "spec").exists())
+            evidence = workdir / "codex" / experiment_forge.CAPABILITY_SCAFFOLD_TAGGED_RESPONSE_FILE
+            self.assertTrue(evidence.is_file())
+            retained = json.loads(evidence.read_text(encoding="utf-8"))
+            self.assertEqual(retained["raw_response"], "{}")
 
     def test_capability_scaffold_requires_durable_runner_contract_before_llm(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -308,6 +349,183 @@ class GenerateScaffoldTests(unittest.TestCase):
 
         self.assertEqual(missing, ["success_criteria"])
 
+    def test_capability_tagged_parser_is_strict_and_preserves_multiline_code(self):
+        response = "\n".join(
+            (
+                "<<<DEEPGRAPH_FIELD:program_md>>>",
+                "# Program",
+                "Use {braces} without JSON escaping.",
+                "<<<DEEPGRAPH_END:program_md>>>",
+                "<<<DEEPGRAPH_FIELD:evaluate_py>>>",
+                "def evaluate(value):",
+                "    return {'score': value}",
+                "<<<DEEPGRAPH_END:evaluate_py>>>",
+            )
+        )
+        parsed = experiment_forge._parse_capability_tagged_blocks(
+            response,
+            expected_fields=["program_md", "evaluate_py"],
+        )
+        self.assertIn("Use {braces}", parsed["program_md"])
+        self.assertIn("return {'score': value}", parsed["evaluate_py"])
+
+        invalid = {
+            "duplicate": response
+            + "\n<<<DEEPGRAPH_FIELD:program_md>>>\nagain\n"
+            + "<<<DEEPGRAPH_END:program_md>>>",
+            "unknown": (
+                "<<<DEEPGRAPH_FIELD:train_py>>>\nvalue\n"
+                "<<<DEEPGRAPH_END:train_py>>>"
+            ),
+            "missing": (
+                "<<<DEEPGRAPH_FIELD:program_md>>>\nvalue\n"
+                "<<<DEEPGRAPH_END:program_md>>>"
+            ),
+            "wrong_order": "\n".join(
+                (
+                    "<<<DEEPGRAPH_FIELD:evaluate_py>>>",
+                    "value",
+                    "<<<DEEPGRAPH_END:evaluate_py>>>",
+                    "<<<DEEPGRAPH_FIELD:program_md>>>",
+                    "value",
+                    "<<<DEEPGRAPH_END:program_md>>>",
+                )
+            ),
+            "outside": "prose\n" + response,
+            "unclosed": "<<<DEEPGRAPH_FIELD:program_md>>>\nvalue",
+        }
+        for name, value in invalid.items():
+            with self.subTest(name=name):
+                with self.assertRaises(
+                    experiment_forge.CapabilityScaffoldContractError
+                ):
+                    experiment_forge._parse_capability_tagged_blocks(
+                        value,
+                        expected_fields=["program_md", "evaluate_py"],
+                    )
+
+        criteria = "\n".join(
+            (
+                "<<<DEEPGRAPH_FIELD:success_criteria>>>",
+                '{"metric_name":"exact_match","metric_direction":"higher",'
+                '"exciting":0.1,"solid":0.05,"disappointing":0.0}',
+                "<<<DEEPGRAPH_END:success_criteria>>>",
+            )
+        )
+        parsed_criteria = experiment_forge._parse_capability_tagged_blocks(
+            criteria,
+            expected_fields=["success_criteria"],
+        )
+        self.assertEqual(
+            parsed_criteria["success_criteria"]["metric_name"],
+            "exact_match",
+        )
+
+    def test_tagged_response_is_retained_before_parse_failure(self):
+        response = "malformed tagged response"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workdir = Path(tmpdir)
+            evidence = (
+                workdir
+                / "codex"
+                / experiment_forge.CAPABILITY_SCAFFOLD_TAGGED_RESPONSE_FILE
+            )
+
+            def reject_after_retention(_text, *, expected_fields):
+                self.assertEqual(expected_fields, ["candidate_adapter_py"])
+                self.assertTrue(evidence.is_file())
+                retained = json.loads(evidence.read_text(encoding="utf-8"))
+                self.assertEqual(retained["raw_response"], response)
+                raise experiment_forge.CapabilityScaffoldContractError(
+                    "injected_parse_failure"
+                )
+
+            with (
+                mock.patch.object(
+                    experiment_forge,
+                    "_resource_granted_proposer_text",
+                    return_value=(response, 19, {"provider": "test"}),
+                ),
+                mock.patch.object(
+                    experiment_forge,
+                    "_parse_capability_tagged_blocks",
+                    side_effect=reject_after_retention,
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    experiment_forge.CapabilityScaffoldContractError,
+                    "injected_parse_failure;response_sha256=",
+                ):
+                    experiment_forge._repair_capability_scaffold(
+                        {
+                            "program_md": "# Program",
+                            "evaluate_py": "print(0.0)",
+                            "success_criteria": {
+                                "metric_name": "exact_match",
+                                "metric_direction": "higher",
+                                "exciting": 0.1,
+                                "solid": 0.05,
+                                "disappointing": 0.0,
+                            },
+                        },
+                        insight=self._capability_insight(),
+                        runner_requirements=self._capability_requirements(),
+                        llm_scope={
+                            "agenda_id": 11,
+                            "idea_id": 105,
+                            "resource_grant_id": 31,
+                            "stage": "pilot",
+                        },
+                        workdir=workdir,
+                    )
+            self.assertEqual(evidence.stat().st_mode & 0o777, 0o600)
+
+    def test_tagged_role_call_has_one_attempt_and_hard_total_token_cap(self):
+        scope = {
+            "agenda_id": 11,
+            "idea_id": 105,
+            "resource_grant_id": 31,
+            "stage": "pilot",
+        }
+        with (
+            mock.patch(
+                "meta_harness.grant_usage.GrantUsageLedger"
+            ) as ledger_type,
+            mock.patch.object(
+                experiment_forge,
+                "configured_role_prompt_version",
+                return_value="forge-proposer-v1",
+            ),
+            mock.patch.object(
+                experiment_forge,
+                "call_llm_for_role",
+                return_value=("tagged", 77, {"provider": "test"}),
+            ) as routed,
+        ):
+            ledger_type.return_value.next_attempt_key.return_value = "attempt:t1"
+            text, tokens, _route = experiment_forge._resource_granted_proposer_text(
+                "system text",
+                "user text",
+                llm_scope=scope,
+                operation=experiment_forge.CAPABILITY_SCAFFOLD_TAGGED_OPERATION,
+                actual_token_cap=8000,
+            )
+
+        self.assertEqual(text, "tagged")
+        self.assertEqual(tokens, 77)
+        ledger_type.return_value.next_attempt_key.assert_called_once_with(
+            mock.ANY,
+            max_attempts=1,
+        )
+        kwargs = routed.call_args.kwargs
+        self.assertEqual(kwargs["max_tokens"], 8000)
+        self.assertEqual(kwargs["total_token_cap"], 8000)
+        self.assertEqual(kwargs["max_route_attempts"], 1)
+        self.assertEqual(
+            kwargs["operation"],
+            experiment_forge.CAPABILITY_SCAFFOLD_TAGGED_OPERATION,
+        )
+
     def test_capability_scaffold_resume_uses_only_focused_repair(self):
         initial = {
             "program_md": "",
@@ -331,11 +549,26 @@ class GenerateScaffoldTests(unittest.TestCase):
             ),
         }
         with tempfile.TemporaryDirectory() as tmpdir:
-            with mock.patch.object(
-                experiment_forge,
-                "_resource_granted_proposer_json",
-                return_value=(repaired, 7, {}),
-            ) as proposer:
+            tagged_response = "\n".join(
+                line
+                for field, value in repaired.items()
+                for line in (
+                    f"<<<DEEPGRAPH_FIELD:{field}>>>",
+                    value,
+                    f"<<<DEEPGRAPH_END:{field}>>>",
+                )
+            )
+            with (
+                mock.patch.object(
+                    experiment_forge,
+                    "_resource_granted_proposer_json",
+                ) as broad,
+                mock.patch.object(
+                    experiment_forge,
+                    "_resource_granted_proposer_text",
+                    return_value=(tagged_response, 7, {}),
+                ) as tagged,
+            ):
                 scaffold = experiment_forge.generate_scaffold(
                     self._capability_insight(),
                     {"url": "scratch", "name": "minimal"},
@@ -352,31 +585,36 @@ class GenerateScaffoldTests(unittest.TestCase):
                 )
 
         self.assertEqual(scaffold["tokens"], 7)
-        proposer.assert_called_once()
+        broad.assert_not_called()
+        tagged.assert_called_once()
         self.assertEqual(
-            proposer.call_args.kwargs["operation"],
-            "experiment_forge.capability_scaffold_repair",
+            tagged.call_args.kwargs["operation"],
+            experiment_forge.CAPABILITY_SCAFFOLD_TAGGED_OPERATION,
         )
 
-    def test_failed_capability_scaffold_loader_requires_exact_original_error(self):
+    @staticmethod
+    def _write_resume_spec(root: Path):
+        spec = root / "spec"
+        spec.mkdir()
+        (spec / "program.md").write_text("", encoding="utf-8")
+        (spec / "evaluate.py").write_text("", encoding="utf-8")
+        (spec / "success_criteria.json").write_text(
+            json.dumps(
+                {
+                    "metric_name": "exact_match",
+                    "metric_direction": "higher",
+                    "exciting": 0.05,
+                    "solid": 0.02,
+                    "disappointing": 0.0,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    def test_failed_capability_scaffold_loader_rejects_pre_tagged_failure(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
-            spec = root / "spec"
-            spec.mkdir()
-            (spec / "program.md").write_text("", encoding="utf-8")
-            (spec / "evaluate.py").write_text("", encoding="utf-8")
-            (spec / "success_criteria.json").write_text(
-                json.dumps(
-                    {
-                        "metric_name": "exact_match",
-                        "metric_direction": "higher",
-                        "exciting": 0.05,
-                        "solid": 0.02,
-                        "disappointing": 0.0,
-                    }
-                ),
-                encoding="utf-8",
-            )
+            self._write_resume_spec(root)
             row = {
                 "id": 137,
                 "status": "failed",
@@ -386,6 +624,52 @@ class GenerateScaffoldTests(unittest.TestCase):
             }
             with (
                 mock.patch.object(experiment_forge.db, "fetchone", return_value=row),
+                mock.patch.object(experiment_forge.db, "commit"),
+            ):
+                with self.assertRaisesRegex(
+                    experiment_forge.CapabilityScaffoldContractError,
+                    "capability_scaffold_resume_source_invalid",
+                ):
+                    experiment_forge._load_failed_capability_scaffold(
+                        run_id=137,
+                        agenda_id=11,
+                        insight_id=105,
+                        resource_grant_id=31,
+                    )
+
+            row["error_message"] = "runner_contract_violation:other"
+            with (
+                mock.patch.object(experiment_forge.db, "fetchone", return_value=row),
+                mock.patch.object(experiment_forge.db, "commit"),
+            ):
+                with self.assertRaisesRegex(
+                    experiment_forge.CapabilityScaffoldContractError,
+                    "capability_scaffold_resume_source_invalid",
+                ):
+                    experiment_forge._load_failed_capability_scaffold(
+                        run_id=137,
+                        agenda_id=11,
+                        insight_id=105,
+                        resource_grant_id=31,
+                    )
+
+    def test_failed_capability_scaffold_loader_allows_run137_tagged_once(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            self._write_resume_spec(root)
+            row = {
+                "id": 137,
+                "status": "failed",
+                "phase": "scaffold_route_unavailable",
+                "error_message": experiment_forge.CAPABILITY_SCAFFOLD_FAILED_REPAIR_ERROR,
+                "workdir": str(root),
+            }
+            with (
+                mock.patch.object(
+                    experiment_forge.db,
+                    "fetchone",
+                    side_effect=[row, {"count": 0}],
+                ),
                 mock.patch.object(experiment_forge.db, "commit"),
             ):
                 loaded, workdir, initial = (
@@ -400,7 +684,26 @@ class GenerateScaffoldTests(unittest.TestCase):
             self.assertEqual(workdir, root)
             self.assertEqual(initial["candidate_adapter_py"], "")
 
-            row["error_message"] = "runner_contract_violation:other"
+            with (
+                mock.patch.object(
+                    experiment_forge.db,
+                    "fetchone",
+                    side_effect=[row, {"count": 1}],
+                ),
+                mock.patch.object(experiment_forge.db, "commit"),
+            ):
+                with self.assertRaisesRegex(
+                    experiment_forge.CapabilityScaffoldContractError,
+                    "capability_scaffold_tagged_attempt_already_used",
+                ):
+                    experiment_forge._load_failed_capability_scaffold(
+                        run_id=137,
+                        agenda_id=11,
+                        insight_id=105,
+                        resource_grant_id=31,
+                    )
+
+            row["id"] = 138
             with (
                 mock.patch.object(experiment_forge.db, "fetchone", return_value=row),
                 mock.patch.object(experiment_forge.db, "commit"),
@@ -410,7 +713,7 @@ class GenerateScaffoldTests(unittest.TestCase):
                     "capability_scaffold_resume_source_invalid",
                 ):
                     experiment_forge._load_failed_capability_scaffold(
-                        run_id=137,
+                        run_id=138,
                         agenda_id=11,
                         insight_id=105,
                         resource_grant_id=31,

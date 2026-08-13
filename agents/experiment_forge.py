@@ -35,6 +35,7 @@ from agents.evosci_requirements import evosci_strict_gate_insight
 from agents.experiment_review import review_experiment_candidate
 from agents.idea_route import classify_idea_route
 from agents.llm_client import (
+    call_llm_for_role,
     call_llm_json_for_role,
     configured_role_prompt_version,
 )
@@ -222,9 +223,16 @@ For framework/evaluation-type methods (not model training), train.py should:
 
 CAPABILITY_SCAFFOLD_REPAIR_SYSTEM = """You repair a rejected capability-bound experiment scaffold.
 
-Return one JSON object whose top-level keys are exactly the requested missing
-fields. Every requested field is mandatory and must contain its complete value;
-do not nest one requested field inside another.
+Return only strict DeepGraph field blocks, with no JSON wrapper, Markdown fence,
+commentary, or text outside the blocks. Emit each requested field exactly once,
+in the order requested, using delimiter lines of this exact form:
+
+<<<DEEPGRAPH_FIELD:field_name>>>
+complete field value
+<<<DEEPGRAPH_END:field_name>>>
+
+Do not repeat a delimiter line inside a field value. Every requested field is
+mandatory; do not emit unrequested fields.
 
 For candidate_adapter_py, return a complete Python module that sets a non-empty
 CANDIDATE_METHOD and implements the exact candidate_hook in the frozen runner
@@ -239,13 +247,27 @@ instruction to NEVER STOP until interrupted.
 For evaluate_py, return a self-contained Python metric reader that prints the
 primary metric and prints 0.0 on malformed or missing input.
 
-For success_criteria, return an object with metric_name, metric_direction,
-exciting, solid, and disappointing. Do not include prose outside the JSON
-object."""
+For success_criteria, the block value must be one strict JSON object with
+metric_name, metric_direction, exciting, solid, and disappointing."""
 
 
 class CapabilityScaffoldContractError(ValueError):
     """The LLM response omitted a required capability-scaffold field."""
+
+
+CAPABILITY_SCAFFOLD_TAGGED_OPERATION = (
+    "experiment_forge.capability_scaffold_tagged_repair"
+)
+CAPABILITY_SCAFFOLD_TAGGED_ACTUAL_TOKEN_CAP = 8000
+CAPABILITY_SCAFFOLD_TAGGED_RESPONSE_FILE = (
+    "capability_scaffold_tagged_response.json"
+)
+CAPABILITY_SCAFFOLD_TAGGED_RESUME_RUN_ID = 137
+CAPABILITY_SCAFFOLD_FAILED_REPAIR_ERROR = (
+    "resource-granted scaffold route unavailable: "
+    "capability_scaffold_contract_missing:"
+    "program_md,evaluate_py,candidate_adapter_py"
+)
 
 
 CODE_SCOUT_SYSTEM = prompt_block("code_scout") + """
@@ -2547,6 +2569,55 @@ def _resource_granted_proposer_json(
     return result, tokens, route
 
 
+def _resource_granted_proposer_text(
+    system_prompt: str,
+    user_prompt: str,
+    *,
+    llm_scope: dict,
+    operation: str,
+    actual_token_cap: int,
+) -> tuple[str, int, dict]:
+    """Run one raw-text forge operation under a hard total-token ceiling."""
+    required = ("agenda_id", "idea_id", "resource_grant_id", "stage")
+    missing = [key for key in required if not llm_scope.get(key)]
+    if missing:
+        raise PermissionError(
+            "resource-granted LLM scope is incomplete: " + ",".join(missing)
+        )
+    from meta_harness.grant_usage import GrantUsageLedger
+
+    digest = hashlib.sha256(
+        "\n".join(
+            (
+                str(llm_scope["agenda_id"]),
+                str(llm_scope["idea_id"]),
+                str(llm_scope["resource_grant_id"]),
+                operation,
+                user_prompt,
+            )
+        ).encode("utf-8")
+    ).hexdigest()
+    attempt_key = GrantUsageLedger(
+        int(llm_scope["resource_grant_id"])
+    ).next_attempt_key(f"{operation}:{digest}", max_attempts=1)
+    text, tokens, route = call_llm_for_role(
+        system_prompt,
+        user_prompt,
+        agenda_id=int(llm_scope["agenda_id"]),
+        idea_id=int(llm_scope["idea_id"]),
+        role="proposer",
+        stage=str(llm_scope["stage"]),
+        resource_grant_id=int(llm_scope["resource_grant_id"]),
+        operation=operation,
+        idempotency_key=attempt_key,
+        prompt_version=configured_role_prompt_version("proposer"),
+        max_tokens=int(actual_token_cap),
+        total_token_cap=int(actual_token_cap),
+        max_route_attempts=1,
+    )
+    return str(text or ""), int(tokens or 0), dict(route or {})
+
+
 def scout_codebase(insight: dict, *, llm_scope: dict | None = None) -> dict:
     """Find the best codebase for implementing a hypothesis."""
     if llm_scope is None:
@@ -2717,18 +2788,213 @@ def _missing_capability_scaffold_fields(result: dict) -> list[str]:
     return missing
 
 
+def _parse_capability_tagged_blocks(
+    text: str,
+    *,
+    expected_fields: list[str],
+) -> dict:
+    """Parse exact, line-delimited scaffold fields without JSON code escaping."""
+    expected = list(expected_fields)
+    if not expected or len(expected) != len(set(expected)):
+        raise CapabilityScaffoldContractError(
+            "capability_scaffold_tagged_expected_fields_invalid"
+        )
+    allowed = set(_CAPABILITY_SCAFFOLD_REQUIRED_FIELDS)
+    if any(field not in allowed for field in expected):
+        raise CapabilityScaffoldContractError(
+            "capability_scaffold_tagged_expected_fields_invalid"
+        )
+
+    starts = {
+        f"<<<DEEPGRAPH_FIELD:{field}>>>": field for field in allowed
+    }
+    ends = {f"<<<DEEPGRAPH_END:{field}>>>": field for field in allowed}
+    parsed: dict[str, str | dict] = {}
+    order: list[str] = []
+    current: str | None = None
+    buffer: list[str] = []
+
+    for raw_line in str(text or "").splitlines(keepends=True):
+        marker = raw_line.rstrip("\r\n")
+        if (
+            marker.startswith("<<<DEEPGRAPH_FIELD:")
+            and marker.endswith(">>>")
+            and marker not in starts
+        ):
+            raise CapabilityScaffoldContractError(
+                "capability_scaffold_tagged_unknown_field"
+            )
+        if (
+            marker.startswith("<<<DEEPGRAPH_END:")
+            and marker.endswith(">>>")
+            and marker not in ends
+        ):
+            raise CapabilityScaffoldContractError(
+                "capability_scaffold_tagged_unknown_end"
+            )
+        if marker in starts:
+            field = starts[marker]
+            if current is not None:
+                raise CapabilityScaffoldContractError(
+                    "capability_scaffold_tagged_nested_field"
+                )
+            if field not in expected:
+                raise CapabilityScaffoldContractError(
+                    "capability_scaffold_tagged_unknown_field:" + field
+                )
+            if field in parsed or field in order:
+                raise CapabilityScaffoldContractError(
+                    "capability_scaffold_tagged_duplicate_field:" + field
+                )
+            current = field
+            order.append(field)
+            buffer = []
+            continue
+        if marker in ends:
+            field = ends[marker]
+            if current != field:
+                raise CapabilityScaffoldContractError(
+                    "capability_scaffold_tagged_mismatched_end:" + field
+                )
+            value = "".join(buffer)
+            if value.endswith("\r\n"):
+                value = value[:-2]
+            elif value.endswith("\n"):
+                value = value[:-1]
+            if not value.strip():
+                raise CapabilityScaffoldContractError(
+                    "capability_scaffold_tagged_empty_field:" + field
+                )
+            if field == "success_criteria":
+                try:
+                    decoded = json.loads(value)
+                except json.JSONDecodeError as exc:
+                    raise CapabilityScaffoldContractError(
+                        "capability_scaffold_tagged_success_criteria_invalid"
+                    ) from exc
+                if not isinstance(decoded, dict):
+                    raise CapabilityScaffoldContractError(
+                        "capability_scaffold_tagged_success_criteria_invalid"
+                    )
+                parsed[field] = decoded
+            else:
+                parsed[field] = value
+            current = None
+            buffer = []
+            continue
+        if current is None:
+            if marker.strip():
+                raise CapabilityScaffoldContractError(
+                    "capability_scaffold_tagged_text_outside_fields"
+                )
+            continue
+        buffer.append(raw_line)
+
+    if current is not None:
+        raise CapabilityScaffoldContractError(
+            "capability_scaffold_tagged_unclosed_field:" + current
+        )
+    missing = [field for field in expected if field not in parsed]
+    if missing:
+        raise CapabilityScaffoldContractError(
+            "capability_scaffold_tagged_missing:" + ",".join(missing)
+        )
+    if order != expected:
+        raise CapabilityScaffoldContractError(
+            "capability_scaffold_tagged_field_order_invalid"
+        )
+    return parsed
+
+
+def _persist_capability_tagged_response(
+    *,
+    workdir: Path,
+    response_text: str,
+    tokens: int,
+    route: dict,
+) -> tuple[Path, str]:
+    """Atomically retain the exact response before any tagged parsing."""
+    raw = str(response_text or "").encode("utf-8")
+    digest = hashlib.sha256(raw).hexdigest()
+    evidence_dir = Path(workdir) / "codex"
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    destination = evidence_dir / CAPABILITY_SCAFFOLD_TAGGED_RESPONSE_FILE
+    if os.path.lexists(destination):
+        raise CapabilityScaffoldContractError(
+            "capability_scaffold_tagged_response_already_exists"
+        )
+    safe_route = {
+        key: route.get(key)
+        for key in ("provider", "model", "model_family", "prompt_version")
+        if route.get(key) is not None
+    }
+    payload = {
+        "schema_version": "capability_scaffold_tagged_response_v1",
+        "operation": CAPABILITY_SCAFFOLD_TAGGED_OPERATION,
+        "response_sha256": digest,
+        "response_bytes": len(raw),
+        "tokens_used": int(tokens or 0),
+        "route": safe_route,
+        "raw_response": str(response_text or ""),
+    }
+    fd, temporary = tempfile.mkstemp(
+        prefix=".capability_scaffold_tagged_response.",
+        suffix=".tmp",
+        dir=str(evidence_dir),
+        text=True,
+    )
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, destination)
+        os.chmod(destination, 0o600)
+        directory_fd = os.open(str(evidence_dir), os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    except Exception:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        try:
+            Path(temporary).unlink()
+        except OSError:
+            pass
+        raise
+    return destination, digest
+
+
 def _repair_capability_scaffold(
     result: dict,
     *,
     insight: dict,
     runner_requirements: dict,
     llm_scope: dict,
+    workdir: Path,
 ) -> tuple[dict, int, dict | None, list[str]]:
-    """Fill only absent capability fields with one focused, metered call."""
+    """Fill only absent capability fields with one retained tagged response."""
 
     missing = _missing_capability_scaffold_fields(result)
     if not missing:
         return dict(result), 0, None, []
+
+    evidence_dir = Path(workdir) / "codex"
+    if evidence_dir.is_symlink():
+        raise CapabilityScaffoldContractError(
+            "capability_scaffold_tagged_evidence_dir_symlink"
+        )
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    evidence_path = evidence_dir / CAPABILITY_SCAFFOLD_TAGGED_RESPONSE_FILE
+    if os.path.lexists(evidence_path):
+        raise CapabilityScaffoldContractError(
+            "capability_scaffold_tagged_response_already_exists"
+        )
 
     method = insight.get("proposed_method")
     method = method if isinstance(method, dict) else {}
@@ -2738,6 +3004,15 @@ def _repair_capability_scaffold(
         (
             "# Missing required top-level fields",
             json.dumps(missing, ensure_ascii=False),
+            "# Required tagged block order",
+            "\n".join(
+                (
+                    f"<<<DEEPGRAPH_FIELD:{field}>>>\n"
+                    f"complete {field} value\n"
+                    f"<<<DEEPGRAPH_END:{field}>>>"
+                )
+                for field in missing
+            ),
             "# Frozen runner contract",
             json.dumps(runner_requirements, ensure_ascii=False, sort_keys=True),
             "# Proposed method",
@@ -2752,16 +3027,37 @@ def _repair_capability_scaffold(
                 ensure_ascii=False,
                 sort_keys=True,
             ),
-            "Return exactly the missing fields as top-level JSON keys.",
+            "Return exactly these tagged blocks in the stated order.",
         )
     )
-    repaired, tokens, route = _resource_granted_proposer_json(
+    response_text, tokens, route = _resource_granted_proposer_text(
         CAPABILITY_SCAFFOLD_REPAIR_SYSTEM,
         prompt,
         llm_scope=llm_scope,
-        operation="experiment_forge.capability_scaffold_repair",
-        max_tokens=8000,
+        operation=CAPABILITY_SCAFFOLD_TAGGED_OPERATION,
+        actual_token_cap=CAPABILITY_SCAFFOLD_TAGGED_ACTUAL_TOKEN_CAP,
     )
+    evidence_path, response_sha256 = _persist_capability_tagged_response(
+        workdir=workdir,
+        response_text=response_text,
+        tokens=tokens,
+        route=route,
+    )
+    try:
+        repaired = _parse_capability_tagged_blocks(
+            response_text,
+            expected_fields=missing,
+        )
+    except CapabilityScaffoldContractError as exc:
+        raise CapabilityScaffoldContractError(
+            f"{exc};response_sha256={response_sha256}"
+        ) from exc
+    route = {
+        **dict(route or {}),
+        "response_format": "deepgraph_tagged_blocks_v1",
+        "response_evidence_path": str(evidence_path),
+        "response_sha256": response_sha256,
+    }
     merged = dict(result)
     for field in missing:
         if field in repaired:
@@ -2919,6 +3215,7 @@ def generate_scaffold(
                 insight=parsed,
                 runner_requirements=runner_requirements,
                 llm_scope=llm_scope,
+                workdir=workdir,
             )
         )
         tokens += repair_tokens
@@ -3880,13 +4177,15 @@ def _load_failed_capability_scaffold(
         (run_id, agenda_id, insight_id, resource_grant_id),
     )
     db.commit()
-    if (
-        not run
-        or str(run.get("status") or "") != "failed"
-        or str(run.get("phase") or "") != "runner_materialization_failed"
-        or str(run.get("error_message") or "")
-        != "runner_contract_violation:candidate_adapter_required"
-    ):
+    tagged_v1_failure = bool(
+        run
+        and int(run.get("id") or 0) == CAPABILITY_SCAFFOLD_TAGGED_RESUME_RUN_ID
+        and str(run.get("status") or "") == "failed"
+        and str(run.get("phase") or "") == "scaffold_route_unavailable"
+        and str(run.get("error_message") or "")
+        == CAPABILITY_SCAFFOLD_FAILED_REPAIR_ERROR
+    )
+    if not tagged_v1_failure:
         raise CapabilityScaffoldContractError(
             "capability_scaffold_resume_source_invalid"
         )
@@ -3895,6 +4194,27 @@ def _load_failed_capability_scaffold(
         raise CapabilityScaffoldContractError(
             "capability_scaffold_resume_workdir_missing"
         )
+    if tagged_v1_failure:
+        evidence_path = (
+            workdir / "codex" / CAPABILITY_SCAFFOLD_TAGGED_RESPONSE_FILE
+        )
+        if evidence_path.exists():
+            raise CapabilityScaffoldContractError(
+                "capability_scaffold_tagged_response_already_exists"
+            )
+        usage = db.fetchone(
+            """
+            SELECT COUNT(*) AS count
+            FROM resource_grant_usage_reservations
+            WHERE resource_grant_id=? AND operation=?
+            """,
+            (resource_grant_id, CAPABILITY_SCAFFOLD_TAGGED_OPERATION),
+        )
+        db.commit()
+        if int((usage or {}).get("count") or 0) != 0:
+            raise CapabilityScaffoldContractError(
+                "capability_scaffold_tagged_attempt_already_used"
+            )
     spec_dir = workdir / "spec"
     try:
         success = json.loads(
@@ -4048,7 +4368,7 @@ def forge_experiment(
         db.execute(
             """
             UPDATE experiment_runs
-            SET status='scaffolding', phase='capability_scaffold_repair',
+            SET status='scaffolding', phase='capability_scaffold_tagged_repair',
                 error_message=NULL, completed_at=NULL
             WHERE id=? AND agenda_id=?
             """,

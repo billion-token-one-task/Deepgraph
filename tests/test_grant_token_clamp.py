@@ -100,14 +100,50 @@ class RoleRouteClampTests(unittest.TestCase):
         from agents import llm_client
 
         source = inspect.getsource(llm_client.call_llm_for_role)
+        bounds_source = inspect.getsource(llm_client._bounded_role_token_caps)
         self.assertIn("GrantUsageLedger(resource_grant_id).remaining(", source)
-        self.assertIn("token_cap = min(token_cap, remaining_tokens)", source)
-        self.assertIn("ResourceGrant token budget is exhausted", source)
+        self.assertIn("_bounded_role_token_caps(", source)
+        self.assertIn("ResourceGrant token budget is exhausted", bounds_source)
         # The clamp must sit after the grant lookup, not before it.
         self.assertLess(
             source.index("active scoped ResourceGrant is required"),
-            source.index("token_cap = min(token_cap, remaining_tokens)"),
+            source.index("remaining_tokens = GrantUsageLedger"),
         )
+
+    def test_explicit_total_cap_separates_provider_output_from_reservation(self):
+        """A tagged call reserves 8k total but sends a smaller output cap."""
+        from agents import llm_client
+
+        aggregate_cap, provider_output_cap = llm_client._bounded_role_token_caps(
+            "system",
+            "user",
+            requested_output_cap=8000,
+            remaining_tokens=17084,
+            total_token_cap=8000,
+        )
+        prompt_bytes = len("system".encode()) + len("user".encode())
+        self.assertEqual(aggregate_cap, 8000)
+        self.assertEqual(
+            provider_output_cap,
+            llm_client.LLM_EXPLICIT_PROVIDER_OUTPUT_TOKEN_CEILING,
+        )
+        self.assertLessEqual(
+            provider_output_cap + prompt_bytes
+            + llm_client.LLM_PROMPT_FRAMING_TOKEN_CEILING,
+            aggregate_cap,
+        )
+
+    def test_explicit_total_cap_refuses_an_oversized_prompt_before_routing(self):
+        from agents import llm_client
+
+        with self.assertRaisesRegex(ValueError, "prompt cannot fit"):
+            llm_client._bounded_role_token_caps(
+                "x" * 8000,
+                "",
+                requested_output_cap=8000,
+                remaining_tokens=17084,
+                total_token_cap=8000,
+            )
 
 
 if __name__ == "__main__":
