@@ -347,6 +347,89 @@ def candidate_prompt(example, baseline_prompt):
                     candidate_adapter_source=source,
                 )
 
+    def test_materializer_rejects_wrong_hook_arity_before_compute(self):
+        source = """
+CANDIDATE_METHOD = "wrong_arity"
+def candidate_prompt(prompt):
+    return "candidate:" + prompt
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(
+                RunnerMaterializationError, "candidate_hook_signature_invalid"
+            ):
+                materialize_runner_bundle(
+                    workdir=tmp,
+                    preflight_row=self._preflight("generative_qa"),
+                    candidate_adapter_source=source,
+                )
+
+    def test_materializer_rejects_non_exact_hook_signature_before_compute(self):
+        source = """
+CANDIDATE_METHOD = "variadic_contract"
+def candidate_prompt(example, baseline_prompt, *extra):
+    return baseline_prompt
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(
+                RunnerMaterializationError, "candidate_hook_signature_invalid"
+            ):
+                materialize_runner_bundle(
+                    workdir=tmp,
+                    preflight_row=self._preflight("generative_qa"),
+                    candidate_adapter_source=source,
+                )
+
+    def test_materializer_rejects_async_hook_before_compute(self):
+        source = """
+CANDIDATE_METHOD = "async_contract"
+async def candidate_prompt(example, baseline_prompt):
+    return baseline_prompt + " candidate"
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(
+                RunnerMaterializationError, "candidate_hook_missing:candidate_prompt"
+            ):
+                materialize_runner_bundle(
+                    workdir=tmp,
+                    preflight_row=self._preflight("generative_qa"),
+                    candidate_adapter_source=source,
+                )
+
+    def test_materializer_rejects_positional_only_identity_adapter(self):
+        source = """
+CANDIDATE_METHOD = "posonly_identity"
+def candidate_prompt(example, baseline_prompt, /):
+    return baseline_prompt
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(
+                RunnerMaterializationError, "candidate_adapter_identity"
+            ):
+                materialize_runner_bundle(
+                    workdir=tmp,
+                    preflight_row=self._preflight("generative_qa"),
+                    candidate_adapter_source=source,
+                )
+
+    def test_materializer_rejects_decorated_hook_before_compute(self):
+        source = """
+CANDIDATE_METHOD = "decorated"
+def wrapper(fn):
+    return fn
+@wrapper
+def candidate_prompt(example, baseline_prompt):
+    return baseline_prompt + " candidate"
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(
+                RunnerMaterializationError, "candidate_hook_signature_invalid"
+            ):
+                materialize_runner_bundle(
+                    workdir=tmp,
+                    preflight_row=self._preflight("generative_qa"),
+                    candidate_adapter_source=source,
+                )
+
     def test_runner_rejects_runtime_all_sample_identity_adapter(self):
         adapter = """
 CANDIDATE_METHOD = "aliased_identity"
