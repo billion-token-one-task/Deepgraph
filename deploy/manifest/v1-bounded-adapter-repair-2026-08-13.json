@@ -1,0 +1,75 @@
+{
+  "backup_root": "/home/ec2-user/deepgraph-rollback",
+  "batches": [
+    {
+      "acceptance": "At most one 2435-token adapter repair of run137; no new run, no GPU before Sol pass.",
+      "authorization": "owner-autonomous-v1-completion-2026-08-13",
+      "batch": "1-bounded-adapter-repair",
+      "files": [
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/v1-bounded-adapter-repair-2026-08-13/experiment_forge.py.bak",
+          "kind": "file",
+          "mode": "0644",
+          "owner": "billion-token:billion-token",
+          "replaces": null,
+          "runtime_locally_modified": true,
+          "source": "agents/experiment_forge.py",
+          "source_bytes": 217013,
+          "source_sha256": "20177eefc4a25bfb25af0150fc97ce61675221131e9e6d27beb37213cf275345",
+          "target": "/home/billion-token/Deepgraph/agents/experiment_forge.py",
+          "target_predeploy_sha256": "7907113c25dc719a4cf9ca86463debd9ba352381663f61422dcfd43496195f98",
+          "target_predeploy_state": "present"
+        },
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/v1-bounded-adapter-repair-2026-08-13/gpu_scheduler.py.bak",
+          "kind": "file",
+          "mode": "0644",
+          "owner": "billion-token:billion-token",
+          "replaces": null,
+          "runtime_locally_modified": true,
+          "source": "orchestrator/gpu_scheduler.py",
+          "source_bytes": 68774,
+          "source_sha256": "19e43c15262dca53314d25c9af85b61f6bb67c3e06c09f7f85d3a751309d7c8b",
+          "target": "/home/billion-token/Deepgraph/orchestrator/gpu_scheduler.py",
+          "target_predeploy_sha256": "43f000495bed773389ab3d738a1e1ef958419f0bc995dd36503b2aa5aecf5a2c",
+          "target_predeploy_state": "present"
+        }
+      ],
+      "health_check": "Hash verify and py_compile; keep services stopped.",
+      "purpose": "Fail closed before adapter repair or GPU launch.",
+      "restart_required": [],
+      "systemd_reload_required": false
+    }
+  ],
+  "deployment_steps": [
+    "Apply only these two production files without restart; verify hashes and py_compile.",
+    "Read-only recheck run137/grant32/original evidence/R8, then invoke repair_materialized_capability_adapter once.",
+    "If repair succeeds, submit artifacts to Sol before any GPU queue; if it fails, do not retry."
+  ],
+  "description": "One fail-closed, grant32-bounded adapter-only recovery for run137, plus GPU admission recheck during repair.",
+  "environment_keys": [],
+  "file_contents_read_from_production": true,
+  "manifest_key": "v1-bounded-adapter-repair-2026-08-13",
+  "operator_diff_required": [
+    "agents/experiment_forge.py",
+    "orchestrator/gpu_scheduler.py"
+  ],
+  "preconditions": [
+    "Autonomous V1 deployment, LLM, and controlled GPU execution authorized by owner on 2026-08-13.",
+    "Services and GPU remain stopped; R8 is zero; run137/grant32 retain the audited state and exactly 2435 unused tokens.",
+    "Sol, Terra, and observer approved the bounded adapter repair boundary."
+  ],
+  "production_tree_modified_by_this_command": false,
+  "rollback": {
+    "data_impact": "File-only deployment; later normal recovery persists its own audited data.",
+    "order": "keep execution stopped, roll back one batch",
+    "steps": [
+      "Use deploy_manifest_batch.py --rollback for 1-bounded-adapter-repair.",
+      "Do not manually edit run/grant/ledger/outcome rows."
+    ]
+  },
+  "runtime_root": "/home/billion-token/Deepgraph",
+  "source_commit": "fb8e10fd01cffa36b130361fd8e019d083fc973f",
+  "source_worktree_clean": true,
+  "tests": "Adapter recovery: 9 targeted tests passed. Runner materializer: 18 passed plus 9 subtests. GPU admission race unit test passed. py_compile and diff-check passed. Legacy scheduler fixture remains incompatible with the current ResourceGrant schema and is not used as acceptance evidence."
+}
