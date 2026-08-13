@@ -8,6 +8,7 @@ Three sub-components:
 This is the hardest layer: translating a structured method description
 into something an autonomous coding agent can actually run.
 """
+import ast
 import copy
 import hashlib
 import json
@@ -263,6 +264,14 @@ CAPABILITY_SCAFFOLD_TAGGED_RESPONSE_FILE = (
     "capability_scaffold_tagged_response.json"
 )
 CAPABILITY_SCAFFOLD_TAGGED_RESUME_RUN_ID = 137
+CAPABILITY_ADAPTER_REPAIR_OPERATION = (
+    "experiment_forge.capability_adapter_repair"
+)
+CAPABILITY_ADAPTER_REPAIR_ACTUAL_TOKEN_CAP = 2435
+CAPABILITY_ADAPTER_REPAIR_RESPONSE_FILE = "capability_adapter_repair_response.json"
+CAPABILITY_ADAPTER_REPAIR_SYSTEM = (
+    "Python only; exact hook; no imports, labels, I/O."
+)
 CAPABILITY_SCAFFOLD_FAILED_REPAIR_ERROR = (
     "resource-granted scaffold route unavailable: "
     "capability_scaffold_contract_missing:"
@@ -2926,13 +2935,15 @@ def _persist_capability_tagged_response(
     response_text: str,
     tokens: int,
     route: dict,
+    operation: str = CAPABILITY_SCAFFOLD_TAGGED_OPERATION,
+    response_file: str = CAPABILITY_SCAFFOLD_TAGGED_RESPONSE_FILE,
 ) -> tuple[Path, str]:
     """Atomically retain the exact response before any tagged parsing."""
     raw = str(response_text or "").encode("utf-8")
     digest = hashlib.sha256(raw).hexdigest()
     evidence_dir = Path(workdir) / "codex"
     evidence_dir.mkdir(parents=True, exist_ok=True)
-    destination = evidence_dir / CAPABILITY_SCAFFOLD_TAGGED_RESPONSE_FILE
+    destination = evidence_dir / response_file
     if os.path.lexists(destination):
         raise CapabilityScaffoldContractError(
             "capability_scaffold_tagged_response_already_exists"
@@ -2944,7 +2955,7 @@ def _persist_capability_tagged_response(
     }
     payload = {
         "schema_version": "capability_scaffold_tagged_response_v1",
-        "operation": CAPABILITY_SCAFFOLD_TAGGED_OPERATION,
+        "operation": operation,
         "response_sha256": digest,
         "response_bytes": len(raw),
         "tokens_used": int(tokens or 0),
@@ -4245,6 +4256,201 @@ def _load_failed_capability_scaffold(
             "capability_scaffold_resume_artifacts_invalid"
         ) from exc
     return dict(run), workdir, initial
+
+
+def _adapter_repair_prompt(insight: dict, requirements: dict) -> str:
+    """Compact prompt for the remaining grant capacity."""
+    hook = _non_empty_text(requirements.get("candidate_hook"))
+    return (
+        f"CANDIDATE_METHOD; def {hook}(example,baseline_prompt): ->str. "
+        "Prompt exactly: observations; centered empirical covariance; eigen directions; "
+        "skewness/excess-kurtosis reweighting; constrained reconstruction; solve; #### answer. "
+        "Return Python only."
+    )
+
+
+def _adapter_has_mechanism_contract(source: str) -> bool:
+    """Reject a renamed generic CoT adapter before scarce GPU execution."""
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return False
+    if len(tree.body) != 2:
+        return False
+    assignment, hook = tree.body
+    if not (
+        isinstance(assignment, ast.Assign)
+        and len(assignment.targets) == 1
+        and isinstance(assignment.targets[0], ast.Name)
+        and assignment.targets[0].id == "CANDIDATE_METHOD"
+        and isinstance(assignment.value, ast.Constant)
+        and isinstance(assignment.value.value, str)
+        and isinstance(hook, ast.FunctionDef)
+        and not hook.decorator_list
+        and len(hook.args.args) == 2
+        and not hook.args.posonlyargs and not hook.args.vararg
+        and not hook.args.kwonlyargs and not hook.args.kwarg
+        and len(hook.body) == 1 and isinstance(hook.body[0], ast.Return)
+    ):
+        return False
+    returned = hook.body[0].value
+    baseline_arg = hook.args.args[1].arg
+
+    def pure_prompt_expression(node: ast.AST) -> bool:
+        if isinstance(node, ast.Constant):
+            return isinstance(node.value, str)
+        if isinstance(node, ast.Name):
+            return node.id == baseline_arg
+        return (
+            isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add)
+            and pure_prompt_expression(node.left) and pure_prompt_expression(node.right)
+        )
+
+    if not pure_prompt_expression(returned):
+        return False
+    if not any(isinstance(node, ast.Name) and node.id == baseline_arg for node in ast.walk(returned)):
+        return False
+    def ordered_literals(node: ast.AST) -> list[str]:
+        if isinstance(node, ast.Constant):
+            return [node.value.lower()]
+        if isinstance(node, ast.Name):
+            return []
+        return ordered_literals(node.left) + ordered_literals(node.right)
+
+    text = " ".join(ordered_literals(returned))
+    tokens = (
+            "observation", "center", "covariance", "eigen", "skew",
+            "kurtosis", "constraint", "reconstruct", "solve", "####",
+    )
+    positions = [text.find(token) for token in tokens]
+    return all(position >= 0 for position in positions) and positions == sorted(positions)
+
+
+def _atomic_replace_adapter(path: Path, source: str) -> None:
+    """Replace only the validated generated adapter, never its runner bundle."""
+    fd, temporary = tempfile.mkstemp(prefix=".candidate_adapter.", suffix=".tmp", dir=str(path.parent), text=True)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(source.rstrip() + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    except Exception:
+        try:
+            Path(temporary).unlink()
+        except OSError:
+            pass
+        raise
+
+
+def repair_materialized_capability_adapter(
+    *, run_id: int, agenda_id: int, insight_id: int, resource_grant_id: int
+) -> dict:
+    """One normal, bounded adapter-only recovery for the stranded V1 run."""
+    if int(run_id) != CAPABILITY_SCAFFOLD_TAGGED_RESUME_RUN_ID:
+        raise CapabilityScaffoldContractError("capability_adapter_repair_run_invalid")
+    lock = " FOR UPDATE" if db._use_pg() else ""  # noqa: SLF001
+    run = db.fetchone(
+        """SELECT r.*, g.status AS grant_status, g.stage AS grant_stage, g.preflight_result_id
+           FROM experiment_runs r JOIN resource_grants g ON g.id=r.resource_grant_id
+           WHERE r.id=? AND r.agenda_id=? AND r.deep_insight_id=? AND r.resource_grant_id=?
+             AND g.expires_at>CURRENT_TIMESTAMP""" + lock,
+        (run_id, agenda_id, insight_id, resource_grant_id),
+    )
+    if not run or str(run.get("status")) != "scaffolding" or str(run.get("phase")) != "scaffold_ready" or str(run.get("grant_status")) != "active" or str(run.get("grant_stage")) not in {"pilot", "experiment_forge"}:
+        db.rollback(); raise CapabilityScaffoldContractError("capability_adapter_repair_source_invalid")
+    workdir = Path(str(run.get("workdir") or ""))
+    original = workdir / "codex" / CAPABILITY_SCAFFOLD_TAGGED_RESPONSE_FILE
+    evidence = workdir / "codex" / CAPABILITY_ADAPTER_REPAIR_RESPONSE_FILE
+    if not original.is_file() or os.path.lexists(evidence):
+        db.rollback(); raise CapabilityScaffoldContractError("capability_adapter_repair_evidence_invalid")
+    try:
+        original_payload = json.loads(original.read_text(encoding="utf-8"))
+        original_ok = (
+            original.stat().st_mode & 0o777 == 0o600
+            and original_payload.get("schema_version") == "capability_scaffold_tagged_response_v1"
+            and original_payload.get("operation") == CAPABILITY_SCAFFOLD_TAGGED_OPERATION
+            and hashlib.sha256(str(original_payload.get("raw_response") or "").encode("utf-8")).hexdigest()
+            == original_payload.get("response_sha256")
+        )
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        original_ok = False
+    if not original_ok:
+        db.rollback(); raise CapabilityScaffoldContractError("capability_adapter_repair_evidence_invalid")
+    for table, predicate, params in (
+        ("resource_grant_usage_reservations", "resource_grant_id=? AND operation=?", (resource_grant_id, CAPABILITY_ADAPTER_REPAIR_OPERATION)),
+        ("gpu_jobs", "experiment_run_id=?", (run_id,)),
+        ("compute_jobs_v1", "experiment_run_id=?", (run_id,)),
+        ("colab_work_requests_v1", "experiment_run_id=?", (run_id,)),
+        ("outcome_records", "experiment_run_id=?", (run_id,)),
+    ):
+        row = db.fetchone(f"SELECT COUNT(*) AS count FROM {table} WHERE {predicate}", params)
+        if int((row or {}).get("count") or 0):
+            db.rollback(); raise CapabilityScaffoldContractError("capability_adapter_repair_state_not_clean")
+    open_llm = db.fetchone(
+        "SELECT COUNT(*) AS count FROM resource_grant_usage_reservations WHERE resource_grant_id=? AND status='reserved'",
+        (resource_grant_id,),
+    )
+    if int((open_llm or {}).get("count") or 0):
+        db.rollback(); raise CapabilityScaffoldContractError("capability_adapter_repair_open_reservation")
+    from meta_harness.grant_usage import GrantUsageLedger
+    if GrantUsageLedger(resource_grant_id).remaining(agenda_id=agenda_id) < CAPABILITY_ADAPTER_REPAIR_ACTUAL_TOKEN_CAP:
+        db.rollback(); raise CapabilityScaffoldContractError("capability_adapter_repair_budget_insufficient")
+    preflight = CandidatePreflightRepository().require_passed(
+        preflight_result_id=int(run["preflight_result_id"]), agenda_id=agenda_id, idea_id=insight_id,
+        allowed_backends=("cpu", "ssh_gpu", "local_gpu", "colab_gpu"),
+    )
+    # The old source is valid only as evidence of this exact known defect. Do
+    # not accept an arbitrary scaffold-ready run as an adapter repair source.
+    old_source = (workdir / "code" / "candidate_adapter.py").read_text(encoding="utf-8")
+    try:
+        with tempfile.TemporaryDirectory() as check_dir:
+            materialize_runner_bundle(workdir=check_dir, preflight_row=preflight,
+                                      candidate_adapter_source=old_source)
+    except RunnerMaterializationError as exc:
+        if str(exc) != "candidate_hook_signature_invalid":
+            db.rollback(); raise CapabilityScaffoldContractError("capability_adapter_repair_source_not_signature_failure") from exc
+    else:
+        db.rollback(); raise CapabilityScaffoldContractError("capability_adapter_repair_source_not_signature_failure")
+    updated = db.execute(
+        "UPDATE experiment_runs SET status='adapter_repairing', phase='adapter_repairing', error_message=NULL, completed_at=NULL WHERE id=? AND agenda_id=? AND status='scaffolding' AND phase='scaffold_ready'",
+        (run_id, agenda_id),
+    )
+    if int(updated.rowcount or 0) != 1:
+        db.rollback(); raise CapabilityScaffoldContractError("capability_adapter_repair_cas_failed")
+    db.commit()
+    try:
+        raw_insight = db.fetchone("SELECT * FROM deep_insights WHERE id=? AND agenda_id=?", (insight_id, agenda_id))
+        insight = _parse_insight_fields(dict(raw_insight or {}))
+        requirements = json.loads(str(preflight["requirements_json"]))
+        text, tokens, route = _resource_granted_proposer_text(
+            CAPABILITY_ADAPTER_REPAIR_SYSTEM, _adapter_repair_prompt(insight, requirements),
+            llm_scope={"agenda_id": agenda_id, "idea_id": insight_id, "resource_grant_id": resource_grant_id, "stage": "pilot"},
+            operation=CAPABILITY_ADAPTER_REPAIR_OPERATION,
+            actual_token_cap=CAPABILITY_ADAPTER_REPAIR_ACTUAL_TOKEN_CAP,
+        )
+        _persist_capability_tagged_response(workdir=workdir, response_text=text, tokens=tokens, route=route,
+            operation=CAPABILITY_ADAPTER_REPAIR_OPERATION, response_file=CAPABILITY_ADAPTER_REPAIR_RESPONSE_FILE)
+        if not _adapter_has_mechanism_contract(text):
+            raise CapabilityScaffoldContractError("capability_adapter_repair_method_drift")
+        with tempfile.TemporaryDirectory() as check_dir:
+            bundle = materialize_runner_bundle(workdir=check_dir, preflight_row=preflight,
+                                               candidate_adapter_source=text)
+        _atomic_replace_adapter(workdir / "code" / "candidate_adapter.py", text)
+    except Exception as exc:
+        db.execute("UPDATE experiment_runs SET status='failed', phase='adapter_repair_unavailable', error_message=?, completed_at=CURRENT_TIMESTAMP WHERE id=? AND agenda_id=? AND resource_grant_id=? AND status='adapter_repairing' AND phase='adapter_repairing'", (f"capability_adapter_repair_failed:{type(exc).__name__}:{exc}", run_id, agenda_id, resource_grant_id))
+        db.commit()
+        raise
+    resource_class = _materialized_resource_class(insight, bundle, preflight)
+    finished = db.execute("UPDATE experiment_runs SET status='scaffolding', phase='scaffold_ready', resource_class=?, error_message=NULL WHERE id=? AND agenda_id=? AND resource_grant_id=? AND status='adapter_repairing' AND phase='adapter_repairing'", (resource_class, run_id, agenda_id, resource_grant_id))
+    if int(finished.rowcount or 0) != 1:
+        db.rollback()
+        _atomic_replace_adapter(workdir / "code" / "candidate_adapter.py", old_source)
+        db.execute("UPDATE experiment_runs SET status='failed', phase='adapter_repair_unavailable', error_message='capability_adapter_repair_finish_cas_failed', completed_at=CURRENT_TIMESTAMP WHERE id=? AND agenda_id=? AND resource_grant_id=? AND status='adapter_repairing' AND phase='adapter_repairing'", (run_id, agenda_id, resource_grant_id))
+        db.commit()
+        raise CapabilityScaffoldContractError("capability_adapter_repair_finish_cas_failed")
+    db.commit()
+    return {"run_id": run_id, "runner_bundle": bundle, "tokens": tokens, "route": route}
 
 
 def _handoff_expired_capability_scaffold_grant(
