@@ -63,6 +63,7 @@ class GenerateScaffoldTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp); (root / "code").mkdir(); (root / "codex").mkdir()
             adapter = root / "code" / "candidate_adapter.py"; adapter.write_text(old)
+            before_code = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in (root / "code").iterdir()}
             original = root / "codex" / experiment_forge.CAPABILITY_SCAFFOLD_TAGGED_RESPONSE_FILE
             raw = "prior"; original.write_text(json.dumps({"schema_version":"capability_scaffold_tagged_response_v1", "operation":experiment_forge.CAPABILITY_SCAFFOLD_TAGGED_OPERATION, "raw_response":raw, "response_sha256":hashlib.sha256(raw.encode()).hexdigest()}))
             original.chmod(0o600)
@@ -85,7 +86,14 @@ class GenerateScaffoldTests(unittest.TestCase):
                 result = experiment_forge.repair_materialized_capability_adapter(run_id=137,agenda_id=11,insight_id=105,resource_grant_id=32)
             self.assertEqual(result["tokens"],600)
             self.assertEqual(adapter.read_text(), new)
-            self.assertTrue((root / "codex" / experiment_forge.CAPABILITY_ADAPTER_REPAIR_RESPONSE_FILE).is_file())
+            response = root / "codex" / experiment_forge.CAPABILITY_ADAPTER_REPAIR_RESPONSE_FILE
+            self.assertEqual(response.stat().st_mode & 0o777, 0o600)
+            payload = json.loads(response.read_text())
+            self.assertEqual(payload["operation"], experiment_forge.CAPABILITY_ADAPTER_REPAIR_OPERATION)
+            self.assertEqual(payload["response_sha256"], hashlib.sha256(new.encode()).hexdigest())
+            after_code = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in (root / "code").iterdir()}
+            self.assertEqual(set(after_code), set(before_code))
+            self.assertNotEqual(after_code["candidate_adapter.py"], before_code["candidate_adapter.py"])
             self.assertEqual(llm.call_count,1)
             self.assertEqual(llm.call_args.kwargs["actual_token_cap"],2435)
 
