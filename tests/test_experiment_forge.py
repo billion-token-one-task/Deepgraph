@@ -10,6 +10,45 @@ from agents.experiment_review import review_experiment_candidate
 
 class GenerateScaffoldTests(unittest.TestCase):
 
+    def test_adapter_repair_prompt_fits_remaining_bounded_route(self):
+        prompt = experiment_forge._adapter_repair_prompt(
+            {"proposed_method": {"name": "ignored"}},
+            {"candidate_hook": "candidate_prompt"},
+        )
+        self.assertLess(
+            len(experiment_forge.CAPABILITY_ADAPTER_REPAIR_SYSTEM.encode("utf-8"))
+            + len(prompt.encode("utf-8")),
+            350,
+        )
+
+    def test_adapter_repair_rejects_generic_cot_source(self):
+        source = '''CANDIDATE_METHOD="spectral"\ndef candidate_prompt(example, baseline_prompt):\n return "Think step by step. " + baseline_prompt\n'''
+        self.assertFalse(experiment_forge._adapter_has_mechanism_contract(source))
+
+    def test_adapter_repair_accepts_five_step_mechanism_source(self):
+        source = '''CANDIDATE_METHOD="spectral"\ndef candidate_prompt(example, baseline_prompt):\n return "observations centered empirical covariance eigen directions skewness excess kurtosis constraint reconstruct solve #### answer " + baseline_prompt\n'''
+        self.assertTrue(experiment_forge._adapter_has_mechanism_contract(source))
+
+    def test_adapter_repair_rejects_unused_mechanism_words(self):
+        source = '''CANDIDATE_METHOD="observations center covariance eigen skew kurtosis constraint reconstruct solve ####"\nUNUSED="observations center covariance eigen skew kurtosis constraint reconstruct solve ####"\ndef candidate_prompt(example, baseline_prompt):\n return "Think step by step " + baseline_prompt\n'''
+        self.assertFalse(experiment_forge._adapter_has_mechanism_contract(source))
+
+    def test_adapter_repair_rejects_hook_side_effect(self):
+        source = '''CANDIDATE_METHOD="spectral"\ndef candidate_prompt(example, baseline_prompt):\n return open("/tmp/x", "w").write("observations center covariance eigen skew kurtosis constraint reconstruct solve ####") or baseline_prompt\n'''
+        self.assertFalse(experiment_forge._adapter_has_mechanism_contract(source))
+
+    def test_adapter_repair_rejects_dead_mechanism_branch(self):
+        source = '''CANDIDATE_METHOD="spectral"\ndef candidate_prompt(example, baseline_prompt):\n return "Think step by step " + baseline_prompt if True else "observations center covariance eigen skew kurtosis constraint reconstruct solve #### " + baseline_prompt\n'''
+        self.assertFalse(experiment_forge._adapter_has_mechanism_contract(source))
+
+    def test_adapter_repair_requires_actual_second_argument(self):
+        source = '''CANDIDATE_METHOD="spectral"\ndef candidate_prompt(example, x):\n return "observations center covariance eigen skew kurtosis constraint reconstruct solve #### " + baseline_prompt\n'''
+        self.assertFalse(experiment_forge._adapter_has_mechanism_contract(source))
+
+    def test_adapter_repair_accepts_ordered_split_literals(self):
+        source = '''CANDIDATE_METHOD="spectral"\ndef candidate_prompt(example, baseline_prompt):\n return "observations center covariance eigen " + "skew kurtosis constraint reconstruct solve #### " + baseline_prompt\n'''
+        self.assertTrue(experiment_forge._adapter_has_mechanism_contract(source))
+
     def test_materialized_resource_class_follows_gpu_preflight(self):
         self.assertEqual(
             experiment_forge._materialized_resource_class(

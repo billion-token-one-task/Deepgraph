@@ -107,6 +107,7 @@ class GpuSchedulerTests(unittest.TestCase):
         job_id = gpu_scheduler.queue_run(
             insight_id=1,
             run_id=1,
+            resource_grant_id=1,
             resource_class="gpu_small",
             priority=1,
             vram_required_gb=16,
@@ -206,6 +207,7 @@ class GpuSchedulerTests(unittest.TestCase):
         job_id = gpu_scheduler.queue_run(
             insight_id=1,
             run_id=1,
+            resource_grant_id=1,
             resource_class="gpu_small",
             priority=1,
             vram_required_gb=16,
@@ -425,6 +427,47 @@ class GpuSchedulerTests(unittest.TestCase):
         self.assertIn("blocked", queued["error_message"])
         self.assertEqual(auto_job["status"], "failed")
         self.assertEqual(auto_job["stage"], "gpu_blocked")
+
+    def test_next_job_refuses_adapter_repairing_run_without_launching(self):
+        database.execute(
+            "UPDATE experiment_runs SET status='adapter_repairing', phase='adapter_repairing' WHERE id=1"
+        )
+        database.execute(
+            "INSERT INTO auto_research_jobs (deep_insight_id, status, stage, experiment_run_id) VALUES (1, 'queued_gpu', 'gpu_scheduler', 1)"
+        )
+        job_id = gpu_scheduler.queue_run(
+            insight_id=1, run_id=1, resource_grant_id=1,
+            resource_class="gpu_small", priority=1, vram_required_gb=16,
+        )
+        self.assertIsNone(gpu_scheduler._next_job())
+        queued = database.fetchone("SELECT status, error_message FROM gpu_jobs WHERE id=?", (job_id,))
+        auto_job = database.fetchone("SELECT status, stage, last_error FROM auto_research_jobs WHERE deep_insight_id=1")
+        self.assertEqual(queued["status"], "failed")
+        self.assertIn("adapter repair", queued["error_message"])
+        self.assertEqual(auto_job["status"], "failed")
+        self.assertEqual(auto_job["stage"], "gpu_blocked")
+
+    def test_run_job_rechecks_adapter_repair_before_attempt_admission(self):
+        job = {
+            "id": 21, "experiment_run_id": 1, "deep_insight_id": 1,
+            "agenda_id": 1, "gpu_attempt_reservation_id": 9,
+        }
+        worker = {"id": "worker-1"}
+        with (
+            mock.patch.object(gpu_scheduler.db, "fetchone", return_value={
+                "id": 1, "agenda_id": 1, "deep_insight_id": 1,
+                "status": "adapter_repairing", "phase": "adapter_repairing",
+                "error_message": "", "resource_grant_id": 1,
+            }),
+            mock.patch.object(gpu_scheduler, "_fail_blocked_queued_job") as failed,
+            mock.patch.object(gpu_scheduler, "_release_worker_if_no_running_jobs") as released,
+            mock.patch.object(gpu_scheduler, "_mark_job_active") as active,
+            mock.patch.object(gpu_scheduler.db, "commit"),
+        ):
+            gpu_scheduler._run_job(job, worker)
+        failed.assert_called_once()
+        released.assert_called_once()
+        active.assert_not_called()
 
     def test_recover_stale_local_running_job_requeues_after_restart(self):
         workers = gpu_scheduler.register_default_workers()

@@ -30,6 +30,7 @@ from config import (
     GPU_REMOTE_SSH_HOST,
     GPU_REMOTE_SSH_PORT,
     GPU_REMOTE_SSH_USER,
+    GPU_REMOTE_SSH_PASSWORD,
     COMPUTE_SSH_CREDENTIAL_REF,
     GPU_VISIBLE_DEVICES,
 )
@@ -1177,6 +1178,8 @@ def _launch_blocker_for_run(run: dict | None) -> str | None:
     phase = str(run.get("phase") or "").strip().lower()
     status = str(run.get("status") or "").strip().lower()
     error = str(run.get("error_message") or "")
+    if status == "adapter_repairing" or phase == "adapter_repairing":
+        return "experiment_run adapter repair is in progress; refusing to launch queued GPU job"
     if status == "canceled":
         return "experiment_run is canceled; refusing to launch queued GPU job"
     if phase == "recipe_blocked" or phase.startswith("invalid"):
@@ -1345,6 +1348,21 @@ def _run_job(job: dict, worker: dict) -> None:
     if attempt_reservation_id <= 0:
         reason = "canonical GPU attempt reservation is required before launch"
         _fail_blocked_queued_job(job, reason)
+        _release_worker_if_no_running_jobs(worker_id, finished_job_id=int(job_id))
+        db.commit()
+        return
+    # _next_job may have selected this row before a concurrent capability
+    # adapter repair claimed the run. Re-read under the database lock at the
+    # actual launch boundary rather than trusting that stale queue snapshot.
+    run_lock = " FOR UPDATE" if db._use_pg() else ""  # noqa: SLF001
+    current_run = db.fetchone(
+        "SELECT id, agenda_id, deep_insight_id, status, phase, error_message, "
+        "resource_grant_id FROM experiment_runs WHERE id=? AND agenda_id=?" + run_lock,
+        (run_id, agenda_id),
+    )
+    launch_blocker = _launch_blocker_for_run(current_run)
+    if launch_blocker:
+        _fail_blocked_queued_job(job, launch_blocker)
         _release_worker_if_no_running_jobs(worker_id, finished_job_id=int(job_id))
         db.commit()
         return
