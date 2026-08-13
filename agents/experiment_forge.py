@@ -4233,6 +4233,195 @@ def _load_failed_capability_scaffold(
     return dict(run), workdir, initial
 
 
+def _handoff_expired_capability_scaffold_grant(
+    *,
+    run_id: int,
+    agenda_id: int,
+    insight_id: int,
+    resource_grant_id: int,
+    preflight_result_id: int,
+    workdir: Path,
+) -> int:
+    """Atomically hand exact run137 from an expired grant to one new grant.
+
+    This is deliberately not the general run/grant attachment API: only the
+    stranded tagged-scaffold source can use it, and every predicate is checked
+    again under a database lock immediately before the compare-and-swap.
+    """
+    if int(run_id) != CAPABILITY_SCAFFOLD_TAGGED_RESUME_RUN_ID:
+        raise CapabilityScaffoldContractError("capability_scaffold_handoff_invalid")
+    evidence_path = Path(workdir) / "codex" / CAPABILITY_SCAFFOLD_TAGGED_RESPONSE_FILE
+    if os.path.lexists(evidence_path):
+        raise CapabilityScaffoldContractError(
+            "capability_scaffold_tagged_response_already_exists"
+        )
+    lock = " FOR UPDATE" if db._use_pg() else ""  # noqa: SLF001
+    try:
+        state = db.fetchone(
+            f"""
+            SELECT r.resource_grant_id AS previous_grant_id,
+                   old_grant.status AS previous_grant_status,
+                   old_grant.expires_at AS previous_grant_expires_at,
+                   new_grant.id AS new_grant_id,
+                   new_grant.stage AS new_grant_stage,
+                   new_grant.status AS new_grant_status,
+                   new_grant.token_cap AS new_token_cap,
+                   old_grant.preflight_result_id AS previous_preflight_result_id,
+                   new_grant.preflight_result_id AS new_preflight_result_id
+            FROM experiment_runs AS r
+            JOIN resource_grants AS old_grant ON old_grant.id=r.resource_grant_id
+            JOIN resource_grants AS new_grant ON new_grant.id=?
+            WHERE r.id=? AND r.agenda_id=? AND r.deep_insight_id=?
+              AND r.status='failed' AND r.phase='scaffold_route_unavailable'
+              AND r.error_message=?
+              AND old_grant.agenda_id=? AND old_grant.idea_id=?
+              AND old_grant.expires_at <= CURRENT_TIMESTAMP
+              AND old_grant.preflight_result_id=?
+              AND new_grant.agenda_id=? AND new_grant.idea_id=?
+              AND new_grant.id <> old_grant.id
+              AND new_grant.status='active'
+              AND new_grant.expires_at > CURRENT_TIMESTAMP
+              AND new_grant.stage IN ('experiment_forge', 'pilot')
+              AND new_grant.preflight_result_id=old_grant.preflight_result_id
+              AND new_grant.preflight_result_id=?
+              AND new_grant.token_cap - COALESCE((
+                    SELECT SUM(CASE WHEN usage.status='reserved' THEN usage.token_reserved
+                                    WHEN usage.status='settled' THEN COALESCE(usage.tokens_used, 0)
+                                    ELSE 0 END)
+                    FROM resource_grant_usage_reservations AS usage
+                    WHERE usage.resource_grant_id=new_grant.id
+                      AND usage.status IN ('reserved', 'settled')
+              ), 0) >= ?
+            {lock}
+            """,
+            (
+                resource_grant_id,
+                run_id,
+                agenda_id,
+                insight_id,
+                CAPABILITY_SCAFFOLD_FAILED_REPAIR_ERROR,
+                agenda_id,
+                insight_id,
+                preflight_result_id,
+                agenda_id,
+                insight_id,
+                preflight_result_id,
+                CAPABILITY_SCAFFOLD_TAGGED_ACTUAL_TOKEN_CAP,
+            ),
+        )
+        if not state:
+            raise CapabilityScaffoldContractError(
+                "capability_scaffold_grant_handoff_source_invalid"
+            )
+        previous_grant_id = int(state["previous_grant_id"])
+        for sql, params, reason in (
+            (
+                """
+                SELECT COUNT(*) AS count
+                FROM resource_grant_usage_reservations
+                WHERE resource_grant_id IN (?, ?) AND status='reserved'
+                """,
+                (previous_grant_id, resource_grant_id),
+                "capability_scaffold_grant_handoff_open_llm_usage",
+            ),
+            (
+                """
+                SELECT COUNT(*) AS count
+                FROM resource_grant_usage_reservations
+                WHERE resource_grant_id IN (?, ?)
+                  AND operation=? AND status IN ('reserved', 'settled')
+                """,
+                (previous_grant_id, resource_grant_id, CAPABILITY_SCAFFOLD_TAGGED_OPERATION),
+                "capability_scaffold_tagged_attempt_already_used",
+            ),
+            (
+                """
+                SELECT COUNT(*) AS count FROM gpu_jobs
+                WHERE experiment_run_id=?
+                """,
+                (run_id,),
+                "capability_scaffold_grant_handoff_gpu_active",
+            ),
+            (
+                """
+                SELECT COUNT(*) AS count FROM compute_jobs_v1
+                WHERE agenda_id=? AND idea_id=? AND resource_grant_id IN (?, ?)
+                """,
+                (agenda_id, insight_id, previous_grant_id, resource_grant_id),
+                "capability_scaffold_grant_handoff_compute_active",
+            ),
+            (
+                """
+                SELECT COUNT(*) AS count FROM colab_work_requests_v1
+                WHERE experiment_run_id=?
+                """,
+                (run_id,),
+                "capability_scaffold_grant_handoff_colab_active",
+            ),
+            (
+                "SELECT COUNT(*) AS count FROM outcome_records WHERE experiment_run_id=?",
+                (run_id,),
+                "capability_scaffold_grant_handoff_outcome_exists",
+            ),
+        ):
+            row = db.fetchone(sql, params)
+            if int((row or {}).get("count") or 0) != 0:
+                raise CapabilityScaffoldContractError(reason)
+        job = db.fetchone(
+            f"""
+            SELECT id, resource_grant_id FROM auto_research_jobs
+            WHERE agenda_id=? AND deep_insight_id=?{lock}
+            """,
+            (agenda_id, insight_id),
+        )
+        if not job or int(job.get("resource_grant_id") or 0) != previous_grant_id:
+            raise CapabilityScaffoldContractError(
+                "capability_scaffold_grant_handoff_job_invalid"
+            )
+        cursor = db.execute(
+            """
+            UPDATE experiment_runs
+            SET resource_grant_id=?,
+                status='scaffolding', phase='capability_scaffold_tagged_repair',
+                error_message=NULL, completed_at=NULL
+            WHERE id=? AND agenda_id=? AND deep_insight_id=?
+              AND resource_grant_id=? AND status='failed'
+              AND phase='scaffold_route_unavailable' AND error_message=?
+            """,
+            (
+                resource_grant_id,
+                run_id,
+                agenda_id,
+                insight_id,
+                previous_grant_id,
+                CAPABILITY_SCAFFOLD_FAILED_REPAIR_ERROR,
+            ),
+        )
+        if int(getattr(cursor, "rowcount", 1) or 0) != 1:
+            raise CapabilityScaffoldContractError("capability_scaffold_grant_handoff_race")
+        job_cursor = db.execute(
+            """
+            UPDATE auto_research_jobs
+            SET resource_grant_id=?, updated_at=CURRENT_TIMESTAMP
+            WHERE id=? AND agenda_id=? AND deep_insight_id=? AND resource_grant_id=?
+            """,
+            (
+                resource_grant_id,
+                int(job["id"]),
+                agenda_id,
+                insight_id,
+                previous_grant_id,
+            ),
+        )
+        if int(getattr(job_cursor, "rowcount", 1) or 0) != 1:
+            raise CapabilityScaffoldContractError("capability_scaffold_grant_handoff_job_race")
+        db.commit()
+        return previous_grant_id
+    except Exception:
+        db.rollback()
+        raise
+
+
 def forge_experiment(
     insight_id: int,
     *,
@@ -4353,28 +4542,42 @@ def forge_experiment(
                 "route": "blocked",
             }
         try:
+            source_run = db.fetchone(
+                """
+                SELECT resource_grant_id FROM experiment_runs
+                WHERE id=? AND agenda_id=? AND deep_insight_id=?
+                """,
+                (int(resume_failed_run_id), agenda_id, insight_id),
+            )
+            db.commit()
+            previous_grant_id = int((source_run or {}).get("resource_grant_id") or 0)
+            if previous_grant_id <= 0:
+                raise CapabilityScaffoldContractError(
+                    "capability_scaffold_resume_source_invalid"
+                )
             resume_run, workdir, initial_scaffold_result = (
                 _load_failed_capability_scaffold(
                     run_id=int(resume_failed_run_id),
                     agenda_id=agenda_id,
                     insight_id=insight_id,
-                    resource_grant_id=resource_grant_id,
+                    resource_grant_id=previous_grant_id,
                 )
             )
         except (CapabilityScaffoldContractError, OSError, ValueError) as exc:
             db.rollback()
             return {"error": str(exc), "route": "blocked"}
         run_id = int(resume_run["id"])
-        db.execute(
-            """
-            UPDATE experiment_runs
-            SET status='scaffolding', phase='capability_scaffold_tagged_repair',
-                error_message=NULL, completed_at=NULL
-            WHERE id=? AND agenda_id=?
-            """,
-            (run_id, agenda_id),
-        )
-        db.commit()
+        try:
+            _handoff_expired_capability_scaffold_grant(
+                run_id=run_id,
+                agenda_id=agenda_id,
+                insight_id=insight_id,
+                resource_grant_id=resource_grant_id,
+                preflight_result_id=int(preflight_row["id"]),
+                workdir=workdir,
+            )
+        except CapabilityScaffoldContractError as exc:
+            return {"error": str(exc), "route": "blocked"}
         print(
             f"[FORGE] Resuming failed capability scaffold run {run_id}; "
             "broad scaffold generation will not be repeated.",
