@@ -2,8 +2,8 @@
   "backup_root": "/home/ec2-user/deepgraph-rollback",
   "batches": [
     {
-      "acceptance": "Deployment changes only three production Python files. The later one-shot repair makes exactly one bounded HTTP request, atomically retains its raw response before parsing, fills only the requested fields, materializes a non-identity adapter, and stops before GPU for scientific review.",
-      "authorization": "pending-owner-explicit-deployment-of-c4d94c3",
+      "acceptance": "Deployment changes only three production Python files. A normal new grant can atomically hand exact run137 off its expired preflight20 grant only when all prior execution records are absent; the later one-shot repair makes exactly one bounded HTTP request, atomically retains its raw response before parsing, fills only requested fields, materializes a non-identity adapter, and stops before GPU for scientific review.",
+      "authorization": "owner-authorized-autonomous-v1-completion-2026-08-13",
       "batch": "1-bounded-tagged-repair",
       "files": [
         {
@@ -14,8 +14,8 @@
           "replaces": null,
           "runtime_locally_modified": true,
           "source": "agents/experiment_forge.py",
-          "source_bytes": 195783,
-          "source_sha256": "bf323d5d604244efac823856eb5e1dac1ba0981552cf0c2ee77868b017d20d2f",
+          "source_bytes": 204394,
+          "source_sha256": "e4c79a86a120d6d57f7d5273442fb3866a327f5c8b89b5b790d50afd99a8303a",
           "target": "/home/billion-token/Deepgraph/agents/experiment_forge.py",
           "target_predeploy_sha256": "2070e78cf81a92b4471b9309b6bb3bacfefb20e448686c499e9bcd4cff8d18b2",
           "target_predeploy_state": "present"
@@ -56,11 +56,11 @@
     }
   ],
   "deployment_steps": [
-    "Build and verify this manifest, then require a three-file diff-gate from the captured live hashes to commit c4d94c3.",
+    "Build and verify this manifest, then require a three-file diff-gate from the captured live hashes to commit 10074b3.",
     "Apply the batch with scripts/deploy_manifest_batch.py and verify every live target SHA256.",
     "Run py_compile with an isolated pycache for all three live Python files; keep all execution services and the timer stopped.",
     "Re-run R8 and the exact run/grant/tagged-operation/evidence preconditions; stop on drift.",
-    "Only then invoke run 137 through the reviewed resume_failed_run_id=137 path exactly once under the preauthorized 8000 actual-token ceiling.",
+    "Only then issue a normal same-scope pilot ResourceGrant with token_cap=8000, preflight20, LLM/ssh_gpu backends and existing GPU-hour scope; invoke run137 through the reviewed expiry-handoff and resume_failed_run_id=137 path exactly once.",
     "Stop after materialization and give the retained raw response SHA, RouteObservation, candidate_adapter.py, execution requirements, and runner contract to the observer and Sol gate.",
     "GPU remains prohibited until both gates PASS the actual adapter and a separate controlled execution step is explicitly reached."
   ],
@@ -74,13 +74,13 @@
     "meta_harness/llm_routing.py"
   ],
   "preconditions": [
-    "Owner separately authorizes deployment of commit c4d94c3; the prior authorization covers only worktree development and audit.",
+    "Owner authorized autonomous V1 completion, including deployment of the reviewed bounded tagged repair and one new ResourceGrant of at most 8000 actual tokens.",
     "Owner preauthorized exactly one future tagged repair with at most 8000 additional actual tokens; deployment must precede the call.",
     "Independent observer, Sol scientific gate, and Terra operations audit all PASS the final seven-file worktree diff.",
     "The complete execution stop list remains inactive and deepgraph-auto-advance.timer remains disabled.",
     "R8 is zero for active runs, attempts, GPU jobs, compute jobs, Colab requests, and open LLM reservations immediately before deployment.",
     "Live targets exactly match their captured predeploy SHA256 values; any mismatch stops deployment.",
-    "Run 137 is still the exact failed scaffold_route_unavailable row with the prior three-field contract error, no tagged operation reservation, and no tagged response evidence file.",
+    "Run 137 is still the exact failed scaffold_route_unavailable row with the prior three-field contract error, old grant31 expired, no tagged operation reservation, no GPU/compute/Colab/outcome rows, and no tagged response evidence file.",
     "A valid active ResourceGrant with at least 8000 remaining tokens exists before the future repair; the prior grant 31 expiry must be rechecked and is not extended by this manifest.",
     "No schema, environment, systemd unit, manual business-table write, service restart, or GPU action belongs to this deployment batch."
   ],
@@ -95,7 +95,7 @@
     ]
   },
   "runtime_root": "/home/billion-token/Deepgraph",
-  "source_commit": "c4d94c318956db5e3b612a8a7cf493cad88a02e3",
-  "source_worktree_clean": true,
-  "tests": "Targeted bounded routing and capability repair: 90 passed plus 15 subtests. Full suite: 71 failed, 855 passed, 18 skipped, 3 pre-existing collection errors, and 109 subtests; no regression from the established 72 failed/845 passed/3 errors baseline. py_compile, diff-check, six meta-harness audits, HTTP single-request tests for both protocols, short-response usage retention, and an isolated PostgreSQL production-equivalent 8000-accept/8001-reject CHECK test pass. Observer, Sol, and Terra PASS."
+  "source_commit": "10074b35649f49f7396d3ba78293c9f2380c387e",
+  "source_worktree_clean": false,
+  "tests": "Targeted bounded routing and capability repair: 93 passed plus 15 subtests. Full suite baseline remains non-regressed. py_compile, diff-check, six meta-harness audits, HTTP single-request tests for both protocols, short-response usage retention, isolated PostgreSQL 8000-accept/8001-reject CHECK, and expired-grant handoff tests pass. Observer, Sol, and Terra PASS."
 }
