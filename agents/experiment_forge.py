@@ -4380,7 +4380,7 @@ def repair_materialized_capability_adapter(
     for table, predicate, params in (
         ("resource_grant_usage_reservations", "resource_grant_id=? AND operation=?", (resource_grant_id, CAPABILITY_ADAPTER_REPAIR_OPERATION)),
         ("gpu_jobs", "experiment_run_id=?", (run_id,)),
-        ("compute_jobs_v1", "experiment_run_id=?", (run_id,)),
+        ("compute_jobs_v1", "resource_grant_id=? AND idea_id=?", (resource_grant_id, insight_id)),
         ("colab_work_requests_v1", "experiment_run_id=?", (run_id,)),
         ("outcome_records", "experiment_run_id=?", (run_id,)),
     ):
