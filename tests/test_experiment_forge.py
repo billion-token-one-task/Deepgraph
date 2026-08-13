@@ -9,6 +9,24 @@ from agents.experiment_review import review_experiment_candidate
 
 
 class GenerateScaffoldTests(unittest.TestCase):
+
+    def test_materialized_resource_class_follows_gpu_preflight(self):
+        self.assertEqual(
+            experiment_forge._materialized_resource_class(
+                {"resource_class": "cpu"}, {"adapter_id": "x"},
+                {"selected_backend": "ssh_gpu"},
+            ),
+            "gpu_large",
+        )
+
+    def test_materialized_resource_class_preserves_cpu_preflight(self):
+        self.assertEqual(
+            experiment_forge._materialized_resource_class(
+                {"resource_class": "gpu_large"}, {"adapter_id": "x"},
+                {"selected_backend": "cpu"},
+            ),
+            "cpu",
+        )
     @staticmethod
     def _capability_requirements():
         return {

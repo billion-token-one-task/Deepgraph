@@ -71,13 +71,33 @@ def _validate_candidate_adapter(path: Path, requirements: ExperimentRequirements
         (
             node
             for node in tree.body
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            if isinstance(node, ast.FunctionDef)
             and node.name == requirements.candidate_hook
         ),
         None,
     )
-    if hook_node is not None and len(hook_node.args.args) >= 2:
-        baseline_arg = hook_node.args.args[1].arg
+    # The generic runners always supply the example and the frozen baseline
+    # input.  A callable alone is insufficient: a one-argument hook otherwise
+    # survives materialization and fails only after scarce GPU work begins.
+    # Keep this static: candidate source is untrusted and must never be invoked
+    # by the controller during admission.
+    if hook_node is None:
+        raise RunnerMaterializationError(
+            f"candidate_hook_missing:{requirements.candidate_hook}"
+        )
+    positional = len(hook_node.args.posonlyargs) + len(hook_node.args.args)
+    if (
+        positional != 2
+        or hook_node.args.vararg is not None
+        or hook_node.args.kwonlyargs
+        or hook_node.args.kwarg is not None
+    ):
+        raise RunnerMaterializationError("candidate_hook_signature_invalid")
+    if hook_node.decorator_list:
+        raise RunnerMaterializationError("candidate_hook_signature_invalid")
+    positional_args = [*hook_node.args.posonlyargs, *hook_node.args.args]
+    if len(positional_args) >= 2:
+        baseline_arg = positional_args[1].arg
         returns = [
             node for node in ast.walk(hook_node) if isinstance(node, ast.Return)
         ]

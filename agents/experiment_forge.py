@@ -2374,6 +2374,20 @@ def _checkpoint_run_state(
     db.commit()
 
 
+def _materialized_resource_class(
+    parsed: dict, runner_bundle: dict | None, preflight_row: dict | None
+) -> str:
+    """Select the execution class from the admitted runner, not stale insight text."""
+    resource_class = str(parsed.get("resource_class") or "cpu")
+    if runner_bundle:
+        backend = str((preflight_row or {}).get("selected_backend") or "")
+        if backend in {"ssh_gpu", "local_gpu", "colab_gpu"}:
+            return "gpu_large"
+        if backend == "cpu":
+            return "cpu"
+    return resource_class
+
+
 def _git_binary() -> str | None:
     return shutil.which("git")
 
@@ -4810,6 +4824,12 @@ def forge_experiment(
         proxy["runner_contract"] = runner_bundle
         codebase["main_eval_command"] = runner_bundle["baseline_command"]
         codebase["main_train_file"] = "train.py"
+    # A passed capability preflight is the authority for the execution
+    # backend.  Do not let a stale discovery-era CPU label override a runner
+    # that explicitly requires CUDA.
+    materialized_resource_class = _materialized_resource_class(
+        parsed, runner_bundle, preflight_row
+    )
     plan_paths = write_plan_files(
         insight_id,
         run_id=run_id,
@@ -4863,7 +4883,7 @@ def forge_experiment(
         proxy_config=proxy,
         success_criteria=success,
         baseline_metric_name=success.get("metric_name", "metric"),
-        resource_class=str(parsed.get("resource_class") or "cpu"),
+        resource_class=materialized_resource_class,
     )
     db.execute(
         """
