@@ -1,6 +1,7 @@
 import time
 import unittest
 import unittest.mock
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
@@ -105,6 +106,152 @@ class LlmClientCooldownTests(unittest.TestCase):
         error = RuntimeError("connect failed: Connection refused")
 
         self.assertTrue(llm_client.is_llm_transient_provider_error(error))
+
+    def test_scoped_short_response_retains_usage_and_does_not_retry(self):
+        """The real provider adapter must not erase billed short responses."""
+        provider = {
+            "name": "provider-a",
+            "base_url": "https://example.invalid",
+            "api_key": "test-key",
+            "model": "model-a",
+            "model_family": "family-a",
+            "protocol": "chat_completions",
+        }
+        llm_client._providers = [provider]
+        llm_client._provider_stats = {
+            "provider-a": {
+                "calls": 0,
+                "tokens": 0,
+                "errors": 0,
+                "total_latency": 0,
+                "in_flight": 0,
+                "cached_tokens": 0,
+                "input_tokens": 0,
+            }
+        }
+        llm_client._rate_limiters = {}
+
+        class Reservation:
+            reservation_id = 77
+
+        class Ledger:
+            instances = []
+
+            def __init__(self, _grant_id):
+                self.settled = []
+                self.released = []
+                Ledger.instances.append(self)
+
+            def remaining(self, *, agenda_id):
+                self.agenda_id = agenda_id
+                return 8000
+
+            def reserve(self, **kwargs):
+                self.reserved = kwargs
+                return Reservation()
+
+            def settle(self, reservation_id, **kwargs):
+                self.settled.append((reservation_id, kwargs))
+
+            def release(self, reservation_id, *, reason):
+                self.released.append((reservation_id, reason))
+
+        class Repository:
+            instances = []
+
+            def __init__(self):
+                self.observations = []
+                Repository.instances.append(self)
+
+            def save_route_observation(self, observation):
+                self.observations.append(observation)
+
+            def load_active_cooldowns(self, _route_ids, *, now):
+                return {}
+
+            def save_cooldown(self, _route, *, until, failure_category):
+                raise AssertionError((until, failure_category))
+
+        grant = {
+            "id": 31,
+            "agenda_id": 11,
+            "idea_id": 105,
+            "decision_packet_id": 9,
+            "stage": "pilot",
+            "token_cap": 8000,
+            "gpu_class": "none",
+            "max_gpu_hours": 0,
+            "backend_allowlist_json": '["llm"]',
+            "artifact_requirements_json": '["tagged_response"]',
+            "expires_at": (
+                datetime.now(timezone.utc) + timedelta(hours=1)
+            ).isoformat(),
+            "grant_reason": "bounded test",
+            "idempotency_key": "grant-test",
+            "status": "active",
+            "reservation_id": 5,
+        }
+        with (
+            unittest.mock.patch.object(llm_client, "_init_providers"),
+            unittest.mock.patch.object(
+                llm_client,
+                "configured_role_route_policy",
+                return_value={
+                    "provider-a": {
+                        "model": "model-a",
+                        "model_family": "family-a",
+                        "prompt_version": "proposer-v1",
+                    }
+                },
+            ),
+            unittest.mock.patch.object(
+                llm_client,
+                "_call_provider",
+                return_value=("short", 8001, 0, 100, 0.02),
+            ) as call_provider,
+            unittest.mock.patch(
+                "meta_harness.grant_usage.GrantUsageLedger",
+                Ledger,
+            ),
+            unittest.mock.patch(
+                "meta_harness.repository.MetaHarnessRepository",
+                Repository,
+            ),
+            unittest.mock.patch(
+                "db.database.fetchone",
+                return_value=grant,
+            ),
+        ):
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "failed_attempt_usage_exceeded_reserved_cap",
+            ):
+                llm_client.call_llm_for_role(
+                    "system",
+                    "user",
+                    agenda_id=11,
+                    idea_id=105,
+                    role="proposer",
+                    stage="pilot",
+                    resource_grant_id=31,
+                    operation="experiment_forge.capability_scaffold_tagged_repair",
+                    idempotency_key="tagged:t1",
+                    prompt_version="proposer-v1",
+                    max_tokens=8000,
+                    total_token_cap=8000,
+                    max_route_attempts=1,
+                )
+
+        self.assertEqual(call_provider.call_count, 1)
+        router_ledger = Ledger.instances[-1]
+        self.assertEqual(router_ledger.settled[0][1]["tokens_used"], 8000)
+        self.assertFalse(router_ledger.released)
+        observation = Repository.instances[-1].observations[0]
+        self.assertEqual(observation.input_tokens + observation.output_tokens, 8001)
+        self.assertEqual(
+            observation.failure_reason,
+            "failed_attempt_usage_exceeded_reserved_cap",
+        )
 
     def test_init_providers_includes_secondary_openai_compatible_provider(self):
         llm_client._providers = []
@@ -327,6 +474,147 @@ class LlmClientCooldownTests(unittest.TestCase):
         self.assertIsNone(cost_usd)
         self.assertEqual(captured_payloads[0]["model"], "openai/gpt-5.5")
         self.assertNotIn("max_tokens", captured_payloads[0])
+
+    def test_bounded_chat_400_makes_one_http_request_with_output_limit(self):
+        payloads = []
+        llm_client.LLM_PROMPT_CACHE_ENABLED = True
+
+        class RejectedResponse:
+            status_code = 400
+
+            def raise_for_status(self):
+                request = httpx.Request("POST", "https://example.invalid/chat")
+                response = httpx.Response(400, request=request)
+                raise httpx.HTTPStatusError(
+                    "bad request",
+                    request=request,
+                    response=response,
+                )
+
+            def json(self):
+                return {}
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def post(self, url, json, headers):
+                payloads.append(dict(json))
+                return RejectedResponse()
+
+        provider = {
+            "name": "bounded-chat",
+            "base_url": "https://example.invalid/v1",
+            "api_key": "test-key",
+            "model": "gpt-5.4",
+            "protocol": "chat_completions",
+            "stream_chat_completions": False,
+        }
+        with (
+            unittest.mock.patch.object(llm_client.httpx, "Client", FakeClient),
+            self.assertRaises(httpx.HTTPStatusError),
+        ):
+            llm_client._call_chat_completions(
+                provider,
+                "system",
+                "user",
+                3000,
+                strict_single_request=True,
+            )
+
+        self.assertEqual(len(payloads), 1)
+        self.assertEqual(payloads[0]["max_tokens"], 3000)
+        self.assertNotIn("prompt_cache_key", payloads[0])
+        self.assertNotIn("prompt_cache_retention", payloads[0])
+
+    def test_bounded_responses_400_never_retries_without_output_limit(self):
+        payloads = []
+        llm_client.LLM_PROMPT_CACHE_ENABLED = True
+
+        class RejectedStream:
+            status_code = 400
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def raise_for_status(self):
+                request = httpx.Request("POST", "https://example.invalid/responses")
+                response = httpx.Response(400, request=request)
+                raise httpx.HTTPStatusError(
+                    "bad request",
+                    request=request,
+                    response=response,
+                )
+
+            def iter_lines(self):
+                return iter(())
+
+        class FakeClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def stream(self, method, url, json, headers):
+                payloads.append(dict(json))
+                return RejectedStream()
+
+        provider = {
+            "name": "bounded-responses",
+            "base_url": "https://example.invalid/v1",
+            "api_key": "test-key",
+            "model": "gpt-5.4",
+            "protocol": "responses",
+        }
+        with (
+            unittest.mock.patch.object(llm_client.httpx, "Client", FakeClient),
+            self.assertRaises(httpx.HTTPStatusError),
+        ):
+            llm_client._call_responses_api(
+                provider,
+                "system",
+                "user",
+                3000,
+                strict_single_request=True,
+            )
+
+        self.assertEqual(len(payloads), 1)
+        self.assertEqual(payloads[0]["max_output_tokens"], 3000)
+        self.assertNotIn("prompt_cache_key", payloads[0])
+        self.assertNotIn("prompt_cache_retention", payloads[0])
+
+    def test_bounded_route_rejects_models_that_omit_output_limits(self):
+        provider = {
+            "name": "unbounded-model",
+            "base_url": "https://example.invalid/v1",
+            "api_key": "test-key",
+            "model": "gpt-5.5",
+            "protocol": "responses",
+        }
+        with self.assertRaisesRegex(
+            llm_client.LLMProviderUnavailableError,
+            "requires an enforceable provider output limit",
+        ):
+            llm_client._call_responses_api(
+                provider,
+                "system",
+                "user",
+                3000,
+                strict_single_request=True,
+            )
 
     def test_responses_payload_includes_prompt_cache_options(self):
         captured_payloads = []

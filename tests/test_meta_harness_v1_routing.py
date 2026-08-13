@@ -21,6 +21,7 @@ from meta_harness.compute import (
 )
 from meta_harness.llm_routing import (
     LLMExecutionFailure,
+    LLMRouteError,
     LLMRouteUnavailableError,
     LLMRouter,
     ProviderRoute,
@@ -249,6 +250,156 @@ class LLMRoutingTests(unittest.TestCase):
         self.assertEqual(observations[0].status, "failed")
         self.assertEqual(ledger.settled[0][1]["tokens_used"], 5)
         self.assertFalse(ledger.released)
+
+    def test_successful_provider_overrun_is_settled_and_fails_closed(self):
+        proposer = self._route("p", "provider-a", "family-a")
+        ledger = _Ledger()
+        observations = []
+        router = LLMRouter(
+            {
+                "proposer": [proposer],
+                "evaluator": [proposer],
+                "reviewer": [proposer],
+            },
+            ledger=ledger,
+            observation_sink=observations.append,
+        )
+        request = RouteRequest(
+            agenda_id=2,
+            idea_id=3,
+            role="proposer",
+            stage="pilot",
+            resource_grant_id=5,
+            token_cap=100,
+            operation="tagged_repair",
+            idempotency_key="tagged-overrun-1",
+            max_attempts=1,
+        )
+
+        with self.assertRaisesRegex(
+            LLMRouteError,
+            "provider_usage_exceeded_reserved_cap",
+        ):
+            router.invoke(
+                request,
+                grant=_grant(backends=["llm"]),
+                executor=lambda _route, _request: (
+                    "unexpected",
+                    RouteUsage(60, 41, 0.01),
+                ),
+            )
+        self.assertEqual(ledger.settled[0][1]["tokens_used"], 100)
+        self.assertNotIn("allow_overrun", ledger.settled[0][1])
+        self.assertFalse(ledger.released)
+        self.assertEqual(observations[0].status, "failed")
+        self.assertEqual(
+            observations[0].failure_reason,
+            "provider_usage_exceeded_reserved_cap",
+        )
+
+    def test_attempt_cap_prevents_transient_retry_or_route_fallback(self):
+        first = ProviderRoute(
+            route_id="p1",
+            provider="provider-a",
+            model="family-a-model",
+            model_family="family-a",
+            prompt_version="v1",
+            timeout_seconds=30,
+            transient_retries=2,
+        )
+        second = self._route("p2", "provider-b", "family-b")
+        ledger = _Ledger()
+        attempts = []
+        router = LLMRouter(
+            {
+                "proposer": [first, second],
+                "evaluator": [first],
+                "reviewer": [first],
+            },
+            ledger=ledger,
+            observation_sink=lambda _observation: None,
+        )
+        request = RouteRequest(
+            agenda_id=2,
+            idea_id=3,
+            role="proposer",
+            stage="pilot",
+            resource_grant_id=5,
+            token_cap=100,
+            operation="tagged_repair",
+            idempotency_key="tagged-attempt-cap-1",
+            max_attempts=1,
+        )
+
+        def fail_once(route, _request):
+            attempts.append(route.route_id)
+            raise LLMExecutionFailure(
+                "injected outage",
+                category="transient",
+                usage=RouteUsage(7, 0, None),
+            )
+
+        with self.assertRaisesRegex(
+            LLMRouteUnavailableError,
+            "route_attempt_cap_exhausted",
+        ):
+            router.invoke(
+                request,
+                grant=_grant(backends=["llm"]),
+                executor=fail_once,
+            )
+        self.assertEqual(attempts, ["p1"])
+        self.assertEqual(ledger.settled[0][1]["tokens_used"], 7)
+        self.assertFalse(ledger.released)
+
+    def test_failed_provider_overrun_is_also_fully_settled(self):
+        proposer = self._route("p", "provider-a", "family-a")
+        ledger = _Ledger()
+        observations = []
+        router = LLMRouter(
+            {
+                "proposer": [proposer],
+                "evaluator": [proposer],
+                "reviewer": [proposer],
+            },
+            ledger=ledger,
+            observation_sink=observations.append,
+        )
+        request = RouteRequest(
+            agenda_id=2,
+            idea_id=3,
+            role="proposer",
+            stage="pilot",
+            resource_grant_id=5,
+            token_cap=100,
+            operation="tagged_repair",
+            idempotency_key="tagged-failed-overrun-1",
+            max_attempts=1,
+        )
+
+        def fail_over_cap(_route, _request):
+            raise LLMExecutionFailure(
+                "provider reported failure after usage",
+                category="provider_error",
+                usage=RouteUsage(70, 31, 0.02),
+            )
+
+        with self.assertRaisesRegex(
+            LLMRouteError,
+            "failed_attempt_usage_exceeded_reserved_cap",
+        ):
+            router.invoke(
+                request,
+                grant=_grant(backends=["llm"]),
+                executor=fail_over_cap,
+            )
+        self.assertEqual(ledger.settled[0][1]["tokens_used"], 100)
+        self.assertNotIn("allow_overrun", ledger.settled[0][1])
+        self.assertFalse(ledger.released)
+        self.assertEqual(
+            observations[0].input_tokens + observations[0].output_tokens,
+            101,
+        )
 
     def test_provider_cooldown_survives_router_reconstruction(self):
         proposer = self._route("p", "provider-a", "family-a")

@@ -47,9 +47,56 @@ _prompt_cache_lock = threading.Lock()
 _rate_limiters = {}       # name -> _RateLimiter
 _provider_cooldown = {}   # name -> resume_timestamp (epoch)
 
+# A byte-level tokenizer cannot produce more prompt tokens than UTF-8 bytes.
+# Explicitly bounded calls also reserve a deliberately oversized allowance for
+# two chat-message wrappers and never ask a provider for more than 3000 output
+# tokens. The tagged repair's measured prompt is about 2.8k bytes, leaving more
+# than 5k tokens between prompt bytes and provider output before the 8k cap.
+LLM_PROMPT_FRAMING_TOKEN_CEILING = 1500
+LLM_EXPLICIT_PROVIDER_OUTPUT_TOKEN_CEILING = 3000
+
 
 class LLMProviderUnavailableError(RuntimeError):
     """Raised when all configured providers are temporarily unavailable."""
+
+
+def _bounded_role_token_caps(
+    system_prompt: str,
+    user_prompt: str,
+    *,
+    requested_output_cap: int,
+    remaining_tokens: int,
+    total_token_cap: int | None,
+) -> tuple[int, int]:
+    """Return (aggregate reservation, provider output) before any LLM call."""
+    if requested_output_cap <= 0:
+        raise ValueError("max_tokens must be a positive hard cap")
+    if remaining_tokens <= 0:
+        raise PermissionError("ResourceGrant token budget is exhausted")
+    if total_token_cap is None:
+        approx_prompt_tokens = (len(system_prompt) + len(user_prompt)) // 3
+        aggregate_cap = min(
+            requested_output_cap + approx_prompt_tokens,
+            remaining_tokens,
+        )
+        return aggregate_cap, min(requested_output_cap, aggregate_cap)
+    if int(total_token_cap) <= 0:
+        raise ValueError("total_token_cap must be a positive hard cap")
+
+    aggregate_cap = min(int(total_token_cap), remaining_tokens)
+    prompt_token_ceiling = (
+        len(system_prompt.encode("utf-8"))
+        + len(user_prompt.encode("utf-8"))
+        + LLM_PROMPT_FRAMING_TOKEN_CEILING
+    )
+    provider_output_cap = min(
+        requested_output_cap,
+        LLM_EXPLICIT_PROVIDER_OUTPUT_TOKEN_CEILING,
+        aggregate_cap - prompt_token_ceiling,
+    )
+    if provider_output_cap <= 0:
+        raise ValueError("prompt cannot fit inside total_token_cap")
+    return aggregate_cap, provider_output_cap
 
 
 def _resolve_route_reference(value: str) -> str:
@@ -622,17 +669,41 @@ def _usage_cost_usd(usage: dict | None) -> float | None:
     return None
 
 
-def _call_provider(provider: dict, system_prompt: str, user_prompt: str,
-                   max_tokens: int) -> tuple[str, int, int, int, float | None]:
+def _call_provider(
+    provider: dict,
+    system_prompt: str,
+    user_prompt: str,
+    max_tokens: int,
+    *,
+    strict_single_request: bool = False,
+) -> tuple[str, int, int, int, float | None]:
     """Return text, total/cached/input tokens, and explicit provider cost."""
     protocol = provider.get("protocol", "responses")
     if protocol == "chat_completions":
-        return _call_chat_completions(provider, system_prompt, user_prompt, max_tokens)
-    return _call_responses_api(provider, system_prompt, user_prompt, max_tokens)
+        return _call_chat_completions(
+            provider,
+            system_prompt,
+            user_prompt,
+            max_tokens,
+            strict_single_request=strict_single_request,
+        )
+    return _call_responses_api(
+        provider,
+        system_prompt,
+        user_prompt,
+        max_tokens,
+        strict_single_request=strict_single_request,
+    )
 
 
-def _call_chat_completions(provider: dict, system_prompt: str, user_prompt: str,
-                           max_tokens: int) -> tuple[str, int, int, int, float | None]:
+def _call_chat_completions(
+    provider: dict,
+    system_prompt: str,
+    user_prompt: str,
+    max_tokens: int,
+    *,
+    strict_single_request: bool = False,
+) -> tuple[str, int, int, int, float | None]:
     """Call via OpenAI Chat Completions API (for Kimi etc).
     Returns (text, total_tokens, cached_tokens, input_tokens)."""
     stream_chat = provider.get("stream_chat_completions", True)
@@ -644,9 +715,14 @@ def _call_chat_completions(provider: dict, system_prompt: str, user_prompt: str,
         ],
         "stream": stream_chat,
     }
+    if strict_single_request and (not max_tokens or _should_omit_token_limit(provider)):
+        raise LLMProviderUnavailableError(
+            "bounded route requires an enforceable provider output limit"
+        )
     if max_tokens and not _should_omit_token_limit(provider):
         payload["max_tokens"] = max_tokens
-    _apply_prompt_cache_options(payload, provider, system_prompt)
+    if not strict_single_request:
+        _apply_prompt_cache_options(payload, provider, system_prompt)
 
     headers = {
         "Authorization": f"Bearer {provider['api_key']}",
@@ -770,6 +846,8 @@ def _call_chat_completions(provider: dict, system_prompt: str, user_prompt: str,
     try:
         _send_once(payload)
     except httpx.HTTPStatusError as exc:
+        if strict_single_request:
+            raise
         fallback_payload = _without_prompt_cache_options(payload)
         if not (_is_http_400(exc) and fallback_payload is not None):
             raise
@@ -813,8 +891,14 @@ def _extract_responses_output_text(response: dict) -> str:
     return "".join(pieces).strip()
 
 
-def _call_responses_api(provider: dict, system_prompt: str, user_prompt: str,
-                        max_tokens: int) -> tuple[str, int, int, int, float | None]:
+def _call_responses_api(
+    provider: dict,
+    system_prompt: str,
+    user_prompt: str,
+    max_tokens: int,
+    *,
+    strict_single_request: bool = False,
+) -> tuple[str, int, int, int, float | None]:
     """Call via OpenAI Responses API (for tabcode etc)."""
     input_items = [
         {"role": "user", "content": [{"type": "input_text", "text": user_prompt}]},
@@ -827,9 +911,14 @@ def _call_responses_api(provider: dict, system_prompt: str, user_prompt: str,
         "stream": True,
         "reasoning": {"effort": LLM_REASONING_EFFORT},
     }
+    if strict_single_request and (not max_tokens or _should_omit_token_limit(provider)):
+        raise LLMProviderUnavailableError(
+            "bounded route requires an enforceable provider output limit"
+        )
     if max_tokens and not _should_omit_token_limit(provider):
         payload["max_output_tokens"] = max_tokens
-    _apply_prompt_cache_options(payload, provider, system_prompt)
+    if not strict_single_request:
+        _apply_prompt_cache_options(payload, provider, system_prompt)
 
     headers = {
         "Authorization": f"Bearer {provider['api_key']}",
@@ -895,6 +984,8 @@ def _call_responses_api(provider: dict, system_prompt: str, user_prompt: str,
     try:
         _stream_response(payload)
     except httpx.HTTPStatusError as exc:
+        if strict_single_request:
+            raise
         if not _is_http_400(exc):
             raise
         candidates: list[tuple[str, dict]] = []
@@ -1207,6 +1298,8 @@ def call_llm_for_role(
     allowed_provider_names: list[str] | None = None,
     proposer_route: dict | None = None,
     max_tokens: int | None = None,
+    total_token_cap: int | None = None,
+    max_route_attempts: int | None = None,
 ) -> tuple[str, int, dict]:
     """Resource-granted role route with provider/model/token observation.
 
@@ -1226,9 +1319,7 @@ def call_llm_for_role(
     from meta_harness.repository import MetaHarnessRepository
     from db import database as db
 
-    token_cap = int(max_tokens or LLM_MAX_OUTPUT_TOKENS)
-    if token_cap <= 0:
-        raise ValueError("max_tokens must be a positive hard cap")
+    requested_output_cap = int(max_tokens or LLM_MAX_OUTPUT_TOKENS)
     grant_row = db.fetchone(
         """
         SELECT * FROM resource_grants
@@ -1247,17 +1338,16 @@ def call_llm_for_role(
     remaining_tokens = GrantUsageLedger(resource_grant_id).remaining(
         agenda_id=agenda_id
     )
-    if remaining_tokens <= 0:
-        raise PermissionError("ResourceGrant token budget is exhausted")
-    # Callers pass max_tokens meaning "how much output do I allow", but the
-    # router compares the cap against input + output, so a long prompt alone
-    # can exceed it and the call dies as provider_usage_exceeded_reserved_cap
-    # before producing anything. Benchmark design sends a 16000-char prompt
-    # under a 4096 cap and could therefore never succeed, whatever the grant
-    # size. Add the prompt's own cost to the cap; the grant's remaining budget
-    # is still the hard ceiling, so this loosens nothing that guards spend.
-    approx_prompt_tokens = (len(system_prompt) + len(user_prompt)) // 3
-    token_cap = min(token_cap + approx_prompt_tokens, remaining_tokens)
+    # Explicit total caps separate the aggregate ledger reservation from the
+    # provider output cap. The latter is reduced before the request is sent,
+    # rather than discovering an input+output overrun after spend occurred.
+    token_cap, provider_output_cap = _bounded_role_token_caps(
+        system_prompt,
+        user_prompt,
+        requested_output_cap=requested_output_cap,
+        remaining_tokens=remaining_tokens,
+        total_token_cap=total_token_cap,
+    )
     grant = ResourceGrant(
         agenda_id=int(grant_row["agenda_id"]),
         idea_id=int(grant_row["idea_id"]),
@@ -1360,6 +1450,7 @@ def call_llm_for_role(
         operation=operation,
         idempotency_key=idempotency_key,
         proposer_route=proposer_contract,
+        max_attempts=max_route_attempts,
     )
 
     def _execute(route, _request):
@@ -1373,11 +1464,21 @@ def call_llm_for_role(
                 provider,
                 system_prompt,
                 user_prompt,
-                token_cap,
+                provider_output_cap,
+                strict_single_request=total_token_cap is not None,
+            )
+            output_tokens = max(0, int(tokens or 0) - int(input_tokens or 0))
+            usage = RouteUsage(
+                int(input_tokens or 0),
+                output_tokens,
+                cost_usd,
             )
             if not text or len(text.strip()) < 10:
-                raise LLMExecutionFailure("provider returned an empty response")
-            output_tokens = max(0, int(tokens or 0) - int(input_tokens or 0))
+                raise LLMExecutionFailure(
+                    "provider returned an empty response",
+                    category="provider_error",
+                    usage=usage,
+                )
             with _provider_lock:
                 stats = _provider_stats[route.route_id]
                 stats["calls"] += 1
@@ -1385,11 +1486,7 @@ def call_llm_for_role(
                 stats["input_tokens"] += int(input_tokens or 0)
                 stats["cached_tokens"] += int(cached_tokens or 0)
                 stats["total_latency"] += time.time() - start
-            return text, RouteUsage(
-                int(input_tokens or 0),
-                output_tokens,
-                cost_usd,
-            )
+            return text, usage
         except Exception as exc:
             category = (
                 "auth"
