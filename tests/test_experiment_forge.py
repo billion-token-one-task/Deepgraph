@@ -1,3 +1,4 @@
+import hashlib
 import json
 import tempfile
 import unittest
@@ -48,6 +49,45 @@ class GenerateScaffoldTests(unittest.TestCase):
     def test_adapter_repair_accepts_ordered_split_literals(self):
         source = '''CANDIDATE_METHOD="spectral"\ndef candidate_prompt(example, baseline_prompt):\n return "observations center covariance eigen " + "skew kurtosis constraint reconstruct solve #### " + baseline_prompt\n'''
         self.assertTrue(experiment_forge._adapter_has_mechanism_contract(source))
+
+    def test_adapter_repair_success_is_single_call_and_only_replaces_adapter(self):
+        old = 'CANDIDATE_METHOD="old"\ndef candidate_prompt(prompt):\n return prompt\n'
+        new = 'CANDIDATE_METHOD="spectral"\ndef candidate_prompt(example, baseline_prompt):\n return "observations center covariance eigen skew kurtosis constraint reconstruct solve #### " + baseline_prompt\n'
+        requirements = self._capability_requirements()
+        preflight = {
+            "id": 20, "status": "passed", "adapter_id": "transformers_causal_lm_qa_v1",
+            "adapter_version": "1.0.0", "dataset_revision": "a" * 40,
+            "model_revision": "b" * 40, "selected_backend": "ssh_gpu",
+            "requirements_json": json.dumps(requirements),
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); (root / "code").mkdir(); (root / "codex").mkdir()
+            adapter = root / "code" / "candidate_adapter.py"; adapter.write_text(old)
+            original = root / "codex" / experiment_forge.CAPABILITY_SCAFFOLD_TAGGED_RESPONSE_FILE
+            raw = "prior"; original.write_text(json.dumps({"schema_version":"capability_scaffold_tagged_response_v1", "operation":experiment_forge.CAPABILITY_SCAFFOLD_TAGGED_OPERATION, "raw_response":raw, "response_sha256":hashlib.sha256(raw.encode()).hexdigest()}))
+            original.chmod(0o600)
+            run = {"id":137,"agenda_id":11,"deep_insight_id":105,"resource_grant_id":32,"status":"scaffolding","phase":"scaffold_ready","grant_status":"active","grant_stage":"pilot","preflight_result_id":20,"workdir":str(root)}
+            def fetchone(sql, params=()):
+                if "FROM experiment_runs r JOIN" in sql: return run
+                if "COUNT(*)" in sql: return {"count":0}
+                if "FROM deep_insights" in sql: return {"proposed_method":json.dumps({"name":"method"})}
+                raise AssertionError(sql)
+            row = mock.Mock(rowcount=1)
+            with (
+                mock.patch.object(experiment_forge.db,"fetchone",side_effect=fetchone),
+                mock.patch.object(experiment_forge.db,"execute",return_value=row),
+                mock.patch.object(experiment_forge.db,"commit"),
+                mock.patch("meta_harness.grant_usage.GrantUsageLedger.remaining",return_value=2435),
+                mock.patch.object(experiment_forge.CandidatePreflightRepository,"require_passed",return_value=preflight),
+                mock.patch.object(experiment_forge,"materialize_runner_bundle",side_effect=[experiment_forge.RunnerMaterializationError("candidate_hook_signature_invalid"), {"adapter_id":"x"}]),
+                mock.patch.object(experiment_forge,"_resource_granted_proposer_text",return_value=(new, 600, {"provider":"test"})) as llm,
+            ):
+                result = experiment_forge.repair_materialized_capability_adapter(run_id=137,agenda_id=11,insight_id=105,resource_grant_id=32)
+            self.assertEqual(result["tokens"],600)
+            self.assertEqual(adapter.read_text(), new)
+            self.assertTrue((root / "codex" / experiment_forge.CAPABILITY_ADAPTER_REPAIR_RESPONSE_FILE).is_file())
+            self.assertEqual(llm.call_count,1)
+            self.assertEqual(llm.call_args.kwargs["actual_token_cap"],2435)
 
     def test_materialized_resource_class_follows_gpu_preflight(self):
         self.assertEqual(
