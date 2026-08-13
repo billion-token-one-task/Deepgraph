@@ -220,6 +220,34 @@ For framework/evaluation-type methods (not model training), train.py should:
 - Print the primary metric"""
 
 
+CAPABILITY_SCAFFOLD_REPAIR_SYSTEM = """You repair a rejected capability-bound experiment scaffold.
+
+Return one JSON object whose top-level keys are exactly the requested missing
+fields. Every requested field is mandatory and must contain its complete value;
+do not nest one requested field inside another.
+
+For candidate_adapter_py, return a complete Python module that sets a non-empty
+CANDIDATE_METHOD and implements the exact candidate_hook in the frozen runner
+contract. The hook must implement the proposed scientific intervention, not an
+identity transform. It must not read target/label/relevance fields, synthesize
+labels, load the dataset or model, compute metrics, or change pinned revisions.
+
+For program_md, return complete autoresearch instructions including editable
+files, baseline, method, evaluation command, success criteria, logging, and the
+instruction to NEVER STOP until interrupted.
+
+For evaluate_py, return a self-contained Python metric reader that prints the
+primary metric and prints 0.0 on malformed or missing input.
+
+For success_criteria, return an object with metric_name, metric_direction,
+exciting, solid, and disappointing. Do not include prose outside the JSON
+object."""
+
+
+class CapabilityScaffoldContractError(ValueError):
+    """The LLM response omitted a required capability-scaffold field."""
+
+
 CODE_SCOUT_SYSTEM = prompt_block("code_scout") + """
 
 You are a research engineer. Given a method description and its related taxonomy area, suggest the BEST open-source codebase to use as a starting point for implementing and testing this method.
@@ -2293,6 +2321,7 @@ def _checkpoint_run_state(
     proxy_config: dict | None = None,
     success_criteria: dict | None = None,
     baseline_metric_name: str | None = None,
+    resource_class: str | None = None,
 ) -> None:
     fields: dict[str, object] = {
         "status": "scaffolding",
@@ -2311,6 +2340,8 @@ def _checkpoint_run_state(
         fields["success_criteria"] = json.dumps(success_criteria)
     if baseline_metric_name is not None:
         fields["baseline_metric_name"] = baseline_metric_name
+    if resource_class is not None:
+        fields["resource_class"] = resource_class
 
     assignments = ", ".join(f"{key}=?" for key in fields)
     params = list(fields.values()) + [run_id, agenda_id]
@@ -2650,6 +2681,99 @@ def setup_workspace(insight_id: int, run_id: int, codebase: dict, *, insight: di
     return workdir
 
 
+_CAPABILITY_SCAFFOLD_REQUIRED_FIELDS = (
+    "program_md",
+    "evaluate_py",
+    "candidate_adapter_py",
+    "success_criteria",
+)
+
+
+def _valid_success_criteria(value) -> bool:
+    if not isinstance(value, dict):
+        return False
+    if not str(value.get("metric_name") or "").strip():
+        return False
+    if str(value.get("metric_direction") or "").strip() not in {"higher", "lower"}:
+        return False
+    for field in ("exciting", "solid", "disappointing"):
+        threshold = value.get(field)
+        if isinstance(threshold, bool) or not isinstance(threshold, (int, float)):
+            return False
+    return True
+
+
+def _missing_capability_scaffold_fields(result: dict) -> list[str]:
+    missing = []
+    for field in _CAPABILITY_SCAFFOLD_REQUIRED_FIELDS:
+        value = result.get(field)
+        valid = (
+            _valid_success_criteria(value)
+            if field == "success_criteria"
+            else isinstance(value, str) and bool(value.strip())
+        )
+        if not valid:
+            missing.append(field)
+    return missing
+
+
+def _repair_capability_scaffold(
+    result: dict,
+    *,
+    insight: dict,
+    runner_requirements: dict,
+    llm_scope: dict,
+) -> tuple[dict, int, dict | None, list[str]]:
+    """Fill only absent capability fields with one focused, metered call."""
+
+    missing = _missing_capability_scaffold_fields(result)
+    if not missing:
+        return dict(result), 0, None, []
+
+    method = insight.get("proposed_method")
+    method = method if isinstance(method, dict) else {}
+    plan = insight.get("experimental_plan")
+    plan = plan if isinstance(plan, dict) else {}
+    prompt = "\n".join(
+        (
+            "# Missing required top-level fields",
+            json.dumps(missing, ensure_ascii=False),
+            "# Frozen runner contract",
+            json.dumps(runner_requirements, ensure_ascii=False, sort_keys=True),
+            "# Proposed method",
+            json.dumps(method, ensure_ascii=False, sort_keys=True),
+            "# Relevant experimental plan",
+            json.dumps(
+                {
+                    "baselines": plan.get("baselines") or [],
+                    "metrics": plan.get("metrics") or {},
+                    "procedure": plan.get("procedure") or "",
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            "Return exactly the missing fields as top-level JSON keys.",
+        )
+    )
+    repaired, tokens, route = _resource_granted_proposer_json(
+        CAPABILITY_SCAFFOLD_REPAIR_SYSTEM,
+        prompt,
+        llm_scope=llm_scope,
+        operation="experiment_forge.capability_scaffold_repair",
+        max_tokens=8000,
+    )
+    merged = dict(result)
+    for field in missing:
+        if field in repaired:
+            merged[field] = repaired[field]
+    still_missing = _missing_capability_scaffold_fields(merged)
+    if still_missing:
+        raise CapabilityScaffoldContractError(
+            "capability_scaffold_contract_missing:" + ",".join(still_missing)
+        )
+    return merged, tokens, route, missing
+
+
 def generate_scaffold(
     insight: dict,
     codebase: dict,
@@ -2657,6 +2781,8 @@ def generate_scaffold(
     *,
     llm_scope: dict | None = None,
     runner_capability_bound: bool = False,
+    runner_requirements: dict | None = None,
+    initial_result: dict | None = None,
 ) -> dict:
     """Generate program.md, evaluate.py, and success_criteria.json using LLM."""
     parsed = _parse_insight_fields(insight)
@@ -2749,10 +2875,26 @@ def generate_scaffold(
     prompt_parts.append((parsed.get("problem_statement") or "")[:300])
     prompt_parts.append(f"Weakness: {(parsed.get('existing_weakness') or '')[:300]}")
 
+    if runner_capability_bound:
+        if not isinstance(runner_requirements, dict) or not runner_requirements:
+            raise CapabilityScaffoldContractError(
+                "capability_scaffold_runner_contract_required"
+            )
+        prompt_parts.append("\n# Frozen Runner Contract")
+        prompt_parts.append(
+            json.dumps(runner_requirements, ensure_ascii=False, sort_keys=True)
+        )
+        prompt_parts.append(
+            "candidate_adapter_py is a mandatory top-level field. Implement "
+            f"candidate_hook={runner_requirements.get('candidate_hook') or '?'} "
+            "without reading target/label/relevance fields."
+        )
+
     prompt = "\n".join(prompt_parts)
 
     used_fallback = False
     llm_route = None
+    capability_repaired_fields: list[str] = []
     real_runner_required = bool(EXPERIMENT_REQUIRE_REAL_BENCHMARK and not EXPERIMENT_ALLOW_SYNTHETIC_FALLBACK)
     recipe_blocked = False
     if runner_capability_bound:
@@ -2760,13 +2902,31 @@ def generate_scaffold(
             raise PermissionError(
                 "candidate adapter generation requires a ResourceGrant-backed LLM scope"
             )
-        result, tokens, llm_route = _resource_granted_proposer_json(
-            SCAFFOLD_SYSTEM,
-            prompt,
-            llm_scope=llm_scope,
-            operation="experiment_forge.capability_scaffold",
-            max_tokens=12000,
+        if initial_result is None:
+            result, tokens, llm_route = _resource_granted_proposer_json(
+                SCAFFOLD_SYSTEM,
+                prompt,
+                llm_scope=llm_scope,
+                operation="experiment_forge.capability_scaffold",
+                max_tokens=12000,
+            )
+        else:
+            result = dict(initial_result)
+            tokens = 0
+        result, repair_tokens, repair_route, capability_repaired_fields = (
+            _repair_capability_scaffold(
+                result,
+                insight=parsed,
+                runner_requirements=runner_requirements,
+                llm_scope=llm_scope,
+            )
         )
+        tokens += repair_tokens
+        if repair_route:
+            llm_route = {
+                **dict(llm_route or {}),
+                "capability_repair": repair_route,
+            }
     elif _plan_uses_executable_probe(plan):
         print("[FORGE] Executable benchmark probe detected; using deterministic scaffold.", flush=True)
         result = _fallback_scaffold(method, plan, codebase)
@@ -2928,6 +3088,7 @@ def generate_scaffold(
         "claim_route": publication_contract.get("claim_route", {}),
         "train_py_written": bool(train_py and len(train_py) > 50),
         "candidate_adapter_py": str(result.get("candidate_adapter_py") or ""),
+        "capability_scaffold_repaired_fields": capability_repaired_fields,
         "baseline_command_override": baseline_command_override,
         "tokens": tokens,
         "llm_route": llm_route,
@@ -3704,11 +3865,64 @@ def _plan_uses_executable_probe(plan: dict) -> bool:
     )
 
 
-def forge_experiment(insight_id: int, *, resource_grant_id: int | None = None) -> dict:
+def _load_failed_capability_scaffold(
+    *,
+    run_id: int,
+    agenda_id: int,
+    insight_id: int,
+    resource_grant_id: int,
+) -> tuple[dict, Path, dict]:
+    run = db.fetchone(
+        """
+        SELECT * FROM experiment_runs
+        WHERE id=? AND agenda_id=? AND deep_insight_id=? AND resource_grant_id=?
+        """,
+        (run_id, agenda_id, insight_id, resource_grant_id),
+    )
+    db.commit()
+    if (
+        not run
+        or str(run.get("status") or "") != "failed"
+        or str(run.get("phase") or "") != "runner_materialization_failed"
+        or str(run.get("error_message") or "")
+        != "runner_contract_violation:candidate_adapter_required"
+    ):
+        raise CapabilityScaffoldContractError(
+            "capability_scaffold_resume_source_invalid"
+        )
+    workdir = Path(str(run.get("workdir") or ""))
+    if not workdir.is_dir():
+        raise CapabilityScaffoldContractError(
+            "capability_scaffold_resume_workdir_missing"
+        )
+    spec_dir = workdir / "spec"
+    try:
+        success = json.loads(
+            (spec_dir / "success_criteria.json").read_text(encoding="utf-8")
+        )
+        initial = {
+            "program_md": (spec_dir / "program.md").read_text(encoding="utf-8"),
+            "evaluate_py": (spec_dir / "evaluate.py").read_text(encoding="utf-8"),
+            "success_criteria": success,
+            "candidate_adapter_py": "",
+        }
+    except (OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise CapabilityScaffoldContractError(
+            "capability_scaffold_resume_artifacts_invalid"
+        ) from exc
+    return dict(run), workdir, initial
+
+
+def forge_experiment(
+    insight_id: int,
+    *,
+    resource_grant_id: int | None = None,
+    resume_failed_run_id: int | None = None,
+) -> dict:
     """Full forge pipeline: scout codebase -> setup workspace -> generate scaffold.
 
-    Creates an experiment_run row and returns all paths/configs needed
-    for the validation loop.
+    Creates an experiment_run row, or resumes one narrowly validated failed
+    capability scaffold, and returns paths/configs for the validation loop.
     """
     print(f"[FORGE] Starting experiment forge for insight {insight_id}...", flush=True)
 
@@ -3811,38 +4025,74 @@ def forge_experiment(insight_id: int, *, resource_grant_id: int | None = None) -
             }
     print(f"[FORGE] Selected: {codebase.get('name', '?')} ({codebase.get('url', '?')})", flush=True)
 
-    run_id = db.insert_returning_id(
-        """
-        INSERT INTO experiment_runs
-            (agenda_id, resource_grant_id, deep_insight_id, experiment_suite,
-             status, phase, workdir, codebase_url, codebase_ref,
-             baseline_metric_name, scientific_evidence_state)
-        VALUES (?, ?, ?, ?, 'scaffolding', 'setup', ?, ?, ?, ?, 'planned')
-        RETURNING id
-        """,
-        (
-            agenda_id,
-            resource_grant_id,
-            insight_id,
-            str(parsed.get("experiment_suite") or "main").strip() or "main",
-            "",
-            codebase.get("url", "scratch"),
-            codebase.get("name", ""),
-            "metric",
-        ),
-    )
-    db.commit()
+    initial_scaffold_result = None
+    if resume_failed_run_id is not None:
+        if not preflight_row:
+            return {
+                "error": "capability scaffold resume requires passed preflight",
+                "route": "blocked",
+            }
+        try:
+            resume_run, workdir, initial_scaffold_result = (
+                _load_failed_capability_scaffold(
+                    run_id=int(resume_failed_run_id),
+                    agenda_id=agenda_id,
+                    insight_id=insight_id,
+                    resource_grant_id=resource_grant_id,
+                )
+            )
+        except (CapabilityScaffoldContractError, OSError, ValueError) as exc:
+            db.rollback()
+            return {"error": str(exc), "route": "blocked"}
+        run_id = int(resume_run["id"])
+        db.execute(
+            """
+            UPDATE experiment_runs
+            SET status='scaffolding', phase='capability_scaffold_repair',
+                error_message=NULL, completed_at=NULL
+            WHERE id=? AND agenda_id=?
+            """,
+            (run_id, agenda_id),
+        )
+        db.commit()
+        print(
+            f"[FORGE] Resuming failed capability scaffold run {run_id}; "
+            "broad scaffold generation will not be repeated.",
+            flush=True,
+        )
+    else:
+        run_id = db.insert_returning_id(
+            """
+            INSERT INTO experiment_runs
+                (agenda_id, resource_grant_id, deep_insight_id, experiment_suite,
+                 status, phase, workdir, codebase_url, codebase_ref,
+                 baseline_metric_name, scientific_evidence_state)
+            VALUES (?, ?, ?, ?, 'scaffolding', 'setup', ?, ?, ?, ?, 'planned')
+            RETURNING id
+            """,
+            (
+                agenda_id,
+                resource_grant_id,
+                insight_id,
+                str(parsed.get("experiment_suite") or "main").strip() or "main",
+                "",
+                codebase.get("url", "scratch"),
+                codebase.get("name", ""),
+                "metric",
+            ),
+        )
+        db.commit()
 
-    # Step 2: Setup workspace
-    workdir = setup_workspace(insight_id, run_id, codebase, insight=parsed)
-    _checkpoint_run_state(
-        run_id,
-        agenda_id=agenda_id,
-        phase="workspace_ready",
-        workdir=workdir,
-        codebase=codebase,
-        baseline_metric_name="metric",
-    )
+        # Step 2: Setup workspace
+        workdir = setup_workspace(insight_id, run_id, codebase, insight=parsed)
+        _checkpoint_run_state(
+            run_id,
+            agenda_id=agenda_id,
+            phase="workspace_ready",
+            workdir=workdir,
+            codebase=codebase,
+            baseline_metric_name="metric",
+        )
     code_dir = workdir / "code"
     codebase = repair_codebase_entrypoint(code_dir, codebase)
     entrypoint_available = None
@@ -3939,12 +4189,25 @@ def forge_experiment(insight_id: int, *, resource_grant_id: int | None = None) -
     # Step 3: Generate scaffold
     print(f"[FORGE] Generating scaffold (program.md, evaluate.py, success_criteria)...", flush=True)
     try:
+        runner_requirements = None
+        if preflight_row:
+            raw_requirements = preflight_row.get("requirements_json")
+            try:
+                runner_requirements = (
+                    dict(raw_requirements)
+                    if isinstance(raw_requirements, dict)
+                    else json.loads(str(raw_requirements or "{}"))
+                )
+            except (TypeError, ValueError, json.JSONDecodeError):
+                runner_requirements = None
         scaffold = generate_scaffold(
             parsed,
             codebase,
             workdir,
             llm_scope=llm_scope,
             runner_capability_bound=bool(preflight_row),
+            runner_requirements=runner_requirements,
+            initial_result=initial_scaffold_result,
         )
     except Exception as exc:
         db.execute(
@@ -4077,6 +4340,7 @@ def forge_experiment(insight_id: int, *, resource_grant_id: int | None = None) -
         proxy_config=proxy,
         success_criteria=success,
         baseline_metric_name=success.get("metric_name", "metric"),
+        resource_class=str(parsed.get("resource_class") or "cpu"),
     )
     db.execute(
         """
@@ -4158,4 +4422,5 @@ def forge_experiment(insight_id: int, *, resource_grant_id: int | None = None) -
         "scout_llm_route": codebase.get("llm_route"),
         "scaffold_llm_route": scaffold.get("llm_route"),
         "runner_bundle": runner_bundle,
+        "resumed_failed_run": resume_failed_run_id is not None,
     }

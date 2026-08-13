@@ -35,6 +35,11 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _normalized_input_sha256(value: str) -> str:
+    normalized = " ".join(str(value).split())
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
 def _load_candidate(path: Path, protocol: str):
     if not path.is_file():
         raise RunnerContractError("runner_contract_violation", "candidate_adapter_missing")
@@ -267,6 +272,9 @@ class GenericTransformersRunner(ResearchRunner):
                         "input_sha256": hashlib.sha256(
                             model_input.encode("utf-8")
                         ).hexdigest(),
+                        "normalized_input_sha256": _normalized_input_sha256(
+                            model_input
+                        ),
                     }
                 )
         self.predictions.extend(output)
@@ -276,7 +284,32 @@ class GenericTransformersRunner(ResearchRunner):
         return self._run_method(self.BASELINE_METHOD, candidate=False)
 
     def run_candidate(self) -> Sequence[Mapping[str, Any]]:
-        return self._run_method(self.candidate_method, candidate=True)
+        candidate_rows = self._run_method(self.candidate_method, candidate=True)
+        baseline_hashes = {
+            (int(row["seed"]), int(row["sample_index"])): str(
+                row["normalized_input_sha256"]
+            )
+            for row in self.predictions
+            if row["method"] == self.BASELINE_METHOD
+        }
+        candidate_hashes = {
+            (int(row["seed"]), int(row["sample_index"])): str(
+                row["normalized_input_sha256"]
+            )
+            for row in candidate_rows
+        }
+        if set(candidate_hashes) != set(baseline_hashes):
+            raise RunnerContractError(
+                "runner_contract_violation", "candidate_pairing_mismatch"
+            )
+        if candidate_hashes and all(
+            candidate_hashes[key] == baseline_hashes[key]
+            for key in candidate_hashes
+        ):
+            raise RunnerContractError(
+                "runner_contract_violation", "candidate_adapter_identity"
+            )
+        return candidate_rows
 
     def compute_metrics(self) -> Mapping[str, Any]:
         metric_name = self.requirements.metric.name

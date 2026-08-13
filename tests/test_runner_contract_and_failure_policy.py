@@ -331,6 +331,68 @@ def candidate_prompt(example, baseline_prompt):
                     candidate_adapter_source=source,
                 )
 
+    def test_materializer_rejects_explicit_identity_adapter(self):
+        source = """
+CANDIDATE_METHOD = "identity"
+def candidate_prompt(example, baseline_prompt):
+    return baseline_prompt
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(
+                RunnerMaterializationError, "candidate_adapter_identity"
+            ):
+                materialize_runner_bundle(
+                    workdir=tmp,
+                    preflight_row=self._preflight("generative_qa"),
+                    candidate_adapter_source=source,
+                )
+
+    def test_runner_rejects_runtime_all_sample_identity_adapter(self):
+        adapter = """
+CANDIDATE_METHOD = "aliased_identity"
+def candidate_prompt(example, baseline_prompt):
+    output = baseline_prompt + "   "
+    return output
+"""
+        rows = [
+            {"question": "q1", "answer": "correct"},
+            {"question": "q2", "answer": "correct"},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            adapter_path = root / "candidate_adapter.py"
+            adapter_path.write_text(adapter, encoding="utf-8")
+            with self.assertRaisesRegex(
+                RunnerContractError, "candidate_adapter_identity"
+            ):
+                _ContractRunner(
+                    {
+                        "requirements": self._requirements("generative_qa"),
+                        "resolved_dataset_revision": "a" * 40,
+                        "resolved_model_revision": "b" * 40,
+                    },
+                    candidate_adapter_path=adapter_path,
+                    output_dir=root / "results",
+                    rows=rows,
+                ).run()
+
+    def test_materializer_allows_selective_non_identity_adapter(self):
+        source = """
+CANDIDATE_METHOD = "selective_gate"
+def candidate_prompt(example, baseline_prompt):
+    if example.get("request_deliberation"):
+        return baseline_prompt + "\\nVerify with an additional derivation."
+    return baseline_prompt
+"""
+        with tempfile.TemporaryDirectory() as tmp:
+            bundle = materialize_runner_bundle(
+                workdir=tmp,
+                preflight_row=self._preflight("generative_qa"),
+                candidate_adapter_source=source,
+            )
+
+        self.assertEqual(bundle["candidate_hook"], "candidate_prompt")
+
     def test_two_protocols_emit_recomputable_real_metric_contract(self):
         cases = (
             (

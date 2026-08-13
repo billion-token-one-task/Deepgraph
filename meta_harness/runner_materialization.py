@@ -29,6 +29,20 @@ def _json_object(value: Any, *, label: str) -> dict[str, Any]:
     return parsed
 
 
+def _returns_hook_input_unchanged(node: ast.Return, input_arg: str) -> bool:
+    value = node.value
+    if isinstance(value, ast.Name) and value.id == input_arg:
+        return True
+    return bool(
+        isinstance(value, ast.Call)
+        and isinstance(value.func, ast.Name)
+        and value.func.id == "str"
+        and len(value.args) == 1
+        and isinstance(value.args[0], ast.Name)
+        and value.args[0].id == input_arg
+    )
+
+
 def _validate_candidate_adapter(path: Path, requirements: ExperimentRequirements) -> None:
     source = path.read_text(encoding="utf-8")
     try:
@@ -53,6 +67,24 @@ def _validate_candidate_adapter(path: Path, requirements: ExperimentRequirements
             key = node.args[0].value
         if str(key) in protected_columns:
             raise RunnerMaterializationError("candidate_adapter_reads_target")
+    hook_node = next(
+        (
+            node
+            for node in tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == requirements.candidate_hook
+        ),
+        None,
+    )
+    if hook_node is not None and len(hook_node.args.args) >= 2:
+        baseline_arg = hook_node.args.args[1].arg
+        returns = [
+            node for node in ast.walk(hook_node) if isinstance(node, ast.Return)
+        ]
+        if returns and all(
+            _returns_hook_input_unchanged(node, baseline_arg) for node in returns
+        ):
+            raise RunnerMaterializationError("candidate_adapter_identity")
     try:
         py_compile.compile(str(path), doraise=True)
         spec = importlib.util.spec_from_file_location(
