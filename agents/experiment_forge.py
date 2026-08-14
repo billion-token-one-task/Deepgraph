@@ -354,7 +354,16 @@ class CapabilityScaffoldContractError(ValueError):
 CAPABILITY_SCAFFOLD_TAGGED_OPERATION = (
     "experiment_forge.capability_scaffold_tagged_repair"
 )
-CAPABILITY_SCAFFOLD_TAGGED_ACTUAL_TOKEN_CAP = 8000
+# The bound is enforced against a byte count of the prompt, not a token count
+# (agents.llm_client sizes the provider output cap as
+# total_token_cap - len(prompt.encode()) - framing), which overstates real
+# token use roughly threefold. 8000 was chosen while grant 32 was nearly spent
+# and left ~2000 bytes of headroom for all four fields; once the adapter
+# contract was stated in the prompt the ceiling reached 8182 and every repair
+# failed closed with "prompt cannot fit inside total_token_cap" before
+# reaching a provider. Size it for the worst case instead: all four fields
+# missing, contract included, with a usable output budget left over.
+CAPABILITY_SCAFFOLD_TAGGED_ACTUAL_TOKEN_CAP = 24000
 CAPABILITY_SCAFFOLD_TAGGED_RESPONSE_FILE = (
     "capability_scaffold_tagged_response.json"
 )
