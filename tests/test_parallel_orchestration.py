@@ -1740,3 +1740,40 @@ class ParallelTier2LaunchTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ForgedResourceClassTests(unittest.TestCase):
+    """The forge's execution class outranks the pre-forge route guess.
+
+    assess_experiment_route reads discovery-era insight text before the forge
+    runs. The forge then derives the class from the runner bundle it actually
+    materialized and that bundle's passed preflight -- the same authority the
+    compute backend gate checks. Writing the earlier guess back over it stamped
+    run 140 as "cpu" although its preflight had selected ssh_gpu, so the
+    dispatcher asked for the cpu backend and the gate refused it with
+    passed_candidate_preflight_required, one step short of GPU.
+    """
+
+    def test_gpu_class_from_the_forge_survives_a_cpu_assessment(self):
+        self.assertEqual(
+            auto_research._forged_resource_class({"resource_class": "gpu_large"}, "cpu"),
+            "gpu_large",
+        )
+        self.assertEqual(
+            auto_research._forged_resource_class({"resource_class": "gpu_small"}, "cpu"),
+            "gpu_small",
+        )
+
+    def test_an_explicit_gpu_assessment_is_not_overridden(self):
+        self.assertEqual(
+            auto_research._forged_resource_class(
+                {"resource_class": "gpu_small"}, "gpu_large"
+            ),
+            "gpu_large",
+        )
+
+    def test_a_cpu_run_stays_cpu(self):
+        self.assertEqual(
+            auto_research._forged_resource_class({"resource_class": "cpu"}, "cpu"), "cpu"
+        )
+        self.assertEqual(auto_research._forged_resource_class(None, "cpu"), "cpu")
