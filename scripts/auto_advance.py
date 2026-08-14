@@ -71,7 +71,15 @@ ARTIFACT_REQUIREMENTS = [
 # therefore manufacture ``recycle_exhausted`` without a single requeue. Counts
 # now mean successful requeues only; one epoch reset discards the polluted
 # operational counters without editing any business row.
-RECYCLE_EPOCH = "successful-requeue-counting-2026-08-12"
+# Bumped again on 2026-08-14. Idea 105 held recycles=3 for failures produced
+# by four defects fixed and deployed that day: the candidate-adapter contract
+# was described differently from the way it was enforced, a contract breach
+# was classified as a missing metric and deferred instead of repaired, the
+# orphan-review recovery had no caller, and ("blocked", "execution_defer") was
+# absent from RECYCLABLE. The counter measured the old code, so the repairs
+# would never have been given the fresh attempt this epoch mechanism exists to
+# grant.
+RECYCLE_EPOCH = "post-adapter-contract-repair-2026-08-14"
 
 # Frontier rationing. The ration per problem is unchanged; what changes is that
 # the pool no longer stops at the top 3, so spending a problem's ration retires
