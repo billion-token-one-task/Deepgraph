@@ -1850,6 +1850,64 @@ class CandidateAdapterContractTests(unittest.TestCase):
             self.assertIn(required, rules)
         self.assertIn(rules, experiment_forge.SCAFFOLD_SYSTEM)
 
+    def test_worst_case_repair_prompt_fits_its_token_cap(self):
+        """The tagged repair must still fit once the contract is in the prompt.
+
+        agents.llm_client sizes the provider output cap as
+        total_token_cap - len(prompt bytes) - framing, so the bound is a byte
+        count roughly three times any real token count. The cap was 8000,
+        chosen while a nearly-spent grant was the constraint; stating the
+        adapter contract pushed the worst-case ceiling to 8182 and every
+        repair failed closed before reaching a provider, burning the scaffold
+        call that preceded it.
+        """
+        from agents.llm_client import (
+            LLM_PROMPT_FRAMING_TOKEN_CEILING,
+            _bounded_role_token_caps,
+        )
+
+        worst_case_fields = list(experiment_forge._CAPABILITY_SCAFFOLD_REQUIRED_FIELDS)
+        prompt = "\n".join(
+            (
+                "# Missing required top-level fields",
+                json.dumps(worst_case_fields),
+                "# Required tagged block order",
+                "\n".join(
+                    f"<<<DEEPGRAPH_FIELD:{field}>>>\ncomplete {field} value\n"
+                    f"<<<DEEPGRAPH_END:{field}>>>"
+                    for field in worst_case_fields
+                ),
+                "# Frozen runner contract",
+                json.dumps(self.QA_REQUIREMENTS, sort_keys=True),
+                experiment_forge._candidate_adapter_contract_text(self.QA_REQUIREMENTS),
+                "# Proposed method",
+                json.dumps({"name": "m", "definition": "d" * 400}, sort_keys=True),
+                "# Relevant experimental plan",
+                json.dumps({"baselines": [], "metrics": {}, "procedure": "p" * 400}),
+                "Return exactly these tagged blocks in the stated order.",
+            )
+        )
+        cap = experiment_forge.CAPABILITY_SCAFFOLD_TAGGED_ACTUAL_TOKEN_CAP
+        ceiling = (
+            len(experiment_forge.CAPABILITY_SCAFFOLD_REPAIR_SYSTEM.encode("utf-8"))
+            + len(prompt.encode("utf-8"))
+            + LLM_PROMPT_FRAMING_TOKEN_CEILING
+        )
+        self.assertLess(
+            ceiling,
+            cap,
+            "the worst-case repair prompt no longer fits its own token cap",
+        )
+        _aggregate, provider_output = _bounded_role_token_caps(
+            experiment_forge.CAPABILITY_SCAFFOLD_REPAIR_SYSTEM,
+            prompt,
+            requested_output_cap=cap,
+            remaining_tokens=cap,
+            total_token_cap=cap,
+        )
+        # program_md alone is far larger than a token or two of headroom.
+        self.assertGreaterEqual(provider_output, 2000)
+
     def test_capability_repair_prompt_carries_the_contract(self):
         captured = {}
 
