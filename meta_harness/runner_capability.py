@@ -779,7 +779,12 @@ def requirements_from_plan(plan: Mapping[str, Any]) -> ExperimentRequirements:
             ),
         ),
         metric=MetricRequirement(
-            name=str(metric_name or ""),
+            # from_dict() folds the alias table but this path did not, so a
+            # plan whose metric was a sanctioned synonym was refused for
+            # spelling while the identical requirements loaded from a stored
+            # row passed. Unknown names still fall through untouched and keep
+            # surfacing as a real capability gap.
+            name=canonical_metric_name(str(metric_name or "")),
             direction=str(
                 (metrics.get("direction") if isinstance(metrics, Mapping) else None)
                 or "higher"

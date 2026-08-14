@@ -332,3 +332,54 @@ class PreflightDiagnosticsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PlanMetricAliasTests(unittest.TestCase):
+    """A sanctioned synonym must survive both requirement construction paths.
+
+    Idea 110 sat deferred on ``metric_contract_unsupported`` for days with a
+    plan the causal-LM runner could otherwise execute: the alias table folded
+    ``exact_match_accuracy`` when requirements were loaded from a stored row,
+    but ``requirements_from_plan`` passed the raw spelling straight to the
+    registry.
+    """
+
+    PLAN = {
+        "benchmark_targets": [
+            {
+                "task_protocol": "generative_qa",
+                "hf_dataset": "openai/gsm8k",
+                "revision": "main",
+                "split": "test",
+                "question_field": "question",
+                "answer_field": "answer",
+            }
+        ],
+        "model_targets": [
+            {
+                "hf_model": "Qwen/Qwen2.5-Math-7B-Instruct",
+                "revision": "main",
+                "backend": "transformers",
+                "task": "causal_lm",
+            }
+        ],
+        "metrics": {"primary": "exact_match_accuracy"},
+        "minimum_seeds": 1,
+    }
+
+    def test_plan_metric_synonym_is_folded_onto_the_registry_vocabulary(self):
+        requirements = requirements_from_plan(self.PLAN)
+        self.assertEqual(requirements.metric.name, "exact_match")
+        matches = RunnerRegistry().matches(requirements)
+        self.assertTrue(
+            matches, "a plan inside the runner's capabilities must find a runner"
+        )
+
+    def test_unknown_metric_still_reports_a_real_capability_gap(self):
+        plan = dict(self.PLAN, metrics={"primary": "bleu"})
+        requirements = requirements_from_plan(plan)
+        self.assertEqual(requirements.metric.name, "bleu")
+        self.assertIn(
+            "metric_contract_unsupported",
+            RunnerRegistry().all()[0].structural_blockers(requirements),
+        )
