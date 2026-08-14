@@ -84,6 +84,110 @@ from meta_harness.runner_materialization import (
 )
 
 
+# Single source of truth for what `_validate_candidate_adapter` actually
+# admits.  Earlier revisions described the adapter informally in one prompt and
+# enforced a stricter, undocumented AST shape somewhere else; every generation
+# attempt then failed on a rule the model was never told.  Any change to the
+# materializer contract must be mirrored here, and the examples below are
+# asserted against the real validator in the test suite.
+CANDIDATE_ADAPTER_CONTRACT_RULES = """## candidate_adapter.py Requirements
+
+Admission is static and fail-closed: a module that breaks any rule below is
+rejected before any GPU work starts, and the whole run is lost.
+
+- Set a module-level, non-empty `CANDIDATE_METHOD` string naming the method.
+- For task_protocol=generative_qa, implement
+  `candidate_prompt(example, baseline_prompt)` returning `str`.
+- For task_protocol=sequence_classification, implement
+  `candidate_text(example, baseline_text)` returning `str`.
+- The hook takes EXACTLY two positional parameters. No decorators, no
+  `*args`, no `**kwargs`, no keyword-only parameters, no `async def`.
+- The runner calls the hook once per example as
+  `hook(example_without_target, frozen_baseline_input)`. Build the returned
+  string from the second argument so the intervention is measured against the
+  same input the baseline saw.
+- Implement the proposed scientific intervention. Returning the baseline input
+  unchanged (or `str(baseline_input)`) is rejected as an identity adapter.
+- Do not read or derive the target/label/relevance field and do not synthesize
+  labels. Reading those columns is rejected statically.
+- Do not import torch/transformers/datasets, load the dataset or model, compute
+  metrics, perform I/O, or change pinned revisions. The capability-selected
+  runner owns those lifecycle stages.
+- The module is imported at admission time, so top-level code must be free of
+  side effects and must not raise."""
+
+
+# Structure-only reference. The wording is deliberately unrelated to any real
+# agenda so a model that copies it verbatim produces an obvious method drift
+# rather than a plausible-looking pass.
+CANDIDATE_ADAPTER_EXAMPLE_GENERATIVE_QA = '''CANDIDATE_METHOD = "example_only_two_pass_reconciliation"
+
+
+def candidate_prompt(example, baseline_prompt):
+    """Structure example only: replace this body with the real intervention."""
+    protocol = (
+        "Answer in two passes.\\n"
+        "Pass 1: name the quantities the question asks for.\\n"
+        "Pass 2: recompute each quantity and reconcile any disagreement.\\n"
+    )
+    return baseline_prompt + "\\n\\n" + protocol + "\\nFinal line: #### <answer>\\n"
+'''
+
+
+CANDIDATE_ADAPTER_EXAMPLE_SEQUENCE_CLASSIFICATION = '''CANDIDATE_METHOD = "example_only_contrastive_framing"
+
+
+def candidate_text(example, baseline_text):
+    """Structure example only: replace this body with the real intervention."""
+    framing = "Consider the passage against its most plausible opposite reading.\\n"
+    return framing + baseline_text
+'''
+
+
+def _candidate_adapter_contract_text(requirements: dict | None) -> str:
+    """Render the binding adapter contract for one concrete frozen runner."""
+    requirements = requirements if isinstance(requirements, dict) else {}
+    protocol = str(requirements.get("task_protocol") or "").strip()
+    hook = str(requirements.get("candidate_hook") or "").strip() or {
+        "generative_qa": "candidate_prompt",
+        "sequence_classification": "candidate_text",
+    }.get(protocol, "candidate_prompt")
+    baseline_arg = "baseline_text" if hook == "candidate_text" else "baseline_prompt"
+    dataset = requirements.get("dataset")
+    mapping = (dataset or {}).get("field_mapping") if isinstance(dataset, dict) else {}
+    protected = sorted(
+        {
+            str((mapping or {}).get(role) or "").strip()
+            for role in ("target", "label", "relevance")
+        }
+        - {""}
+    )
+    example = (
+        CANDIDATE_ADAPTER_EXAMPLE_SEQUENCE_CLASSIFICATION
+        if hook == "candidate_text"
+        else CANDIDATE_ADAPTER_EXAMPLE_GENERATIVE_QA
+    )
+    lines = [
+        CANDIDATE_ADAPTER_CONTRACT_RULES,
+        "",
+        "### Binding for this run",
+        f"- task_protocol: {protocol or 'generative_qa'}",
+        f"- required hook: def {hook}(example, {baseline_arg}):",
+        (
+            "- columns that must never be read: "
+            + (", ".join(protected) if protected else "(none declared)")
+        ),
+        "",
+        "### Accepted structure (shape only, NOT the science)",
+        "Copying this wording instead of implementing the proposed method is a",
+        "method drift and will be rejected by scientific review.",
+        "```python",
+        example.strip(),
+        "```",
+    ]
+    return "\n".join(lines)
+
+
 SCAFFOLD_SYSTEM = prompt_block(
     "experiment_contract_architect",
     "sanity_runner_builder",
@@ -137,16 +241,7 @@ You must output JSON with these keys:
   }
 }
 
-## candidate_adapter.py Requirements
-- Set a non-empty `CANDIDATE_METHOD` string naming the proposed method.
-- For task_protocol=generative_qa, implement
-  `candidate_prompt(example, baseline_prompt) -> str`.
-- For task_protocol=sequence_classification, implement
-  `candidate_text(example, baseline_text) -> str`.
-- Implement the proposed scientific intervention, not an identity transform.
-- Do not read or derive the target/label field and do not synthesize labels.
-- Do not load the dataset/model, compute metrics, or change revisions. The
-  capability-selected runner owns those lifecycle stages.
+""" + CANDIDATE_ADAPTER_CONTRACT_RULES + """
 
 ## program.md Requirements
 - Must follow the autoresearch format: setup, experimentation loop, output format, logging
@@ -3040,6 +3135,11 @@ def _repair_capability_scaffold(
             ),
             "# Frozen runner contract",
             json.dumps(runner_requirements, ensure_ascii=False, sort_keys=True),
+            *(
+                (_candidate_adapter_contract_text(runner_requirements),)
+                if "candidate_adapter_py" in missing
+                else ()
+            ),
             "# Proposed method",
             json.dumps(method, ensure_ascii=False, sort_keys=True),
             "# Relevant experimental plan",
@@ -3206,10 +3306,11 @@ def generate_scaffold(
             json.dumps(runner_requirements, ensure_ascii=False, sort_keys=True)
         )
         prompt_parts.append(
-            "candidate_adapter_py is a mandatory top-level field. Implement "
-            f"candidate_hook={runner_requirements.get('candidate_hook') or '?'} "
-            "without reading target/label/relevance fields."
+            "candidate_adapter_py is a mandatory top-level field. It is the "
+            "smallest field but the only one that cannot be recovered later; "
+            "emit it in full even if that means shortening program_md."
         )
+        prompt_parts.append(_candidate_adapter_contract_text(runner_requirements))
 
     prompt = "\n".join(prompt_parts)
 
@@ -4261,8 +4362,14 @@ def _load_failed_capability_scaffold(
 def _adapter_repair_prompt(insight: dict, requirements: dict) -> str:
     """Compact prompt for the remaining grant capacity."""
     hook = _non_empty_text(requirements.get("candidate_hook"))
+    # Every structural rule the validator enforces has to be stated here: the
+    # module-level constant and the plain "+" concatenation were previously
+    # only implied, so compliant-looking responses were rejected for a shape
+    # they were never asked for.
     return (
-        f"CANDIDATE_METHOD; def {hook}(example,baseline_prompt): ->str. "
+        'CANDIDATE_METHOD="m" then def '
+        f"{hook}(example,baseline_prompt): one return, "
+        'only "str"+baseline_prompt+"str" concatenation, no f-string. '
         "Prompt exactly: observations; centered empirical covariance; eigen directions; "
         "skewness/excess-kurtosis reweighting; constrained reconstruction; solve; #### answer. "
         "Return Python only."
@@ -4318,9 +4425,14 @@ def _adapter_has_mechanism_contract(source: str) -> bool:
         return ordered_literals(node.left) + ordered_literals(node.right)
 
     text = " ".join(ordered_literals(returned))
+    # Substrings, matched against the prompt's own wording. "constrain" and not
+    # "constraint": the prompt asks for "constrained reconstruction", which does
+    # not contain "constraint", so the stricter token made every compliant
+    # response fail. tests/test_experiment_forge.py asserts the prompt wording
+    # and these tokens stay mutually satisfiable.
     tokens = (
             "observation", "center", "covariance", "eigen", "skew",
-            "kurtosis", "constraint", "reconstruct", "solve", "####",
+            "kurtosis", "constrain", "reconstruct", "solve", "####",
     )
     positions = [text.find(token) for token in tokens]
     return all(position >= 0 for position in positions) and positions == sorted(positions)
