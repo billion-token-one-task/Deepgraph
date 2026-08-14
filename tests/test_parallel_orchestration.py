@@ -935,6 +935,38 @@ class AutoResearchSchedulingTests(unittest.TestCase):
         process.assert_not_called()
         self.assertEqual(stats["scheduled"], [70])
 
+    def test_launch_pass_releases_orphaned_review_claims(self):
+        """The launch pass must call the orphan-review recovery.
+
+        A review claim records the worker pid in assigned_worker. If that
+        process dies before it links an experiment run to the job, the job
+        holds the claim forever: _refresh_running_jobs only rediscovers runs
+        still in 'scaffolding', and the review queue keeps counting the job as
+        active. recover_orphaned_review_pending_jobs was written for that state
+        but had no caller, so two granted candidates parked in review_pending
+        and nothing ever forged them again.
+        """
+        with (
+            mock.patch.object(auto_research, "recover_stale_execution_jobs", return_value=0),
+            mock.patch.object(
+                auto_research, "recover_orphaned_review_pending_jobs", return_value=2
+            ) as recover_orphans,
+            mock.patch.object(auto_research, "archive_inactive_benchmark_harness_jobs", return_value=0),
+            mock.patch.object(auto_research, "recover_partially_supported_harness_jobs", return_value=0),
+            mock.patch.object(auto_research, "repair_benchmark_harness_design_jobs", return_value=0),
+            mock.patch.object(auto_research, "process_benchmark_harness_jobs", return_value=0),
+            mock.patch.object(auto_research, "_refresh_running_jobs"),
+            mock.patch.object(auto_research, "_select_candidate_from_queues", return_value=(
+                None, {"selected_queue": None, "queue_counts": {}}
+            )),
+            mock.patch.object(auto_research, "_queue_active_counts", return_value={}),
+            mock.patch.object(auto_research, "_active_job_count", return_value=0),
+        ):
+            stats = auto_research._launch_candidates_to_capacity()
+
+        recover_orphans.assert_called_once_with()
+        self.assertEqual(stats["recovered_orphan_review"], 2)
+
     def test_process_candidate_requeues_cpu_when_execution_lane_busy(self):
         candidate = {"id": 71, "tier": 2, "novelty_status": "novel"}
         existing_run = {

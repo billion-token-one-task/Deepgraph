@@ -3486,6 +3486,14 @@ def recover_soft_benchmark_completion_jobs(limit: int = 50) -> int:
 
 def _launch_candidates_to_capacity() -> dict:
     recovered_execution = recover_stale_execution_jobs()
+    # A review claim is held by a pid recorded in assigned_worker. When that
+    # process dies before it links a run to the job, the job keeps the claim
+    # forever: _refresh_running_jobs only rediscovers runs still in
+    # 'scaffolding', and the review queue counts the job as active, so no
+    # forge is ever scheduled for it again. recover_orphaned_review_pending_jobs
+    # was written for exactly this state and checks worker liveness before it
+    # releases anything, but nothing called it.
+    recovered_orphan_review = recover_orphaned_review_pending_jobs()
     archived_inactive_harness = archive_inactive_benchmark_harness_jobs()
     recovered_harness = recover_partially_supported_harness_jobs()
     repaired_harness_design = repair_benchmark_harness_design_jobs()
@@ -3548,6 +3556,7 @@ def _launch_candidates_to_capacity() -> dict:
         "queue_counts": queue_counts,
         "selected_queue": last_selection.get("selected_queue") if isinstance(last_selection, dict) else None,
         "recovered_execution": recovered_execution,
+        "recovered_orphan_review": recovered_orphan_review,
         "archived_inactive_harness": archived_inactive_harness,
         "recovered_harness": recovered_harness,
         "repaired_harness_design": repaired_harness_design,
