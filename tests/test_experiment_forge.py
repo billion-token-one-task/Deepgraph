@@ -16,10 +16,36 @@ class GenerateScaffoldTests(unittest.TestCase):
             {"proposed_method": {"name": "ignored"}},
             {"candidate_hook": "candidate_prompt"},
         )
+        # A prompt that omits a mandatory structural rule to stay short buys
+        # nothing: the response is rejected and the tokens are gone anyway.
         self.assertLess(
             len(experiment_forge.CAPABILITY_ADAPTER_REPAIR_SYSTEM.encode("utf-8"))
             + len(prompt.encode("utf-8")),
-            350,
+            500,
+        )
+
+    def test_adapter_repair_prompt_admits_a_compliant_response(self):
+        """The requested wording must be able to satisfy the validator.
+
+        The mechanism validator used to search for "constraint" while the
+        prompt asked for "constrained reconstruction", so a response that
+        followed the instructions exactly was still rejected. Nothing else in
+        the suite noticed, because every case asserted the validator in
+        isolation from the prompt that feeds it.
+        """
+        prompt = experiment_forge._adapter_repair_prompt(
+            {"proposed_method": {"name": "ignored"}},
+            {"candidate_hook": "candidate_prompt"},
+        )
+        requested = prompt.split("Prompt exactly:", 1)[1].split("Return Python only.", 1)[0]
+        compliant = (
+            'CANDIDATE_METHOD="spectral"\n'
+            "def candidate_prompt(example, baseline_prompt):\n"
+            '    return baseline_prompt + "' + requested.strip().replace('"', "'") + '"\n'
+        )
+        self.assertTrue(
+            experiment_forge._adapter_has_mechanism_contract(compliant),
+            "the repair prompt asks for wording its own validator rejects",
         )
 
     def test_adapter_repair_rejects_generic_cot_source(self):
@@ -1721,6 +1747,133 @@ class GenerateScaffoldTests(unittest.TestCase):
 
         self.assertFalse(judgement.smoke_test_only)
         self.assertTrue(judgement.formal_experiment)
+
+
+class CandidateAdapterContractTests(unittest.TestCase):
+    """The adapter contract the model is told must be the one enforced.
+
+    Four consecutive generation attempts were lost to rules that existed only
+    in the validator: a mandatory module-level constant, a two-argument hook,
+    and a return shape. Each of these asserts the prompt still carries the rule
+    that rejected those responses.
+    """
+
+    QA_REQUIREMENTS = {
+        "task_protocol": "generative_qa",
+        "candidate_hook": "candidate_prompt",
+        "dataset": {
+            "repository_id": "org/qa-corpus",
+            "revision": "stable",
+            "config": "default",
+            "split": "validation",
+            "field_mapping": {"prompt": "query_text", "target": "gold_text"},
+        },
+        "model": {
+            "repository_id": "org/generator",
+            "revision": "release",
+            "task": "causal_lm",
+            "min_vram_gb": 8.0,
+            "requires_cuda": True,
+        },
+        "metric": {"name": "exact_match", "direction": "higher"},
+    }
+
+    CLASSIFICATION_REQUIREMENTS = {
+        "task_protocol": "sequence_classification",
+        "candidate_hook": "candidate_text",
+        "dataset": {
+            "repository_id": "org/text-corpus",
+            "revision": "stable",
+            "config": "default",
+            "split": "validation",
+            "field_mapping": {"text": "body_text", "label": "gold_label"},
+        },
+        "model": {
+            "repository_id": "org/classifier",
+            "revision": "release",
+            "task": "sequence_classification",
+            "min_vram_gb": 8.0,
+            "requires_cuda": True,
+        },
+        "metric": {"name": "accuracy", "direction": "higher"},
+    }
+
+    def _assert_materializer_admits(self, source: str, requirements: dict) -> None:
+        from meta_harness.runner_capability import ExperimentRequirements
+        from meta_harness.runner_materialization import _validate_candidate_adapter
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "candidate_adapter.py"
+            path.write_text(source, encoding="utf-8")
+            _validate_candidate_adapter(
+                path, ExperimentRequirements.from_dict(requirements)
+            )
+
+    def test_generative_qa_example_passes_the_real_materializer(self):
+        self._assert_materializer_admits(
+            experiment_forge.CANDIDATE_ADAPTER_EXAMPLE_GENERATIVE_QA,
+            self.QA_REQUIREMENTS,
+        )
+
+    def test_sequence_classification_example_passes_the_real_materializer(self):
+        self._assert_materializer_admits(
+            experiment_forge.CANDIDATE_ADAPTER_EXAMPLE_SEQUENCE_CLASSIFICATION,
+            self.CLASSIFICATION_REQUIREMENTS,
+        )
+
+    def test_contract_text_binds_hook_and_protected_columns(self):
+        text = experiment_forge._candidate_adapter_contract_text(self.QA_REQUIREMENTS)
+        self.assertIn("def candidate_prompt(example, baseline_prompt):", text)
+        self.assertIn("gold_text", text)
+        self.assertIn("EXACTLY two positional parameters", text)
+        self.assertIn("CANDIDATE_METHOD", text)
+
+        classification = experiment_forge._candidate_adapter_contract_text(
+            self.CLASSIFICATION_REQUIREMENTS
+        )
+        self.assertIn("def candidate_text(example, baseline_text):", classification)
+        self.assertIn("gold_label", classification)
+        # The generic rules name both protocols on purpose; only the binding
+        # section and the worked example may be protocol-specific.
+        bound = classification.split("### Binding for this run", 1)[1]
+        self.assertNotIn("candidate_prompt", bound)
+
+    def test_contract_rules_state_every_static_rejection_reason(self):
+        rules = experiment_forge.CANDIDATE_ADAPTER_CONTRACT_RULES
+        for required in (
+            "CANDIDATE_METHOD",
+            "EXACTLY two positional parameters",
+            "decorators",
+            "identity adapter",
+            "target/label/relevance",
+        ):
+            self.assertIn(required, rules)
+        self.assertIn(rules, experiment_forge.SCAFFOLD_SYSTEM)
+
+    def test_capability_repair_prompt_carries_the_contract(self):
+        captured = {}
+
+        def fake_text(system, prompt, **kwargs):
+            captured["prompt"] = prompt
+            raise experiment_forge.CapabilityScaffoldContractError("stop_before_llm")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(
+                experiment_forge, "_resource_granted_proposer_text", fake_text
+            ):
+                with self.assertRaises(
+                    experiment_forge.CapabilityScaffoldContractError
+                ):
+                    experiment_forge._repair_capability_scaffold(
+                        {"program_md": "x", "evaluate_py": "y"},
+                        insight={"proposed_method": {"name": "m"}},
+                        runner_requirements=self.QA_REQUIREMENTS,
+                        llm_scope={"grant_id": 1},
+                        workdir=Path(tmp),
+                    )
+
+        self.assertIn("def candidate_prompt(example, baseline_prompt):", captured["prompt"])
+        self.assertIn("gold_text", captured["prompt"])
 
 
 if __name__ == "__main__":
