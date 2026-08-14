@@ -518,3 +518,54 @@ def candidate_prompt(example, baseline_prompt):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ContractFailureClassificationTests(unittest.TestCase):
+    """A contract violation must not be classified as a missing metric.
+
+    classify_failure returned metric_missing for anything that produced no
+    final_results, and a run that breaks the runner or candidate-adapter
+    contract dies long before it can write final_results. So every such
+    failure took the metric_missing branch, which decide_recovery routes to a
+    bare defer while runner_contract_violation routes to repair_code. Idea 105
+    parked on that defer with the note "this failure does not require a code
+    change" after its adapter was rejected for a contract breach.
+    """
+
+    ADAPTER_CONTRACT_FAILURES = (
+        "capability_adapter_repair_failed:CapabilityScaffoldContractError:"
+        "capability_adapter_repair_method_drift",
+        "RunnerMaterializationError: candidate_hook_signature_invalid",
+        "runner_contract_violation:candidate_adapter_required",
+        "capability_scaffold_contract_missing:candidate_adapter_py",
+    )
+
+    def test_contract_failures_route_to_code_repair(self):
+        for message in self.ADAPTER_CONTRACT_FAILURES:
+            with self.subTest(message=message):
+                reason = classify_failure(
+                    message=message, returncode=None, final_results_present=False
+                )
+                self.assertEqual(reason, "runner_contract_violation")
+                decision = decide_recovery(
+                    FailureContext(
+                        reason_code=reason,
+                        detail="",
+                        code_hash="code",
+                        environment_hash="env",
+                        remaining_gpu_seconds=7200.0,
+                    ),
+                    fingerprint_seen=False,
+                )
+                self.assertEqual(decision.action, "repair_code")
+                self.assertTrue(decision.invoke_llm_repair)
+
+    def test_a_genuinely_empty_run_is_still_metric_missing(self):
+        self.assertEqual(
+            classify_failure(
+                message="process exited cleanly but produced no parsable output",
+                returncode=0,
+                final_results_present=False,
+            ),
+            "metric_missing",
+        )
