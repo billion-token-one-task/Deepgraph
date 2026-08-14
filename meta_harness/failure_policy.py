@@ -115,10 +115,24 @@ def classify_failure(
         return "controller_lost"
     if "artifact_hash_mismatch" in text:
         return "artifact_hash_mismatch"
+    # Contract checks must precede the "no final_results" fallback. A run that
+    # violates the runner or candidate-adapter contract dies before it can
+    # write final_results, so testing for their absence first classified every
+    # such failure as metric_missing -- which decide_recovery routes to a bare
+    # defer, while runner_contract_violation routes to repair_code. That made
+    # the repair path unreachable for exactly the failures a code repair is
+    # meant to fix, and left granted candidates parked forever.
+    if (
+        "runner_contract" in text
+        or "final_results" in text
+        or "contracterror" in text
+        or "candidate_adapter" in text
+        or "candidate_hook" in text
+        or "capability_scaffold" in text
+    ):
+        return "runner_contract_violation"
     if returncode in (0, None) and not final_results_present:
         return "metric_missing"
-    if "runner_contract" in text or "final_results" in text:
-        return "runner_contract_violation"
     return "unknown_execution_failure"
 
 
