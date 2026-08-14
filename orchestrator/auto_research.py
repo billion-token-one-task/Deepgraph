@@ -2445,6 +2445,24 @@ def _requires_accelerated_runner(insight: dict) -> bool:
     )
 
 
+_GPU_RESOURCE_CLASSES = frozenset({"gpu_small", "gpu_large"})
+
+
+def _forged_resource_class(run: dict | None, assessed: str) -> str:
+    """Prefer the class the forge derived from an admitted runner.
+
+    The forge sets the run's resource_class from the runner bundle it
+    materialized and that bundle's passed preflight, which is the same
+    authority the compute backend gate checks. The route assessment that
+    precedes the forge only sees insight text, so it must not demote a run
+    the preflight already admitted to a GPU backend.
+    """
+    forged = str((run or {}).get("resource_class") or "")
+    if forged in _GPU_RESOURCE_CLASSES and assessed not in _GPU_RESOURCE_CLASSES:
+        return forged
+    return assessed
+
+
 def assess_experiment_route(insight: dict) -> tuple[str, str]:
     """Route insights into cpu / gpu_small / gpu_large lanes."""
     inferred_resource = str(insight.get("resource_class") or "").strip() or infer_resource_class(insight)
@@ -3996,6 +4014,14 @@ def _process_candidate(insight: dict) -> None:
             )
             return
         existing_run = db.fetchone("SELECT * FROM experiment_runs WHERE id=?", (forged["run_id"],))
+        # assess_experiment_route runs before the forge and reads discovery-era
+        # insight text. The forge afterwards derives the execution class from
+        # the runner it actually materialized and that runner's passed
+        # preflight, so writing the pre-forge guess back over it demoted
+        # GPU-bound runs to "cpu". The dispatcher then requested the cpu
+        # backend for a grant whose preflight had selected ssh_gpu, and the
+        # authority check refused it with passed_candidate_preflight_required.
+        resource_class = _forged_resource_class(existing_run, resource_class)
         if forged.get("smoke_test_only") or not forged.get("formal_experiment"):
             _upsert_job(
                 insight_id,
@@ -4055,6 +4081,7 @@ def _process_candidate(insight: dict) -> None:
             )
             return
     elif not _run_is_formal(existing_run):
+        resource_class = _forged_resource_class(existing_run, resource_class)
         _upsert_job(
             insight_id,
             status="smoke_only",
