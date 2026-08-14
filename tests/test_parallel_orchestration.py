@@ -1777,3 +1777,62 @@ class ForgedResourceClassTests(unittest.TestCase):
             auto_research._forged_resource_class({"resource_class": "cpu"}, "cpu"), "cpu"
         )
         self.assertEqual(auto_research._forged_resource_class(None, "cpu"), "cpu")
+
+
+class GrantedBackendResourceClassTests(unittest.TestCase):
+    """The grant's passed preflight decides which dispatch branch may run.
+
+    meta_compute_runtime.require_passed admits only the backend the preflight
+    selected. Run 140 sat at scaffold_ready with a valid adapter and a grant
+    admitted on ssh_gpu, but its resource_class column still read "cpu" from an
+    earlier defect, so the dispatcher took the cpu branch, hard-coded
+    backend_kind="cpu", and was refused with
+    passed_candidate_preflight_required.
+    """
+
+    def test_gpu_preflight_overrides_a_stale_cpu_column(self):
+        for backend in ("ssh_gpu", "local_gpu", "colab_gpu"):
+            with self.subTest(backend=backend):
+                with mock.patch.object(
+                    auto_research.db, "fetchone", return_value={"backend": backend}
+                ):
+                    self.assertEqual(
+                        auto_research._granted_backend_resource_class(
+                            {"resource_grant_id": 35}, "cpu"
+                        ),
+                        "gpu_large",
+                    )
+
+    def test_a_cpu_preflight_stays_on_the_cpu_branch(self):
+        with mock.patch.object(
+            auto_research.db, "fetchone", return_value={"backend": "cpu"}
+        ):
+            self.assertEqual(
+                auto_research._granted_backend_resource_class(
+                    {"resource_grant_id": 35}, "cpu"
+                ),
+                "cpu",
+            )
+
+    def test_no_grant_or_no_passed_preflight_changes_nothing(self):
+        with mock.patch.object(auto_research.db, "fetchone", return_value=None) as f:
+            self.assertEqual(
+                auto_research._granted_backend_resource_class(
+                    {"resource_grant_id": 35}, "cpu"
+                ),
+                "cpu",
+            )
+            self.assertEqual(
+                auto_research._granted_backend_resource_class({}, "cpu"), "cpu"
+            )
+            self.assertEqual(f.call_count, 1)
+
+    def test_an_explicit_gpu_assessment_skips_the_lookup(self):
+        with mock.patch.object(auto_research.db, "fetchone") as f:
+            self.assertEqual(
+                auto_research._granted_backend_resource_class(
+                    {"resource_grant_id": 35}, "gpu_small"
+                ),
+                "gpu_small",
+            )
+            f.assert_not_called()
