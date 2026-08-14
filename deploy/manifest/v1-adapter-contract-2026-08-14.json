@@ -1,0 +1,51 @@
+{
+  "backup_root": "/home/billion-token/Deepgraph (in-place .bak-adaptercontract-20260814-182515)",
+  "batches": [
+    {
+      "acceptance": "py_compile passes on both targets; idea 110 preflight moves off metric_contract_unsupported; no service restart.",
+      "authorization": "owner-autonomous-v1-completion-2026-08-14",
+      "batch": "1-adapter-contract-and-metric-alias",
+      "files": [
+        {
+          "backup_artifact": "/home/billion-token/Deepgraph/agents/experiment_forge.py.bak-adaptercontract-20260814-182515",
+          "kind": "file",
+          "mode": "0644",
+          "owner": "billion-token:billion-token",
+          "replaces": null,
+          "runtime_locally_modified": false,
+          "source": "agents/experiment_forge.py",
+          "source_bytes": 222256,
+          "source_sha256": "28cf6bb96b7165a025f5f9599303a7cc9ac074a2891573b520276ca7bf8915e4",
+          "target": "/home/billion-token/Deepgraph/agents/experiment_forge.py",
+          "target_predeploy_sha256_prefix": "6dc2e71927ffe339",
+          "target_predeploy_state": "present"
+        },
+        {
+          "backup_artifact": "/home/billion-token/Deepgraph/meta_harness/runner_capability.py.bak-adaptercontract-20260814-182515",
+          "kind": "file",
+          "mode": "0644",
+          "owner": "billion-token:billion-token",
+          "replaces": null,
+          "runtime_locally_modified": false,
+          "source": "meta_harness/runner_capability.py",
+          "source_bytes": 31817,
+          "source_sha256": "e2b4d8460758a331fee4983958ecedb52d9a8362fc7fdbba6327889d934ae5c3",
+          "target": "/home/billion-token/Deepgraph/meta_harness/runner_capability.py",
+          "target_predeploy_sha256_prefix": "97c37b18c4ab58e6",
+          "target_predeploy_state": "present"
+        }
+      ],
+      "health_check": "sha256 match against source, py_compile, services remain stopped.",
+      "purpose": "State the enforced candidate-adapter contract in the prompts that request it, and fold sanctioned metric synonyms on the plan-derived requirements path.",
+      "restart_required": [],
+      "rollback": "Restore the two .bak-adaptercontract-20260814-182515 files; no schema, env, systemd or business-table change."
+    }
+  ],
+  "commits": [
+    "23fac7e",
+    "aac6eba"
+  ],
+  "env_scope": "none",
+  "schema_scope": "none",
+  "systemd_scope": "none"
+}
