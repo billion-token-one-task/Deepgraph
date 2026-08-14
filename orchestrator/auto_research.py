@@ -2448,6 +2448,36 @@ def _requires_accelerated_runner(insight: dict) -> bool:
 _GPU_RESOURCE_CLASSES = frozenset({"gpu_small", "gpu_large"})
 
 
+_GPU_PREFLIGHT_BACKENDS = frozenset({"ssh_gpu", "local_gpu", "colab_gpu"})
+
+
+def _granted_backend_resource_class(run: dict | None, assessed: str) -> str:
+    """Resolve the execution class from the grant's passed preflight.
+
+    require_passed admits exactly the backend the preflight selected, so a run
+    whose grant was admitted on a GPU backend cannot execute on the cpu branch
+    no matter what its own resource_class column says. Reading the preflight
+    keeps the dispatcher and the gate quoting one source, and repairs rows
+    already stamped by earlier defects without rewriting history.
+    """
+    if assessed in _GPU_RESOURCE_CLASSES:
+        return assessed
+    grant_id = int((run or {}).get("resource_grant_id") or 0)
+    if grant_id <= 0:
+        return assessed
+    row = db.fetchone(
+        """
+        SELECT p.selected_backend AS backend
+          FROM resource_grants g
+          JOIN candidate_preflight_results_v1 p ON p.id = g.preflight_result_id
+         WHERE g.id=? AND p.status='passed'
+        """,
+        (grant_id,),
+    )
+    backend = str((row or {}).get("backend") or "")
+    return "gpu_large" if backend in _GPU_PREFLIGHT_BACKENDS else assessed
+
+
 def _forged_resource_class(run: dict | None, assessed: str) -> str:
     """Prefer the class the forge derived from an admitted runner.
 
@@ -4270,6 +4300,14 @@ def _process_candidate(insight: dict) -> None:
             triggered_by="experiment",
         )
         return
+
+    # The compute backend gate admits only the backend the grant's passed
+    # preflight selected, so that preflight -- not a resource_class copied
+    # from discovery-era text or left behind by an earlier defect -- decides
+    # which branch may run. Dispatching a GPU-admitted run down the cpu branch
+    # hard-codes backend_kind="cpu" and is refused with
+    # passed_candidate_preflight_required.
+    resource_class = _granted_backend_resource_class(existing_run, resource_class)
 
     if resource_class != "cpu":
         gpu_scheduler.start()
