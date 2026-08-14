@@ -78,8 +78,12 @@ ARTIFACT_REQUIREMENTS = [
 # orphan-review recovery had no caller, and ("blocked", "execution_defer") was
 # absent from RECYCLABLE. The counter measured the old code, so the repairs
 # would never have been given the fresh attempt this epoch mechanism exists to
-# grant.
-RECYCLE_EPOCH = "post-adapter-contract-repair-2026-08-14"
+# grant. Bumped once more the same day: those three requeues were themselves
+# spent diagnosing a fifth defect, the pre-forge route assessment overwriting
+# the execution class the forge derived from a passed preflight. Every bump
+# here must name a repair that is already deployed; the counter is the only
+# thing standing between a broken candidate and an unbounded retry loop.
+RECYCLE_EPOCH = "post-resource-class-authority-repair-2026-08-14"
 
 # Frontier rationing. The ration per problem is unchanged; what changes is that
 # the pool no longer stops at the top 3, so spending a problem's ration retires
