@@ -92,6 +92,12 @@ RECYCLABLE: frozenset[tuple[str, str]] = frozenset(
         ("failed", "exception"),
         ("review_pending", "benchmark_harness_design_repair"),
         ("blocked", "experiment_review_blocked_final"),
+        # decide_recovery parks a deferred failure here and nothing else
+        # claims the pair, so a granted candidate whose failure was deferred
+        # stayed blocked even after the defect behind the failure was fixed
+        # and redeployed. The recycler is the sanctioned way out: it issues a
+        # fresh grant and is bounded by MAX_RECYCLES per idea.
+        ("blocked", "execution_defer"),
     }
 )
 
