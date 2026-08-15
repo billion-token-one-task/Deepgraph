@@ -1065,3 +1065,56 @@ class FalselyUnboundRecoveryTests(unittest.TestCase):
         self.assertIn("j.status='failed'", sql)
         self.assertIn("r.phase='scaffold_ready'", sql)
         self.assertEqual(fetch.call_args.args[1][0], gpu_scheduler._FALSE_UNBOUND_BLOCKER)
+
+
+class ColabWorkerRegistrationTests(unittest.TestCase):
+    """Preflight can only select Colab once something measured the device.
+
+    preflight holds Colab VRAM at zero until a canary records real hardware,
+    which is the correct default for a backend whose allocation is not
+    guaranteed. Nothing could record that measurement, so the zero was
+    permanent and colab_gpu was unselectable by construction.
+    """
+
+    def test_a_measured_device_is_written_as_an_idle_colab_worker(self):
+        statements = []
+
+        with (
+            mock.patch.object(gpu_scheduler.db, "fetchone", return_value=None),
+            mock.patch.object(
+                gpu_scheduler.db,
+                "execute",
+                side_effect=lambda sql, params=None: statements.append(
+                    (" ".join(sql.split()), params)
+                ),
+            ),
+            mock.patch.object(
+                gpu_scheduler, "_local_hostname", return_value="host"
+            ),
+        ):
+            summary = gpu_scheduler.upsert_colab_worker(
+                account_ref="colab-pro",
+                gpu_model="Tesla T4",
+                total_mem_gb=14.56,
+                measured_at="2026-08-15",
+                detail={"driver": "580.82.07"},
+            )
+
+        self.assertEqual(summary["total_mem_gb"], 14.56)
+        self.assertEqual(summary["status"], "idle")
+        self.assertEqual(summary["backend"], "colab")
+        sql, params = statements[0]
+        self.assertIn("INSERT INTO gpu_workers", sql)
+        self.assertIn("'idle'", sql)
+        self.assertIn("host:colab-colab-pro", params)
+
+    def test_an_unmeasured_device_is_refused(self):
+        for kwargs in (
+            {"account_ref": "", "total_mem_gb": 14.56},
+            {"account_ref": "colab-pro", "total_mem_gb": 0},
+        ):
+            with self.subTest(kwargs=kwargs):
+                with self.assertRaises(ValueError):
+                    gpu_scheduler.upsert_colab_worker(
+                        gpu_model="Tesla T4", measured_at="2026-08-15", **kwargs
+                    )
