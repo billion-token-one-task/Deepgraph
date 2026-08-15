@@ -21,21 +21,20 @@ from db import database as db
 GPU_BACKENDS = {"local_gpu", "ssh_gpu", "colab_gpu"}
 ACTIVE_ATTEMPT_STATES = {"reserved", "running"}
 TERMINAL_ATTEMPT_STATES = {"settled", "released"}
-# The one release that records a definite non-attempt: the claim never started
-# and its usage is exactly zero.
-PRELAUNCH_RELEASE_REASONS = {
-    "attempt_blocked_before_launch",
-    "controller_lost_before_submit",
-}
-
-
 def _is_reusable_prelaunch_release(row) -> bool:
-    """True when a released claim provably never ran and consumed nothing."""
+    """True when a released claim provably never ran and consumed nothing.
+
+    The test is the recorded facts, not the reason code. Several distinct
+    reasons describe the same non-attempt -- attempt_blocked_before_launch,
+    controller_lost_before_submit, compute_submission_failed_before_backend_start
+    -- and an allow-list of those strings silently stops matching the moment a
+    new one is introduced, which is how run 140 stayed stuck after the first
+    version of this check. A claim with no start and zero usage did not happen,
+    however it came to be released.
+    """
     if str((row or {}).get("status")) != "released":
         return False
     if (row or {}).get("started_at") is not None:
-        return False
-    if str((row or {}).get("reason_code") or "") not in PRELAUNCH_RELEASE_REASONS:
         return False
     return float((row or {}).get("actual_gpu_seconds") or 0.0) == 0.0
 _EPSILON_SECONDS = 1e-6

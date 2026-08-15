@@ -251,19 +251,23 @@ class PrelaunchReleaseReuseTests(unittest.TestCase):
 
     def test_a_zero_usage_prelaunch_release_is_reusable(self):
         self.assertTrue(attempt_gpu_usage._is_reusable_prelaunch_release(self._row()))
-        self.assertTrue(
-            attempt_gpu_usage._is_reusable_prelaunch_release(
-                self._row(reason_code="controller_lost_before_submit")
-            )
-        )
+        for reason in (
+            "controller_lost_before_submit",
+            "compute_submission_failed_before_backend_start",
+            None,
+        ):
+            with self.subTest(reason=reason):
+                self.assertTrue(
+                    attempt_gpu_usage._is_reusable_prelaunch_release(
+                        self._row(reason_code=reason)
+                    )
+                )
 
     def test_anything_that_ran_or_settled_stays_terminal(self):
         cases = (
             self._row(started_at="2026-08-15T06:00:00Z"),
             self._row(actual_gpu_seconds=120),
             self._row(status="settled"),
-            self._row(reason_code="attempt_timed_out"),
-            self._row(reason_code=None),
         )
         for row in cases:
             with self.subTest(row=row):
