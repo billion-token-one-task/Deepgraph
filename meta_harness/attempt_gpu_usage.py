@@ -910,6 +910,38 @@ class GrantGPUUsageControl:
         db.commit()
         return int(getattr(cursor, "rowcount", 0) or 0)
 
+    def release_prelaunch_blocked_reservations(self) -> int:
+        """Release claims whose GPU job died before it ever started.
+
+        release_orphaned_reservations only covers claims that never reached a
+        compute job. A claim that did reach one, whose legacy GPU job was then
+        refused at the launch boundary, is stranded instead: settling the
+        compute job demands settled attempt usage, and the usage cannot settle
+        because the claim is still reserved. The lease eventually expires but
+        the compute_job_id IS NULL condition never matches, so the deadlock is
+        permanent.
+
+        Zero usage is a fact here rather than an estimate: both the claim and
+        the GPU job carry no started_at, and the job is terminal.
+        """
+        cursor = db.execute(
+            """
+            UPDATE experiment_attempt_gpu_reservations_v1
+            SET status='released', reason_code='attempt_blocked_before_launch',
+                actual_gpu_seconds=0, completed_at=CURRENT_TIMESTAMP,
+                updated_at=CURRENT_TIMESTAMP
+            WHERE status='reserved' AND started_at IS NULL
+              AND gpu_job_id IN (
+                  SELECT id FROM gpu_jobs
+                  WHERE status IN ('failed', 'cancelled', 'canceled', 'timed_out')
+                    AND started_at IS NULL
+                    AND completed_at IS NOT NULL
+              )
+            """
+        )
+        db.commit()
+        return int(getattr(cursor, "rowcount", 0) or 0)
+
     def import_legacy_terminal_attempts(self) -> int:
         """Adopt pre-control-plane terminal GPU jobs exactly once.
 

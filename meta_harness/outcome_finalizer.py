@@ -59,6 +59,9 @@ def _recover_terminal_usage() -> dict[str, int]:
         "terminal_colab_attempts_reconciled": len(colab_ids),
         "terminal_colab_jobs_settled": colab_settled,
         "orphan_unstarted_attempts_released": control.release_orphaned_reservations(),
+        "prelaunch_blocked_attempts_released": (
+            control.release_prelaunch_blocked_reservations()
+        ),
     }
 
 
