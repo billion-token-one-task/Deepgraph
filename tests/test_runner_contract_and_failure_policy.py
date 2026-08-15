@@ -609,12 +609,27 @@ class ComputeIdempotencyReuseTests(unittest.TestCase):
         ):
             self.assertFalse(compute_repository._never_reached_backend(row))
 
+    def test_a_zeroed_usage_record_still_counts_as_never_run(self):
+        from meta_harness import compute_repository
+
+        # A pre-launch refusal writes a usage record rather than leaving it
+        # empty, with every metered quantity zero.
+        zeroed = (
+            '{"backend_report": {"reason_code": "attempt_blocked_before_launch"},'
+            ' "cpu_core_hours": 0.0, "gpu_hours": 0.0, "wall_seconds": 0.0}'
+        )
+        self.assertTrue(compute_repository._usage_is_zero(zeroed))
+        self.assertTrue(compute_repository._usage_is_zero(None))
+        self.assertFalse(compute_repository._usage_is_zero('{"gpu_hours": 0.01}'))
+        self.assertFalse(compute_repository._usage_is_zero("not json"))
+
     def test_real_work_stays_terminal(self):
         from meta_harness import compute_repository
 
         cases = (
             self._row(backend_job_id="ssh-4321"),
-            self._row(usage_json='{"gpu_seconds": 12}'),
+            self._row(usage_json='{"gpu_hours": 0.4, "wall_seconds": 900}'),
+            self._row(usage_json="not json"),
             self._row(status="running"),
             self._row(status="submitted"),
         )
