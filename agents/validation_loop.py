@@ -813,6 +813,57 @@ def _command_script_path(command_tokens: list[str], code_dir: Path) -> Path:
     return code_dir / "train.py"
 
 
+def _is_materialized_runner_bundle(code_dir: Path) -> bool:
+    """True when the workdir holds a capability-selected portable runner."""
+    return (
+        (code_dir / "execution_requirements.json").is_file()
+        and (code_dir / "candidate_adapter.py").is_file()
+        and (code_dir / "meta_harness" / "runners").is_dir()
+    )
+
+
+def _materialized_bundle_violations(workdir: Path, code_dir: Path) -> list[str]:
+    """Verify the bundle declares the contracted dataset and model.
+
+    The runner package itself is vendored from this repository and carries the
+    output contract, so the checks that matter here are the ones a bundle could
+    actually get wrong: a manifest that does not parse, or one pinned to a
+    different dataset or model than the experiment contracted for.
+    """
+    violations: list[str] = []
+    manifest_path = code_dir / "execution_requirements.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return [f"materialized runner manifest is unreadable: {exc}"]
+    requirements = manifest.get("requirements")
+    requirements = requirements if isinstance(requirements, dict) else manifest
+    _success, proxy, _contract = _contract_context(workdir)
+    declared = {
+        "dataset": str(
+            (requirements.get("dataset") or {}).get("repository_id") or ""
+        ).strip().lower(),
+        "model": str(
+            (requirements.get("model") or {}).get("repository_id") or ""
+        ).strip().lower(),
+    }
+    for key, proxy_key in (("dataset", "benchmark_dataset"), ("model", "benchmark_model")):
+        expected = str(proxy.get(proxy_key) or "").strip().lower()
+        if expected and declared[key] and expected != declared[key]:
+            violations.append(
+                f"materialized runner is pinned to {key} {declared[key]!r} but the "
+                f"experiment contracted for {expected!r}."
+            )
+        if expected and not declared[key]:
+            violations.append(
+                f"materialized runner manifest declares no {key}; the experiment "
+                f"contracted for {expected!r}."
+            )
+    if not str(requirements.get("candidate_hook") or "").strip():
+        violations.append("materialized runner manifest declares no candidate_hook.")
+    return violations
+
+
 def _runner_contract_violations(
     workdir: Path,
     code_dir: Path,
@@ -830,6 +881,16 @@ def _runner_contract_violations(
         return [f"formal benchmark entrypoint is missing: {script_path}"]
     lowered = text.lower()
     violations: list[str] = []
+
+    # These heuristics read one generated script, which is the whole program
+    # when the forge writes a monolithic train.py. A materialized runner bundle
+    # is not that: its entrypoint is a ten-line launcher and the dataset,
+    # model, CUDA handling and output contract live in the vendored runner it
+    # imports, driven by execution_requirements.json. Scanning the launcher for
+    # dataset names and "cuda" therefore rejected a bundle the materializer had
+    # already admitted. Check the bundle's declared contract instead.
+    if _is_materialized_runner_bundle(code_dir):
+        return _materialized_bundle_violations(workdir, code_dir)
 
     literal_patterns = {
         r"\b[A-Za-z_][A-Za-z0-9_]*\s*=\s*true\b": "Python code uses JSON boolean true in a keyword/assignment; use True.",

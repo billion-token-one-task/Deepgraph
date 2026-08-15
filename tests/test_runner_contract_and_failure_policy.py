@@ -4,6 +4,7 @@ import hashlib
 import json
 import tempfile
 import unittest
+from agents import validation_loop
 from unittest import mock
 import subprocess
 import sys
@@ -636,3 +637,87 @@ class ComputeIdempotencyReuseTests(unittest.TestCase):
         for row in cases:
             with self.subTest(row=row):
                 self.assertFalse(compute_repository._never_reached_backend(row))
+
+
+class MaterializedBundleGuardTests(unittest.TestCase):
+    """The launcher of a portable runner is not the whole program.
+
+    _runner_contract_violations scans one generated script for dataset names,
+    "cuda" and output markers, which is right when the forge writes a
+    monolithic train.py. A materialized runner bundle's train.py is a ten-line
+    launcher; the dataset, model, device handling and output contract live in
+    the vendored runner it imports. Run 142 reached the GPU host and was
+    refused there for lacking markers its launcher could never contain.
+    """
+
+    def _bundle(self, root, *, dataset="openai/gsm8k", model="org/model"):
+        code = Path(root) / "code"
+        (code / "meta_harness" / "runners").mkdir(parents=True)
+        (code / "candidate_adapter.py").write_text("CANDIDATE_METHOD = 'm'\n")
+        (code / "train.py").write_text(
+            "import sys\n"
+            "from meta_harness.runners.generic_transformers import main\n"
+        )
+        (code / "execution_requirements.json").write_text(
+            json.dumps(
+                {
+                    "requirements": {
+                        "candidate_hook": "candidate_prompt",
+                        "dataset": {"repository_id": dataset},
+                        "model": {"repository_id": model},
+                    }
+                }
+            )
+        )
+        return code
+
+    def test_a_launcher_backed_bundle_is_detected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            code = self._bundle(tmp)
+            self.assertTrue(validation_loop._is_materialized_runner_bundle(code))
+            (code / "execution_requirements.json").unlink()
+            self.assertFalse(validation_loop._is_materialized_runner_bundle(code))
+
+    def test_a_bundle_matching_its_contract_has_no_violations(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            code = self._bundle(tmp)
+            with mock.patch.object(
+                validation_loop,
+                "_contract_context",
+                return_value=(
+                    {},
+                    {"benchmark_dataset": "openai/gsm8k", "benchmark_model": "org/model"},
+                    {},
+                ),
+            ):
+                self.assertEqual(
+                    validation_loop._materialized_bundle_violations(
+                        Path(tmp), code
+                    ),
+                    [],
+                )
+
+    def test_a_bundle_pinned_elsewhere_is_still_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            code = self._bundle(tmp, dataset="other/corpus")
+            with mock.patch.object(
+                validation_loop,
+                "_contract_context",
+                return_value=({}, {"benchmark_dataset": "openai/gsm8k"}, {}),
+            ):
+                violations = validation_loop._materialized_bundle_violations(
+                    Path(tmp), code
+                )
+        self.assertEqual(len(violations), 1)
+        self.assertIn("other/corpus", violations[0])
+        self.assertIn("openai/gsm8k", violations[0])
+
+    def test_an_unreadable_manifest_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            code = self._bundle(tmp)
+            (code / "execution_requirements.json").write_text("{ not json")
+            violations = validation_loop._materialized_bundle_violations(
+                Path(tmp), code
+            )
+        self.assertEqual(len(violations), 1)
+        self.assertIn("unreadable", violations[0])
