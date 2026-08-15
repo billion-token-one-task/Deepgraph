@@ -851,3 +851,14 @@ class ColabControlLostRequeueTests(unittest.TestCase):
         self.assertIn("status='queued'", request_update)
         compute_update = next(s for s, _ in statements if "compute_jobs_v1" in s)
         self.assertIn("status='submitted'", compute_update)
+        # claim_next marks the attempt started before the executor runs, so a
+        # worker that dies in between settles a reservation holding only
+        # controller overhead; leaving it terminal makes start_attempt refuse
+        # the retry.
+        attempt_update = next(
+            s for s, _ in statements
+            if "experiment_attempt_gpu_reservations_v1" in s
+        )
+        self.assertIn("status='reserved'", attempt_update)
+        self.assertIn("started_at=NULL", attempt_update)
+        self.assertIn("actual_gpu_seconds=NULL", attempt_update)
