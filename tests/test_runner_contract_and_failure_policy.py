@@ -766,3 +766,40 @@ class GrantedBackendKindTests(unittest.TestCase):
                 meta_compute_runtime._granted_backend_kind({"preflight_result_id": 9}),
                 "ssh_gpu",
             )
+
+
+class ColabGrantRowShapeTests(unittest.TestCase):
+    """The Colab worker must hand grant_from_row the keys it documents.
+
+    grant_from_row reads the grant id as "resource_grant_id", the name the
+    work-request rows use. resource_grants calls that column "id", so a
+    SELECT rg.* left the mapper with a KeyError and every claimed Colab
+    request was quarantined as colab_worker_control_lost before the executor
+    was ever reached.
+    """
+
+    def test_the_worker_query_aliases_the_grant_id(self):
+        import inspect
+        from orchestrator import colab_worker
+
+        source = inspect.getsource(colab_worker)
+        self.assertIn("rg.id AS resource_grant_id", source)
+
+    def test_grant_from_row_still_requires_that_key(self):
+        from meta_harness.backends.colab_durable import grant_from_row
+
+        row = {
+            "agenda_id": 11,
+            "idea_id": 105,
+            "decision_packet_id": 1,
+            "stage": "pilot",
+            "expires_at": "2026-08-16T00:00:00+00:00",
+            "grant_reason": "r",
+            "grant_idempotency_key": "k",
+            "grant_status": "active",
+            "reservation_id": 1,
+            "preflight_result_id": 28,
+        }
+        with self.assertRaises(KeyError):
+            grant_from_row(row)
+        self.assertIsNotNone(grant_from_row(dict(row, resource_grant_id=38)))
