@@ -83,7 +83,7 @@ ARTIFACT_REQUIREMENTS = [
 # the execution class the forge derived from a passed preflight. Every bump
 # here must name a repair that is already deployed; the counter is the only
 # thing standing between a broken candidate and an unbounded retry loop.
-RECYCLE_EPOCH = "post-gpu-launch-path-repair-2026-08-15"
+RECYCLE_EPOCH = "post-compute-idempotency-repair-2026-08-15"
 
 # Frontier rationing. The ration per problem is unchanged; what changes is that
 # the pool no longer stops at the top 3, so spending a problem's ration retires
