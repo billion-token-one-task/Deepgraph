@@ -461,7 +461,14 @@ class ColabWorkRepository:
                   AND cwr.session_ref IS NULL
                   AND cwr.result_json IS NULL
                   AND cwr.failure_reason LIKE 'colab_worker_control_lost:%'
-                  AND cj.backend_job_id IS NULL
+                  -- The compute row's backend_job_id is this request's own
+                  -- reference, assigned at admission; it is not a Colab
+                  -- session and says nothing about whether work began. The
+                  -- session and result columns above are that evidence.
+                  AND (
+                        cj.backend_job_id IS NULL
+                     OR cj.backend_job_id = 'colab-work-request:' || cwr.id
+                  )
                 FOR UPDATE OF cwr, cj
                 """
             )
@@ -481,7 +488,7 @@ class ColabWorkRepository:
                     UPDATE compute_jobs_v1
                     SET status='submitted', failure_reason=NULL,
                         updated_at=CURRENT_TIMESTAMP
-                    WHERE id=? AND agenda_id=? AND backend_job_id IS NULL
+                    WHERE id=? AND agenda_id=? AND status='failed' 
                     """,
                     (int(row["compute_job_id"]), int(row["agenda_id"])),
                 )

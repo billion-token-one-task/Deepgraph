@@ -841,6 +841,7 @@ class ColabControlLostRequeueTests(unittest.TestCase):
             "cwr.result_json IS NULL",
             "colab_worker_control_lost:%",
             "cj.backend_job_id IS NULL",
+            "colab-work-request:",
         ):
             with self.subTest(guard=guard):
                 self.assertIn(guard, predicate)
@@ -850,4 +851,3 @@ class ColabControlLostRequeueTests(unittest.TestCase):
         self.assertIn("status='queued'", request_update)
         compute_update = next(s for s, _ in statements if "compute_jobs_v1" in s)
         self.assertIn("status='submitted'", compute_update)
-        self.assertIn("backend_job_id IS NULL", compute_update)
