@@ -457,10 +457,19 @@ class ColabWorkRepository:
                 SELECT cwr.id, cwr.agenda_id, cwr.compute_job_id
                 FROM colab_work_requests_v1 AS cwr
                 JOIN compute_jobs_v1 AS cj ON cj.id=cwr.compute_job_id
-                WHERE cwr.status='failed'
-                  AND cwr.session_ref IS NULL
+                LEFT JOIN experiment_attempt_gpu_reservations_v1 AS res
+                       ON res.compute_job_id=cj.id
+                WHERE cwr.session_ref IS NULL
                   AND cwr.result_json IS NULL
-                  AND cwr.failure_reason LIKE 'colab_worker_control_lost:%'
+                  -- Either the worker failed the request on its own defect, or
+                  -- it left the request claimable while its reservation stayed
+                  -- terminal, which start_attempt refuses just as firmly.
+                  AND (
+                        (cwr.status='failed'
+                         AND cwr.failure_reason LIKE 'colab_worker_control_lost:%')
+                     OR (cwr.status='queued'
+                         AND res.status IN ('settled', 'released'))
+                  )
                   -- The compute row's backend_job_id is this request's own
                   -- reference, assigned at admission; it is not a Colab
                   -- session and says nothing about whether work began. The
@@ -479,7 +488,8 @@ class ColabWorkRepository:
                     SET status='queued', worker_id=NULL, started_at=NULL,
                         completed_at=NULL, failure_reason=NULL,
                         updated_at=CURRENT_TIMESTAMP
-                    WHERE id=? AND agenda_id=? AND status='failed'
+                    WHERE id=? AND agenda_id=?
+                      AND status IN ('failed', 'queued')
                     """,
                     (int(row["id"]), int(row["agenda_id"])),
                 )
@@ -488,7 +498,8 @@ class ColabWorkRepository:
                     UPDATE compute_jobs_v1
                     SET status='submitted', failure_reason=NULL,
                         updated_at=CURRENT_TIMESTAMP
-                    WHERE id=? AND agenda_id=? AND status='failed'
+                    WHERE id=? AND agenda_id=?
+                      AND status IN ('failed', 'queued')
                     """,
                     (int(row["compute_job_id"]), int(row["agenda_id"])),
                 )
