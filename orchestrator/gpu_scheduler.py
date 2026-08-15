@@ -1163,7 +1163,16 @@ def _next_job() -> dict | None:
                 )
                 db.commit()
                 continue
-        run = db.fetchone("SELECT id, deep_insight_id, status, phase, error_message, workdir FROM experiment_runs WHERE id=?", (job["experiment_run_id"],))
+        # _capability_preflight_blocker reads resource_grant_id and agenda_id
+        # to resolve the grant's passed preflight. They were absent from this
+        # projection, so every queued job reported "experiment run is not bound
+        # to a ResourceGrant" however well bound it was, and the blocker could
+        # never pass.
+        run = db.fetchone(
+            "SELECT id, deep_insight_id, agenda_id, resource_grant_id, status,"
+            " phase, error_message, workdir FROM experiment_runs WHERE id=?",
+            (job["experiment_run_id"],),
+        )
         blocker = _launch_blocker_for_run(run)
         if blocker:
             _fail_blocked_queued_job(job, blocker)
@@ -1203,6 +1212,20 @@ def _capability_preflight_blocker(run: dict) -> str | None:
     """Fail closed for production compute not bound to a passed capability."""
     if not db._use_pg():  # noqa: SLF001 - SQLite unit fixtures predate V1 grants.
         return None
+    # A caller that never selected these columns is a defect, not an unbound
+    # run. Reporting both the same way hid a projection that omitted
+    # resource_grant_id behind a plausible policy refusal, and every queued GPU
+    # job failed as "not bound to a ResourceGrant" while being correctly bound.
+    absent = [
+        column
+        for column in ("resource_grant_id", "agenda_id", "deep_insight_id")
+        if column not in run
+    ]
+    if absent:
+        return (
+            "experiment_run row is missing columns required for the capability "
+            "check: " + ", ".join(absent)
+        )
     grant_id = int(run.get("resource_grant_id") or 0)
     if grant_id <= 0:
         return "experiment run is not bound to a ResourceGrant"

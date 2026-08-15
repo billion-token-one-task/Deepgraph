@@ -949,3 +949,64 @@ class GpuSchedulerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LaunchBlockerProjectionTests(unittest.TestCase):
+    """A run row that never carried the grant columns is a defect, not a policy.
+
+    _capability_preflight_blocker resolves the grant's passed preflight from
+    resource_grant_id and agenda_id. _next_job's projection omitted both, so
+    the blocker read None, treated it as grant 0, and failed every queued job
+    with "experiment run is not bound to a ResourceGrant" however well bound
+    the run was. The legacy GPU path could not launch anything, and the message
+    pointed at the data instead of the query.
+    """
+
+    BOUND_RUN = {
+        "id": 140,
+        "deep_insight_id": 105,
+        "agenda_id": 11,
+        "resource_grant_id": 35,
+        "status": "scaffolding",
+        "phase": "scaffold_ready",
+        "error_message": None,
+    }
+    PASSED_PREFLIGHT = {
+        "preflight_result_id": 25,
+        "status": "passed",
+        "adapter_id": "transformers_causal_lm_qa_v1",
+        "dataset_revision": "a" * 40,
+        "model_revision": "b" * 40,
+    }
+
+    def test_a_bound_run_with_a_passed_preflight_is_not_blocked(self):
+        with (
+            mock.patch.object(gpu_scheduler.db, "_use_pg", return_value=True),
+            mock.patch.object(
+                gpu_scheduler.db, "fetchone", return_value=self.PASSED_PREFLIGHT
+            ),
+        ):
+            self.assertIsNone(
+                gpu_scheduler._capability_preflight_blocker(dict(self.BOUND_RUN))
+            )
+
+    def test_an_incomplete_projection_names_the_missing_columns(self):
+        run = {
+            key: value
+            for key, value in self.BOUND_RUN.items()
+            if key not in {"resource_grant_id", "agenda_id"}
+        }
+        with mock.patch.object(gpu_scheduler.db, "_use_pg", return_value=True):
+            blocker = gpu_scheduler._capability_preflight_blocker(run)
+        self.assertIn("missing columns", blocker)
+        self.assertIn("resource_grant_id", blocker)
+        self.assertIn("agenda_id", blocker)
+        self.assertNotIn("not bound to a ResourceGrant", blocker)
+
+    def test_a_genuinely_unbound_run_is_still_refused(self):
+        run = dict(self.BOUND_RUN, resource_grant_id=0)
+        with mock.patch.object(gpu_scheduler.db, "_use_pg", return_value=True):
+            self.assertEqual(
+                gpu_scheduler._capability_preflight_blocker(run),
+                "experiment run is not bound to a ResourceGrant",
+            )
