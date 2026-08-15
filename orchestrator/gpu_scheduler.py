@@ -394,6 +394,86 @@ def _ssh_run_has_live_process(worker: dict, run_id: int) -> bool:
     return bool((proc.stdout or "").strip())
 
 
+_FALSE_UNBOUND_BLOCKER = "experiment run is not bound to a ResourceGrant"
+
+
+def recover_falsely_unbound_gpu_jobs(limit: int = 25) -> int:
+    """Requeue runs a fixed projection defect reported as grant-less.
+
+    _next_job selected the run without resource_grant_id, so the capability
+    blocker resolved grant 0 and failed correctly bound jobs with a verdict
+    that contradicts the database. Recovery is restricted to that provable
+    contradiction: the recorded blocker claims the run has no grant while the
+    run holds an active grant whose capability preflight passed. The scaffold
+    and its admitted adapter are kept -- the experiment never ran, only the
+    controller refused to launch it -- so no regeneration is charged. Once no
+    row contradicts itself this is a no-op.
+    """
+    from orchestrator import meta_compute_runtime
+
+    rows = db.fetchall(
+        """
+        SELECT j.id AS job_id, j.agenda_id, j.deep_insight_id,
+               r.id AS run_id, r.phase
+          FROM gpu_jobs j
+          JOIN experiment_runs r ON r.id = j.experiment_run_id
+          JOIN resource_grants g ON g.id = r.resource_grant_id
+          JOIN candidate_preflight_results_v1 p
+            ON p.id = g.preflight_result_id AND p.status='passed'
+         WHERE j.status='failed'
+           AND j.error_message = ?
+           AND g.status='active'
+           AND g.expires_at > CURRENT_TIMESTAMP
+           AND r.phase='scaffold_ready'
+         ORDER BY j.id
+         LIMIT ?
+        """,
+        (_FALSE_UNBOUND_BLOCKER, limit),
+    )
+    recovered = 0
+    for row in rows:
+        job_id = int(row["job_id"])
+        run_id = int(row["run_id"])
+        agenda_id = int(row["agenda_id"] or 0)
+        insight_id = int(row["deep_insight_id"] or 0)
+        if agenda_id <= 0 or insight_id <= 0:
+            continue
+        try:
+            meta_compute_runtime.settle_legacy_job(job_id)
+        except Exception:
+            db.rollback()
+            continue
+        note = (
+            f"Recovered GPU job {job_id}: the launch blocker reported an unbound "
+            "run while the run held an active grant with a passed preflight. The "
+            "scaffold is intact and is requeued without regeneration."
+        )
+        db.execute(
+            """
+            UPDATE experiment_runs
+            SET status='scaffolding', error_message=NULL,
+                completed_at=NULL
+            WHERE id=? AND agenda_id=? AND status='failed'
+              AND phase='scaffold_ready'
+            """,
+            (run_id, agenda_id),
+        )
+        db.execute(
+            """
+            UPDATE auto_research_jobs
+            SET status='queued', stage='retry_failed_run',
+                assigned_worker=NULL, experiment_run_id=?,
+                last_note=?, last_error=NULL,
+                updated_at=CURRENT_TIMESTAMP, last_checked_at=CURRENT_TIMESTAMP
+            WHERE deep_insight_id=? AND agenda_id=?
+            """,
+            (run_id, note, insight_id, agenda_id),
+        )
+        db.commit()
+        recovered += 1
+    return recovered
+
+
 def recover_stale_ssh_running_jobs() -> int:
     """Recover SSH jobs whose controller died after the remote process exited."""
     stale_jobs = db.fetchall(

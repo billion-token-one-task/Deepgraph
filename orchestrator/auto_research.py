@@ -3542,6 +3542,7 @@ def _launch_candidates_to_capacity() -> dict:
     # was written for exactly this state and checks worker liveness before it
     # releases anything, but nothing called it.
     recovered_orphan_review = recover_orphaned_review_pending_jobs()
+    recovered_false_unbound = gpu_scheduler.recover_falsely_unbound_gpu_jobs()
     archived_inactive_harness = archive_inactive_benchmark_harness_jobs()
     recovered_harness = recover_partially_supported_harness_jobs()
     repaired_harness_design = repair_benchmark_harness_design_jobs()
@@ -3605,6 +3606,7 @@ def _launch_candidates_to_capacity() -> dict:
         "selected_queue": last_selection.get("selected_queue") if isinstance(last_selection, dict) else None,
         "recovered_execution": recovered_execution,
         "recovered_orphan_review": recovered_orphan_review,
+        "recovered_false_unbound": recovered_false_unbound,
         "archived_inactive_harness": archived_inactive_harness,
         "recovered_harness": recovered_harness,
         "repaired_harness_design": repaired_harness_design,
