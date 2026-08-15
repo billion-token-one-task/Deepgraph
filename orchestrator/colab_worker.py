@@ -50,7 +50,13 @@ def run_one() -> dict:
         grant_row = db.fetchone(
             """
             SELECT rg.*, rg.status AS grant_status,
-                   rg.idempotency_key AS grant_idempotency_key
+                   rg.idempotency_key AS grant_idempotency_key,
+                   -- grant_from_row reads the grant id under the name the
+                   -- work-request rows use; resource_grants calls it "id", so
+                   -- selecting rg.* alone left the mapper with a KeyError and
+                   -- every claimed Colab request was quarantined as
+                   -- colab_worker_control_lost before reaching the executor.
+                   rg.id AS resource_grant_id
             FROM resource_grants AS rg
             WHERE rg.id=? AND rg.agenda_id=? AND rg.idea_id=?
               AND rg.status='active' AND rg.expires_at > CURRENT_TIMESTAMP
