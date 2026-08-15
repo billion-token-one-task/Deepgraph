@@ -733,7 +733,24 @@ def requirements_from_plan(plan: Mapping[str, Any]) -> ExperimentRequirements:
             else []
         )
     ) or tuple(range(max(1, int(plan.get("minimum_seeds") or 1))))
-    sample_cap = int(target.get("max_eval_examples") or plan.get("max_eval_examples") or 0)
+    # An absent cap meant "evaluate the entire split", so a plan that simply
+    # never mentioned max_eval_examples authorised the full GSM8K test set
+    # across every seed and both methods -- thousands of generations, hours of
+    # a scarce accelerator, and a GPU budget overrun, from an omission rather
+    # than a decision. Fall back to the deployment's configured ceiling, which
+    # exists for exactly this and was already set.
+    # Imported here rather than at module scope: this module keeps dataset and
+    # model identifiers opaque and deliberately carries no config dependency.
+    try:
+        from config import EXPERIMENT_REAL_BENCHMARK_MAX_EXAMPLES as _default_cap
+    except Exception:  # pragma: no cover - config is absent in unit fixtures
+        _default_cap = 0
+    sample_cap = int(
+        target.get("max_eval_examples")
+        or plan.get("max_eval_examples")
+        or _default_cap
+        or 0
+    )
     artifact_contract = tuple(
         str(item)
         for item in (

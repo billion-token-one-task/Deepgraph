@@ -63,9 +63,21 @@ def runtime_preflight_environment() -> PreflightEnvironment:
             ) or {}
             backend_vram[kind] = float(row.get("max_vram_gb") or 0.0)
         db.commit()
-    # Colab hardware is not assumed from an account manifest.  Until a canary
-    # records a concrete accelerator inventory, its zero VRAM makes preflight
-    # defer rather than guess.
+    # Colab hardware is still not assumed from an account manifest. What counts
+    # is a canary that actually reached the accelerator and recorded it as a
+    # live worker row; absent that the zero VRAM makes preflight defer rather
+    # than guess, exactly as before.
+    if db._use_pg():  # noqa: SLF001
+        row = db.fetchone(
+            """
+            SELECT COALESCE(MAX(total_mem_gb), 0) AS max_vram_gb
+            FROM gpu_workers
+            WHERE metadata LIKE ? AND status <> 'retired'
+            """,
+            ('%"backend": "colab"%',),
+        ) or {}
+        db.commit()
+        backend_vram["colab_gpu"] = float(row.get("max_vram_gb") or 0.0)
     backend_vram.setdefault("colab_gpu", 0.0)
     return local_preflight_environment(
         enabled_backends=enabled,
