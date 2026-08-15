@@ -4,6 +4,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 
+from meta_harness import attempt_gpu_usage
 from meta_harness.attempt_gpu_usage import (
     AttemptGPUUsageError,
     GrantGPUUsageControl,
@@ -181,3 +182,47 @@ class AttemptGPUUsageTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PrelaunchBlockedReleaseTests(unittest.TestCase):
+    """A claim whose GPU job never started must not strand the grant.
+
+    release_orphaned_reservations only matches claims with compute_job_id IS
+    NULL. A claim that reached a compute job whose legacy GPU job was then
+    refused at the launch boundary deadlocks: settling the compute job demands
+    settled attempt usage, and the usage cannot settle while the claim is
+    reserved. Reservation 3 sat in exactly that state behind GPU job 112.
+    """
+
+    def test_release_targets_only_terminal_never_started_jobs(self):
+        captured = {}
+
+        class _Cursor:
+            rowcount = 1
+
+        def _execute(sql, params=None):
+            captured["sql"] = " ".join(sql.split())
+            return _Cursor()
+
+        with (
+            mock.patch.object(attempt_gpu_usage.db, "execute", side_effect=_execute),
+            mock.patch.object(attempt_gpu_usage.db, "commit"),
+        ):
+            released = (
+                attempt_gpu_usage.GrantGPUUsageControl()
+                .release_prelaunch_blocked_reservations()
+            )
+
+        self.assertEqual(released, 1)
+        sql = captured["sql"]
+        self.assertIn("status='released'", sql)
+        self.assertIn("actual_gpu_seconds=0", sql)
+        # Only claims and jobs that provably never ran.
+        self.assertIn("status='reserved' AND started_at IS NULL", sql)
+        self.assertIn("AND started_at IS NULL", sql.split("FROM gpu_jobs")[1])
+        self.assertIn("completed_at IS NOT NULL", sql.split("FROM gpu_jobs")[1])
+        for terminal in ("'failed'", "'cancelled'", "'timed_out'"):
+            self.assertIn(terminal, sql)
+        # A running or completed job must never be swept up by this.
+        self.assertNotIn("'running'", sql)
+        self.assertNotIn("'completed'", sql)
