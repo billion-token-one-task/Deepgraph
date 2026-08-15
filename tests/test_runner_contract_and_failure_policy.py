@@ -4,6 +4,7 @@ import hashlib
 import json
 import tempfile
 import unittest
+from unittest import mock
 import subprocess
 import sys
 from pathlib import Path
@@ -569,3 +570,54 @@ class ContractFailureClassificationTests(unittest.TestCase):
             ),
             "metric_missing",
         )
+
+
+class ComputeIdempotencyReuseTests(unittest.TestCase):
+    """A job refused before any backend start must not burn the run's key.
+
+    compute_jobs_v1.idempotency_key is derived from agenda, idea, run and
+    stage, so a run presents exactly one key for its whole life. Leaving a
+    pre-launch refusal terminal made every later attempt raise
+    idempotency_key_already_terminal, which is what stranded run 140 after its
+    GPU job was refused at the launch boundary.
+    """
+
+    def _row(self, **overrides):
+        row = {"status": "failed", "backend_job_id": None, "usage_json": None}
+        row.update(overrides)
+        return row
+
+    def test_a_job_that_never_bound_a_backend_is_reusable(self):
+        from meta_harness import compute_repository
+
+        self.assertTrue(compute_repository._never_reached_backend(self._row()))
+
+    def test_a_legacy_mirror_is_judged_by_the_job_it_names(self):
+        from meta_harness import compute_repository
+
+        row = self._row(backend_job_id="legacy-gpu-job:112")
+        with mock.patch.object(
+            compute_repository.db,
+            "fetchone",
+            return_value={"started_at": None, "status": "failed"},
+        ):
+            self.assertTrue(compute_repository._never_reached_backend(row))
+        with mock.patch.object(
+            compute_repository.db,
+            "fetchone",
+            return_value={"started_at": "2026-08-15T06:00:00Z", "status": "failed"},
+        ):
+            self.assertFalse(compute_repository._never_reached_backend(row))
+
+    def test_real_work_stays_terminal(self):
+        from meta_harness import compute_repository
+
+        cases = (
+            self._row(backend_job_id="ssh-4321"),
+            self._row(usage_json='{"gpu_seconds": 12}'),
+            self._row(status="running"),
+            self._row(status="submitted"),
+        )
+        for row in cases:
+            with self.subTest(row=row):
+                self.assertFalse(compute_repository._never_reached_backend(row))

@@ -19,12 +19,14 @@ from meta_harness.compute import (
     ComputeClaim,
     ComputeJob,
     ComputeSubmission,
+    TERMINAL_JOB_STATES,
     UsageAccounting,
 )
 from meta_harness.attempt_gpu_usage import GrantGPUUsageControl
 
 
 _BACKENDS = {"cpu", "local_gpu", "ssh_gpu", "colab_gpu"}
+_LEGACY_JOB_PREFIX = "legacy-gpu-job:"
 _TERMINAL = {"succeeded", "failed", "cancelled", "timed_out"}
 _TRANSITIONS = {
     "submitting": {"submitted", "running", "submission_unknown"},
@@ -60,6 +62,38 @@ def _now() -> datetime:
 
 def _dump(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+
+
+def _never_reached_backend(row) -> bool:
+    """True when a terminal job was refused before any backend started it.
+
+    Judged on the recorded facts rather than a failure_reason string: the job
+    is terminal, no backend job id was ever bound, and no usage was recorded.
+    Such a job did not happen, so it must not consume the run's only
+    idempotency key. Anything that reached a backend stays terminal.
+    """
+    if str((row or {}).get("status") or "") not in TERMINAL_JOB_STATES:
+        return False
+    if str((row or {}).get("usage_json") or "").strip():
+        return False
+    backend_job_id = str((row or {}).get("backend_job_id") or "").strip()
+    if not backend_job_id:
+        return True
+    # A legacy mirror's backend_job_id points at a gpu_jobs row rather than at
+    # anything a backend issued, so its presence alone does not mean the work
+    # started. Consult the row it names.
+    if not backend_job_id.startswith(_LEGACY_JOB_PREFIX):
+        return False
+    try:
+        legacy_id = int(backend_job_id[len(_LEGACY_JOB_PREFIX):])
+    except ValueError:
+        return False
+    legacy = db.fetchone(
+        "SELECT started_at, status FROM gpu_jobs WHERE id=?", (legacy_id,)
+    )
+    if not legacy or legacy.get("started_at") is not None:
+        return False
+    return str(legacy.get("status") or "") in TERMINAL_JOB_STATES | {"canceled"}
 
 
 def _require_postgresql() -> None:
@@ -175,6 +209,42 @@ class ComputeJobRepository:
                 """,
                 (request.agenda_id, request.idempotency_key),
             )
+            if existing and _never_reached_backend(existing):
+                # idempotency_key is derived from agenda, idea, run and stage,
+                # so it is the only key a run will ever present. A job that
+                # failed before the backend ever started it consumed nothing,
+                # yet leaving it terminal made the caller raise
+                # idempotency_key_already_terminal for every later attempt and
+                # put the run permanently beyond retry. Reopen that row rather
+                # than refuse; a job that actually reached a backend is left
+                # terminal so a real attempt is never silently repeated.
+                db.execute(
+                    """
+                    UPDATE compute_jobs_v1
+                    SET status='submitting', failure_reason=NULL,
+                        backend_job_id=NULL, heartbeat_at=?, timeout_at=?,
+                        resource_grant_id=?, requested_gpu_hours=?,
+                        timeout_seconds=?, backend_kind=?,
+                        updated_at=CURRENT_TIMESTAMP
+                    WHERE id=? AND status=?
+                    """,
+                    (
+                        _now(),
+                        _now() + timedelta(seconds=request.timeout_seconds),
+                        request.resource_grant_id,
+                        request.requested_gpu_hours,
+                        request.timeout_seconds,
+                        backend_kind,
+                        int(existing["id"]),
+                        str(existing.get("status")),
+                    ),
+                )
+                reopened = db.fetchone(
+                    "SELECT * FROM compute_jobs_v1 WHERE id=?",
+                    (int(existing["id"]),),
+                )
+                db.commit()
+                return self._claim_from_row(reopened or existing, is_new=True)
             if existing:
                 self._validate_existing(existing, request, backend_kind=backend_kind)
                 db.commit()
