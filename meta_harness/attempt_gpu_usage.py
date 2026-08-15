@@ -21,6 +21,23 @@ from db import database as db
 GPU_BACKENDS = {"local_gpu", "ssh_gpu", "colab_gpu"}
 ACTIVE_ATTEMPT_STATES = {"reserved", "running"}
 TERMINAL_ATTEMPT_STATES = {"settled", "released"}
+# The one release that records a definite non-attempt: the claim never started
+# and its usage is exactly zero.
+PRELAUNCH_RELEASE_REASONS = {
+    "attempt_blocked_before_launch",
+    "controller_lost_before_submit",
+}
+
+
+def _is_reusable_prelaunch_release(row) -> bool:
+    """True when a released claim provably never ran and consumed nothing."""
+    if str((row or {}).get("status")) != "released":
+        return False
+    if (row or {}).get("started_at") is not None:
+        return False
+    if str((row or {}).get("reason_code") or "") not in PRELAUNCH_RELEASE_REASONS:
+        return False
+    return float((row or {}).get("actual_gpu_seconds") or 0.0) == 0.0
 _EPSILON_SECONDS = 1e-6
 # The persisted reservation includes a small controller/transport cleanup
 # margin.  The executable timeout excludes it, so a normally interrupted
@@ -284,7 +301,31 @@ class GrantGPUUsageControl:
                     raise AttemptGPUUsageError(
                         "attempt_key_scope_mismatch", ",".join(mismatches)
                     )
-                if str(existing.get("status")) in TERMINAL_ATTEMPT_STATES:
+                # A claim released before launch consumed nothing and never
+                # ran, so it is not an attempt that already happened. The
+                # attempt key is derived from (agenda, idea, run, stage) and is
+                # therefore fixed for the life of a grant: treating that
+                # no-op as terminal burned the only key a run has and left it
+                # permanently unlaunchable under a grant it had not used.
+                # Re-open it rather than refusing. Any claim that started, or
+                # that settled real usage, stays terminal.
+                if _is_reusable_prelaunch_release(existing):
+                    db.execute(
+                        """
+                        UPDATE experiment_attempt_gpu_reservations_v1
+                        SET status='reserved', reason_code=NULL,
+                            completed_at=NULL, actual_gpu_seconds=NULL,
+                            updated_at=CURRENT_TIMESTAMP
+                        WHERE id=? AND status='released' AND started_at IS NULL
+                        """,
+                        (int(existing["id"]),),
+                    )
+                    existing = db.fetchone(
+                        "SELECT * FROM experiment_attempt_gpu_reservations_v1"
+                        " WHERE id=?",
+                        (int(existing["id"]),),
+                    )
+                elif str(existing.get("status")) in TERMINAL_ATTEMPT_STATES:
                     raise AttemptGPUUsageError(
                         "attempt_already_terminal", str(existing.get("status"))
                     )

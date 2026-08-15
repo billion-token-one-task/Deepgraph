@@ -226,3 +226,54 @@ class PrelaunchBlockedReleaseTests(unittest.TestCase):
         # A running or completed job must never be swept up by this.
         self.assertNotIn("'running'", sql)
         self.assertNotIn("'completed'", sql)
+
+
+class PrelaunchReleaseReuseTests(unittest.TestCase):
+    """A claim released before launch must not burn the run's attempt key.
+
+    attempt_key is derived from (agenda, idea, run, stage) and so is fixed for
+    the life of a grant. Releasing a claim whose GPU job was refused at the
+    launch boundary recorded zero usage and no start, yet left the key in a
+    terminal state, so the run could never be launched again under a grant it
+    had never used.
+    """
+
+    def _row(self, **overrides):
+        row = {
+            "id": 3,
+            "status": "released",
+            "started_at": None,
+            "reason_code": "attempt_blocked_before_launch",
+            "actual_gpu_seconds": 0,
+        }
+        row.update(overrides)
+        return row
+
+    def test_a_zero_usage_prelaunch_release_is_reusable(self):
+        self.assertTrue(attempt_gpu_usage._is_reusable_prelaunch_release(self._row()))
+        self.assertTrue(
+            attempt_gpu_usage._is_reusable_prelaunch_release(
+                self._row(reason_code="controller_lost_before_submit")
+            )
+        )
+
+    def test_anything_that_ran_or_settled_stays_terminal(self):
+        cases = (
+            self._row(started_at="2026-08-15T06:00:00Z"),
+            self._row(actual_gpu_seconds=120),
+            self._row(status="settled"),
+            self._row(reason_code="attempt_timed_out"),
+            self._row(reason_code=None),
+        )
+        for row in cases:
+            with self.subTest(row=row):
+                self.assertFalse(
+                    attempt_gpu_usage._is_reusable_prelaunch_release(row)
+                )
+
+    def test_a_live_reservation_is_not_treated_as_reusable(self):
+        self.assertFalse(
+            attempt_gpu_usage._is_reusable_prelaunch_release(
+                self._row(status="reserved", reason_code=None)
+            )
+        )
