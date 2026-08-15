@@ -744,6 +744,19 @@ def submit_experiment_run(
         )
     grant = _grant_from_row(grant_row)
     backend_kind = str(backend_kind or _backend_kind())
+    if backend_kind == "colab_gpu":
+        # Colab already has a durable backend, transport and work queue, all
+        # sharing this module's grant, reservation and settlement machinery.
+        # What it never had was a caller from the experiment path:
+        # submit_colab_work took an operator-authored ColabWorkSpec, so an
+        # experiment could be admitted to colab_gpu by preflight and then had
+        # nowhere to run. Build the spec from the run's own materialized
+        # workdir and hand it to that path.
+        return _submit_experiment_run_on_colab(
+            grant_row=grant_row,
+            experiment_run_id=int(experiment_run_id),
+            timeout_seconds=int(timeout_seconds),
+        )
     if backend_kind not in {"cpu", "local_gpu", "ssh_gpu"}:
         raise ComputeBackendError(
             "runtime backend must be cpu or the configured legacy GPU transport"
@@ -815,6 +828,73 @@ def submit_experiment_run(
                 reason_code="compute_submission_failed_before_backend_start",
             )
         raise
+
+
+_RUNNER_ARTIFACT_FILES = {
+    "final_results": "final_results.json",
+    "raw_predictions": "raw_predictions.jsonl",
+    "environment_manifest": "environment_manifest.json",
+    "dataset_manifest": "dataset_manifest.json",
+    "model_manifest": "model_manifest.json",
+}
+
+
+def _submit_experiment_run_on_colab(
+    *,
+    grant_row: dict,
+    experiment_run_id: int,
+    timeout_seconds: int,
+) -> ComputeJob:
+    """Run a materialized experiment through the durable Colab queue.
+
+    The materialized runner bundle is already self-contained: code/ holds the
+    vendored runner, the candidate adapter and execution_requirements.json, and
+    results/ is where the runner writes the artifact contract. That is exactly
+    the shape ColabWorkSpec describes, so the experiment path needs a
+    translation rather than a second execution mechanism.
+    """
+    run = db.fetchone(
+        """
+        SELECT id, agenda_id, deep_insight_id, resource_grant_id, workdir
+        FROM experiment_runs WHERE id=?
+        """,
+        (int(experiment_run_id),),
+    )
+    if not run:
+        raise ComputeBackendError("experiment run not found for Colab submission")
+    workdir = Path(str(run.get("workdir") or ""))
+    code_dir = workdir / "code"
+    results_dir = workdir / "results"
+    if not (code_dir / "train.py").is_file():
+        raise ComputeBackendError(
+            "Colab submission requires a materialized runner bundle in the workdir"
+        )
+    results_dir.mkdir(parents=True, exist_ok=True)
+    grant = _grant_from_row(dict(grant_row))
+    required = [str(name) for name in grant.artifact_requirements]
+    unknown = [name for name in required if name not in _RUNNER_ARTIFACT_FILES]
+    if unknown:
+        raise ComputeBackendError(
+            "no Colab artifact path is known for: " + ",".join(sorted(unknown))
+        )
+    spec = ColabWorkSpec(
+        agenda_id=int(run["agenda_id"]),
+        idea_id=int(run["deep_insight_id"]),
+        experiment_run_id=int(run["id"]),
+        resource_grant_id=int(run["resource_grant_id"]),
+        stage=str(grant.stage),
+        idempotency_key=(
+            f"experiment-run:{run['agenda_id']}:{run['deep_insight_id']}:"
+            f"{run['id']}:{grant.stage}"
+        ),
+        code_dir=str(code_dir),
+        command_tokens=("python", "train.py"),
+        environment={"PYTHONUNBUFFERED": "1"},
+        artifact_map={name: _RUNNER_ARTIFACT_FILES[name] for name in required},
+        artifact_output_dir=str(results_dir),
+        timeout_seconds=int(timeout_seconds),
+    )
+    return submit_colab_work(spec)
 
 
 def submit_colab_work(spec: ColabWorkSpec) -> ComputeJob:

@@ -383,3 +383,54 @@ class PlanMetricAliasTests(unittest.TestCase):
             "metric_contract_unsupported",
             RunnerRegistry().all()[0].structural_blockers(requirements),
         )
+
+
+class SampleCapDefaultTests(unittest.TestCase):
+    """An unstated evaluation size must not authorise the whole split.
+
+    sample_cap fell back to 0, which the runner reads as "evaluate everything".
+    Idea 105's plan never named max_eval_examples, so its materialized bundle
+    authorised all 1319 GSM8K test rows across three seeds and two methods --
+    thousands of generations and hours of a scarce accelerator, from an
+    omission rather than a decision.
+    """
+
+    PLAN = {
+        "benchmark_targets": [
+            {
+                "task_protocol": "generative_qa",
+                "hf_dataset": "openai/gsm8k",
+                "revision": "main",
+                "split": "test",
+                "question_field": "question",
+                "answer_field": "answer",
+            }
+        ],
+        "model_targets": [
+            {
+                "hf_model": "Qwen/Qwen2.5-Math-7B-Instruct",
+                "revision": "main",
+                "backend": "transformers",
+                "task": "causal_lm",
+            }
+        ],
+        "metrics": {"primary": "exact_match"},
+        "minimum_seeds": 1,
+    }
+
+    def test_an_unstated_size_falls_back_to_the_configured_ceiling(self):
+        with mock.patch.dict(
+            "sys.modules",
+            {"config": mock.Mock(EXPERIMENT_REAL_BENCHMARK_MAX_EXAMPLES=16)},
+        ):
+            requirements = requirements_from_plan(self.PLAN)
+        self.assertEqual(requirements.sample_cap, 16)
+
+    def test_an_explicit_size_still_wins(self):
+        plan = dict(self.PLAN, max_eval_examples=250)
+        with mock.patch.dict(
+            "sys.modules",
+            {"config": mock.Mock(EXPERIMENT_REAL_BENCHMARK_MAX_EXAMPLES=16)},
+        ):
+            requirements = requirements_from_plan(plan)
+        self.assertEqual(requirements.sample_cap, 250)
