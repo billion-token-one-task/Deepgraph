@@ -488,7 +488,25 @@ class ColabWorkRepository:
                     UPDATE compute_jobs_v1
                     SET status='submitted', failure_reason=NULL,
                         updated_at=CURRENT_TIMESTAMP
-                    WHERE id=? AND agenda_id=? AND status='failed' 
+                    WHERE id=? AND agenda_id=? AND status='failed'
+                    """,
+                    (int(row["compute_job_id"]), int(row["agenda_id"])),
+                )
+                # claim_next marks the attempt started before handing the
+                # request to the executor, so a worker that died in between
+                # settled a reservation holding milliseconds of controller
+                # overhead and no accelerator time at all. Leaving it terminal
+                # makes start_attempt refuse the retry. Only reservations for a
+                # request that never held a session are reopened, and the
+                # discarded figure is bounded by that same fact.
+                db.execute(
+                    """
+                    UPDATE experiment_attempt_gpu_reservations_v1
+                    SET status='reserved', started_at=NULL, completed_at=NULL,
+                        actual_gpu_seconds=NULL, reason_code=NULL,
+                        updated_at=CURRENT_TIMESTAMP
+                    WHERE compute_job_id=? AND agenda_id=?
+                      AND status IN ('settled', 'released')
                     """,
                     (int(row["compute_job_id"]), int(row["agenda_id"])),
                 )
