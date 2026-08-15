@@ -910,6 +910,11 @@ class AutoResearchSchedulingTests(unittest.TestCase):
 
         with (
             mock.patch.object(auto_research, "recover_stale_execution_jobs", return_value=0),
+            mock.patch.object(
+                auto_research.gpu_scheduler,
+                "recover_falsely_unbound_gpu_jobs",
+                return_value=0,
+            ),
             mock.patch.object(auto_research, "archive_inactive_benchmark_harness_jobs", return_value=0),
             mock.patch.object(auto_research, "recover_partially_supported_harness_jobs", return_value=0),
             mock.patch.object(auto_research, "repair_benchmark_harness_design_jobs", return_value=0),
@@ -948,6 +953,11 @@ class AutoResearchSchedulingTests(unittest.TestCase):
         """
         with (
             mock.patch.object(auto_research, "recover_stale_execution_jobs", return_value=0),
+            mock.patch.object(
+                auto_research.gpu_scheduler,
+                "recover_falsely_unbound_gpu_jobs",
+                return_value=0,
+            ),
             mock.patch.object(
                 auto_research, "recover_orphaned_review_pending_jobs", return_value=2
             ) as recover_orphans,

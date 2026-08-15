@@ -1010,3 +1010,58 @@ class LaunchBlockerProjectionTests(unittest.TestCase):
                 gpu_scheduler._capability_preflight_blocker(run),
                 "experiment run is not bound to a ResourceGrant",
             )
+
+
+class FalselyUnboundRecoveryTests(unittest.TestCase):
+    """Recover only where the recorded verdict contradicts the database."""
+
+    ROW = {
+        "job_id": 112,
+        "agenda_id": 11,
+        "deep_insight_id": 105,
+        "run_id": 140,
+        "phase": "scaffold_ready",
+    }
+
+    def test_requeues_the_run_without_regenerating_the_scaffold(self):
+        statements = []
+
+        def _execute(sql, params=None):
+            statements.append((" ".join(sql.split()), params))
+
+        with (
+            mock.patch.object(gpu_scheduler.db, "fetchall", return_value=[self.ROW]),
+            mock.patch.object(gpu_scheduler.db, "execute", side_effect=_execute),
+            mock.patch.object(gpu_scheduler.db, "commit"),
+            mock.patch(
+                "orchestrator.meta_compute_runtime.settle_legacy_job",
+                return_value="failed",
+            ) as settle,
+        ):
+            self.assertEqual(gpu_scheduler.recover_falsely_unbound_gpu_jobs(), 1)
+
+        settle.assert_called_once_with(112)
+        run_update = next(s for s, _ in statements if "UPDATE experiment_runs" in s)
+        self.assertIn("status='scaffolding'", run_update)
+        self.assertIn("phase='scaffold_ready'", run_update)
+        job_update, params = next(
+            (s, p) for s, p in statements if "UPDATE auto_research_jobs" in s
+        )
+        self.assertIn("status='queued'", job_update)
+        # The run id is preserved so the requeue reuses the admitted adapter
+        # instead of paying for a fresh forge.
+        self.assertEqual(params[0], 140)
+
+    def test_the_predicate_requires_an_active_grant_and_passed_preflight(self):
+        with (
+            mock.patch.object(gpu_scheduler.db, "fetchall", return_value=[]) as fetch,
+            mock.patch.object(gpu_scheduler.db, "execute") as execute,
+        ):
+            self.assertEqual(gpu_scheduler.recover_falsely_unbound_gpu_jobs(), 0)
+        execute.assert_not_called()
+        sql = " ".join(fetch.call_args.args[0].split())
+        self.assertIn("g.status='active'", sql)
+        self.assertIn("p.status='passed'", sql)
+        self.assertIn("j.status='failed'", sql)
+        self.assertIn("r.phase='scaffold_ready'", sql)
+        self.assertEqual(fetch.call_args.args[1][0], gpu_scheduler._FALSE_UNBOUND_BLOCKER)
