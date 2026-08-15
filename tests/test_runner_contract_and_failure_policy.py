@@ -721,3 +721,48 @@ class MaterializedBundleGuardTests(unittest.TestCase):
             )
         self.assertEqual(len(violations), 1)
         self.assertIn("unreadable", violations[0])
+
+
+class GrantedBackendKindTests(unittest.TestCase):
+    """The dispatcher must ask for the backend the grant was admitted on.
+
+    _backend_kind reports the deployment's single legacy GPU transport from
+    GPU_MODE, while _require_grant_preflight admits only the backend the
+    grant's preflight selected. Run 145 was admitted on colab_gpu and
+    dispatched as ssh_gpu, failing with "requested compute backend is
+    disabled:ssh_gpu" without ever reaching the accelerator it was admitted
+    for.
+    """
+
+    def test_the_passed_preflight_backend_wins(self):
+        from orchestrator import meta_compute_runtime
+
+        with mock.patch.object(
+            meta_compute_runtime.db,
+            "fetchone",
+            return_value={"selected_backend": "colab_gpu"},
+        ):
+            self.assertEqual(
+                meta_compute_runtime._granted_backend_kind(
+                    {"preflight_result_id": 28}
+                ),
+                "colab_gpu",
+            )
+
+    def test_a_grant_without_a_passed_preflight_falls_back(self):
+        from orchestrator import meta_compute_runtime
+
+        with (
+            mock.patch.object(meta_compute_runtime.db, "fetchone", return_value=None),
+            mock.patch.object(
+                meta_compute_runtime, "_backend_kind", return_value="ssh_gpu"
+            ),
+        ):
+            self.assertEqual(
+                meta_compute_runtime._granted_backend_kind({"preflight_result_id": 0}),
+                "ssh_gpu",
+            )
+            self.assertEqual(
+                meta_compute_runtime._granted_backend_kind({"preflight_result_id": 9}),
+                "ssh_gpu",
+            )

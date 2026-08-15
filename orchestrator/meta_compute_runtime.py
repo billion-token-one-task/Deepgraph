@@ -613,6 +613,31 @@ def _backend_kind() -> str:
     return "ssh_gpu" if str(GPU_MODE).strip().lower() == "ssh" else "local_gpu"
 
 
+def _granted_backend_kind(grant_row: dict) -> str:
+    """Default to the backend this grant's passed preflight selected.
+
+    _backend_kind reports the deployment's single legacy GPU transport from
+    GPU_MODE. That is not the authority the admission gate consults:
+    _require_grant_preflight admits only the backend the grant's preflight
+    selected. When the two disagree the dispatcher asks for a backend the gate
+    refuses, or one that is not even enabled, and the run fails without ever
+    being offered to the accelerator it was admitted for.
+    """
+    preflight_id = int((grant_row or {}).get("preflight_result_id") or 0)
+    if preflight_id > 0:
+        row = db.fetchone(
+            """
+            SELECT selected_backend FROM candidate_preflight_results_v1
+            WHERE id=? AND status='passed'
+            """,
+            (preflight_id,),
+        )
+        selected = str((row or {}).get("selected_backend") or "").strip()
+        if selected:
+            return selected
+    return _backend_kind()
+
+
 def _enabled_backend_kinds() -> set[str]:
     enabled = {
         str(value).strip().lower()
@@ -743,7 +768,7 @@ def submit_experiment_run(
             "active scoped ResourceGrant is required for compute"
         )
     grant = _grant_from_row(grant_row)
-    backend_kind = str(backend_kind or _backend_kind())
+    backend_kind = str(backend_kind or _granted_backend_kind(grant_row))
     if backend_kind == "colab_gpu":
         # Colab already has a durable backend, transport and work queue, all
         # sharing this module's grant, reservation and settlement machinery.
