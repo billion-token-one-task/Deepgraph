@@ -64,6 +64,32 @@ def _dump(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
 
 
+def _usage_is_zero(usage_json) -> bool:
+    """True when recorded usage exists and every metered quantity is zero.
+
+    A pre-launch refusal still writes a usage record -- zeroed, annotated with
+    the reason the attempt never began. Testing for an absent record therefore
+    misses exactly the case that matters. Any unparsable or non-zero usage is
+    treated as real work.
+    """
+    text = str(usage_json or "").strip()
+    if not text:
+        return True
+    try:
+        usage = json.loads(text)
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(usage, Mapping):
+        return False
+    for field in ("gpu_hours", "wall_seconds", "cpu_core_hours"):
+        try:
+            if float(usage.get(field) or 0.0) != 0.0:
+                return False
+        except (TypeError, ValueError):
+            return False
+    return True
+
+
 def _never_reached_backend(row) -> bool:
     """True when a terminal job was refused before any backend started it.
 
@@ -74,7 +100,7 @@ def _never_reached_backend(row) -> bool:
     """
     if str((row or {}).get("status") or "") not in TERMINAL_JOB_STATES:
         return False
-    if str((row or {}).get("usage_json") or "").strip():
+    if not _usage_is_zero((row or {}).get("usage_json")):
         return False
     backend_job_id = str((row or {}).get("backend_job_id") or "").strip()
     if not backend_job_id:
