@@ -862,3 +862,56 @@ class ColabControlLostRequeueTests(unittest.TestCase):
         self.assertIn("status='reserved'", attempt_update)
         self.assertIn("started_at=NULL", attempt_update)
         self.assertIn("actual_gpu_seconds=NULL", attempt_update)
+
+
+class ColabDependencyGuardTests(unittest.TestCase):
+    """The remote installs nothing, but a satisfied runtime must still run.
+
+    The guard refused any bundle containing requirements.txt. A materialized
+    runner bundle always ships one, so run 145 reached a Colab T4 that already
+    had torch, transformers and datasets and was rejected in 27 seconds for
+    declaring the very packages it had.
+    """
+
+    def _script(self):
+        from meta_harness.backends.colab_cli import (
+            ColabExecutionRequest,
+            _runner_source,
+        )
+
+        return _runner_source(
+            ColabExecutionRequest(
+                agenda_id=11,
+                idea_id=105,
+                stage="pilot",
+                resource_grant_id=38,
+                idempotency_key="k",
+                code_dir="/tmp/code",
+                command_tokens=("python", "train.py"),
+                environment={"PYTHONUNBUFFERED": "1"},
+                timeout_seconds=1800,
+                artifact_paths=("final_results.json",),
+                artifact_output_dir="/tmp/out",
+            )
+        )
+
+    def test_the_generated_remote_script_is_valid_python(self):
+        import ast
+
+        ast.parse(self._script())
+
+    def test_the_remote_verifies_rather_than_installs(self):
+        script = self._script()
+        self.assertIn("importlib.util", script)
+        self.assertIn("find_spec", script)
+        self.assertIn("dependency_install_blocked", script)
+        # The remote must never install anything, whatever it finds.
+        for installer in ("pip install", "pip3 install", "-m pip"):
+            with self.subTest(installer=installer):
+                self.assertNotIn(installer, script)
+
+    def test_a_missing_requirement_still_blocks(self):
+        script = self._script()
+        guard = script[script.index("requirements_file") : script.index("environment = dict")]
+        self.assertIn("if missing:", guard)
+        self.assertIn("78", guard)

@@ -172,10 +172,37 @@ root.mkdir(parents=True, exist_ok=True)
 with tarfile.open("/content/code.tar.gz") as archive:
     archive.extractall(root, filter="data")
 
-if (root / "requirements.txt").exists():
-    print("dependency_install_blocked: reviewed runtime must be pre-provisioned")
-    print("{_SENTINEL}78")
-    raise SystemExit(0)
+requirements_file = root / "requirements.txt"
+if requirements_file.exists():
+    # The rule is that this runtime installs nothing; it is not that a bundle
+    # may not declare what it needs. A materialized runner bundle always ships
+    # a requirements.txt, so refusing on the file's presence rejected runtimes
+    # that already satisfied every line of it. Verify instead, and keep the
+    # refusal for anything genuinely missing -- the remote still never installs.
+    import importlib.util
+
+    _DISTRIBUTION_MODULES = {{"datasets": "datasets", "torch": "torch",
+                              "transformers": "transformers"}}
+    missing = []
+    for line in requirements_file.read_text(encoding="utf-8").splitlines():
+        name = line.strip()
+        if not name or name.startswith("#"):
+            continue
+        for separator in ("==", ">=", "<=", "~=", ">", "<", "["):
+            name = name.split(separator)[0]
+        name = name.strip()
+        if not name:
+            continue
+        module = _DISTRIBUTION_MODULES.get(name, name.replace("-", "_"))
+        if importlib.util.find_spec(module) is None:
+            missing.append(name)
+    if missing:
+        print(
+            "dependency_install_blocked: reviewed runtime must be pre-provisioned; "
+            "missing " + ", ".join(sorted(missing))
+        )
+        print("{_SENTINEL}78")
+        raise SystemExit(0)
 
 environment = dict(os.environ)
 environment.update({json.dumps(environment, ensure_ascii=False)})
