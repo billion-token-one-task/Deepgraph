@@ -434,6 +434,64 @@ class ColabWorkRepository:
             db.rollback()
             raise
 
+    def requeue_control_lost(self) -> int:
+        """Re-queue requests a controller defect failed before any session.
+
+        claim_next only takes queued requests, so a request the worker dropped
+        on its own bug stays failed for good even once that bug is fixed. The
+        idempotency key is derived from the run, so no replacement request can
+        be created either, and the experiment is stranded holding a scaffold it
+        already paid for.
+
+        Recovery is limited to what is provably a non-attempt: the worker never
+        recorded a session or a result, and the request is still bound to a
+        compute job that never reached a backend. Anything that reached Colab
+        keeps its terminal state so remote usage is never double counted.
+        """
+        if not db._use_pg():  # noqa: SLF001
+            raise ColabCLIError("durable Colab recovery requires PostgreSQL")
+        requeued = 0
+        try:
+            rows = db.fetchall(
+                """
+                SELECT cwr.id, cwr.agenda_id, cwr.compute_job_id
+                FROM colab_work_requests_v1 AS cwr
+                JOIN compute_jobs_v1 AS cj ON cj.id=cwr.compute_job_id
+                WHERE cwr.status='failed'
+                  AND cwr.session_ref IS NULL
+                  AND cwr.result_json IS NULL
+                  AND cwr.failure_reason LIKE 'colab_worker_control_lost:%'
+                  AND cj.backend_job_id IS NULL
+                FOR UPDATE OF cwr, cj
+                """
+            )
+            for row in rows:
+                db.execute(
+                    """
+                    UPDATE colab_work_requests_v1
+                    SET status='queued', worker_id=NULL, started_at=NULL,
+                        completed_at=NULL, failure_reason=NULL,
+                        updated_at=CURRENT_TIMESTAMP
+                    WHERE id=? AND agenda_id=? AND status='failed'
+                    """,
+                    (int(row["id"]), int(row["agenda_id"])),
+                )
+                db.execute(
+                    """
+                    UPDATE compute_jobs_v1
+                    SET status='submitted', failure_reason=NULL,
+                        updated_at=CURRENT_TIMESTAMP
+                    WHERE id=? AND agenda_id=? AND backend_job_id IS NULL
+                    """,
+                    (int(row["compute_job_id"]), int(row["agenda_id"])),
+                )
+                requeued += 1
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        return requeued
+
     def quarantine_restarted_running(self) -> int:
         """A lost synchronous CLI process has unknown remote usage."""
         if not db._use_pg():  # noqa: SLF001

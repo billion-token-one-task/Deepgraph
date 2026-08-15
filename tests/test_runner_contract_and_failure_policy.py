@@ -803,3 +803,51 @@ class ColabGrantRowShapeTests(unittest.TestCase):
         with self.assertRaises(KeyError):
             grant_from_row(row)
         self.assertIsNotNone(grant_from_row(dict(row, resource_grant_id=38)))
+
+
+class ColabControlLostRequeueTests(unittest.TestCase):
+    """A request the worker dropped on its own bug must return to the queue.
+
+    claim_next only takes queued requests and the idempotency key is derived
+    from the run, so a request failed by a controller defect can neither be
+    re-claimed nor recreated. Colab request 1 for run 145 sat there after a
+    KeyError in the worker, holding a scaffold the grant had already paid for.
+    """
+
+    def test_only_a_request_that_never_reached_colab_is_requeued(self):
+        from meta_harness.backends import colab_durable
+
+        statements = []
+        row = {"id": 1, "agenda_id": 11, "compute_job_id": 15}
+        with (
+            mock.patch.object(colab_durable.db, "_use_pg", return_value=True),
+            mock.patch.object(colab_durable.db, "fetchall", return_value=[row]) as fetch,
+            mock.patch.object(
+                colab_durable.db,
+                "execute",
+                side_effect=lambda sql, params=None: statements.append(
+                    (" ".join(sql.split()), params)
+                ),
+            ),
+            mock.patch.object(colab_durable.db, "commit"),
+        ):
+            self.assertEqual(
+                colab_durable.ColabWorkRepository().requeue_control_lost(), 1
+            )
+
+        predicate = " ".join(fetch.call_args.args[0].split())
+        for guard in (
+            "cwr.session_ref IS NULL",
+            "cwr.result_json IS NULL",
+            "colab_worker_control_lost:%",
+            "cj.backend_job_id IS NULL",
+        ):
+            with self.subTest(guard=guard):
+                self.assertIn(guard, predicate)
+        request_update = next(
+            s for s, _ in statements if "colab_work_requests_v1" in s
+        )
+        self.assertIn("status='queued'", request_update)
+        compute_update = next(s for s, _ in statements if "compute_jobs_v1" in s)
+        self.assertIn("status='submitted'", compute_update)
+        self.assertIn("backend_job_id IS NULL", compute_update)

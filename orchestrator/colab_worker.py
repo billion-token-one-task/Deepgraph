@@ -40,6 +40,10 @@ def run_one() -> dict:
         settle_colab_request(pending_request_id)
 
     repository = ColabWorkRepository()
+    # A request the worker failed on its own defect never reached Colab and
+    # cannot be recreated, because its idempotency key is derived from the run.
+    # Give those back to the queue before claiming.
+    repository.requeue_control_lost()
     row = repository.claim_next(worker_id=_worker_id())
     if not row:
         return {"status": "idle"}
