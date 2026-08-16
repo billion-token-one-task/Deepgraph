@@ -1,0 +1,64 @@
+{
+  "manifest_key": "v1-stale-model-renegotiation-2026-08-12",
+  "description": "Renegotiate a stale system-derived model requirement only when model_task_mismatch is the sole original preflight failure, then require the same real preflight predicate to pass before an optimistic plan update.",
+  "runtime_root": "/home/billion-token/Deepgraph",
+  "backup_root": "/home/ec2-user/deepgraph-rollback",
+  "capture_target_predeploy_sha256": true,
+  "preconditions": [
+    "Owner authorized deployment of source commit 8e7f2c3 and a bounded 40000-token acceptance pass on 2026-08-12.",
+    "The independent read-only observer reports on-track before deployment.",
+    "R8 snapshot shows zero active experiment runs, attempt reservations, queued/running GPU jobs, compute jobs, Colab requests, and open LLM reservations.",
+    "Live agents/experiment_forge.py and meta_harness/preflight_repository.py exactly match source commit 8e7f2c3^; any mismatch stops deployment.",
+    "A PostgreSQL custom-format backup and OPERATORS.log BEFORE DEPLOY entry are recorded before any live file is replaced.",
+    "No schema, environment, systemd unit, or manual business-table change belongs to this batch."
+  ],
+  "deployment_steps": [
+    "Stop deepgraph-auto-advance.timer and deepgraph-auto-advance.service together, then deepgraph-auto-execute.service, deepgraph-observe@10/11.service, and deepgraph-web.service after R8 is zero.",
+    "Apply batch 1 through scripts/deploy_manifest_batch.py and verify both deployed SHA256 values.",
+    "py_compile both live modules and confirm HTTP 200 plus clean API stats after restart.",
+    "Restart web, observers, and auto-execute; keep the normal auto-advance timer stopped while one bounded --agenda 11 pass runs with --spend-limit 40000.",
+    "Append every production action, backup path, checksum, restart, health result, and acceptance result to OPERATORS.log.",
+    "Do not manually mutate business state; all plan, grant, forge, execution, and OutcomeRecord transitions must use the deployed repository and autonomous entry points."
+  ],
+  "tests": "18/18 targeted tests passed; full suite 72 failed / 824 passed / 18 skipped / 3 collection errors, matching the pre-change 72-failure and 3-error baseline with six new passes; all six meta-harness audits exit 0.",
+  "rollback": {
+    "order": "stop services after R8 zero, then reverse batch 1",
+    "steps": [
+      "Use deploy_manifest_batch.py --rollback for 1-stale-model-renegotiation; both restored files must match their recorded predeployment SHA256 values.",
+      "No schema, .env, or systemd unit change is part of this batch, so no secondary rollback is required.",
+      "Restart deepgraph-web.service, deepgraph-observe@10/11.service, and deepgraph-auto-execute.service; restore the timer only when the bounded acceptance pass or rollback decision is complete.",
+      "Record restored hashes, service states, health results, and any post-deployment autonomous data effects in OPERATORS.log."
+    ],
+    "data_impact": "The code writes a revised plan only after the replacement passes the same preflight predicate and only through a scoped compare-and-swap. It preserves negotiation history and both original and revised preflight evidence. A code rollback does not erase those auditable autonomous records and requires no manual business-table rewrite."
+  },
+  "batches": [
+    {
+      "batch": "1-stale-model-renegotiation",
+      "authorization": "owner-approved-2026-08-12",
+      "purpose": "Break idea 105's frozen-plan deadlock without weakening preflight or manually editing its business plan.",
+      "restart_required": [
+        "deepgraph-web.service",
+        "deepgraph-auto-execute.service",
+        "deepgraph-observe@10.service",
+        "deepgraph-observe@11.service"
+      ],
+      "systemd_reload_required": false,
+      "health_check": "Re-hash both targets, py_compile them, confirm GET / returns HTTP 200 and /api/stats contains real numbers without filesystem paths.",
+      "acceptance": "Both deployed SHA256 values equal the manifest; the original failing preflight remains recorded; only a same-predicate passing replacement can persist; no active attempt crosses the deployment boundary.",
+      "files": [
+        {
+          "source": "agents/experiment_forge.py",
+          "target": "{runtime_root}/agents/experiment_forge.py",
+          "owner": "billion-token:billion-token",
+          "mode": "0644"
+        },
+        {
+          "source": "meta_harness/preflight_repository.py",
+          "target": "{runtime_root}/meta_harness/preflight_repository.py",
+          "owner": "billion-token:billion-token",
+          "mode": "0644"
+        }
+      ]
+    }
+  ]
+}

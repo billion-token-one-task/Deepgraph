@@ -603,7 +603,8 @@ class GrantGPUUsageControl:
         rows = db.fetchall(
             """
             SELECT ar.id AS reservation_id, cwr.id AS request_id,
-                   cwr.status, cwr.completed_at
+                   cwr.status, cwr.started_at, cwr.completed_at,
+                   cwr.wall_seconds
             FROM experiment_attempt_gpu_reservations_v1 ar
             JOIN compute_jobs_v1 cj ON cj.id=ar.compute_job_id
             JOIN colab_work_requests_v1 cwr ON cwr.compute_job_id=cj.id
@@ -621,9 +622,18 @@ class GrantGPUUsageControl:
                 "timed_out": "attempt_timed_out",
                 "cancelled": "attempt_cancelled",
             }.get(terminal_status, "attempt_failed")
+            completed_at = row.get("completed_at")
+            started_at = _as_utc(row.get("started_at"))
+            reported_wall = float(row.get("wall_seconds") or 0.0)
+            if (
+                started_at is not None
+                and math.isfinite(reported_wall)
+                and reported_wall > 0.0
+            ):
+                completed_at = started_at + timedelta(seconds=reported_wall)
             self.settle_attempt(
                 int(row["reservation_id"]),
-                completed_at=row.get("completed_at"),
+                completed_at=completed_at,
                 reason_code=reason_code,
             )
         pending_durable = db.fetchall(
@@ -930,6 +940,128 @@ class GrantGPUUsageControl:
             }
             db.commit()
             return result
+        except Exception:
+            db.rollback()
+            raise
+
+    def reconcile_colab_executor_wall_seconds(self, compute_job_id: int) -> bool:
+        """Repair a settled Colab attempt from its persisted executor duration.
+
+        A durable Colab worker persists the executor's measured wall time.  If
+        controller settlement instead used the few milliseconds spent writing
+        that record, the canonical GPU ledger and any already-recorded outcome
+        understate real resource use.  This narrow, idempotent reconciler only
+        accepts a larger, bounded duration from a successful Colab request; it
+        never manufactures a caller-supplied value or changes a non-Colab job.
+        """
+
+        try:
+            row = db.fetchone(
+                """
+                SELECT ar.*, cwr.status AS colab_status,
+                       cwr.wall_seconds AS executor_wall_seconds,
+                       cj.usage_json, rg.reservation_id
+                FROM experiment_attempt_gpu_reservations_v1 AS ar
+                JOIN compute_jobs_v1 AS cj ON cj.id=ar.compute_job_id
+                JOIN colab_work_requests_v1 AS cwr ON cwr.compute_job_id=cj.id
+                JOIN resource_grants AS rg ON rg.id=ar.resource_grant_id
+                WHERE ar.compute_job_id=? AND cj.backend_kind='colab_gpu'
+                FOR UPDATE OF ar, cj, cwr, rg
+                """,
+                (int(compute_job_id),),
+            )
+            if not row:
+                raise AttemptGPUUsageError("colab_attempt_not_found")
+            if (
+                str(row.get("status") or "") != "settled"
+                or str(row.get("colab_status") or "") != "succeeded"
+            ):
+                db.commit()
+                return False
+            reported_wall = float(row.get("executor_wall_seconds") or 0.0)
+            if not math.isfinite(reported_wall) or reported_wall <= 0:
+                raise AttemptGPUUsageError("colab_executor_wall_seconds_invalid")
+            if reported_wall > float(row.get("timeout_seconds") or 0):
+                raise AttemptGPUUsageError("colab_executor_wall_seconds_exceeds_timeout")
+            gpu_count = max(1, int(row.get("gpu_count") or 1))
+            measured_gpu_seconds = reported_wall * gpu_count
+            current_gpu_seconds = float(row.get("actual_gpu_seconds") or 0.0)
+            if measured_gpu_seconds <= current_gpu_seconds + _EPSILON_SECONDS:
+                db.commit()
+                return False
+            started_at = _as_utc(row.get("started_at"))
+            if started_at is None:
+                raise AttemptGPUUsageError("attempt_not_started")
+            delta_hours = (measured_gpu_seconds - current_gpu_seconds) / 3600.0
+            usage_payload = json.loads(str(row.get("usage_json") or "{}"))
+            if not isinstance(usage_payload, dict):
+                usage_payload = {}
+            report = usage_payload.get("backend_report")
+            if not isinstance(report, dict):
+                report = {}
+            report["executor_reported_wall_seconds"] = reported_wall
+            report["metering_source"] = "colab_executor_wall_seconds"
+            usage_payload.update(
+                {
+                    "wall_seconds": reported_wall,
+                    "gpu_hours": measured_gpu_seconds / 3600.0,
+                    "cpu_core_hours": float(usage_payload.get("cpu_core_hours") or 0.0),
+                    "backend_report": report,
+                }
+            )
+            db.execute(
+                """
+                UPDATE experiment_attempt_gpu_reservations_v1
+                SET actual_gpu_seconds=?, completed_at=?,
+                    reason_code='attempt_completed:executor_wall_seconds_reconciled',
+                    updated_at=CURRENT_TIMESTAMP
+                WHERE id=? AND status='settled'
+                """,
+                (
+                    measured_gpu_seconds,
+                    (started_at + timedelta(seconds=reported_wall)).isoformat(),
+                    int(row["id"]),
+                ),
+            )
+            db.execute(
+                """
+                UPDATE compute_jobs_v1
+                SET usage_json=?, updated_at=CURRENT_TIMESTAMP
+                WHERE id=? AND backend_kind='colab_gpu'
+                """,
+                (json.dumps(usage_payload, sort_keys=True), int(compute_job_id)),
+            )
+            db.execute(
+                """
+                UPDATE agenda_resource_ledger
+                SET gpu_hours_used=gpu_hours_used+?
+                WHERE id=? AND status IN ('reserved','settled')
+                """,
+                (delta_hours, int(row["reservation_id"])),
+            )
+            db.execute(
+                """
+                UPDATE research_agendas
+                SET gpu_hours_spent=gpu_hours_spent+?, updated_at=CURRENT_TIMESTAMP
+                WHERE id=?
+                """,
+                (delta_hours, int(row["agenda_id"])),
+            )
+            db.execute(
+                """
+                UPDATE outcome_records
+                SET actual_gpu_hours=actual_gpu_hours+?,
+                    wall_seconds=wall_seconds+?
+                WHERE resource_grant_id=?
+                """,
+                (
+                    delta_hours,
+                    reported_wall - (current_gpu_seconds / gpu_count),
+                    int(row["resource_grant_id"]),
+                ),
+            )
+            db.commit()
+            return True
         except Exception:
             db.rollback()
             raise

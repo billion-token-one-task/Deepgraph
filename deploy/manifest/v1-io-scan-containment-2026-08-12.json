@@ -1,0 +1,136 @@
+{
+  "backup_root": "/home/ec2-user/deepgraph-rollback",
+  "batches": [
+    {
+      "acceptance": "Five deployed hashes equal the manifest; the timer remains disabled; the one-shot web snapshot does not recur; agenda 11 stays under the 40000 process guard and owner token gate; V1 completes only on a real GPU result and a new OutcomeRecord.",
+      "authorization": "owner-approved-2026-08-12",
+      "batch": "1-io-scan-containment",
+      "files": [
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/v1-io-scan-containment-2026-08-12/signal_harvester.py.bak",
+          "kind": "file",
+          "mode": "0644",
+          "owner": "billion-token:billion-token",
+          "replaces": null,
+          "runtime_locally_modified": true,
+          "source": "agents/signal_harvester.py",
+          "source_bytes": 87633,
+          "source_sha256": "20af34799585576c2275aaad90775e917628c3183461f002d4da3f5fb5a67536",
+          "target": "/home/billion-token/Deepgraph/agents/signal_harvester.py",
+          "target_predeploy_sha256": "465d2574c5023588a9125bed16cb8284acf46112688298c0e4f307b47ff8ecfb",
+          "target_predeploy_state": "present"
+        },
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/v1-io-scan-containment-2026-08-12/auto_advance.py.bak",
+          "kind": "file",
+          "mode": "0755",
+          "owner": "billion-token:billion-token",
+          "replaces": null,
+          "runtime_locally_modified": true,
+          "source": "scripts/auto_advance.py",
+          "source_bytes": 46894,
+          "source_sha256": "c391b8b21469ec9eed5d22538d465fd93bc222c77b4d957e6a4531d0b7175430",
+          "target": "/home/billion-token/Deepgraph/scripts/auto_advance.py",
+          "target_predeploy_sha256": "41a388376a9ede515b1a656cea5a0b9523d9e1e72af6a32dee74c872818764d3",
+          "target_predeploy_state": "present"
+        },
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/v1-io-scan-containment-2026-08-12/auto_execute.py.bak",
+          "kind": "file",
+          "mode": "0755",
+          "owner": "billion-token:billion-token",
+          "replaces": null,
+          "runtime_locally_modified": true,
+          "source": "scripts/auto_execute.py",
+          "source_bytes": 4481,
+          "source_sha256": "6660bec40f8a106bb0a52c56ce269319586e0cbfd51777e8abcae4103a891c67",
+          "target": "/home/billion-token/Deepgraph/scripts/auto_execute.py",
+          "target_predeploy_sha256": "bedea3bb35b59f391799bf778e4002b6fd389d59508b67c68a3ffa21574f5d6f",
+          "target_predeploy_state": "present"
+        },
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/v1-io-scan-containment-2026-08-12/observe_agenda_run.py.bak",
+          "kind": "file",
+          "mode": "0755",
+          "owner": "billion-token:billion-token",
+          "replaces": null,
+          "runtime_locally_modified": true,
+          "source": "scripts/observe_agenda_run.py",
+          "source_bytes": 5701,
+          "source_sha256": "1ef1742e5a705e41685420a54b1a3f8db49bda1fef7aa4ad2e292ebb1ad76a3a",
+          "target": "/home/billion-token/Deepgraph/scripts/observe_agenda_run.py",
+          "target_predeploy_sha256": "36c050f07705fec3dbc423e44bd243b123341e10f66685567cfe45630a9f85d7",
+          "target_predeploy_state": "present"
+        },
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/v1-io-scan-containment-2026-08-12/app.py.bak",
+          "kind": "file",
+          "mode": "0644",
+          "owner": "billion-token:billion-token",
+          "replaces": null,
+          "runtime_locally_modified": true,
+          "source": "web/app.py",
+          "source_bytes": 85079,
+          "source_sha256": "78a39a73465e9166b1e64440c24819d3dc741aee60ff7fc482bb4f159364eb95",
+          "target": "/home/billion-token/Deepgraph/web/app.py",
+          "target_predeploy_sha256": "077311124c65dfff1453e690c5b2b02641da0a854cbb2fdd53ec54999f44bc48",
+          "target_predeploy_state": "present"
+        }
+      ],
+      "health_check": "Re-hash all targets, py_compile them, verify HTTP 200 and a single real stats snapshot, then confirm no recurring hidden-bridge or exact-stats scans and safe disk I/O.",
+      "purpose": "Prevent recurrence of the production EBS scan storm while keeping one bounded V1 acceptance path executable.",
+      "restart_required": [
+        "deepgraph-web.service",
+        "deepgraph-auto-execute.service",
+        "deepgraph-observe@10.service",
+        "deepgraph-observe@11.service"
+      ],
+      "systemd_reload_required": false
+    }
+  ],
+  "deployment_steps": [
+    "Keep deepgraph-auto-advance.timer disabled and stop its service, then stop deepgraph-auto-execute.service, deepgraph-observe@10/11.service, and deepgraph-web.service after R8 is zero.",
+    "Apply batch 1 through scripts/deploy_manifest_batch.py and verify all five deployed SHA256 values.",
+    "Run py_compile on all five live modules.",
+    "Start web once and verify that its exact stats snapshot completes without a recurring 30-second scan; monitor disk I/O before starting any acceptance work.",
+    "Restart observers and auto-execute; keep the normal auto-advance timer disabled while one bounded --agenda 11 pass runs with --spend-limit 40000.",
+    "Observe the real preflight, grant, GPU run, artifact metrics, usage settlement, and OutcomeRecord for at most 60 minutes; stop on the owner token gate or renewed sustained high I/O.",
+    "Append every production action, backup path, checksum, restart, health result, and acceptance result to OPERATORS.log.",
+    "Do not manually mutate business state; all recycle, plan, grant, forge, execution, settlement, and OutcomeRecord transitions use deployed entry points."
+  ],
+  "description": "Remove the recurring production scan multipliers, close long-lived read transactions, and repair the bounded agenda-11 acceptance driver without weakening scientific or resource gates.",
+  "environment_keys": [],
+  "file_contents_read_from_production": true,
+  "manifest_key": "v1-io-scan-containment-2026-08-12",
+  "operator_diff_required": [
+    "agents/signal_harvester.py",
+    "scripts/auto_advance.py",
+    "scripts/auto_execute.py",
+    "scripts/observe_agenda_run.py",
+    "web/app.py"
+  ],
+  "preconditions": [
+    "Owner authorized deployment and controlled acceptance on 2026-08-12.",
+    "The independent read-only observer reports PASS before deployment.",
+    "R8 shows zero active experiment runs, GPU jobs, attempt reservations, compute jobs, Colab requests, open LLM reservations, and active grants.",
+    "Actual settled token use is below the owner gate of 245452 before new LLM output resumes.",
+    "All five live targets exactly match source commit 93b1f23^; any mismatch stops deployment.",
+    "A controlled PostgreSQL custom-format backup and OPERATORS.log BEFORE DEPLOY entry are recorded before any live file is replaced.",
+    "No schema, environment, systemd unit, or manual business-table change belongs to this batch."
+  ],
+  "production_tree_modified_by_this_command": false,
+  "rollback": {
+    "data_impact": "The deployment itself changes only files. The controlled acceptance pass may create normal audited preflight, grant, run, settlement, and outcome records. A code rollback preserves that business history and never rewrites it manually.",
+    "order": "stop services after R8 zero, then reverse batch 1",
+    "steps": [
+      "Use deploy_manifest_batch.py --rollback for 1-io-scan-containment and verify all five restored predeployment SHA256 values.",
+      "No schema, .env, or systemd unit change is part of this batch, so no secondary rollback is required.",
+      "Keep the auto-advance timer disabled; restart only web, observers, and auto-execute after I/O is verified safe.",
+      "Record restored hashes, service states, health results, and any autonomous data effects in OPERATORS.log."
+    ]
+  },
+  "runtime_root": "/home/billion-token/Deepgraph",
+  "source_commit": "93b1f235b42c11ac8e858b9037b3ab4378089740",
+  "source_worktree_clean": true,
+  "tests": "42 targeted tests passed; full suite 72 failed / 830 passed / 18 skipped / 3 collection errors, with no new failures versus the 72-failure / 3-error baseline and six additional passes over source 8e7f2c3; all six meta-harness audits exit 0; independent observer reran 29 critical tests and all six audits."
+}

@@ -1,0 +1,69 @@
+{
+  "backup_root": "/home/ec2-user/deepgraph-rollback",
+  "batches": [
+    {
+      "acceptance": "Live web/app.py matches e1da852; web serves without exact aggregate queries; I/O remains at idle after startup.",
+      "authorization": "owner-approved-e1da852-2026-08-12",
+      "batch": "1-disable-automatic-exact-stats",
+      "files": [
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/v1-disable-automatic-exact-stats-2026-08-12/app.py.bak",
+          "kind": "file",
+          "mode": "0644",
+          "owner": "billion-token:billion-token",
+          "replaces": null,
+          "runtime_locally_modified": true,
+          "source": "web/app.py",
+          "source_bytes": 84871,
+          "source_sha256": "e6661cae4e495e87803edda8980b470c372c16edff2df082e1bada4013740398",
+          "target": "/home/billion-token/Deepgraph/web/app.py",
+          "target_predeploy_sha256": "78a39a73465e9166b1e64440c24819d3dc741aee60ff7fc482bb4f159364eb95",
+          "target_predeploy_state": "present"
+        }
+      ],
+      "health_check": "Verify hash and py_compile; start web alone; require HTTP 200 warming response and no automatic scan or sustained disk read for at least 90 seconds.",
+      "purpose": "Eliminate the remaining web-startup EBS saturation path.",
+      "restart_required": [
+        "deepgraph-web.service"
+      ],
+      "systemd_reload_required": false
+    }
+  ],
+  "deployment_steps": [
+    "Apply the single-file batch through scripts/deploy_manifest_batch.py and verify the deployed SHA256.",
+    "Run py_compile on live web/app.py.",
+    "Start only deepgraph-web.service and monitor /api/stats, PostgreSQL activity, and disk I/O for at least 90 seconds.",
+    "Require /api/stats to return the honest warming marker and require zero automatic exact-statistics or hidden-bridge scans.",
+    "Keep the normal auto-advance timer disabled throughout the controlled agenda-11 acceptance.",
+    "Append all actions and results to OPERATORS.log."
+  ],
+  "description": "Disable every automatic web exact-statistics computation after the one-shot startup containment still saturated production EBS.",
+  "environment_keys": [],
+  "file_contents_read_from_production": true,
+  "manifest_key": "v1-disable-automatic-exact-stats-2026-08-12",
+  "operator_diff_required": [
+    "web/app.py"
+  ],
+  "preconditions": [
+    "Owner explicitly authorized deployment of e1da852 on 2026-08-12.",
+    "The independent read-only observer reports PASS.",
+    "All Deepgraph services in the deployment stop list are inactive and the auto-advance timer is disabled.",
+    "R8 remains zero and no autonomous business write occurred after the verified predeployment backup c096bd31e36018ce9ac70e7549a6601549868555b76e4cebb132b3fa649820af.",
+    "Live web/app.py exactly matches source commit e1da852^; any mismatch stops deployment.",
+    "No schema, environment, systemd unit, or manual business-table change belongs to this batch."
+  ],
+  "production_tree_modified_by_this_command": false,
+  "rollback": {
+    "data_impact": "File-only deployment. The stats endpoint remains honest but unavailable (warming) until an incremental V1-postfix design replaces exact aggregates.",
+    "order": "stop web, then reverse the single batch",
+    "steps": [
+      "Use deploy_manifest_batch.py --rollback for 1-disable-automatic-exact-stats and verify the restored predeployment SHA256.",
+      "Keep web stopped after rollback because the restored one-shot startup aggregate is known to saturate EBS.",
+      "Record the rollback and service state in OPERATORS.log."
+    ]
+  },
+  "runtime_root": "/home/billion-token/Deepgraph",
+  "source_commit": "e1da852075dfb58cf28ffebcb40a474d1b64a97b",
+  "source_worktree_clean": true,
+  "tests": "42 targeted tests pass; full suite remains 72 failed / 830 passed / 18 skipped / 3 collection errors; all six audits pass; independent observer reports PASS."
+}

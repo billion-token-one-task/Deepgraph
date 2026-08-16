@@ -800,6 +800,32 @@ class AutoResearchSchedulingTests(unittest.TestCase):
         self.assertIn("best=1.5", upserts[-1][1]["last_note"])
         self.assertFalse(upserts[-1][1].get("touch_updated_at", True))
 
+    def test_refresh_running_jobs_releases_queued_gpu_job_with_superseded_run(self):
+        job = {
+            "deep_insight_id": 105,
+            "status": "queued_gpu",
+            "stage": "gpu_scheduler",
+            "experiment_run_id": 145,
+        }
+        run = {"id": 145, "status": "superseded", "phase": "superseded"}
+        upserts = []
+
+        def _capture_upsert(insight_id, **fields):
+            upserts.append((insight_id, fields))
+
+        with (
+            mock.patch.object(auto_research.db, "fetchall", return_value=[job]),
+            mock.patch.object(auto_research.db, "fetchone", return_value=run),
+            mock.patch.object(auto_research, "_upsert_job", side_effect=_capture_upsert),
+        ):
+            auto_research._refresh_running_jobs()
+
+        self.assertEqual(upserts[-1][0], 105)
+        self.assertEqual(upserts[-1][1]["status"], "queued")
+        self.assertEqual(upserts[-1][1]["stage"], "review_retry")
+        self.assertIsNone(upserts[-1][1]["experiment_run_id"])
+        self.assertIsNone(upserts[-1][1]["assigned_worker"])
+
     def test_failed_run_is_repaired_and_requeued_once(self):
         run = {
             "id": 31,
@@ -1060,6 +1086,18 @@ class AutoResearchSchedulingTests(unittest.TestCase):
         self.assertEqual(run["id"], 9)
         self.assertEqual(fetchone.call_count, 1)
         self.assertEqual(fetchone.call_args.args[1], (9,))
+
+    def test_existing_run_lookup_does_not_reuse_failed_run_from_prior_grant(self):
+        with mock.patch.object(
+            auto_research.db,
+            "fetchone",
+            return_value={"id": 8, "status": "failed", "resource_grant_id": 40},
+        ):
+            run = auto_research._existing_run_for_candidate(
+                {"id": 21, "auto_resource_grant_id": 42}
+            )
+
+        self.assertIsNone(run)
 
     def test_reset_completed_stage_reforges_terminal_runs(self):
         insight = {"id": 21, "auto_stage": "reset_completed_experiments"}

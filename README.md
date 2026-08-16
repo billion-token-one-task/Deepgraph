@@ -17,16 +17,15 @@ contracted, budgeted, auditable experiments.**
 
 ---
 
-## Design principle: The Bitter Lesson
+## Current V1 scope
 
-Rich Sutton's *Bitter Lesson* observes that across seventy years of AI, general
-methods that scale with computation eventually overtake methods built on
-hand-encoded human knowledge. For a system whose job is to *do research*, that
-translates into a hard question: where do the research questions come from? If
-they come from a human's topic list, the system's ceiling is that human. So in
-DeepGraph they come from structure in the corpus, and the ranking that decides
-which ones to fund is learned from experiment outcomes rather than tuned by
-hand.
+V1 is an auditable pilot-execution control plane, not an autonomous scientist.
+Its real Colab T4 acceptance ran a four-example, three-seed GSM8K pilot with
+Qwen2.5-0.5B and produced verified artifacts, settled resource use, and a
+`sanity_passed` negative/refuted `OutcomeRecord`. It does not establish a
+scientific finding, an A100 benchmark, or unattended production research.
+
+## Design principle: The Bitter Lesson
 
 Each commitment below is a specific mechanism in this repository, not a stance:
 

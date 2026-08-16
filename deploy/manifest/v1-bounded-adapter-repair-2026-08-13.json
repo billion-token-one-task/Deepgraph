@@ -14,10 +14,10 @@
           "replaces": null,
           "runtime_locally_modified": true,
           "source": "agents/experiment_forge.py",
-          "source_bytes": 217013,
-          "source_sha256": "20177eefc4a25bfb25af0150fc97ce61675221131e9e6d27beb37213cf275345",
+          "source_bytes": 217049,
+          "source_sha256": "6dc2e71927ffe339849a8d1fd39ab4a471376c7672965e5345ec20b4cf3b8f2f",
           "target": "/home/billion-token/Deepgraph/agents/experiment_forge.py",
-          "target_predeploy_sha256": "7907113c25dc719a4cf9ca86463debd9ba352381663f61422dcfd43496195f98",
+          "target_predeploy_sha256": "20177eefc4a25bfb25af0150fc97ce61675221131e9e6d27beb37213cf275345",
           "target_predeploy_state": "present"
         },
         {
@@ -31,7 +31,7 @@
           "source_bytes": 68774,
           "source_sha256": "19e43c15262dca53314d25c9af85b61f6bb67c3e06c09f7f85d3a751309d7c8b",
           "target": "/home/billion-token/Deepgraph/orchestrator/gpu_scheduler.py",
-          "target_predeploy_sha256": "43f000495bed773389ab3d738a1e1ef958419f0bc995dd36503b2aa5aecf5a2c",
+          "target_predeploy_sha256": "19e43c15262dca53314d25c9af85b61f6bb67c3e06c09f7f85d3a751309d7c8b",
           "target_predeploy_state": "present"
         }
       ],
@@ -69,7 +69,7 @@
     ]
   },
   "runtime_root": "/home/billion-token/Deepgraph",
-  "source_commit": "fb8e10fd01cffa36b130361fd8e019d083fc973f",
+  "source_commit": "cb84debb50342f3da9f3c36be0009ffd65160962",
   "source_worktree_clean": true,
   "tests": "Adapter recovery: 9 targeted tests passed. Runner materializer: 18 passed plus 9 subtests. GPU admission race unit test passed. py_compile and diff-check passed. Legacy scheduler fixture remains incompatible with the current ResourceGrant schema and is not used as acceptance evidence."
 }

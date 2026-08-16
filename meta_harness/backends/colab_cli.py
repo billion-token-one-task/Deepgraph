@@ -165,7 +165,7 @@ def _runner_source(request: ColabExecutionRequest) -> str:
     environment = _safe_remote_environment(request.environment)
     artifacts = _safe_relative_paths(request.artifact_paths)
     return f"""\
-import json, os, pathlib, subprocess, sys, tarfile
+import json, os, pathlib, shutil, subprocess, sys, tarfile
 
 root = pathlib.Path("/content/code")
 root.mkdir(parents=True, exist_ok=True)
@@ -181,7 +181,8 @@ if requirements_file.exists():
     # refusal for anything genuinely missing -- the remote still never installs.
     import importlib.util
 
-    _DISTRIBUTION_MODULES = {{"datasets": "datasets", "torch": "torch",
+    _DISTRIBUTION_MODULES = {{"accelerate": "accelerate", "bitsandbytes": "bitsandbytes",
+                              "datasets": "datasets", "torch": "torch",
                               "transformers": "transformers"}}
     missing = []
     for line in requirements_file.read_text(encoding="utf-8").splitlines():
@@ -222,6 +223,18 @@ if process.stderr:
     sys.stdout.write("\\n--- STDERR ---\\n" + process.stderr)
 
 artifact_archive = pathlib.Path("/content/deepgraph-artifacts.tar.gz")
+# The portable runner executes under /content/code but deliberately writes its
+# durable outputs to ../results.  Stage those outputs back under the isolated
+# code root before archiving, rather than asking the request to authorize a
+# traversal path.  A runner that writes in-place still works unchanged.
+for relative in {json.dumps(list(artifacts), ensure_ascii=False)}:
+    destination = root / relative
+    for candidate in (destination, root.parent / "results" / relative):
+        if candidate.is_file():
+            if candidate != destination:
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(candidate, destination)
+            break
 with tarfile.open(artifact_archive, "w:gz") as archive:
     for relative in {json.dumps(list(artifacts), ensure_ascii=False)}:
         path = root / relative

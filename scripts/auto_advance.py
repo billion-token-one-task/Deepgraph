@@ -682,6 +682,9 @@ def _requeue_for_consumer(agenda_id: int, idea_id: int, grant_id: int,
         status=status,
         stage=stage,
         resource_grant_id=grant_id,
+        # A replacement grant must be claimed by a fresh run.  Retaining an
+        # old terminal run here lets its finalizer close the new grant.
+        experiment_run_id=None,
         assigned_worker=None,
         last_error=None,
         last_note=(f"auto-advance-v1 recycle {recycle}/{MAX_RECYCLES}: requeued on grant"
