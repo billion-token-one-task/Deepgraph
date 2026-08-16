@@ -1,0 +1,98 @@
+{
+  "backup_root": "/home/ec2-user/deepgraph-rollback",
+  "batches": [
+    {
+      "acceptance": "run 137 receives a non-identity candidate adapter bound to preflight 20 and the pinned dataset/model revisions; no third broad scaffold call or new experiment run is created; actual-token spend stays within the newly authorized allowance; GPU remains held until independent review and then produces a real result and the second OutcomeRecord.",
+      "authorization": "owner-authorized-2026-08-13-deploy-36a48c8-and-one-focused-repair-max-12000-actual-tokens",
+      "batch": "1-capability-scaffold-repair",
+      "files": [
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/v1-capability-scaffold-repair-2026-08-13/experiment_forge.py.bak",
+          "kind": "file",
+          "mode": "0644",
+          "owner": "billion-token:billion-token",
+          "replaces": null,
+          "runtime_locally_modified": true,
+          "source": "agents/experiment_forge.py",
+          "source_bytes": 184415,
+          "source_sha256": "2070e78cf81a92b4471b9309b6bb3bacfefb20e448686c499e9bcd4cff8d18b2",
+          "target": "/home/billion-token/Deepgraph/agents/experiment_forge.py",
+          "target_predeploy_sha256": "0699ee13a69901141eff68c6ac35b1ac6333b04116a0edcb88a7696d4c3ca8a2",
+          "target_predeploy_state": "present"
+        },
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/v1-capability-scaffold-repair-2026-08-13/runner_materialization.py.bak",
+          "kind": "file",
+          "mode": "0644",
+          "owner": "billion-token:billion-token",
+          "replaces": null,
+          "runtime_locally_modified": true,
+          "source": "meta_harness/runner_materialization.py",
+          "source_bytes": 8550,
+          "source_sha256": "fa4afaa375d44a8ea063bfd6a597139c14433926a205094cbd0841e6d919fd71",
+          "target": "/home/billion-token/Deepgraph/meta_harness/runner_materialization.py",
+          "target_predeploy_sha256": "41b1170086c603b5b228296c99f7aa558a26e1f6d077b7f5cf936f620cf8652a",
+          "target_predeploy_state": "present"
+        },
+        {
+          "backup_artifact": "/home/ec2-user/deepgraph-rollback/v1-capability-scaffold-repair-2026-08-13/generic_transformers.py.bak",
+          "kind": "file",
+          "mode": "0644",
+          "owner": "billion-token:billion-token",
+          "replaces": null,
+          "runtime_locally_modified": true,
+          "source": "meta_harness/runners/generic_transformers.py",
+          "source_bytes": 20591,
+          "source_sha256": "51fbe2a1cace8547decd1f686817ecf0aa46fcd40795fde5b3bf932ac5d9cbca",
+          "target": "/home/billion-token/Deepgraph/meta_harness/runners/generic_transformers.py",
+          "target_predeploy_sha256": "aeb38c623e5ecbe615f7157b93954ed70403c3f186229e13b19b112298f945d1",
+          "target_predeploy_state": "present"
+        }
+      ],
+      "health_check": "Verify hashes and py_compile; keep timer and executor stopped; resume run 137 once only after token approval; require materializer plus observer/Sol PASS before GPU.",
+      "purpose": "Allow one fail-closed focused repair of missing scaffold fields while preserving frozen runner, budget, label-isolation, identity, and GPU gates.",
+      "restart_required": [],
+      "systemd_reload_required": false
+    }
+  ],
+  "deployment_steps": [
+    "Build and verify this manifest, then require a three-file diff-gate against 36a48c8^.",
+    "Apply the batch with scripts/deploy_manifest_batch.py and verify every target SHA256.",
+    "Run py_compile on all three live Python files and keep periodic execution disabled.",
+    "After separate token approval, invoke forge_experiment for idea 105 with resource_grant_id=31 and resume_failed_run_id=137 exactly once.",
+    "Stop after materialization; give candidate_adapter.py, execution_requirements.json, and runner contract evidence to the independent observer and Sol gate.",
+    "Only after both gates pass may the normal GPU scheduler resume run 137; stop on any contract, budget, or I/O violation."
+  ],
+  "description": "Repair missing capability-scaffold fields through one focused grant-backed call, reject identity adapters, and narrowly resume run 137 without repeating broad generation.",
+  "environment_keys": [],
+  "file_contents_read_from_production": true,
+  "manifest_key": "v1-capability-scaffold-repair-2026-08-13",
+  "operator_diff_required": [
+    "agents/experiment_forge.py",
+    "meta_harness/runner_materialization.py",
+    "meta_harness/runners/generic_transformers.py"
+  ],
+  "preconditions": [
+    "Owner authorized deployment of commit 36a48c8 on 2026-08-13 and set completion of V1 acceptance as the objective.",
+    "Owner authorized one focused LLM repair with at most 12000 additional actual tokens; hard total ceiling 240368.",
+    "Independent observer, Sol scientific gate, and Terra operations audit approve the deployment boundary.",
+    "The complete execution stop list is inactive and deepgraph-auto-advance.timer remains disabled.",
+    "R8 has zero active runs, attempts, GPU jobs, compute jobs, Colab requests, and open LLM reservations.",
+    "Live targets exactly match source commit 36a48c8^; any mismatch stops deployment.",
+    "No schema, environment, systemd unit, or manual business-table change belongs to this batch."
+  ],
+  "production_tree_modified_by_this_command": false,
+  "rollback": {
+    "data_impact": "File-only deployment. A later authorized focused repair uses normal ResourceGrant accounting and normal forge/materializer persistence; rollback restores code but does not rewrite autonomous records.",
+    "order": "keep execution stopped, then reverse the single batch",
+    "steps": [
+      "Use deploy_manifest_batch.py --rollback for 1-capability-scaffold-repair and verify the restored 36a48c8^ hashes.",
+      "Keep auto-execute, observers, and auto-advance stopped; leave the safe web service unchanged.",
+      "Do not manually rewrite run 137, idea 105, ResourceGrant 31, reservations, metrics, or outcomes; record the rollback in OPERATORS.log."
+    ]
+  },
+  "runtime_root": "/home/billion-token/Deepgraph",
+  "source_commit": "36a48c88f9bb372c226025a1ec7deb800d829ed6",
+  "source_worktree_clean": true,
+  "tests": "Capability scaffold/resume tests: 6 passed. Runner, materializer, and preflight tests: 19 passed plus 9 subtests. Full suite remains at the established 72 failures and 3 collection errors, with 840 passed and 18 skipped. All six audits, py_compile, and diff-check pass. Observer, Sol, and Terra all approve the final deployment boundary."
+}

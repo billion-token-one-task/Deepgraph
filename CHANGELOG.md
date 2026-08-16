@@ -79,10 +79,11 @@ See `docs/runbooks/RECOVERY_2026-08-03.md` for the full record.
 
 ## 0.2.0 — meta-harness-v1 (accepted scoped release)
 
-Release scope: CPU + SSH A100. Colab is implemented but explicitly excluded
-from this release. The accepted candidate has been fast-forwarded into the
-local `master`; remote publication and deployment remain separate operator
-actions.
+Release scope: CPU, SSH A100, and a bounded Colab T4 pilot. The Colab
+acceptance completed a four-example, three-seed GSM8K run with Qwen2.5-0.5B;
+its verified artifacts and settled usage yielded a `sanity_passed`,
+negative/refuted `OutcomeRecord`. Remote publication and production deployment
+remain separately controlled actions.
 
 ### Why this release exists
 
@@ -110,8 +111,8 @@ ambiguous remote submissions fail closed.
   and failure observations.
 - Hash-pinned bubblewrap held-in/held-out/canary evaluation and signed,
   subject-bound reviewer approval.
-- Durable scoped ingestion and Colab queue contracts; Colab remains disabled
-  in the 0.2.0 release scope.
+- Durable scoped ingestion and Colab queue contracts, including terminal-run
+  handoff, verified artifact registration, and executor-wall-time settlement.
 
 ### Changed
 
@@ -145,21 +146,20 @@ ambiguous remote submissions fail closed.
   preserved including `claims`, FK/orphan/scope checks, and repository tests.
 - Policy/fault/evaluator lanes passed; adapted legacy failures remain explicitly
   classified without weakening grant or scope rules.
-- CPU/API, SSH A100, real provider, provider cooldown restart, and reviewer
-  approval passed in isolation. Those acceptance runs did not connect a
-  production database or perform a deployment; publication and deployment are
-  separately controlled operator actions.
+- CPU/API, SSH A100, real provider, provider cooldown restart, reviewer
+  approval, and the bounded Colab T4 pilot passed. None establishes a
+  scientific finding or performs a production deployment.
 
 ### Release boundaries
 
 - Accepted: CPU, SSH A100 control-plane/backend execution, PostgreSQL durable
   state, real LLM provider routing, cooldown restart, evaluator isolation,
-  trusted OutcomeRecord assembly and signed reviewer approval.
-- Excluded: Colab runtime and OAuth lifecycle. The contracts remain disabled
-  until a later release completes its own acceptance.
-- Not claimed: a scientific A100 benchmark result, production deployment,
-  production database migration, or continued support for unsafe legacy
-  control paths.
+  trusted OutcomeRecord assembly, signed reviewer approval, and one bounded
+  Colab T4 pilot.
+- Excluded: a general Colab/OAuth service lifecycle and automatic production
+  research.
+- Not claimed: a scientific benchmark result, production deployment,
+  production database migration, or continued support for unsafe legacy paths.
 
 ### Upgrade notes
 

@@ -1,0 +1,52 @@
+{
+  "manifest_key": "v1-disable-automatic-exact-stats-2026-08-12",
+  "description": "Disable every automatic web exact-statistics computation after the one-shot startup containment still saturated production EBS.",
+  "runtime_root": "/home/billion-token/Deepgraph",
+  "backup_root": "/home/ec2-user/deepgraph-rollback",
+  "capture_target_predeploy_sha256": true,
+  "preconditions": [
+    "Owner explicitly authorized deployment of e1da852 on 2026-08-12.",
+    "The independent read-only observer reports PASS.",
+    "All Deepgraph services in the deployment stop list are inactive and the auto-advance timer is disabled.",
+    "R8 remains zero and no autonomous business write occurred after the verified predeployment backup c096bd31e36018ce9ac70e7549a6601549868555b76e4cebb132b3fa649820af.",
+    "Live web/app.py exactly matches source commit e1da852^; any mismatch stops deployment.",
+    "No schema, environment, systemd unit, or manual business-table change belongs to this batch."
+  ],
+  "deployment_steps": [
+    "Apply the single-file batch through scripts/deploy_manifest_batch.py and verify the deployed SHA256.",
+    "Run py_compile on live web/app.py.",
+    "Start only deepgraph-web.service and monitor /api/stats, PostgreSQL activity, and disk I/O for at least 90 seconds.",
+    "Require /api/stats to return the honest warming marker and require zero automatic exact-statistics or hidden-bridge scans.",
+    "Keep the normal auto-advance timer disabled throughout the controlled agenda-11 acceptance.",
+    "Append all actions and results to OPERATORS.log."
+  ],
+  "tests": "42 targeted tests pass; full suite remains 72 failed / 830 passed / 18 skipped / 3 collection errors; all six audits pass; independent observer reports PASS.",
+  "rollback": {
+    "order": "stop web, then reverse the single batch",
+    "steps": [
+      "Use deploy_manifest_batch.py --rollback for 1-disable-automatic-exact-stats and verify the restored predeployment SHA256.",
+      "Keep web stopped after rollback because the restored one-shot startup aggregate is known to saturate EBS.",
+      "Record the rollback and service state in OPERATORS.log."
+    ],
+    "data_impact": "File-only deployment. The stats endpoint remains honest but unavailable (warming) until an incremental V1-postfix design replaces exact aggregates."
+  },
+  "batches": [
+    {
+      "batch": "1-disable-automatic-exact-stats",
+      "authorization": "owner-approved-e1da852-2026-08-12",
+      "purpose": "Eliminate the remaining web-startup EBS saturation path.",
+      "restart_required": ["deepgraph-web.service"],
+      "systemd_reload_required": false,
+      "health_check": "Verify hash and py_compile; start web alone; require HTTP 200 warming response and no automatic scan or sustained disk read for at least 90 seconds.",
+      "acceptance": "Live web/app.py matches e1da852; web serves without exact aggregate queries; I/O remains at idle after startup.",
+      "files": [
+        {
+          "source": "web/app.py",
+          "target": "{runtime_root}/web/app.py",
+          "owner": "billion-token:billion-token",
+          "mode": "0644"
+        }
+      ]
+    }
+  ]
+}

@@ -302,6 +302,26 @@ class RunnerRegistry:
         )
 
 
+def runtime_dependencies(
+    adapter: RunnerCapability,
+    requirements: ExperimentRequirements,
+) -> tuple[str, ...]:
+    """Return every import the materialized runner will require.
+
+    GPU execution uses ``device_map='auto'`` and therefore requires
+    ``accelerate``.  4-bit loading additionally requires ``bitsandbytes``.
+    Keep this derivation shared by preflight and bundle materialization so a
+    passed preflight cannot produce an under-declared remote bundle.
+    """
+
+    dependencies = adapter.dependencies + requirements.dependencies
+    if requirements.model.requires_cuda:
+        dependencies += ("accelerate",)
+    if requirements.model.quantization == "4bit":
+        dependencies += ("bitsandbytes",)
+    return tuple(dict.fromkeys(dependencies))
+
+
 def default_runner_capabilities() -> tuple[RunnerCapability, ...]:
     common_outputs = (
         "final_results",
@@ -573,9 +593,7 @@ class PreflightEngine:
         }:
             reasons.append("model_task_mismatch")
         adapter = matches[0]
-        required_dependencies = tuple(
-            dict.fromkeys(adapter.dependencies + requirements.dependencies)
-        )
+        required_dependencies = runtime_dependencies(adapter, requirements)
         missing_dependencies = [
             name
             for name in required_dependencies
@@ -678,6 +696,17 @@ def requirements_from_plan(plan: Mapping[str, Any]) -> ExperimentRequirements:
         raise CapabilityContractError("candidate_execution_requirements_missing")
     target = targets[0]
     model = models[0]
+    dataset_id = str(target.get("hf_dataset") or target.get("dataset_id") or "")
+    # A few public datasets expose multiple configs.  Their official config is
+    # part of the executable dataset identity, not an optional convenience.
+    # Preserve explicit plans, then supply the canonical value for known
+    # datasets so a legacy/minimal plan cannot pass preflight and fail remotely.
+    default_dataset_configs = {"openai/gsm8k": "main"}
+    dataset_config = str(
+        target.get("config")
+        or plan.get("benchmark_dataset_config")
+        or default_dataset_configs.get(dataset_id, "")
+    )
     task_type = str(
         target.get("task_protocol") or target.get("task_type") or ""
     ).lower()
@@ -776,11 +805,9 @@ def requirements_from_plan(plan: Mapping[str, Any]) -> ExperimentRequirements:
     result = ExperimentRequirements(
         task_protocol=protocol,
         dataset=DatasetRequirement(
-            repository_id=str(
-                target.get("hf_dataset") or target.get("dataset_id") or ""
-            ),
+            repository_id=dataset_id,
             revision=str(target.get("revision") or "main"),
-            config=str(target.get("config") or ""),
+            config=dataset_config,
             split=str(target.get("split") or "test"),
             field_mapping=field_mapping,
         ),

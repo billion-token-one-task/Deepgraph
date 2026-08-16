@@ -10,7 +10,11 @@ import shutil
 from pathlib import Path
 from typing import Any, Mapping
 
-from meta_harness.runner_capability import ExperimentRequirements, RunnerRegistry
+from meta_harness.runner_capability import (
+    ExperimentRequirements,
+    RunnerRegistry,
+    runtime_dependencies,
+)
 
 
 class RunnerMaterializationError(RuntimeError):
@@ -210,7 +214,7 @@ def materialize_runner_bundle(
         "    raise SystemExit(main(args))\n",
         encoding="utf-8",
     )
-    dependencies = tuple(dict.fromkeys(capability.dependencies + requirements.dependencies))
+    dependencies = runtime_dependencies(capability, requirements)
     requirements_path = code_dir / "requirements.txt"
     requirements_path.write_text("\n".join(dependencies) + "\n", encoding="utf-8")
     for path in (train_path, adapter_path, runner_dir / "generic_transformers.py"):

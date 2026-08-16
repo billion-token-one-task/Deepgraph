@@ -87,7 +87,11 @@ def _candidate_rows(limit: int) -> list[dict[str, Any]]:
           AND rg.stage IN ('pilot','validation','full_benchmark')
           AND (
                 er.status='completed'
-                OR arj.status IN ('completed','bundle_ready','failed','blocked')
+                OR (
+                    arj.status IN ('completed','bundle_ready','failed','blocked')
+                    AND arj.resource_grant_id=er.resource_grant_id
+                    AND arj.experiment_run_id=er.id
+                )
               )
           AND COALESCE(arj.stage, '') NOT IN (
                 'retry_failed_run', 'gpu_failed'
@@ -105,6 +109,7 @@ def _mark_closed(row: dict[str, Any], outcome_id: int, verdict: str) -> None:
     agenda_id = int(row["agenda_id"])
     idea_id = int(row["deep_insight_id"])
     run_id = int(row["experiment_run_id"])
+    grant_id = int(row["resource_grant_id"])
     note = (
         f"Trusted outcome_record={outcome_id} assembled automatically from "
         f"metered usage and persisted artifacts; verdict={verdict}."
@@ -117,8 +122,9 @@ def _mark_closed(row: dict[str, Any], outcome_id: int, verdict: str) -> None:
             last_checked_at=CURRENT_TIMESTAMP
         WHERE agenda_id=? AND deep_insight_id=?
           AND experiment_run_id=?
+          AND resource_grant_id=?
         """,
-        (note, agenda_id, idea_id, run_id),
+        (note, agenda_id, idea_id, run_id, grant_id),
     )
     db.commit()
     apply_experiment_finished_deep(
@@ -133,7 +139,7 @@ def _mark_closed(row: dict[str, Any], outcome_id: int, verdict: str) -> None:
             "agenda_id": agenda_id,
             "deep_insight_id": idea_id,
             "experiment_run_id": run_id,
-            "resource_grant_id": int(row["resource_grant_id"]),
+            "resource_grant_id": grant_id,
             "outcome_record_id": int(outcome_id),
             "verdict": verdict,
         },

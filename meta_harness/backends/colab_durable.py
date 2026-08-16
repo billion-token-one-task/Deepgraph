@@ -49,10 +49,28 @@ _WORK_STATES = {
     "cancelled",
     "manual_reconciliation",
 }
+_FAILED_STDOUT_TAIL_CHARS = 6000
 
 
 def _dump(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+
+
+def _result_payload(result: ColabExecutionResult) -> dict[str, Any]:
+    """Persist bounded, failure-only diagnostics alongside immutable metadata."""
+
+    stdout = str(result.stdout or "")
+    payload: dict[str, Any] = {
+        "returncode": result.returncode,
+        "stdout_sha256": __import__("hashlib").sha256(
+            stdout.encode("utf-8")
+        ).hexdigest(),
+        "gpu_type": result.gpu_type,
+    }
+    if result.status != "succeeded" and stdout:
+        payload["stdout_tail"] = stdout[-_FAILED_STDOUT_TAIL_CHARS:]
+        payload["stdout_truncated"] = len(stdout) > _FAILED_STDOUT_TAIL_CHARS
+    return payload
 
 
 def _load_object(value: Any, *, label: str) -> dict:
@@ -411,15 +429,7 @@ class ColabWorkRepository:
                     result.status,
                     result.account_ref,
                     result.session,
-                    _dump(
-                        {
-                            "returncode": result.returncode,
-                            "stdout_sha256": __import__("hashlib").sha256(
-                                result.stdout.encode("utf-8")
-                            ).hexdigest(),
-                            "gpu_type": result.gpu_type,
-                        }
-                    ),
+                    _dump(_result_payload(result)),
                     _dump(result.artifact_manifest),
                     result.wall_seconds,
                     result.failure_reason,

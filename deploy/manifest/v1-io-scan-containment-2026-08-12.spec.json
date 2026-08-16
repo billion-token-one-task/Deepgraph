@@ -1,0 +1,85 @@
+{
+  "manifest_key": "v1-io-scan-containment-2026-08-12",
+  "description": "Remove the recurring production scan multipliers, close long-lived read transactions, and repair the bounded agenda-11 acceptance driver without weakening scientific or resource gates.",
+  "runtime_root": "/home/billion-token/Deepgraph",
+  "backup_root": "/home/ec2-user/deepgraph-rollback",
+  "capture_target_predeploy_sha256": true,
+  "preconditions": [
+    "Owner authorized deployment and controlled acceptance on 2026-08-12.",
+    "The independent read-only observer reports PASS before deployment.",
+    "R8 shows zero active experiment runs, GPU jobs, attempt reservations, compute jobs, Colab requests, open LLM reservations, and active grants.",
+    "Actual settled token use is below the owner gate of 245452 before new LLM output resumes.",
+    "All five live targets exactly match source commit 93b1f23^; any mismatch stops deployment.",
+    "A controlled PostgreSQL custom-format backup and OPERATORS.log BEFORE DEPLOY entry are recorded before any live file is replaced.",
+    "No schema, environment, systemd unit, or manual business-table change belongs to this batch."
+  ],
+  "deployment_steps": [
+    "Keep deepgraph-auto-advance.timer disabled and stop its service, then stop deepgraph-auto-execute.service, deepgraph-observe@10/11.service, and deepgraph-web.service after R8 is zero.",
+    "Apply batch 1 through scripts/deploy_manifest_batch.py and verify all five deployed SHA256 values.",
+    "Run py_compile on all five live modules.",
+    "Start web once and verify that its exact stats snapshot completes without a recurring 30-second scan; monitor disk I/O before starting any acceptance work.",
+    "Restart observers and auto-execute; keep the normal auto-advance timer disabled while one bounded --agenda 11 pass runs with --spend-limit 40000.",
+    "Observe the real preflight, grant, GPU run, artifact metrics, usage settlement, and OutcomeRecord for at most 60 minutes; stop on the owner token gate or renewed sustained high I/O.",
+    "Append every production action, backup path, checksum, restart, health result, and acceptance result to OPERATORS.log.",
+    "Do not manually mutate business state; all recycle, plan, grant, forge, execution, settlement, and OutcomeRecord transitions use deployed entry points."
+  ],
+  "tests": "42 targeted tests passed; full suite 72 failed / 830 passed / 18 skipped / 3 collection errors, with no new failures versus the 72-failure / 3-error baseline and six additional passes over source 8e7f2c3; all six meta-harness audits exit 0; independent observer reran 29 critical tests and all six audits.",
+  "rollback": {
+    "order": "stop services after R8 zero, then reverse batch 1",
+    "steps": [
+      "Use deploy_manifest_batch.py --rollback for 1-io-scan-containment and verify all five restored predeployment SHA256 values.",
+      "No schema, .env, or systemd unit change is part of this batch, so no secondary rollback is required.",
+      "Keep the auto-advance timer disabled; restart only web, observers, and auto-execute after I/O is verified safe.",
+      "Record restored hashes, service states, health results, and any autonomous data effects in OPERATORS.log."
+    ],
+    "data_impact": "The deployment itself changes only files. The controlled acceptance pass may create normal audited preflight, grant, run, settlement, and outcome records. A code rollback preserves that business history and never rewrites it manually."
+  },
+  "batches": [
+    {
+      "batch": "1-io-scan-containment",
+      "authorization": "owner-approved-2026-08-12",
+      "purpose": "Prevent recurrence of the production EBS scan storm while keeping one bounded V1 acceptance path executable.",
+      "restart_required": [
+        "deepgraph-web.service",
+        "deepgraph-auto-execute.service",
+        "deepgraph-observe@10.service",
+        "deepgraph-observe@11.service"
+      ],
+      "systemd_reload_required": false,
+      "health_check": "Re-hash all targets, py_compile them, verify HTTP 200 and a single real stats snapshot, then confirm no recurring hidden-bridge or exact-stats scans and safe disk I/O.",
+      "acceptance": "Five deployed hashes equal the manifest; the timer remains disabled; the one-shot web snapshot does not recur; agenda 11 stays under the 40000 process guard and owner token gate; V1 completes only on a real GPU result and a new OutcomeRecord.",
+      "files": [
+        {
+          "source": "agents/signal_harvester.py",
+          "target": "{runtime_root}/agents/signal_harvester.py",
+          "owner": "billion-token:billion-token",
+          "mode": "0644"
+        },
+        {
+          "source": "scripts/auto_advance.py",
+          "target": "{runtime_root}/scripts/auto_advance.py",
+          "owner": "billion-token:billion-token",
+          "mode": "0755"
+        },
+        {
+          "source": "scripts/auto_execute.py",
+          "target": "{runtime_root}/scripts/auto_execute.py",
+          "owner": "billion-token:billion-token",
+          "mode": "0755"
+        },
+        {
+          "source": "scripts/observe_agenda_run.py",
+          "target": "{runtime_root}/scripts/observe_agenda_run.py",
+          "owner": "billion-token:billion-token",
+          "mode": "0755"
+        },
+        {
+          "source": "web/app.py",
+          "target": "{runtime_root}/web/app.py",
+          "owner": "billion-token:billion-token",
+          "mode": "0644"
+        }
+      ]
+    }
+  ]
+}

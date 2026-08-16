@@ -913,7 +913,15 @@ def _submit_experiment_run_on_colab(
             f"{run['id']}:{grant.stage}"
         ),
         code_dir=str(code_dir),
-        command_tokens=("python", "train.py"),
+        # Keep portable-runner artifacts inside the uploaded code tree.  The
+        # train.py convenience default writes to ../results, which is outside
+        # the Colab artifact archive's isolated root.
+        command_tokens=(
+            "python", "train.py",
+            "--config", "execution_requirements.json",
+            "--candidate-adapter", "candidate_adapter.py",
+            "--output-dir", ".",
+        ),
         environment={"PYTHONUNBUFFERED": "1"},
         artifact_map={name: _RUNNER_ARTIFACT_FILES[name] for name in required},
         artifact_output_dir=str(results_dir),

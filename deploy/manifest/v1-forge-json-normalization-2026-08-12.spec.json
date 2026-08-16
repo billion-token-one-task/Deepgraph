@@ -1,0 +1,54 @@
+{
+  "manifest_key": "v1-forge-json-normalization-2026-08-12",
+  "description": "Normalize preflight-bound forge JSON fields so a frozen passed plan is neither double-encoded nor consumed as a string.",
+  "runtime_root": "/home/billion-token/Deepgraph",
+  "backup_root": "/home/ec2-user/deepgraph-rollback",
+  "capture_target_predeploy_sha256": true,
+  "preconditions": [
+    "Owner authorized completing all currently known deployment work and controlled V1 acceptance on 2026-08-12.",
+    "The independent read-only observer approves the completed deployment boundary.",
+    "The complete Deepgraph stop list is inactive and the auto-advance timer remains disabled.",
+    "R8 has zero real active runs, attempts, GPU jobs, compute jobs, Colab requests, and LLM reservations.",
+    "Live agents/experiment_forge.py exactly matches source commit eee91ae^; any mismatch stops deployment.",
+    "A new low-priority custom-format PostgreSQL backup made after run 135 is verified before apply.",
+    "No schema, environment, systemd unit, or manual business-table change belongs to this batch."
+  ],
+  "deployment_steps": [
+    "Build and verify this manifest, then require a one-file diff-gate against eee91ae^.",
+    "Apply the single file with scripts/deploy_manifest_batch.py and verify its SHA256.",
+    "Run py_compile on live agents/experiment_forge.py.",
+    "Run one targeted agenda-11 pass so the declared recycler requeues failed/exception through the normal state-authority path.",
+    "Start auto-execute under control; require the normal forge entry point to normalize all three fields before it creates the replacement run.",
+    "Require one-decode dictionaries for proposed_method, experimental_plan, and evidence_plan, then require a real GPU result and a new OutcomeRecord.",
+    "Stop on the owner token gate, sustained high I/O, or a new unclassified blocker; keep the periodic timer disabled throughout."
+  ],
+  "tests": "28 targeted tests and 9 subtests pass; full suite remains 72 failed / 832 passed / 18 skipped / 3 collection errors, improving pass count by 2 without baseline regression; all six audits pass; independent observer reviewed the fix.",
+  "rollback": {
+    "order": "stop auto-execute and all controlled services, then reverse the single batch",
+    "steps": [
+      "Use deploy_manifest_batch.py --rollback for 1-forge-json-normalization and verify the restored eee91ae^ SHA256.",
+      "Keep auto-execute, observers, and auto-advance stopped after rollback; web may be restored only with the already-deployed no-exact-stats version.",
+      "Do not manually rewrite idea 105 or run 135; record the rollback and preserve the verified database backup."
+    ],
+    "data_impact": "File-only deployment. Recovery of the already double-encoded row occurs only through the normal reviewed forge/recycler path; rollback does not reverse autonomous business records."
+  },
+  "batches": [
+    {
+      "batch": "1-forge-json-normalization",
+      "authorization": "owner-authorized-complete-known-deployments-2026-08-12",
+      "purpose": "Remove the preflight forge JSON type mismatch and let the normal pipeline self-heal the affected persisted fields.",
+      "restart_required": ["deepgraph-auto-execute.service"],
+      "systemd_reload_required": false,
+      "health_check": "Verify hash and py_compile; run targeted recycler; require one-decode object fields, then observe forge, GPU, and OutcomeRecord under existing gates.",
+      "acceptance": "The live file matches eee91ae; no direct business-table repair occurs; idea 105 reaches a real GPU result and creates the second OutcomeRecord without exceeding 245452 actual tokens or causing sustained high I/O.",
+      "files": [
+        {
+          "source": "agents/experiment_forge.py",
+          "target": "{runtime_root}/agents/experiment_forge.py",
+          "owner": "billion-token:billion-token",
+          "mode": "0644"
+        }
+      ]
+    }
+  ]
+}

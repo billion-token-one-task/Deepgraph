@@ -1179,19 +1179,35 @@ def _run_reusable_for_auto_research(run: dict | None) -> bool:
     return str(run.get("status") or "").strip() not in IGNORED_EXISTING_RUN_STATUSES
 
 
+def _run_belongs_to_active_grant(run: dict | None, active_grant_id: int | None) -> bool:
+    """Reject terminal runs inherited from an earlier resource grant.
+
+    A fresh grant authorizes a fresh forge.  Reusing an old failed run only
+    because it is the latest run for the idea lets historical failure-policy
+    fingerprints block or mutate the newly authorized attempt.
+    """
+    if not _run_reusable_for_auto_research(run):
+        return False
+    if active_grant_id is None:
+        return True
+    return int((run or {}).get("resource_grant_id") or 0) == active_grant_id
+
+
 def _existing_run_for_candidate(insight: dict) -> dict | None:
     insight_id = int(insight["id"])
+    raw_active_grant_id = insight.get("auto_resource_grant_id") or insight.get("resource_grant_id")
+    active_grant_id = int(raw_active_grant_id) if raw_active_grant_id else None
     auto_run_id = insight.get("auto_experiment_run_id") or insight.get("experiment_run_id")
     if auto_run_id:
         run = db.fetchone("SELECT * FROM experiment_runs WHERE id=?", (auto_run_id,))
-        if _run_reusable_for_auto_research(run):
+        if _run_belongs_to_active_grant(run, active_grant_id):
             return run
     canonical_run_id = insight.get("canonical_run_id")
     if canonical_run_id:
         run = db.fetchone("SELECT * FROM experiment_runs WHERE id=?", (canonical_run_id,))
-        if _run_reusable_for_auto_research(run):
+        if _run_belongs_to_active_grant(run, active_grant_id):
             return run
-    return db.fetchone(
+    run = db.fetchone(
         """
         SELECT * FROM experiment_runs
         WHERE deep_insight_id=?
@@ -1200,6 +1216,7 @@ def _existing_run_for_candidate(insight: dict) -> dict | None:
         """,
         (insight_id,),
     )
+    return run if _run_belongs_to_active_grant(run, active_grant_id) else None
 
 
 def _coerce_datetime(value):
@@ -3338,6 +3355,31 @@ def _refresh_running_jobs() -> None:
                     OUTCOME_EXPERIMENT_FAILED_RUN,
                     reason=run.get("error_message"),
                     triggered_by="experiment",
+                )
+            elif run["status"] in {"superseded", "reset", "archived", "cancelled"}:
+                # A queued GPU job is only live while its run is eligible for
+                # dispatch.  A prior recovery can deliberately supersede a
+                # run (for example after a terminal Colab request); leaving
+                # the owning auto job in queued_gpu then consumes the sole
+                # execution slot forever while no GPU or compute job remains
+                # runnable.  Drop the terminal reference and return through
+                # review/forge, rather than attempting to reuse that run.
+                _upsert_job(
+                    insight_id,
+                    status="queued",
+                    # review_retry is an existing, claimable fresh-forge
+                    # stage.  Do not introduce a recovery-only stage here:
+                    # unclaimed states are indistinguishable from a deadlock
+                    # to the auto-execution worker.
+                    stage="review_retry",
+                    experiment_run_id=None,
+                    assigned_worker=None,
+                    last_error=None,
+                    last_note=(
+                        "Recovered queued GPU job whose experiment run is terminal; "
+                        f"run_id={run.get('id')}; run_status={run.get('status')}. "
+                        "Requeued a fresh forge instead of holding an execution slot."
+                    ),
                 )
             elif run["status"] == "running_gpu":
                 running_stage = BENCHMARK_COMPLETION_STAGE if job.get("stage") == BENCHMARK_COMPLETION_STAGE else "gpu_scheduler"
