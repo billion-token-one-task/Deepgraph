@@ -232,12 +232,14 @@ class StatsCacheRouteTests(unittest.TestCase):
     def setUp(self):
         self.client = web_app.app.test_client()
 
-    def test_stats_returns_warming_before_prewarm_and_snapshot_after(self):
+    def test_stats_returns_503_before_prewarm_and_snapshot_after(self):
         with mock.patch.object(
             web_app, "_stats_cache", web_app.StatsCache(lambda: {"papers_total": 7})
         ) as cache:
-            payload = self.client.get("/api/stats").get_json()
-            self.assertEqual(payload, {"warming": True})
+            response = self.client.get("/api/stats")
+            payload = response.get_json()
+            self.assertEqual(response.status_code, 503)
+            self.assertFalse(payload["ready"])
 
             cache.prewarm()
             payload = self.client.get("/api/stats").get_json()
@@ -246,13 +248,14 @@ class StatsCacheRouteTests(unittest.TestCase):
             self.client.get("/api/stats")
             self.assertEqual(cache.compute_count, 1)
 
-    def test_process_prewarm_is_safety_disabled(self):
+    def test_process_prewarm_populates_and_starts_refresh(self):
         cache = mock.Mock()
+        cache.prewarm.return_value = {"papers_total": 7}
         with mock.patch.object(web_app, "_stats_cache", cache):
-            self.assertIsNone(web_app.prewarm_stats_cache())
+            self.assertEqual(web_app.prewarm_stats_cache(), {"papers_total": 7})
 
-        cache.prewarm.assert_not_called()
-        cache.start_background_refresh.assert_not_called()
+        cache.prewarm.assert_called_once_with()
+        cache.start_background_refresh.assert_called_once_with()
 
 
 class LeakGuardTests(unittest.TestCase):
@@ -319,6 +322,38 @@ class LeakGuardTests(unittest.TestCase):
         self.assertNotIn("secret", str(payload))
         self.assertNotIn("/home/", str(payload))
         self.assertTrue(payload["correlation_id"])
+
+    def test_critical_data_endpoints_report_health_and_structured_data(self):
+        snapshot = {
+            "papers_processed": 3,
+            "results_total": 2,
+            "deep_insights_total": 1,
+            "experiment_runs_total": 1,
+            "generated_at": 123.0,
+            "data_health": {"status": "ok", "source_rows": 7},
+        }
+        with mock.patch.object(
+            web_app, "_stats_cache", web_app.StatsCache(lambda: snapshot)
+        ) as cache:
+            cache.prewarm()
+
+            health = self.client.get("/api/health/data")
+            self.assertEqual(health.status_code, 200)
+            self.assertTrue(health.get_json()["ready"])
+
+            stats = self.client.get("/api/stats")
+            self.assertEqual(stats.status_code, 200)
+            self.assertEqual(stats.get_json()["papers_processed"], 3)
+
+            processing = self.client.get("/api/processing")
+            self.assertEqual(processing.status_code, 200)
+            self.assertIsInstance(processing.get_json()["papers"], list)
+            self.assertEqual(processing.get_json()["data_health"]["status"], "ok")
+
+            office = self.client.get("/api/agent_office")
+            self.assertEqual(office.status_code, 200)
+            self.assertGreater(len(office.get_json()["departments"]), 0)
+            self.assertEqual(office.get_json()["data_health"]["status"], "ok")
 
 
 if __name__ == "__main__":

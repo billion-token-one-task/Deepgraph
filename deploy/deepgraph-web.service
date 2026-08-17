@@ -1,15 +1,18 @@
 [Unit]
 Description=DeepGraph Flask dashboard
-After=network-online.target
-Wants=network-online.target
+After=network-online.target deepgraph-postgres.service
+Wants=network-online.target deepgraph-postgres.service
 
 [Service]
 Type=simple
 User=billion-token
-WorkingDirectory=/home/billion-token/Deepgraph
+# Immutable release directory.  Rollback changes only this unit back to the
+# protected snapshot; it never edits or replaces that snapshot in place.
+WorkingDirectory=/home/billion-token/releases/deepgraph-v1-webfix-20260817
 EnvironmentFile=/home/billion-token/Deepgraph/.env
 Environment=PYTHONUNBUFFERED=1
-ExecStart=/home/billion-token/Deepgraph/.venv/bin/python -u /home/billion-token/Deepgraph/main.py
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/home/billion-token/Deepgraph/.venv/bin/python -u /home/billion-token/releases/deepgraph-v1-webfix-20260817/main.py
 Restart=always
 RestartSec=5
 StandardOutput=append:/home/billion-token/Deepgraph/logs/web-systemd.log
