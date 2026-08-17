@@ -83,7 +83,7 @@ ARTIFACT_REQUIREMENTS = [
 # the execution class the forge derived from a passed preflight. Every bump
 # here must name a repair that is already deployed; the counter is the only
 # thing standing between a broken candidate and an unbounded retry loop.
-RECYCLE_EPOCH = "post-bundle-guard-repair-2026-08-15"
+RECYCLE_EPOCH = "evaluator-route-and-pvalue-repair-2026-08-17"
 
 # Frontier rationing. The ration per problem is unchanged; what changes is that
 # the pool no longer stops at the top 3, so spending a problem's ration retires
@@ -161,6 +161,16 @@ def _load_state(path: Path) -> dict:
     # the state file or any business table.
     if state.get("recycle_epoch") != RECYCLE_EPOCH:
         state["recycles"] = {}
+        # frontier_attempts is the same kind of counter and was left out, so the
+        # rule did not reach it. On 2026-08-10 an unreachable evaluator route
+        # burned 28 rations; the route was fixed the same day and again on
+        # 2026-08-17, but 17 problems across six agendas stayed locked out at
+        # tries=4 and every later pass logged frontier_attempts_exhausted.
+        # A ration spent against a dead route says nothing about the problem.
+        state["frontier_attempts"] = {}
+        # frontier_issues is NOT reset: it is the monotonic idempotency-key
+        # serial, and a failed authority burns its key forever. Restarting it
+        # would regenerate keys the repository has already refused.
         state["recycle_epoch"] = RECYCLE_EPOCH
     return state
 

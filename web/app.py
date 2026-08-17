@@ -1102,17 +1102,21 @@ def _load_experiment_groups(
 
     insight_ids = [int(row["id"]) for row in insights]
     placeholders = ",".join("?" for _ in insight_ids)
+    # The scope may be the ALL_AGENDAS sentinel, which is a string; binding it
+    # where PostgreSQL expects a bigint raised
+    # "invalid input syntax for type bigint" and 500ed the whole tab. Build the
+    # clause through the same helper the insight query above uses.
+    run_clause, run_params = _agenda_sql_filter(agenda_id, "er.agenda_id")
     run_rows = db.fetchall(
         f"""
         SELECT er.*, di.title AS insight_title, di.tier AS insight_tier
         FROM experiment_runs er
         JOIN deep_insights di
           ON di.id = er.deep_insight_id AND di.agenda_id = er.agenda_id
-        WHERE er.agenda_id=?
-          AND er.deep_insight_id IN ({placeholders})
+        WHERE er.deep_insight_id IN ({placeholders}){run_clause}
         ORDER BY er.created_at DESC, er.id DESC
         """,
-        (agenda_id, *insight_ids),
+        (*insight_ids, *run_params),
     )
     run_ids = [int(row["id"]) for row in run_rows]
     artifact_counts = _artifact_counts_for_runs(run_ids)
@@ -2287,10 +2291,13 @@ def api_generated_papers():
             if not has_paper_asset and (insight.get("submission_status") or "not_started") == "not_started":
                 continue
 
+            # In the cross-agenda view there is no single scope to pass down, so
+            # each row is resolved against the agenda it actually belongs to.
+            row_agenda_id = int(insight.get("agenda_id") or 0)
             preview_urls = _paper_preview_urls(
                 insight_id,
                 assets,
-                agenda_id=agenda_id,
+                agenda_id=row_agenda_id,
             )
             tex_source = _read_paper_asset_text(insight_id, main_tex, insight)
             manuscript_rows = db.fetchall(
@@ -2304,7 +2311,7 @@ def api_generated_papers():
                 WHERE mr.deep_insight_id=? AND mr.agenda_id=?
                 ORDER BY COALESCE(sb.created_at, mr.updated_at) DESC
                 """,
-                (insight_id, agenda_id),
+                (insight_id, row_agenda_id),
             )
             bundle_rows = [
                 {

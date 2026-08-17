@@ -269,7 +269,14 @@ class AgendaScopeApiTests(unittest.TestCase):
         database.init_db()
         # The V1 agenda column exists in PostgreSQL via the meta-harness
         # migration; SQLite's init_db() predates it.
-        for table in ("deep_insights", "experiment_runs", "manuscript_runs"):
+        for table in (
+            "deep_insights",
+            "experiment_runs",
+            "manuscript_runs",
+            "auto_research_jobs",
+            "experiment_artifacts",
+            "experimental_claims",
+        ):
             rows = database.fetchall(f"PRAGMA table_info({table})")
             if not rows:
                 continue
@@ -350,6 +357,42 @@ class AgendaScopeApiTests(unittest.TestCase):
         self.assertIn("decisions", payload)
         self.assertIn("counts_by_verdict", payload)
         self.assertEqual(payload["agenda_scope"], "all")
+
+    def test_every_rescoped_read_endpoint_answers(self):
+        """A smoke pass over all of them, in both scopes.
+
+        The cross-agenda change renamed the scope variable inside each handler.
+        /api/generated_papers kept two references to the old name and shipped a
+        NameError that only showed as an empty Manuscripts tab, because the
+        suite exercised /api/manuscripts and never called that endpoint at all.
+        """
+        endpoints = (
+            "/api/deep_insights",
+            "/api/experiments",
+            "/api/experiment_groups",
+            "/api/generated_papers",
+            "/api/manuscripts",
+            "/api/scientific_decisions",
+        )
+        # Endpoints whose tables come from the PostgreSQL-only meta-harness
+        # migration cannot answer on SQLite; skip those rather than assert a
+        # green that the fixture cannot deliver.
+        needs_migration = {"/api/scientific_decisions": "scientific_decision_records"}
+        for path in endpoints:
+            table = needs_migration.get(path)
+            if table and not database.fetchall(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)
+            ):
+                continue
+            for query in ("", "?agenda_id=7", "?agenda_id=all"):
+                with self.subTest(endpoint=path + query):
+                    response = self.client.get(path + query)
+                    self.assertLess(
+                        response.status_code,
+                        500,
+                        f"{path}{query} -> {response.status_code}: "
+                        f"{response.get_data(as_text=True)[:200]}",
+                    )
 
     def test_manuscripts_list_spans_agendas_when_unscoped(self):
         self._require_table("manuscript_runs")
