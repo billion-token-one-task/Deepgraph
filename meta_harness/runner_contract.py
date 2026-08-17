@@ -320,7 +320,12 @@ def recompute_metric(rows: Sequence[Mapping[str, Any]], metric_name: str) -> flo
         ]
         return sum(matches) / len(matches)
     if metric_name == "numeric_accuracy":
-        matches = [_numeric(row.get("prediction")) == _numeric(row.get("target")) for row in rows]
+        # A row where neither side contains a number is not a match: scoring
+        # None == None as correct would let degenerate output inflate the arm.
+        matches = []
+        for row in rows:
+            predicted = _numeric(row.get("prediction"))
+            matches.append(predicted is not None and predicted == _numeric(row.get("target")))
         return sum(matches) / len(matches)
     if metric_name in {"f1", "macro_f1"}:
         labels = sorted(

@@ -13,6 +13,7 @@ import json
 import shutil
 import urllib.parse
 import urllib.request
+import dataclasses
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Protocol, Sequence
@@ -53,6 +54,58 @@ def canonical_metric_name(name: str) -> str:
 
     normalized = str(name or "").strip().lower()
     return METRIC_NAME_ALIASES.get(normalized, normalized)
+
+
+# Measurement floors: the smallest configuration under which a generative run
+# can support any verdict. A plan below them does not test its hypothesis --
+# run 153 evaluated n=4 with string equality against chain-of-thought output
+# and filed 0.0-vs-0.0 as a refutation. n=200 is the measured floor from the
+# 2026-08-17 M0 probe (7-point minimum detectable effect at power 0.8); both
+# values are V1 scaffolding, registered in docs/internal/V1_SCAFFOLD_REGISTER.md.
+GENERATIVE_QA_MIN_SAMPLE_CAP = 200
+
+# Datasets whose reference answers are a number: string equality against
+# free-form generation measures formatting, not correctness. numeric_accuracy
+# compares the final number on both sides, verified against 200 hand-checked
+# GSM8K generations in the M0 probe. Metric selection is measurement policy,
+# not authorization, so naming a dataset here follows the same precedent as
+# default_dataset_configs below.
+NUMERIC_ANSWER_DATASETS = frozenset({"openai/gsm8k"})
+
+
+def apply_measurement_floors(
+    requirements: "ExperimentRequirements",
+    *,
+    clamp_sample_cap: bool = True,
+) -> "ExperimentRequirements":
+    """Clamp plan-authored knobs that would make the measurement meaningless.
+
+    Applied where a plan becomes executable requirements, before preflight
+    hashes them, so the stored requirements are the honest configuration.
+    ``clamp_sample_cap`` is False when the cap came from the deployment's own
+    config fallback rather than the plan: an operator's explicit ceiling is a
+    control surface and silently outvoting it would recreate the phantom-config
+    disease this repo keeps re-catching.
+    """
+    if requirements.task_protocol != "generative_qa":
+        return requirements
+    updates: dict[str, Any] = {}
+    if (
+        clamp_sample_cap
+        and requirements.sample_cap is not None
+        and int(requirements.sample_cap) < GENERATIVE_QA_MIN_SAMPLE_CAP
+    ):
+        updates["sample_cap"] = GENERATIVE_QA_MIN_SAMPLE_CAP
+    if (
+        requirements.dataset.repository_id in NUMERIC_ANSWER_DATASETS
+        and requirements.metric.name in {"exact_match", "accuracy"}
+    ):
+        updates["metric"] = dataclasses.replace(
+            requirements.metric, name="numeric_accuracy"
+        )
+    if not updates:
+        return requirements
+    return dataclasses.replace(requirements, **updates)
 
 
 @dataclass(frozen=True)
@@ -687,7 +740,7 @@ def requirements_from_plan(plan: Mapping[str, Any]) -> ExperimentRequirements:
     """Translate a candidate design without inspecting repository names."""
     explicit = plan.get("execution_requirements")
     if isinstance(explicit, Mapping):
-        return ExperimentRequirements.from_dict(explicit)
+        return apply_measurement_floors(ExperimentRequirements.from_dict(explicit))
     targets = [
         item for item in plan.get("benchmark_targets", []) if isinstance(item, Mapping)
     ]
@@ -846,5 +899,9 @@ def requirements_from_plan(plan: Mapping[str, Any]) -> ExperimentRequirements:
         artifact_contract=logical_artifacts,
         preferred_backends=("ssh_gpu", "local_gpu", "colab_gpu"),
     )
+    plan_stated_cap = bool(
+        target.get("max_eval_examples") or plan.get("max_eval_examples")
+    )
+    result = apply_measurement_floors(result, clamp_sample_cap=plan_stated_cap)
     result.validate()
     return result

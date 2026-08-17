@@ -368,7 +368,14 @@ class PlanMetricAliasTests(unittest.TestCase):
     }
 
     def test_plan_metric_synonym_is_folded_onto_the_registry_vocabulary(self):
-        requirements = requirements_from_plan(self.PLAN)
+        # A non-numeric dataset keeps this test about alias folding alone;
+        # gsm8k would additionally trip the numeric-answer measurement floor
+        # (tests/test_measurement_floors.py covers that mapping).
+        plan = dict(self.PLAN)
+        plan["benchmark_targets"] = [
+            dict(self.PLAN["benchmark_targets"][0], hf_dataset="example/free-text-qa")
+        ]
+        requirements = requirements_from_plan(plan)
         self.assertEqual(requirements.metric.name, "exact_match")
         matches = RunnerRegistry().matches(requirements)
         self.assertTrue(

@@ -202,10 +202,14 @@ class GenericTransformersRunner(ResearchRunner):
         tokens = self.tokenizer(prompt, return_tensors="pt")
         tokens = {key: value.to(self._device()) for key, value in tokens.items()}
         runtime_adjustments = dict(self.config.get("runtime_adjustments") or {})
+        # Default measured, not guessed: the 2026-08-17 M0 probe on GSM8K
+        # showed 59% of generations still hit a 256-token cap, and truncated
+        # samples scored 9% against 61% for completed ones. 512 is the V1
+        # scaffold value (docs/internal/V1_SCAFFOLD_REGISTER.md).
         max_new_tokens = int(
             runtime_adjustments.get("max_new_tokens")
             or self.config.get("max_new_tokens")
-            or 64
+            or 512
         )
         with self.torch.inference_mode():
             generated = self.model.generate(
