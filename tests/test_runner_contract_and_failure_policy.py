@@ -210,7 +210,10 @@ class _ContractRunner(GenericTransformersRunner):
         return self.model
 
     def _qa_prediction(self, prompt):
-        return "correct" if str(prompt).startswith("candidate:") else "wrong"
+        # (text, truncated). The runner now reports whether generation stopped on
+        # the token cap, because a run whose every prediction was cut off did not
+        # test the hypothesis -- it ran out of budget.
+        return ("correct" if str(prompt).startswith("candidate:") else "wrong"), False
 
     def _classification_prediction(self, text):
         return "1" if str(text).startswith("candidate:") else "0"
