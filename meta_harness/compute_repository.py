@@ -696,6 +696,18 @@ class ComputeJobRepository:
                       WHERE ar.compute_job_id=compute_jobs_v1.id
                         AND ar.status='running'
                   )
+                  -- A Colab request still waiting in the queue has not begun:
+                  -- its usage is zero, not unknown. Request 9's authority was
+                  -- expired out from under it while it waited behind a long
+                  -- run (2026-08-17); the wait clock is the grant TTL, not
+                  -- this timeout.
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM colab_work_requests_v1 AS cwr
+                      WHERE cwr.compute_job_id=compute_jobs_v1.id
+                        AND cwr.status='queued'
+                        AND cwr.session_ref IS NULL
+                  )
                 """
                 ,
                 (int(agenda_id),),

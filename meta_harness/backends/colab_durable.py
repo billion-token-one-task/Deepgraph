@@ -195,6 +195,22 @@ class ColabWorkRepository:
                     for key, value in expected.items()
                     if str(existing.get(key)) != str(value)
                 ]
+                # environment_json carries transport knobs (unbuffered output,
+                # decode batch size), not scientific identity: refusing the
+                # dedupe over it froze requests 8/9 on a cap-blowing batch
+                # size on 2026-08-17. An env-only difference updates the
+                # stored row; every other field still refuses.
+                if mismatches == ["environment_json"]:
+                    db.execute(
+                        """
+                        UPDATE colab_work_requests_v1
+                        SET environment_json=?, updated_at=CURRENT_TIMESTAMP
+                        WHERE id=?
+                        """,
+                        (expected["environment_json"], int(existing["id"])),
+                    )
+                    db.commit()
+                    return int(existing["id"])
                 if mismatches:
                     raise ColabCLIError(
                         "Colab idempotency key reused with different request:"
@@ -479,6 +495,14 @@ class ColabWorkRepository:
                          AND cwr.failure_reason LIKE 'colab_worker_control_lost:%')
                      OR (cwr.status='queued'
                          AND res.status IN ('settled', 'released'))
+                     -- A queued request whose durable compute authority timed
+                     -- out while it waited its turn never became an attempt:
+                     -- request 9 sat 2.5h behind a long run and its compute
+                     -- job aged into usage_unknown (2026-08-17). No session,
+                     -- no result -- rebind and let it claim.
+                     OR (cwr.status='queued'
+                         AND cj.status IN ('usage_unknown', 'submission_unknown',
+                                           'timed_out'))
                   )
                   -- The compute row's backend_job_id is this request's own
                   -- reference, assigned at admission; it is not a Colab
@@ -980,11 +1004,22 @@ def execution_request_from_row(row: Mapping[str, Any]) -> ColabExecutionRequest:
             )
         ),
         environment={
-            str(key): str(value)
-            for key, value in _load_object(
-                row.get("environment_json"),
-                label="Colab environment",
-            ).items()
+            # Transport-layer defaults merge under the stored request: batch
+            # size is decoding throughput, not scientific identity, and rows
+            # created before the knob existed (requests 8/9, 2026-08-17)
+            # must not re-run at the cap-blowing batch of 8.
+            **(
+                {"DEEPGRAPH_RUNNER_BATCH_SIZE": os.environ["DEEPGRAPH_RUNNER_BATCH_SIZE"]}
+                if os.environ.get("DEEPGRAPH_RUNNER_BATCH_SIZE")
+                else {"DEEPGRAPH_RUNNER_BATCH_SIZE": "16"}
+            ),
+            **{
+                str(key): str(value)
+                for key, value in _load_object(
+                    row.get("environment_json"),
+                    label="Colab environment",
+                ).items()
+            },
         },
         timeout_seconds=int(row["timeout_seconds"]),
         artifact_paths=tuple(str(value) for value in artifact_map.values()),
