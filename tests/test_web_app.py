@@ -51,6 +51,41 @@ class WebAppTests(unittest.TestCase):
         self.assertIn("removed", payload["error"].lower())
         self.assertEqual(payload["replacement"], "/api/meta-harness/v1")
 
+    def test_removed_post_endpoints_are_covered_by_the_catch_all(self):
+        """Deleting the per-route 410 stubs must not change what a caller sees.
+
+        block_manual_experiment_post_apis already answers every POST under /api/
+        outside /api/meta-harness/v1/ with the same _manual_api_removed_response,
+        so fifteen individual stub routes were pure duplication. This asserts the
+        catch-all still covers each path they used to occupy.
+        """
+        for path in (
+            "/api/start",
+            "/api/backfill_graph",
+            "/api/taxonomy/expand",
+            "/api/research/launch",
+            "/api/deep_insights/generate",
+            "/api/deep_insights/7/verify",
+            "/api/deep_insights/7/research",
+            "/api/experiments/forge",
+            "/api/experiments/7/run",
+            "/api/experiments/run_full",
+            "/api/auto_research/start",
+            "/api/auto_research/stop",
+            "/api/manuscripts/7/bundle",
+            "/api/graph/merge_candidates/refresh",
+            "/api/graph/merge_candidates/7/decision",
+        ):
+            with self.subTest(path=path):
+                response = self.client.post(path, json={})
+                self.assertEqual(response.status_code, 410, path)
+                self.assertEqual(response.get_json()["mode"], "fixed_flow_read_only")
+
+    def test_the_meta_harness_api_is_not_swallowed_by_the_catch_all(self):
+        """The catch-all must stop at the boundary it was written for."""
+        response = self.client.post("/api/meta-harness/v1/grants", json={})
+        self.assertNotEqual(response.status_code, 410)
+
     def test_legacy_compute_get_does_not_start_scheduler(self):
         response = self.client.get("/api/gpu/status")
         self.assertEqual(response.status_code, 410)

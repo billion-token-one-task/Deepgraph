@@ -1655,16 +1655,6 @@ def api_graph_merge_candidate(candidate_id: int):
     return jsonify(row)
 
 
-@app.route("/api/graph/merge_candidates/refresh", methods=["POST"])
-def api_graph_merge_candidates_refresh():
-    """Refresh heuristic merge candidates."""
-    return _manual_api_removed_response()
-
-
-@app.route("/api/graph/merge_candidates/<int:candidate_id>/decision", methods=["POST"])
-def api_graph_merge_candidate_decision(candidate_id: int):
-    """Accept or reject a merge candidate."""
-    return _manual_api_removed_response()
 
 
 # ── Search ─────────────────────────────────────────────────────────
@@ -1795,10 +1785,7 @@ def api_recent_discoveries():
 
 # ── Taxonomy Expansion Trigger ────────────────────────────────────
 
-@app.route("/api/taxonomy/expand", methods=["POST"])
-def api_taxonomy_expand():
-    """Manually trigger taxonomy expansion."""
-    return _manual_api_removed_response()
+
 
 
 # ── Legacy Endpoints (kept for compatibility) ─────────────────────
@@ -1931,24 +1918,12 @@ def api_events():
 
 # ── Pipeline Control ──────────────────────────────────────────────
 
-@app.route("/api/start", methods=["POST"])
-def api_start():
-    """Start the pipeline."""
-    return _manual_api_removed_response()
 
-
-@app.route("/api/backfill_graph", methods=["POST"])
-def api_backfill_graph():
-    """Backfill graph evidence from existing structured records."""
-    return _manual_api_removed_response()
 
 
 # ── EvoScientist Bridge ──────────────────────────────────────────────
 
-@app.route("/api/research/launch", methods=["POST"])
-def api_research_launch():
-    """Launch EvoScientist research from a DeepGraph insight."""
-    return _manual_api_removed_response()
+
 
 
 @app.route("/api/research/status")
@@ -2034,21 +2009,6 @@ def api_deep_insight_detail(insight_id):
     return jsonify(dict(row))
 
 
-@app.route("/api/deep_insights/generate", methods=["POST"])
-def api_generate_deep_insights():
-    """Trigger discovery pipeline (harvest + Tier 1 + Tier 2).
-
-    JSON body (optional):
-      tier: "1" | "2" | "both" (default both)
-      bulk: true — use DISCOVERY_BULK_* wider signals + expand all Tier2 problems
-    """
-    return _manual_api_removed_response()
-
-
-@app.route("/api/deep_insights/<int:insight_id>/verify", methods=["POST"])
-def api_verify_deep_insight(insight_id):
-    """Launch novelty verification via EvoScientist."""
-    return _manual_api_removed_response()
 
 
 @app.route("/api/deep_insights/<int:insight_id>/verify_status")
@@ -2057,10 +2017,6 @@ def api_verify_status(insight_id):
     return _manual_api_removed_response()
 
 
-@app.route("/api/deep_insights/<int:insight_id>/research", methods=["POST"])
-def api_deep_insight_research(insight_id):
-    """Launch full EvoScientist research session."""
-    return _manual_api_removed_response()
 
 
 @app.route("/api/deep_insights/signals")
@@ -2453,22 +2409,6 @@ def api_experiment_detail(run_id):
     })
 
 
-@app.route("/api/experiments/forge", methods=["POST"])
-def api_forge_experiment():
-    """Forge an experiment from a deep insight (scaffold + codebase)."""
-    return _manual_api_removed_response()
-
-
-@app.route("/api/experiments/<int:run_id>/run", methods=["POST"])
-def api_run_experiment(run_id):
-    """Launch the validation loop for a forged experiment."""
-    return _manual_api_removed_response()
-
-
-@app.route("/api/experiments/run_full", methods=["POST"])
-def api_run_full_experiment():
-    """Full pipeline: forge + validation loop + knowledge loop for a deep insight."""
-    return _manual_api_removed_response()
 
 
 @app.route("/api/meta_report")
@@ -2493,14 +2433,6 @@ def api_auto_research_jobs():
     return _manual_api_removed_response()
 
 
-@app.route("/api/auto_research/start", methods=["POST"])
-def api_auto_research_start():
-    return _manual_api_removed_response()
-
-
-@app.route("/api/auto_research/stop", methods=["POST"])
-def api_auto_research_stop():
-    return _manual_api_removed_response()
 
 
 @app.route("/api/gpu/status")
@@ -2524,9 +2456,6 @@ def api_manuscripts():
     return jsonify(list_manuscripts(agenda_id=scope, limit=limit))
 
 
-@app.route("/api/manuscripts/<int:run_id>/bundle", methods=["POST"])
-def api_manuscript_bundle(run_id):
-    return _manual_api_removed_response()
 
 
 def _decision_detail(raw: Any) -> dict[str, Any]:
