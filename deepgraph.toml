@@ -66,6 +66,31 @@ max_output_tokens = 32000
 # rpm = 0
 # enabled = true
 
+# Proposer route: the high-volume role. Every paper read, abstraction, reasoning
+# pass and experiment design goes through it.
+[[llm.providers]]
+name = "sora2_gemini"
+base_url = "https://llm.sora2.today/v1"
+model = "gemini-3.7-flash-high"
+model_family = "gemini-flash"
+protocol = "chat_completions"
+api_key_env = "DEEPGRAPH_LLM_SECONDARY_API_KEY"
+rpm = 0
+enabled = true
+
+# Evaluator and reviewer route. A different generation and size class from the
+# proposer so adjudication is not the proposing model grading its own output;
+# same vendor, so the independence this buys is real but partial.
+[[llm.providers]]
+name = "sora2_gemini_pro"
+base_url = "https://llm.sora2.today/v1"
+model = "gemini-3.1-pro-high"
+model_family = "gemini-pro"
+protocol = "chat_completions"
+api_key_env = "DEEPGRAPH_LLM_SECONDARY_API_KEY"
+rpm = 0
+enabled = true
+
 [llm.secondary]
 enabled = false
 protocol = "responses"
