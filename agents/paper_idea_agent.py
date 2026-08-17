@@ -1313,7 +1313,17 @@ def discover_paper_ideas(
 
         method = _extract_method_payload(result2)
         if not method.get("name"):
-            print(f"[PAPER_IDEA] No method produced for '{title[:50]}'", flush=True)
+            # Diagnostic, not decoration: this branch fired four times on
+            # 2026-08-17 and the parsed shape was invisible every time.
+            shape = (
+                sorted(result2.keys()) if isinstance(result2, dict)
+                else type(result2).__name__
+            )
+            print(
+                f"[PAPER_IDEA] No method produced for '{title[:50]}'"
+                f" (parsed shape: {shape})",
+                flush=True,
+            )
             continue
 
         why_novel = method.get("why_novel", "").lower()
