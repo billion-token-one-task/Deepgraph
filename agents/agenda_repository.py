@@ -123,6 +123,35 @@ class AgendaRepository:
         )
         return [row_to_agenda(row) for row in rows]
 
+    KNOWN_BACKENDS = ("cpu", "llm", "colab_gpu", "ssh_gpu", "local_gpu")
+
+    def set_backend_allowlist(self, agenda_id: int, backends: list[str]) -> None:
+        """Operator surface for the agenda's compute-pool governance.
+
+        Added 2026-08-17: extending an agenda to a newly verified backend
+        (colab_gpu, live since 2026-08-15) previously required a raw UPDATE
+        no code path owned. Validation is fail-closed: only known backend
+        names, never an empty list.
+        """
+        cleaned = [str(b).strip() for b in backends if str(b).strip()]
+        if not cleaned:
+            raise ValueError("backend allowlist cannot be empty")
+        unknown = sorted(set(cleaned) - set(self.KNOWN_BACKENDS))
+        if unknown:
+            raise ValueError(f"unknown backends: {','.join(unknown)}")
+        cur = db.execute(
+            """
+            UPDATE research_agendas
+            SET backend_allowlist_json=?, updated_at=CURRENT_TIMESTAMP
+            WHERE id=?
+            """,
+            (json.dumps(cleaned), int(agenda_id)),
+        )
+        if int(getattr(cur, "rowcount", 0) or 0) != 1:
+            db.rollback()
+            raise AgendaNotFoundError(agenda_id)
+        db.commit()
+
     def set_status(self, agenda_id: int, status: str) -> None:
         cur = db.execute(
             """
