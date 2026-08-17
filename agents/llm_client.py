@@ -337,12 +337,28 @@ def _declared_providers() -> list[dict]:
                 "use api_key_env with an environment variable name instead"
             )
         key_env = str(entry.get("api_key_env") or "").strip()
-        base_url = str(entry.get("base_url") or "").strip().rstrip("/")
+        # A private gateway hostname is site-specific even though it is not a
+        # credential, and this file is in Git. base_url_env keeps the endpoint
+        # in the operator's environment for exactly the reason api_key_env
+        # keeps the key there; a literal base_url stays supported for public
+        # provider endpoints that are safe to publish.
+        base_url_env = str(entry.get("base_url_env") or "").strip()
+        if base_url_env:
+            base_url = str(os.environ.get(base_url_env, "") or "").strip().rstrip("/")
+            if not base_url:
+                print(
+                    f"[LLM] Skipping declared provider {name}: "
+                    f"{base_url_env} is not set",
+                    flush=True,
+                )
+                continue
+        else:
+            base_url = str(entry.get("base_url") or "").strip().rstrip("/")
         model = str(entry.get("model") or "").strip()
         if not key_env or not base_url or not model:
             print(
                 f"[LLM] Skipping declared provider {name}: "
-                "api_key_env, base_url and model are all required",
+                "api_key_env, base_url (or base_url_env) and model are all required",
                 flush=True,
             )
             continue
