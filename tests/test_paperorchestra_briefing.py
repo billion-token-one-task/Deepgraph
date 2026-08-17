@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -10,9 +11,24 @@ from agents.paperorchestra.briefing import (
     evidence_brief_markdown,
 )
 from agents.paperorchestra.tracing import PaperGenerationTrace, call_json_traced
-from agents.paperorchestra.full_pipeline import (
+
+# The CRPP-specific manuscript implementation was demoted into the disabled
+# plugins.examples.cggr boundary; agents/paperorchestra/full_pipeline.py is now
+# a fail-closed entry point that no longer carries these helpers. Importing the
+# old path aborted collection of this whole file. Gate the one test that needs
+# them behind the same opt-in the runtime uses for that plugin.
+from plugins.examples.cggr.full_pipeline import (
     _completed_benchmark_mode,
     _repair_completed_evidence_section,
+)
+
+NONPROD_PLUGINS = os.getenv(
+    "DEEPGRAPH_ENABLE_NONPROD_EXAMPLE_PLUGINS", ""
+).strip().lower() in {"1", "true", "yes"}
+requires_nonprod_plugins = unittest.skipUnless(
+    NONPROD_PLUGINS,
+    "covers demoted plugins.examples.cggr; set "
+    "DEEPGRAPH_ENABLE_NONPROD_EXAMPLE_PLUGINS=1 to run",
 )
 
 
@@ -96,6 +112,7 @@ class PaperOrchestraBriefingTests(unittest.TestCase):
         )
         self.assertTrue(any("multi-agent" in q for q in outline["intro_related_work_plan"]["introduction_strategy"]["search_directions"]))
 
+    @requires_nonprod_plugins
     def test_completed_evidence_mode_repairs_plan_language(self):
         brief = {
             "experiment": {
