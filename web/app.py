@@ -1277,18 +1277,6 @@ def api_data_health():
         return _api_failure("data_health", exc, status=503)
 
 
-@app.route("/api/providers")
-def api_providers():
-    """Provider topology and usage are intentionally not public."""
-    abort(404)
-
-
-@app.route("/api/runtime-config", methods=["GET", "POST"])
-def api_runtime_config():
-    """Runtime configuration is an operator concern, never a public API."""
-    abort(404)
-
-
 def _office_clip(value: Any, limit: int = 110) -> str:
     text = "" if value is None else " ".join(str(value).split())
     if len(text) <= limit:

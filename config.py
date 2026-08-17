@@ -250,7 +250,6 @@ LLM_REQUEST_TIMEOUT_SECONDS = _env_int("DEEPGRAPH_LLM_REQUEST_TIMEOUT_SECONDS", 
 LLM_TRANSIENT_RETRIES = _env_int("DEEPGRAPH_LLM_TRANSIENT_RETRIES", 2, "llm.transient_retries")
 LLM_TRANSIENT_BACKOFF_SECONDS = _env_int("DEEPGRAPH_LLM_TRANSIENT_BACKOFF_SECONDS", 5, "llm.transient_backoff_seconds")
 LLM_TRANSIENT_COOLDOWN_SECONDS = _env_int("DEEPGRAPH_LLM_TRANSIENT_COOLDOWN_SECONDS", 180, "llm.transient_cooldown_seconds")
-LLM_MAX_INPUT_TOKENS = _env_int("DEEPGRAPH_LLM_MAX_INPUT_TOKENS", 900_000, "llm.max_input_tokens")
 LLM_MAX_OUTPUT_TOKENS = _env_int("DEEPGRAPH_LLM_MAX_OUTPUT_TOKENS", 32_000, "llm.max_output_tokens")
 # Provenance / feedback loop: bump when changing insight prompts for A/B analysis
 PROMPT_VERSION = _env_str("DEEPGRAPH_PROMPT_VERSION", "insight_v1", "prompts.version")
@@ -274,8 +273,6 @@ PDF_TEXT_BACKEND = _env_str("DEEPGRAPH_PDF_TEXT_BACKEND", "source_auto", "pdf.te
 # Pipeline
 PIPELINE_CONCURRENCY = _env_int("DEEPGRAPH_PIPELINE_CONCURRENCY", 30, "pipeline.concurrency")
 PAPER_TEXT_PREFETCH_CONCURRENCY = _env_int("DEEPGRAPH_PAPER_TEXT_PREFETCH_CONCURRENCY", 8, "pipeline.paper_text_prefetch_concurrency")
-PIPELINE_SLEEP_BETWEEN_PAPERS = _env_int("DEEPGRAPH_PIPELINE_SLEEP_BETWEEN_PAPERS", 1, "pipeline.sleep_between_papers")
-PIPELINE_INCREMENTAL_INSIGHT_EVERY = _env_int("DEEPGRAPH_INCREMENTAL_INSIGHT_EVERY", 20, "pipeline.incremental_insight_every")
 PIPELINE_MAX_RETRYABLE_FAILURES = _env_int("DEEPGRAPH_PIPELINE_MAX_RETRYABLE_FAILURES", 12, "pipeline.max_retryable_failures")
 # Claim/result grounding: drop rows below this score before DB insert (0 = keep all)
 GROUNDING_MIN_STORE_SCORE = _env_float("DEEPGRAPH_GROUNDING_MIN_STORE_SCORE", 0.0, "graph.grounding_min_store_score")
@@ -312,35 +309,6 @@ AGENDA_TOKEN_BUDGET_DEFAULT = _env_int(
     "DEEPGRAPH_AGENDA_TOKEN_BUDGET_DEFAULT",
     100_000,
     "agenda.default_token_budget",
-)
-AGENDA_GPU_HOURS_BUDGET_DEFAULT = _env_float(
-    "DEEPGRAPH_AGENDA_GPU_HOURS_BUDGET_DEFAULT",
-    0.0,
-    "agenda.default_gpu_hours_budget",
-)
-AGENDA_BACKLOG_POLICY = _env_str(
-    "DEEPGRAPH_AGENDA_BACKLOG_POLICY",
-    "explicit_import_only",
-    "agenda.backlog_policy",
-)
-AGENDA_SCOPE_MIN_TERM_HITS = _env_int(
-    "DEEPGRAPH_AGENDA_SCOPE_MIN_TERM_HITS",
-    1,
-    "agenda.scope_min_term_hits",
-)
-AGENDA_ACTIVE_IDS = [
-    int(value)
-    for value in _toml_get("agenda.active_ids", [])
-    if str(value).isdigit() and int(value) > 0
-]
-AGENDA_MAX_CONCURRENCY = _env_int(
-    "DEEPGRAPH_AGENDA_MAX_CONCURRENCY",
-    1,
-    "agenda.max_concurrency_per_agenda",
-)
-AGENDA_DEFAULT_BACKEND_ALLOWLIST = _split_csv(
-    os.getenv("DEEPGRAPH_AGENDA_BACKEND_ALLOWLIST")
-    or _toml_get("agenda.default_backend_allowlist", ["cpu", "llm"])
 )
 
 # Topic gate (agents/topic_gate.py): three questions before any compute, then
@@ -386,17 +354,11 @@ TOPIC_GATE_MAX_PILOT_WALL_HOURS = _env_float(
 # meta-harness-v1 policy is non-sensitive configuration. Provider, SSH, and
 # Colab credential material is never read from TOML; route/backend entries hold
 # environment or secret-manager references only.
-PORTFOLIO_POLICY = dict(_toml_get("portfolio", {}) or {})
 RESOURCE_GRANT_POLICY = dict(_toml_get("resource_grants", {}) or {})
 LLM_ROLE_ROUTES = {
     role: list(_toml_get(f"llm_routes.{role}", []) or [])
     for role in ("proposer", "evaluator", "reviewer")
 }
-LLM_ROUTE_FAILURE_POLICY = _env_str(
-    "DEEPGRAPH_LLM_ROUTE_FAILURE_POLICY",
-    "fail_closed_or_manual",
-    "llm_routes.failure_policy",
-)
 COMPUTE_BACKENDS_ENABLED = _split_csv(
     os.getenv("DEEPGRAPH_COMPUTE_BACKENDS")
     or _toml_get("compute_backends.enabled", ["cpu"])
@@ -415,11 +377,6 @@ COMPUTE_ARTIFACT_ROOT = Path(
         "compute_backends.artifact_root",
     )
 ).expanduser()
-COMPUTE_HEARTBEAT_TIMEOUT_SECONDS = _env_int(
-    "DEEPGRAPH_COMPUTE_HEARTBEAT_TIMEOUT_SECONDS",
-    300,
-    "compute_backends.heartbeat_timeout_seconds",
-)
 COMPUTE_SSH_TARGET_REF = _env_str(
     "DEEPGRAPH_COMPUTE_SSH_TARGET_REF",
     "",
@@ -474,7 +431,6 @@ SCOPED_INGESTION_LEASE_SECONDS = _env_int(
     1800,
     "scoped_ingestion.lease_seconds",
 )
-SCIENTIFIC_EVIDENCE_POLICY = dict(_toml_get("scientific_evidence", {}) or {})
 HARNESS_POLICY_VERSION = _env_str(
     "DEEPGRAPH_HARNESS_POLICY_VERSION",
     "harness_policy_v1",
@@ -538,14 +494,6 @@ HARNESS_PRODUCTION_DATABASE_NAMESPACE = _env_str(
     "",
     "harness_evolution.production_database_namespace",
 )
-FAILURE_POLICY = dict(_toml_get("failure_policy", {}) or {})
-TRACE_DIRECTORY = Path(
-    _env_str(
-        "DEEPGRAPH_TRACE_DIRECTORY",
-        str(WORKSPACE_DIR / "meta_harness" / "traces"),
-        "trace.directory",
-    )
-).expanduser()
 DISCOVERY_TIER1_CANDIDATES = _env_int("DEEPGRAPH_TIER1_CANDIDATES", 5, "discovery.tier1_candidates")
 DISCOVERY_TIER2_PROBLEMS = _env_int("DEEPGRAPH_TIER2_PROBLEMS", 8, "discovery.tier2_problems")
 DISCOVERY_TIER2_PAPERS = _env_int("DEEPGRAPH_TIER2_PAPERS", 5, "discovery.tier2_papers")
@@ -636,7 +584,6 @@ EXPERIMENT_VALIDATION_BENCHMARK_METHODS = _env_str(
 # After baseline reproduction fails (crash / no metric), run Codex or LLM repair rounds before giving up.
 REPRODUCTION_REPAIR_MAX_ROUNDS = _env_int("DEEPGRAPH_REPRODUCTION_REPAIR_MAX_ROUNDS", 8, "experiment.reproduction_repair_max_rounds")
 ALLOW_SMOKE_EXPERIMENT_VALIDATION = _env_bool("DEEPGRAPH_ALLOW_SMOKE_EXPERIMENT_VALIDATION", False, "experiment.allow_smoke_validation")
-EXPERIMENT_WORKDIR = Path(_env_str("SCIFORGE_WORKDIR", str(Path.home() / "sciforge_runs"), "paths.experiment_workdir")).expanduser()
 IDEA_WORKSPACE_DIR = Path(_env_str("DEEPGRAPH_IDEA_WORKSPACE_DIR", str(Path.home() / "deepgraph_ideas"), "paths.idea_workspace_dir")).expanduser()
 RUNTIME_PYTHON = _env_str("DEEPGRAPH_RUNTIME_PYTHON", sys.executable, "runtime.python")
 MLFLOW_TRACKING_URI = _env_str("DEEPGRAPH_MLFLOW_TRACKING_URI", "", "tracking.mlflow_uri")
@@ -675,12 +622,10 @@ GPU_REMOTE_AUTO_PIP_INSTALL = _env_bool("DEEPGRAPH_GPU_REMOTE_AUTO_PIP_INSTALL",
 GPU_REMOTE_SETUP_TIMEOUT_SECONDS = _env_int("DEEPGRAPH_GPU_REMOTE_SETUP_TIMEOUT_SECONDS", 3600, "gpu.remote.setup_timeout_seconds")
 
 # Mechanism-first discovery
-IDEA_EVIDENCE_MIN_NON_NUMERIC = _env_int("DEEPGRAPH_IDEA_EVIDENCE_MIN_NON_NUMERIC", 2, "idea.evidence_min_non_numeric")
 
 # Manuscript / submission bundle
 MANUSCRIPT_LATEX_TEMPLATE = _env_str("DEEPGRAPH_MANUSCRIPT_LATEX_TEMPLATE", "auto", "manuscript.latex_template")
 SUBMISSION_BUNDLE_FORMATS = _split_csv(os.getenv("DEEPGRAPH_SUBMISSION_BUNDLE_FORMATS") or _toml_get("manuscript.submission_bundle_formats", None)) or ["conference"]
-MANUSCRIPT_WORKDIR = Path(_env_str("DEEPGRAPH_MANUSCRIPT_WORKDIR", str(Path.home() / "deepgraph_manuscripts"), "paths.manuscript_workdir")).expanduser()
 # PaperOrchestra is the only supported manuscript backend.
 MANUSCRIPT_BACKEND = _env_str("DEEPGRAPH_MANUSCRIPT_BACKEND", "paper_orchestra", "manuscript.backend").lower()
 REFERENCE_PDF_CORPUS_DIR = Path(

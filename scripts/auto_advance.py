@@ -59,13 +59,13 @@ from meta_harness.repository import MetaHarnessRepository  # noqa: E402
 from meta_harness.topic_gate_record import record_prediction  # noqa: E402
 
 ACTOR = "ops:auto-advance-v1"
-ARTIFACT_REQUIREMENTS = [
-    "final_results",
-    "raw_predictions",
-    "environment_manifest",
-    "dataset_manifest",
-    "model_manifest",
-]
+# One vocabulary: grants must require exactly what the runner contract
+# enforces. The list used to be restated here; nothing bound the copies
+# (audit A5), so a drift would have granted against artifacts no runner
+# validates. tests/test_job_state_consumers.py asserts the identity.
+from meta_harness.runner_contract import REQUIRED_ARTIFACTS  # noqa: E402
+
+ARTIFACT_REQUIREMENTS = list(REQUIRED_ARTIFACTS)
 # Bumped after discovering that the old recycler incremented its counter before
 # checking packet/preflight/grant eligibility. Three preflight deferrals could
 # therefore manufacture ``recycle_exhausted`` without a single requeue. Counts

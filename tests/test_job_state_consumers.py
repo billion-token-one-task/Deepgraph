@@ -258,6 +258,14 @@ class JobStateConsumerTest(unittest.TestCase):
 
         self.assertIs(auto_advance.DEAD_END, job_states.RECYCLABLE)
 
+    def test_granted_artifacts_are_the_enforced_artifacts(self) -> None:
+        from meta_harness.runner_contract import REQUIRED_ARTIFACTS
+        from scripts import auto_advance
+
+        self.assertEqual(
+            list(auto_advance.ARTIFACT_REQUIREMENTS), list(REQUIRED_ARTIFACTS)
+        )
+
     def test_rendered_predicate_covers_every_declared_rule(self) -> None:
         sql = job_states.claim_predicate_sql()
         for status in job_states.CLAIMABLE_STATUSES:

@@ -171,17 +171,6 @@ scope_min_term_hits = 1
 default_backend_allowlist = ["cpu", "llm"]
 max_concurrency_per_agenda = 1
 
-[portfolio]
-policy_version = "portfolio_heuristic_v1"
-promote_count = 1
-exploration_fraction = 0.20
-falsification_fraction = 0.15
-surprise_fraction = 0.10
-kill_obsolescence_threshold = 0.80
-kill_execution_risk_threshold = 0.92
-max_family_share = 0.50
-park_hours = 168
-
 [resource_grants]
 required = true
 default_ttl_seconds = 3600
@@ -248,13 +237,6 @@ worker_enabled = false
 poll_seconds = 10
 lease_seconds = 1800
 
-[scientific_evidence]
-states = ["planned", "sanity_passed", "full_benchmark_complete", "evidence_audited", "scientifically_decided", "manuscript_allowed"]
-pilot_final_state = "sanity_passed"
-require_raw_artifacts = true
-require_claim_ledger = true
-require_holdout_evaluator = true
-
 [harness_evolution]
 policy_version = "harness_policy_v1"
 candidate_root = "{project_root}/workspace/meta_harness/candidates"
@@ -278,13 +260,6 @@ require_reviewer_approval = true
 keys_manifest_ref = "env:DEEPGRAPH_REVIEWER_APPROVAL_KEYS_JSON"
 max_age_seconds = 604800
 signature_algorithm = "hmac-sha256-v1"
-
-[failure_policy]
-provider_unavailable = "fail_closed_or_manual"
-compute_unavailable = "failed"
-heartbeat_expired = "timed_out"
-artifact_incomplete = "failed"
-never_map_failure_to_completed = true
 
 [trace]
 directory = "{project_root}/workspace/meta_harness/traces"
