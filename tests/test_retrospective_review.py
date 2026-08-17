@@ -36,8 +36,12 @@ def _create_meta_harness_tables():
             benchmark_contract_hash TEXT, evaluator_ref TEXT, evaluator_hash TEXT,
             holdout_ref TEXT, holdout_hash TEXT,
             created_at TEXT DEFAULT '2026-08-04 00:00:00')""",
+        # evidence_audit_record_id is NOT NULL in db/migrations/0001_meta_harness_v1.sql.
+        # This fixture used to omit it, so the suite could pass while the real
+        # insert raised NotNullViolation on every production run.
         """CREATE TABLE IF NOT EXISTS scientific_decision_records (
             id INTEGER PRIMARY KEY, agenda_id INTEGER, experiment_run_id INTEGER,
+            evidence_audit_record_id INTEGER NOT NULL,
             verdict TEXT, verdict_hash TEXT, evidence_decision_json TEXT,
             created_at TEXT DEFAULT '2026-08-04 00:00:00')""",
         """CREATE TABLE IF NOT EXISTS reviewer_approval_records (
