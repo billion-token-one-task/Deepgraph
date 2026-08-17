@@ -1443,12 +1443,32 @@ def _handle_experiment_review_blocked(insight_id: int, forged: dict | None, *, s
 
     job = db.fetchone(
         """
-        SELECT last_note, last_error, resource_grant_id
+        SELECT status, stage, last_note, last_error, resource_grant_id
         FROM auto_research_jobs
         WHERE deep_insight_id=?
         """,
         (insight_id,),
     ) or {}
+    # A job the harness consumer just requeued for a fresh forge is not an
+    # orphan. The stale-review sweeps resurrected run 155's verdict onto
+    # idea 133 minutes after its plan had been repaired and requeued, the
+    # job went blocked without any new forge, and the outcome finalizer
+    # closed the candidate (outcome_records 13 and 14, 2026-08-17). The old
+    # verdict belongs to the old plan; the fresh forge owns the next word.
+    if (
+        source != "review"
+        and str(job.get("status") or "") == "queued"
+        and str(job.get("stage") or "") == "harness_supported_subset_recovered"
+    ):
+        log_event(
+            "auto_research",
+            {
+                "step": "stale_review_verdict_ignored_for_fresh_forge",
+                "insight_id": insight_id,
+                "source": source,
+            },
+        )
+        return
     previous_attempt = max(
         _repair_attempt_from_note(job.get("last_note"), "experiment_review"),
         _repair_attempt_from_note(job.get("last_error"), "experiment_review"),
