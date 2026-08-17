@@ -29,6 +29,23 @@ VALID_SELECTION_STATUS = {
 }
 VALID_BACKLOG_POLICIES = {"explicit_import_only", "new_only"}
 
+# GPU hours are reserved and released as floats, so a long series of paired
+# add/subtract operations leaves a residue that IEEE754 cannot cancel exactly.
+# On 2026-08-17 agenda 11 held gpu_hours_reserved = -3.76e-06 -- thirteen
+# milliseconds of negative GPU -- and the "cannot be negative" guard below
+# refused to load the agenda at all, which stopped the whole auto-research loop.
+#
+# The guard is worth keeping: a genuine double-release shows up as a negative on
+# the order of the reservation itself, minutes or hours. This threshold is 3.6
+# seconds, far below any real unit of GPU accounting and far above accumulated
+# float dust, so it absorbs the residue without hiding a real accounting fault.
+GPU_HOURS_FLOAT_DUST = 1e-3
+
+
+def _snap_float_dust(value: float) -> float:
+    """Treat a value within float-dust distance of zero as exactly zero."""
+    return 0.0 if abs(value) < GPU_HOURS_FLOAT_DUST else value
+
 
 @dataclass
 class ResearchAgenda(ContractRecord):
@@ -69,8 +86,12 @@ class ResearchAgenda(ContractRecord):
         self.token_reserved = coerce_optional_int(self.token_reserved) or 0
         self.max_concurrency = coerce_optional_int(self.max_concurrency) or 0
         self.gpu_hours_budget = coerce_optional_float(self.gpu_hours_budget) or 0.0
-        self.gpu_hours_spent = coerce_optional_float(self.gpu_hours_spent) or 0.0
-        self.gpu_hours_reserved = coerce_optional_float(self.gpu_hours_reserved) or 0.0
+        self.gpu_hours_spent = _snap_float_dust(
+            coerce_optional_float(self.gpu_hours_spent) or 0.0
+        )
+        self.gpu_hours_reserved = _snap_float_dust(
+            coerce_optional_float(self.gpu_hours_reserved) or 0.0
+        )
         if not self.focus and not self.prefer:
             raise ContractValidationError(
                 "ResearchAgenda needs at least one focus keyword or prefer rule"
