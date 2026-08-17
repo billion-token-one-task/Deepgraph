@@ -366,13 +366,17 @@ def apply_review(
                  _canonical_json(context)),
             )
             current = target
-        db.execute(
+        # The decision row must name the audit row it rests on, exactly as the
+        # native ladder does: scientific_decision_records.evidence_audit_record_id
+        # is NOT NULL, so discarding this id makes the whole path unusable.
+        audit_record_id = db.insert_returning_id(
             """
             INSERT INTO evidence_audit_records
                 (agenda_id, experiment_run_id, raw_artifacts_hash,
                  claim_ledger_hash, benchmark_contract_hash, evaluator_ref,
                  evaluator_hash, holdout_ref, holdout_hash)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            RETURNING id
             """,
             (agenda_id, run_id, evidence.raw_artifacts_hash,
              evidence.claim_ledger_hash, evidence.benchmark_contract_hash,
@@ -392,11 +396,11 @@ def apply_review(
         db.execute(
             """
             INSERT INTO scientific_decision_records
-                (agenda_id, experiment_run_id, verdict, verdict_hash,
-                 evidence_decision_json)
-            VALUES (?, ?, ?, ?, ?)
+                (agenda_id, experiment_run_id, evidence_audit_record_id,
+                 verdict, verdict_hash, evidence_decision_json)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (agenda_id, run_id, verdict, verdict_hash,
+            (agenda_id, run_id, audit_record_id, verdict, verdict_hash,
              _canonical_json({
                  "path": "retrospective_review",
                  "evaluator_report": evidence.evaluator_report,
