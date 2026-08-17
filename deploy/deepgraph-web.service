@@ -10,6 +10,9 @@ User=billion-token
 # protected snapshot; it never edits or replaces that snapshot in place.
 WorkingDirectory=/home/billion-token/releases/deepgraph-v1-webfix-20260817
 EnvironmentFile=/home/billion-token/Deepgraph/.env
+# Operator-managed secret overrides.  The leading '-' keeps an existing
+# deployment bootable until scripts/configure_llm_runtime.sh is first run.
+EnvironmentFile=-/etc/deepgraph/runtime.env
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONDONTWRITEBYTECODE=1
 ExecStart=/home/billion-token/Deepgraph/.venv/bin/python -u /home/billion-token/releases/deepgraph-v1-webfix-20260817/main.py

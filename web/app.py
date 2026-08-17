@@ -32,10 +32,10 @@ from web.stats_cache import StatsCache
 app.register_blueprint(meta_harness_blueprint)
 app.register_blueprint(provenance_blueprint)
 
-# Dashboard totals come from PostgreSQL's maintained relation statistics rather
-# than repeated COUNT(*) scans over the largest tables.  The previous exact
-# snapshot saturated production storage; the statistics catalog is real
-# database telemetry, cheap to read, and explicitly labelled as an estimate.
+# Large dashboard totals come from PostgreSQL's planner catalog estimates
+# rather than repeated COUNT(*) scans.  pg_stat_user_tables can be reset while
+# restored tables remain populated; pg_class.reltuples survives that condition
+# and every displayed estimate is explicitly labelled.
 _DASHBOARD_RELATION_KEYS = {
     "papers": "papers_total",
     "claims": "claims_total",
@@ -47,26 +47,62 @@ _DASHBOARD_RELATION_KEYS = {
     "deep_insights": "deep_insights_total",
     "experiment_runs": "experiment_runs_total",
     "submission_bundles": "submission_bundles_total",
+    "graph_entities": "graph_entities_total",
+    "graph_relations": "graph_relations_total",
+    "paper_insights": "paper_insights_total",
+}
+
+_PUBLIC_ESTIMATED_FIELDS = {
+    "claims_total",
+    "patterns_total",
+    "contradictions_total",
+    "gaps_total",
+    "results_total",
+    "insights_total",
+    "graph_entities_total",
+    "graph_relations_total",
+    "paper_insights_total",
+}
+
+_SMALL_EXACT_RELATIONS = {
+    "deep_insights",
+    "experiment_runs",
+    "submission_bundles",
 }
 
 
-def _dashboard_relation_counts() -> tuple[dict[str, int], str]:
+def _dashboard_relation_counts() -> tuple[dict[str, int], str, list[str], list[str]]:
     tables = tuple(_DASHBOARD_RELATION_KEYS)
     if db.use_postgres():
         placeholders = ",".join("?" for _ in tables)
         rows = db.fetchall(
             f"""
-            SELECT relname, GREATEST(n_live_tup, 0)::BIGINT AS c
-            FROM pg_stat_user_tables
-            WHERE schemaname = ANY(current_schemas(false))
-              AND relname IN ({placeholders})
+            SELECT c.relname, GREATEST(c.reltuples, 0)::BIGINT AS c
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid=c.relnamespace
+            WHERE n.nspname = ANY(current_schemas(false))
+              AND c.relkind='r'
+              AND c.relname IN ({placeholders})
             """,
             tables,
         )
         raw = {str(row["relname"]): int(row["c"] or 0) for row in rows}
+        counts = {key: raw.get(table, 0) for table, key in _DASHBOARD_RELATION_KEYS.items()}
+        zero_nonempty = []
+        for table, key in _DASHBOARD_RELATION_KEYS.items():
+            if counts[key] != 0:
+                continue
+            exists = bool((db.fetchone(f"SELECT EXISTS(SELECT 1 FROM {table} LIMIT 1) AS present") or {}).get("present"))
+            if exists:
+                if table in _SMALL_EXACT_RELATIONS:
+                    counts[key] = int((db.fetchone(f"SELECT COUNT(*) AS c FROM {table}") or {}).get("c") or 0)
+                else:
+                    zero_nonempty.append(key)
         return (
-            {key: raw.get(table, 0) for table, key in _DASHBOARD_RELATION_KEYS.items()},
-            "postgresql_n_live_tup",
+            counts,
+            "postgresql_reltuples",
+            sorted(_PUBLIC_ESTIMATED_FIELDS),
+            zero_nonempty,
         )
     return (
         {
@@ -74,6 +110,8 @@ def _dashboard_relation_counts() -> tuple[dict[str, int], str]:
             for table, key in _DASHBOARD_RELATION_KEYS.items()
         },
         "exact",
+        [],
+        [],
     )
 
 
@@ -87,12 +125,43 @@ def _optional_scalar(sql: str, params: tuple = ()) -> int | float:
 
 
 def _compute_stats_snapshot() -> dict:
-    stats, count_source = _dashboard_relation_counts()
+    stats, count_source, estimated_fields, zero_nonempty = _dashboard_relation_counts()
+    paper_funnel = db.fetchone(
+        """
+        SELECT COUNT(*) AS papers_total_exact,
+               SUM(CASE WHEN status IN ('extracted','abstracted','reasoned') THEN 1 ELSE 0 END) AS papers_processed,
+               SUM(CASE WHEN status='ingested' THEN 1 ELSE 0 END) AS papers_pending,
+               SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) AS papers_error,
+               SUM(CASE WHEN status='processing' THEN 1 ELSE 0 END) AS papers_processing,
+               SUM(CASE WHEN COALESCE(full_text,'')<>'' THEN 1 ELSE 0 END) AS papers_with_text
+        FROM papers
+        """
+    ) or {}
+    experiment_funnel = db.fetchone(
+        """
+        SELECT SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS experiments_completed,
+               SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS experiments_failed,
+               SUM(CASE WHEN status='superseded' THEN 1 ELSE 0 END) AS experiments_superseded,
+               SUM(CASE WHEN status='canceled' THEN 1 ELSE 0 END) AS experiments_canceled,
+               COUNT(*) AS experiment_runs_total_exact
+        FROM experiment_runs
+        """
+    ) or {}
     stats.update(
         {
-            "papers_processed": int(_optional_scalar(
-                "SELECT COUNT(*) AS c FROM papers WHERE status IN ('extracted','abstracted','reasoned')"
-            )),
+            "papers_total": int(paper_funnel.get("papers_total_exact") or 0),
+            "papers_processed": int(paper_funnel.get("papers_processed") or 0),
+            "papers_pending": int(paper_funnel.get("papers_pending") or 0),
+            "papers_error": int(paper_funnel.get("papers_error") or 0),
+            "papers_processing": int(paper_funnel.get("papers_processing") or 0),
+            "papers_with_text": int(paper_funnel.get("papers_with_text") or 0),
+            "experiments_completed": int(experiment_funnel.get("experiments_completed") or 0),
+            "experiments_failed": int(experiment_funnel.get("experiments_failed") or 0),
+            "experiments_superseded": int(experiment_funnel.get("experiments_superseded") or 0),
+            "experiments_canceled": int(experiment_funnel.get("experiments_canceled") or 0),
+            "experiment_runs_total": int(experiment_funnel.get("experiment_runs_total_exact") or 0),
+            "deep_insights_total": int(_optional_scalar("SELECT COUNT(*) AS c FROM deep_insights")),
+            "submission_bundles_total": int(_optional_scalar("SELECT COUNT(*) AS c FROM submission_bundles")),
             "tokens_consumed": int(_optional_scalar(
                 "SELECT COALESCE(SUM(token_cost),0) AS c FROM papers"
             )),
@@ -125,13 +194,14 @@ def _compute_stats_snapshot() -> dict:
             "SELECT COUNT(*) AS c FROM scientific_decision_records WHERE verdict=?",
             (verdict,),
         ))
-    stats["papers_total"] = max(stats["papers_total"], stats["papers_processed"])
+    stats["estimated_fields"] = estimated_fields
     stats["generated_at"] = time.time()
     stats["data_health"] = {
-        "status": "ok",
+        "status": "degraded" if zero_nonempty else "ok",
         "database_round_trip": True,
         "count_source": count_source,
         "source_rows": sum(int(stats.get(key, 0) or 0) for key in _DASHBOARD_RELATION_KEYS.values()),
+        "zero_nonempty_fields": zero_nonempty,
     }
     db.rollback()
     return stats
@@ -1075,16 +1145,31 @@ def api_data_health():
         stats = _stats_cache.get()
         required = {
             "papers_processed",
+            "papers_total",
             "results_total",
+            "insights_total",
             "deep_insights_total",
             "experiment_runs_total",
         }
-        if int(probe.get("ok") or 0) != 1 or not isinstance(stats, dict) or not required.issubset(stats):
+        stats_health = (stats or {}).get("data_health") if isinstance(stats, dict) else {}
+        semantic_ok = (
+            isinstance(stats_health, dict)
+            and stats_health.get("status") == "ok"
+            and int((stats or {}).get("papers_total") or 0) >= int((stats or {}).get("papers_processed") or 0)
+        )
+        if (
+            int(probe.get("ok") or 0) != 1
+            or not isinstance(stats, dict)
+            or not required.issubset(stats)
+            or not semantic_ok
+        ):
             return jsonify({
                 "status": "unavailable",
                 "ready": False,
                 "database_round_trip": int(probe.get("ok") or 0) == 1,
                 "stats_ready": isinstance(stats, dict),
+                "semantic_stats_ready": semantic_ok,
+                "zero_nonempty_fields": (stats_health or {}).get("zero_nonempty_fields", []),
             }), 503
         return jsonify({
             "status": "ok",
@@ -1279,17 +1364,31 @@ def api_processing():
         processing_count = int((db.fetchone(
             "SELECT COUNT(*) AS c FROM papers WHERE status='processing'"
         ) or {}).get("c") or 0)
+        recent_processing_count = int((db.fetchone(
+            f"SELECT COUNT(*) AS c FROM papers WHERE status='processing' AND {db.sql_updated_after_seconds(300)}"
+        ) or {}).get("c") or 0)
+        stale_processing_count = max(0, processing_count - recent_processing_count)
         try:
             from orchestrator import paper_worker
             paper_worker_status = paper_worker.get_status()
         except Exception as exc:
             paper_worker_status = {"running": False, "error": str(exc)}
         with _pipeline_lock:
-            is_running = _pipeline_running or bool(paper_worker_status.get("running")) or processing_count > 0
+            is_running = _pipeline_running or bool(paper_worker_status.get("running")) or recent_processing_count > 0
+        if is_running:
+            pipeline_state = "running"
+        elif str(paper_worker_status.get("status") or "").startswith("disabled_"):
+            pipeline_state = "paused_scope_required"
+        elif stale_processing_count:
+            pipeline_state = "stalled"
+        else:
+            pipeline_state = "idle"
         stats = _stats_cache.get() or {}
         return jsonify({
             "papers": rows,
             "pipeline_running": is_running,
+            "pipeline_state": pipeline_state,
+            "stale_processing_count": stale_processing_count,
             "paper_worker": paper_worker_status,
             "data_health": {
                 "status": "ok",

@@ -11,7 +11,7 @@
          render-blocking and unreachable/slow from some networks. -->
     <script defer src="/static/vendor/d3/d3.v7.min.js"></script>
     <script defer src="/static/vendor/marked/marked.min.js"></script>
-    <script defer src="/static/js/i18n.js?v=20260803-merge1"></script>
+    <script defer src="/static/js/i18n.js?v=20260817-public1"></script>
     <script>
         window.MathJax = {
             tex: {
@@ -151,6 +151,7 @@
                             </div>
                             <div class="stat-number" id="statExperiments">0</div>
                             <div class="stat-label" data-i18n="stat.experimentRuns">Experiment Runs</div>
+                            <div class="stat-subtext" id="statExperimentsSub"></div>
                         </div>
                         <div class="stat-card" title="Conclusions that passed the full evidence ladder (sanity, benchmark, audit) and received a recorded verdict - supported, refuted, or inconclusive. The only card that counts scientific output; zero means no claim has survived full adjudication yet.">
                             <div class="stat-icon stat-icon-green">
@@ -198,6 +199,18 @@
                         <p class="overview-details-note" data-i18n="overview.portfolioNote">Aggregate counts and in-progress work are available here when you need context.</p>
                     <!-- Stat cards -->
                     <div class="stat-grid" id="overviewStats">
+                        <div class="stat-card" title="All paper records currently held in the research corpus">
+                            <div class="stat-number" id="statCorpusPapers">0</div>
+                            <div class="stat-label" data-i18n="stat.corpusPapers">Corpus Papers</div>
+                        </div>
+                        <div class="stat-card" title="Papers admitted to the corpus but not yet through the complete reasoning pipeline">
+                            <div class="stat-number" id="statPendingPapers">0</div>
+                            <div class="stat-label" data-i18n="stat.pendingPapers">Awaiting Analysis</div>
+                        </div>
+                        <div class="stat-card" title="Papers whose latest processing attempt ended in error">
+                            <div class="stat-number" id="statErrorPapers">0</div>
+                            <div class="stat-label" data-i18n="stat.errorPapers">Processing Errors</div>
+                        </div>
                         <div class="stat-card">
                             <div class="stat-icon stat-icon-cyan">
                                 <svg width="22" height="22" viewBox="0 0 20 20" fill="none"><path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
@@ -225,6 +238,14 @@
                             </div>
                             <div class="stat-number" id="statInsights">0</div>
                             <div class="stat-label" data-i18n="stat.insights">Insights</div>
+                        </div>
+                        <div class="stat-card" title="Estimated graph entity count; prefixed with ~ because PostgreSQL catalog estimates are used">
+                            <div class="stat-number" id="statGraphEntities">0</div>
+                            <div class="stat-label" data-i18n="stat.graphEntities">Graph Entities</div>
+                        </div>
+                        <div class="stat-card" title="Estimated graph relation count; prefixed with ~ because PostgreSQL catalog estimates are used">
+                            <div class="stat-number" id="statGraphRelations">0</div>
+                            <div class="stat-label" data-i18n="stat.graphRelations">Graph Relations</div>
                         </div>
                         <div class="stat-card" title="LLM tokens metered against research agendas (kept separate from analysis tokens; the two ledgers are not summed)">
                             <div class="stat-icon stat-icon-cyan">
@@ -447,6 +468,6 @@
     <!-- Tooltip (shared) -->
     <div class="tooltip" id="tooltip"></div>
 
-    <script src="/static/js/app.js?v=20260803-merge1"></script>
+    <script src="/static/js/app.js?v=20260817-public1"></script>
 </body>
 </html>
