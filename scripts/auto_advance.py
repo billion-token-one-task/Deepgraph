@@ -151,6 +151,45 @@ def _next_discovery_agenda(agenda_ids: list[int], state: dict) -> int | None:
     return selected
 
 
+_AUTHORITY_KEY_PREFIX = "auto-advance-v1"
+
+
+def _role_default(role: str, suffix: str) -> str:
+    """Resolve one field of a deployed LLM role route.
+
+    config.LLM_ROLE_ROUTES stores these as ``env:NAME`` references, so the
+    deployed identity of a role lives in exactly one place. Reading it here
+    keeps this script from carrying a second, silently stale copy.
+    """
+    import os
+
+    return str(os.environ.get(f"DEEPGRAPH_LLM_{role}{suffix}", "") or "").strip()
+
+
+def _burned_authority_serial(agenda_id: int, problem_id: int) -> int:
+    """Highest serial already spent on a frontier authority for this problem.
+
+    The authorities table is the record of which idempotency keys exist; a
+    counter kept only in the state file is a second answer to the same question
+    and can be lower, in which case issue() replays a revoked authority instead
+    of minting a new one.
+    """
+    prefix = f"{_AUTHORITY_KEY_PREFIX}:agenda{int(agenda_id)}:problem{int(problem_id)}:t"
+    highest = 0
+    for row in _rows(
+        "SELECT idempotency_key FROM frontier_evaluation_authorities"
+        " WHERE agenda_id=? AND research_problem_id=?",
+        (int(agenda_id), int(problem_id)),
+    ):
+        key = str(row.get("idempotency_key") or "")
+        if not key.startswith(prefix):
+            continue
+        suffix = key[len(prefix):]
+        if suffix.isdigit():
+            highest = max(highest, int(suffix))
+    return highest
+
+
 def _load_state(path: Path) -> dict:
     if path.exists():
         state = json.loads(path.read_text(encoding="utf-8"))
@@ -405,6 +444,14 @@ def ensure_frontier_packet(
     # Authority idempotency keys are burned on failure, so key uniqueness needs
     # its own monotonic counter - it must keep advancing even on attempts that
     # deliberately do not consume the per-problem ration.
+    #
+    # That counter used to live only in this state file, which made it a second
+    # source of truth about which keys exist. When the two disagreed the
+    # advancer reissued a burned key and got the old row back: on 2026-08-17
+    # every agenda failed with authority_expired,authority_revoked against
+    # authorities revoked on 2026-08-10. The database already knows which keys
+    # are spent, so the serial is now read from there and the file only caches
+    # it.
     issues = state.setdefault("frontier_issues", {})
     considered = 0
     for problem in problems:
@@ -420,7 +467,10 @@ def ensure_frontier_packet(
                         attempted=FRONTIER_ATTEMPTS_PER_PASS)
             return None
         attempts[akey] = tries + 1
-        serial = int(issues.get(akey, 0)) + 1
+        serial = max(
+            int(issues.get(akey, 0)),
+            _burned_authority_serial(agenda_id, int(problem["id"])),
+        ) + 1
         issues[akey] = serial
         # A failed authority is settled+revoked and its idempotency key is
         # burned forever, so every attempt needs a fresh key.
@@ -1029,11 +1079,16 @@ def main() -> int:
     # Contract max is 20000; cycle-1's real evaluator consumed 13717 and a
     # 15000 cap was exceeded in practice, charging the agenda for nothing.
     parser.add_argument("--authority-token-cap", type=int, default=20000)
-    parser.add_argument("--evaluator-provider", default="sora2_claude")
-    parser.add_argument("--evaluator-model", default="claude-opus-4-6-thinking")
-    parser.add_argument("--evaluator-family", default="claude")
-    parser.add_argument("--proposer-provider", default="sora2_gemini")
-    parser.add_argument("--proposer-family", default="gemini")
+    # Defaults follow the deployed role routes rather than a second hard-coded
+    # copy. The old defaults named sora2_claude/claude-opus-4-6-thinking, a
+    # provider no longer declared anywhere; every frontier bootstrap on
+    # 2026-08-17 failed with "frontier evaluator route is unavailable" while the
+    # configured evaluator was healthy. A role's identity has one home.
+    parser.add_argument("--evaluator-provider", default=_role_default("EVALUATOR", ""))
+    parser.add_argument("--evaluator-model", default=_role_default("EVALUATOR", "_MODEL"))
+    parser.add_argument("--evaluator-family", default=_role_default("EVALUATOR", "_FAMILY"))
+    parser.add_argument("--proposer-provider", default=_role_default("PRIMARY", ""))
+    parser.add_argument("--proposer-family", default=_role_default("PRIMARY", "_FAMILY"))
     args = parser.parse_args()
     args.agenda = args.agenda or active_agenda_ids()
 
