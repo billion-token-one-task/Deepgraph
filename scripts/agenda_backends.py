@@ -32,6 +32,7 @@ def main() -> int:
     budget.add_argument("--agenda", type=int, required=True)
     budget.add_argument("--tokens", type=int, default=None)
     budget.add_argument("--gpu-hours", type=float, default=None)
+    budget.add_argument("--max-concurrency", type=int, default=None)
     args = parser.parse_args()
 
     if args.cmd == "show":
@@ -47,20 +48,17 @@ def main() -> int:
         return 0
 
     if args.cmd == "budget":
-        before = dict(db.fetchone(
-            "SELECT token_budget, gpu_hours_budget FROM research_agendas WHERE id=?",
-            (args.agenda,),
-        ) or {})
+        q = ("SELECT token_budget, gpu_hours_budget, max_concurrency"
+             " FROM research_agendas WHERE id=?")
+        before = dict(db.fetchone(q, (args.agenda,)) or {})
         print(f"agenda {args.agenda} before: {before}")
         AgendaRepository().set_budgets(
             args.agenda,
             token_budget=args.tokens,
             gpu_hours_budget=args.gpu_hours,
+            max_concurrency=args.max_concurrency,
         )
-        after = dict(db.fetchone(
-            "SELECT token_budget, gpu_hours_budget FROM research_agendas WHERE id=?",
-            (args.agenda,),
-        ) or {})
+        after = dict(db.fetchone(q, (args.agenda,)) or {})
         print(f"agenda {args.agenda} after:  {after}")
         return 0
 

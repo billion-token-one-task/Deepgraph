@@ -158,6 +158,7 @@ class AgendaRepository:
         *,
         token_budget: int | None = None,
         gpu_hours_budget: float | None = None,
+        max_concurrency: int | None = None,
     ) -> None:
         """Operator surface for agenda resource ceilings.
 
@@ -192,6 +193,11 @@ class AgendaRepository:
                 )
             updates.append("gpu_hours_budget=?")
             params.append(float(gpu_hours_budget))
+        if max_concurrency is not None:
+            if int(max_concurrency) < 1:
+                raise ValueError("max_concurrency must be >= 1")
+            updates.append("max_concurrency=?")
+            params.append(int(max_concurrency))
         if not updates:
             return
         params.append(int(agenda_id))
