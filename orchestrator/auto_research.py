@@ -468,6 +468,13 @@ def _repair_harness_job_from_task_plan(row: dict) -> dict | None:
     plan["generated_runner_supported"] = True
     plan["real_benchmark_required"] = True
     plan["benchmark_harness_deferred"] = bool(deferred)
+    # The bootstrap-probe authorization must exist BEFORE
+    # _ensure_real_benchmark_plan reads it. It used to be stamped only by
+    # _reset_review_repair_history_after_harness_recovery on the way out, so
+    # any plan with an unresolved benchmark design was refused first and the
+    # recovery this function exists for could never fire (job 3 / idea 131,
+    # 2026-08-17). Manuscript evidence stays blocked either way.
+    plan["harness_recovery_fresh_forge"] = True
     if deferred:
         plan["deferred_benchmark_targets"] = [
             t.get("name") or t.get("hf_dataset") or t.get("dataset")
