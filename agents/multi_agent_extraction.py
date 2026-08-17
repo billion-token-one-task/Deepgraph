@@ -196,14 +196,32 @@ Rules:
 - Keep facet_name short and canonical, e.g. "RGB output decoding" or "low-ratio task-data mixture"."""
 
 
-def _paper_user_prompt(paper_id: str, title: str, taxonomy_hint: str, compact_text: str) -> str:
-    return f"""Paper ID: {paper_id}
-Title: {title}
+def _paper_user_prompt(
+    paper_id: str,
+    title: str,
+    taxonomy_hint: str,
+    compact_text: str,
+    *,
+    include_taxonomy: bool = True,
+) -> str:
+    """Build the shared paper prompt.
 
-{taxonomy_hint}
+    Only the taxonomy reader classifies, so only it is charged for the taxonomy
+    listing.  The other roles used to receive the same multi-hundred-thousand
+    character list they never referenced, once each.
+
+    The taxonomy leads the prompt when present: it is identical for every paper
+    in a branch, so keeping it in front of the per-paper text lets prompt
+    caching reuse it instead of re-sending it per paper.
+    """
+    paper_block = f"""Paper ID: {paper_id}
+Title: {title}
 
 Full text:
 {compact_text}"""
+    if include_taxonomy and taxonomy_hint:
+        return f"{taxonomy_hint}\n\n{paper_block}"
+    return paper_block
 
 
 def _list(value: Any) -> list:
@@ -353,18 +371,26 @@ def extract_paper_multi_agent(
     llm_scope: Mapping[str, Any] | None = None,
 ) -> tuple[dict, int]:
     """Run role-specialized extraction and merge into legacy schema."""
-    user_prompt = _paper_user_prompt(paper_id, title, taxonomy_hint, compact_text)
+    # Only the taxonomy reader is told to classify into leaf nodes, so it is the
+    # only role that needs the leaf listing in its prompt.
     roles = [
-        ("taxonomy_overview", TAXONOMY_OVERVIEW_SYSTEM),
-        ("empirical_results", EMPIRICAL_RESULTS_SYSTEM),
-        ("claims_methods", CLAIMS_METHODS_SYSTEM),
-        ("graph_context", GRAPH_CONTEXT_SYSTEM),
-        ("research_facets", RESEARCH_FACETS_SYSTEM),
+        ("taxonomy_overview", TAXONOMY_OVERVIEW_SYSTEM, True),
+        ("empirical_results", EMPIRICAL_RESULTS_SYSTEM, False),
+        ("claims_methods", CLAIMS_METHODS_SYSTEM, False),
+        ("graph_context", GRAPH_CONTEXT_SYSTEM, False),
+        ("research_facets", RESEARCH_FACETS_SYSTEM, False),
     ]
     outputs: dict[str, dict] = {}
     total_tokens = 0
     errors: dict[str, str] = {}
-    for role_name, system_prompt in roles:
+    for role_name, system_prompt, needs_taxonomy in roles:
+        user_prompt = _paper_user_prompt(
+            paper_id,
+            title,
+            taxonomy_hint,
+            compact_text,
+            include_taxonomy=needs_taxonomy,
+        )
         try:
             payload, tokens, _route = proposer_json(
                 system_prompt,
