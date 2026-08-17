@@ -28,14 +28,40 @@ def main() -> int:
     setter.add_argument("--agenda", type=int, required=True)
     setter.add_argument("--backends", required=True,
                         help="comma-separated, e.g. cpu,llm,colab_gpu")
+    budget = sub.add_parser("budget")
+    budget.add_argument("--agenda", type=int, required=True)
+    budget.add_argument("--tokens", type=int, default=None)
+    budget.add_argument("--gpu-hours", type=float, default=None)
     args = parser.parse_args()
 
     if args.cmd == "show":
         for row in db.fetchall(
-            "SELECT id, status, backend_allowlist_json FROM research_agendas ORDER BY id"
+            "SELECT id, status, backend_allowlist_json, token_budget,"
+            " token_spent, token_reserved, gpu_hours_budget, gpu_hours_spent"
+            " FROM research_agendas ORDER BY id"
         ):
             row = dict(row)
-            print(row["id"], row["status"], row["backend_allowlist_json"])
+            print(row["id"], row["status"], row["backend_allowlist_json"],
+                  "tok", row["token_budget"], "spent", row["token_spent"],
+                  "resv", row["token_reserved"], "gpuh", row["gpu_hours_budget"])
+        return 0
+
+    if args.cmd == "budget":
+        before = dict(db.fetchone(
+            "SELECT token_budget, gpu_hours_budget FROM research_agendas WHERE id=?",
+            (args.agenda,),
+        ) or {})
+        print(f"agenda {args.agenda} before: {before}")
+        AgendaRepository().set_budgets(
+            args.agenda,
+            token_budget=args.tokens,
+            gpu_hours_budget=args.gpu_hours,
+        )
+        after = dict(db.fetchone(
+            "SELECT token_budget, gpu_hours_budget FROM research_agendas WHERE id=?",
+            (args.agenda,),
+        ) or {})
+        print(f"agenda {args.agenda} after:  {after}")
         return 0
 
     before = db.fetchone(

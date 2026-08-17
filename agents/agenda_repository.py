@@ -152,6 +152,56 @@ class AgendaRepository:
             raise AgendaNotFoundError(agenda_id)
         db.commit()
 
+    def set_budgets(
+        self,
+        agenda_id: int,
+        *,
+        token_budget: int | None = None,
+        gpu_hours_budget: float | None = None,
+    ) -> None:
+        """Operator surface for agenda resource ceilings.
+
+        Raising a ceiling authorises future grants; it never touches spent or
+        reserved accounting. A ceiling below what is already spent+reserved is
+        refused -- that would misstate the ledger, not tighten it.
+        """
+        row = db.fetchone(
+            "SELECT token_spent, token_reserved, gpu_hours_spent,"
+            " gpu_hours_reserved FROM research_agendas WHERE id=?",
+            (int(agenda_id),),
+        )
+        if not row:
+            raise AgendaNotFoundError(agenda_id)
+        row = dict(row)
+        updates, params = [], []
+        if token_budget is not None:
+            floor = int(row.get("token_spent") or 0) + int(row.get("token_reserved") or 0)
+            if int(token_budget) < floor:
+                raise ValueError(
+                    f"token_budget {token_budget} below spent+reserved {floor}"
+                )
+            updates.append("token_budget=?")
+            params.append(int(token_budget))
+        if gpu_hours_budget is not None:
+            floor_h = float(row.get("gpu_hours_spent") or 0.0) + float(
+                row.get("gpu_hours_reserved") or 0.0
+            )
+            if float(gpu_hours_budget) < floor_h:
+                raise ValueError(
+                    f"gpu_hours_budget {gpu_hours_budget} below spent+reserved {floor_h}"
+                )
+            updates.append("gpu_hours_budget=?")
+            params.append(float(gpu_hours_budget))
+        if not updates:
+            return
+        params.append(int(agenda_id))
+        db.execute(
+            "UPDATE research_agendas SET " + ", ".join(updates)
+            + ", updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            tuple(params),
+        )
+        db.commit()
+
     def set_status(self, agenda_id: int, status: str) -> None:
         cur = db.execute(
             """

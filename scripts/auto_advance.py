@@ -87,9 +87,13 @@ RECYCLE_EPOCH = "evaluator-route-and-pvalue-repair-2026-08-17"
 
 # A preflight whose blockers cannot heal on their own (missing requirements,
 # unresolvable declared repos) is retried this many times before the candidate
-# is retired and its problem returned to the pool. backend_unavailable is
-# exempt: hardware appearing is exactly what re-running preflight is for.
+# is retired and its problem returned to the pool. backend_unavailable gets a
+# longer leash -- hardware appearing is what re-running preflight is for --
+# but not an infinite one: idea 129 (an 8B model declared before the designer
+# knew the fleet) held its research problem hostage while a redesign would
+# have produced a candidate that fits the live GPU today.
 MAX_PREFLIGHT_RETRIES = 3
+MAX_PREFLIGHT_RETRIES_HARDWARE = 10
 
 # Frontier rationing. The ration per problem is unchanged; what changes is that
 # the pool no longer stops at the top 3, so spending a problem's ration retires
@@ -1164,7 +1168,11 @@ def retry_deferred_preflights(agenda_id: int, state: dict, journal: Journal, arg
             # heal by asking the same question again. Retire those so the
             # research problem returns to the pool for a fresh design --
             # ideas 123/124 blocked agenda 7's whole pool on 2026-08-17.
-            retriable_forever = set(preflight.reason_codes) <= {"backend_unavailable"}
+            hardware_wait = set(preflight.reason_codes) <= {"backend_unavailable"}
+            budget = (
+                MAX_PREFLIGHT_RETRIES_HARDWARE if hardware_wait
+                else MAX_PREFLIGHT_RETRIES
+            )
             note = str(row.get("last_note") or "")
             used = 0
             if note.startswith("preflight retry "):
@@ -1172,9 +1180,7 @@ def retry_deferred_preflights(agenda_id: int, state: dict, journal: Journal, arg
                     used = int(note.split(" ")[2].split("/")[0])
                 except (IndexError, ValueError):
                     used = 0
-            if preflight.status == "failed" or (
-                not retriable_forever and used + 1 >= MAX_PREFLIGHT_RETRIES
-            ):
+            if preflight.status == "failed" or used + 1 >= budget:
                 _upsert_job(
                     idea_id,
                     status="failed",
@@ -1217,11 +1223,7 @@ def retry_deferred_preflights(agenda_id: int, state: dict, journal: Journal, arg
                     stage="capability_preflight_deferred",
                     assigned_worker=None,
                     last_error="preflight:" + codes,
-                    last_note=(
-                        f"preflight retry {used + 1}/{MAX_PREFLIGHT_RETRIES}: {codes}"
-                        if not retriable_forever
-                        else f"preflight waiting on hardware: {codes}"
-                    ),
+                    last_note=f"preflight retry {used + 1}/{budget}: {codes}",
                 )
             continue
         agenda_backends = json.loads(dict(db.fetchone(
