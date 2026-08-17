@@ -70,7 +70,10 @@ GENERATIVE_QA_MIN_SAMPLE_CAP = 200
 # GSM8K generations in the M0 probe. Metric selection is measurement policy,
 # not authorization, so naming a dataset here follows the same precedent as
 # default_dataset_configs below.
-NUMERIC_ANSWER_DATASETS = frozenset({"openai/gsm8k"})
+# Hub IDs resolve with and without the org prefix; idea 131 declared bare
+# "gsm8k", slipped past the org-prefixed entry, and nearly ran string
+# equality against chain-of-thought output on a pilot grant.
+NUMERIC_ANSWER_DATASETS = frozenset({"openai/gsm8k", "gsm8k"})
 
 
 # Plan-authored field mappings name their roles freely ("input",
