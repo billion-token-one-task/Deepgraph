@@ -33,7 +33,20 @@ def main() -> int:
     budget.add_argument("--tokens", type=int, default=None)
     budget.add_argument("--gpu-hours", type=float, default=None)
     budget.add_argument("--max-concurrency", type=int, default=None)
+    expire = sub.add_parser("expire-grant")
+    expire.add_argument("--agenda", type=int, required=True)
+    expire.add_argument("--grant", type=int, required=True)
+    expire.add_argument("--reason", required=True)
     args = parser.parse_args()
+
+    if args.cmd == "expire-grant":
+        from meta_harness.repository import MetaHarnessRepository
+
+        done = MetaHarnessRepository().expire_grant_now(
+            args.grant, agenda_id=args.agenda, reason=args.reason
+        )
+        print(f"grant {args.grant}: {'expired+reconciled' if done else 'not eligible (must be active proposal-stage)'}")
+        return 0 if done else 1
 
     if args.cmd == "show":
         for row in db.fetchall(

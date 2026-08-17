@@ -1261,6 +1261,39 @@ class MetaHarnessRepository:
             db.rollback()
             raise
 
+    def expire_grant_now(self, grant_id: int, *, agenda_id: int, reason: str) -> bool:
+        """Operator action: end an active proposal grant's TTL immediately.
+
+        Identical semantics to natural expiry -- the remaining reservation is
+        released, settled spend stays settled, and the candidate parks at
+        resource_grant_expired for the standard requeue. Exists because an
+        attempts- or cap-exhausted proposal grant otherwise pins its candidate
+        and the agenda's concurrency slot for the rest of a 4-hour TTL
+        (grants 62/67/68, 2026-08-17). Deliberately narrow: proposal stage
+        only; pilot and later stages settle through the outcome finalizer.
+        """
+        if not str(reason or "").strip():
+            raise MetaHarnessPersistenceError("a reason is required to end a TTL early")
+        try:
+            cur = db.execute(
+                """
+                UPDATE resource_grants
+                SET expires_at=CURRENT_TIMESTAMP,
+                    grant_reason=grant_reason || ?
+                WHERE id=? AND agenda_id=? AND status='active' AND stage='proposal'
+                """,
+                (f";operator_expired:{reason[:200]}", int(grant_id), int(agenda_id)),
+            )
+            if int(getattr(cur, "rowcount", 0) or 0) != 1:
+                db.rollback()
+                return False
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        self.reconcile_expired_grants(agenda_id=int(agenda_id))
+        return True
+
     def reconcile_expired_grants(self, *, agenda_id: int | None = None) -> int:
         """Release expired reservations after restart without completing work.
 
