@@ -321,8 +321,11 @@ class ProblemFirstTests(TempDbTestCase):
             "hidden_variable_bridges": [],
             "claim_method_gaps": [],
         }
-        llm_outputs = [
-            (
+        # The invention call is text-first (raw JSON string) since the
+        # malformed-response dump landed; the design call still returns
+        # parsed JSON.
+        invention_output = (
+            json.dumps(
                 {
                     "method": {
                         "name": "ProtocolShield",
@@ -335,10 +338,12 @@ class ProblemFirstTests(TempDbTestCase):
                         "mechanism_repair": "Decouples benchmark protocol from the learned objective.",
                         "falsification_hook": "No gain under changed protocol settings.",
                     }
-                },
-                123,
-                {"provider": "p", "model": "m"},
+                }
             ),
+            123,
+            {"provider": "p", "model": "m"},
+        )
+        llm_outputs = [
             (
                 {
                     "paper_title": "ProtocolShield: Auditing Protocol-Sensitive Benchmarks",
@@ -359,6 +364,10 @@ class ProblemFirstTests(TempDbTestCase):
         with (
             mock.patch("agents.paper_idea_agent.get_tier2_signals", return_value=signals),
             mock.patch("agents.paper_idea_agent.select_problem_first_candidates", return_value=[problem]),
+            mock.patch(
+                "agents.paper_idea_agent.call_llm_for_role",
+                side_effect=[invention_output],
+            ),
             mock.patch(
                 "agents.paper_idea_agent.call_llm_json_for_role",
                 side_effect=llm_outputs,
@@ -389,7 +398,7 @@ class ProblemFirstTests(TempDbTestCase):
         self.assertEqual(ideas[0]["research_problem_id"], 7)
         self.assertEqual(ideas[0]["proposal_candidate_id"], 71)
         self.assertEqual(ideas[0]["resource_grant_id"], 91)
-        self.assertEqual(call_llm_json.call_count, 2)
+        self.assertEqual(call_llm_json.call_count, 1)
         self.assertIn("source_signal_refs", ideas[0])
 
 

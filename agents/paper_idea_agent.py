@@ -10,7 +10,9 @@ The bar: a senior researcher reads it and says "this is a real paper, let me imp
 """
 import json
 import re
+import time
 from collections import Counter
+from pathlib import Path
 from dataclasses import asdict
 from difflib import SequenceMatcher
 from agents.compute_profile import detect_compute_profile
@@ -23,10 +25,12 @@ from agents.idea_taste import (
 )
 from agents.insight_validation import get_evosci_input_issue
 from agents.llm_client import (
+    call_llm_for_role,
     call_llm_json_for_role,
     configured_role_prompt_version,
     is_llm_auth_error,
     is_llm_provider_unavailable_error,
+    parse_llm_json_text,
 )
 from agents.problem_first import (
     discover_research_problems,
@@ -1289,7 +1293,10 @@ def discover_paper_ideas(
         method_prompt = _build_method_prompt(problem, solution_signals=solution_signals)
         method_route: dict = {}
         try:
-            result2, tokens2, method_route = call_llm_json_for_role(
+            # Text-first so a malformed response can be dumped verbatim: the
+            # invention call failed 8+ times on 2026-08-17 with only a two-key
+            # fragment surviving the parse, and the raw shape was invisible.
+            raw2, tokens2, method_route = call_llm_for_role(
                 METHOD_INVENTION_SYSTEM,
                 method_prompt,
                 agenda_id=agenda_id,
@@ -1311,17 +1318,23 @@ def discover_paper_ideas(
             print(f"[PAPER_IDEA] Method invention failed for '{title[:50]}': {e}", flush=True)
             continue
 
+        result2, parse_how = parse_llm_json_text(raw2)
         method = _extract_method_payload(result2)
         if not method.get("name"):
-            # Diagnostic, not decoration: this branch fired four times on
-            # 2026-08-17 and the parsed shape was invisible every time.
             shape = (
                 sorted(result2.keys()) if isinstance(result2, dict)
                 else type(result2).__name__
             )
+            dump_dir = Path.home() / "deepgraph-reports" / "malformed_llm"
+            try:
+                dump_dir.mkdir(parents=True, exist_ok=True)
+                dump_path = dump_dir / f"method_invention_{proposal_candidate_id}_{int(time.time())}.txt"
+                dump_path.write_text(raw2, encoding="utf-8")
+            except OSError:
+                dump_path = None
             print(
                 f"[PAPER_IDEA] No method produced for '{title[:50]}'"
-                f" (parsed shape: {shape})",
+                f" (parsed via {parse_how}, shape: {shape}, raw dumped: {dump_path})",
                 flush=True,
             )
             continue
