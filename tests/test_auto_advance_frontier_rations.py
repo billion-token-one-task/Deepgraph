@@ -84,5 +84,102 @@ class FrontierRationEpochTests(unittest.TestCase):
         self.assertRegex(auto_advance.RECYCLE_EPOCH, r"\d{4}-\d{2}-\d{2}$")
 
 
+
+class AuthoritySerialTests(unittest.TestCase):
+    """The database, not the state file, decides which keys are already spent.
+
+    On 2026-08-17 the file counter restarted at 0 while the authorities table
+    still held t1..t4 for the same problems, revoked since 2026-08-10. issue()
+    replayed the old row and every agenda failed with
+    authority_expired,authority_revoked.
+    """
+
+    def test_the_serial_is_read_from_the_burned_keys(self):
+        from unittest import mock
+
+        rows = [
+            {"idempotency_key": "auto-advance-v1:agenda1:problem37:t1"},
+            {"idempotency_key": "auto-advance-v1:agenda1:problem37:t4"},
+            {"idempotency_key": "auto-advance-v1:agenda1:problem37:t2"},
+        ]
+        with mock.patch.object(auto_advance, "_rows", return_value=rows):
+            self.assertEqual(auto_advance._burned_authority_serial(1, 37), 4)
+
+    def test_keys_from_another_issuer_are_ignored(self):
+        from unittest import mock
+
+        rows = [
+            {"idempotency_key": "some-other-tool:agenda1:problem37:t9"},
+            {"idempotency_key": "auto-advance-v1:agenda1:problem37:t2"},
+        ]
+        with mock.patch.object(auto_advance, "_rows", return_value=rows):
+            self.assertEqual(auto_advance._burned_authority_serial(1, 37), 2)
+
+    def test_a_malformed_suffix_does_not_crash_the_pass(self):
+        from unittest import mock
+
+        rows = [{"idempotency_key": "auto-advance-v1:agenda1:problem37:tXX"}]
+        with mock.patch.object(auto_advance, "_rows", return_value=rows):
+            self.assertEqual(auto_advance._burned_authority_serial(1, 37), 0)
+
+    def test_no_prior_authority_starts_at_zero(self):
+        from unittest import mock
+
+        with mock.patch.object(auto_advance, "_rows", return_value=[]):
+            self.assertEqual(auto_advance._burned_authority_serial(1, 37), 0)
+
+
+
+class RoleDefaultTests(unittest.TestCase):
+    """A role's deployed identity has one home: the role-route env refs.
+
+    The advancer used to hard-code sora2_claude/claude-opus-4-6-thinking. That
+    provider stopped being declared, and every frontier bootstrap on 2026-08-17
+    failed with "frontier evaluator route is unavailable" even though the
+    configured evaluator was answering normally.
+    """
+
+    def test_defaults_follow_the_deployed_route(self):
+        import os
+        from unittest import mock
+
+        env = {
+            "DEEPGRAPH_LLM_EVALUATOR": "novita_deepseek",
+            "DEEPGRAPH_LLM_EVALUATOR_MODEL": "deepseek/deepseek-v4-flash-0731",
+            "DEEPGRAPH_LLM_EVALUATOR_FAMILY": "deepseek",
+            "DEEPGRAPH_LLM_PRIMARY": "sora2_gemini",
+            "DEEPGRAPH_LLM_PRIMARY_FAMILY": "gemini-flash",
+        }
+        with mock.patch.dict(os.environ, env, clear=False):
+            self.assertEqual(auto_advance._role_default("EVALUATOR", ""), "novita_deepseek")
+            self.assertEqual(
+                auto_advance._role_default("EVALUATOR", "_MODEL"),
+                "deepseek/deepseek-v4-flash-0731",
+            )
+            self.assertEqual(auto_advance._role_default("PRIMARY", "_FAMILY"), "gemini-flash")
+
+    def test_evaluator_and_proposer_families_differ_in_the_deployed_config(self):
+        """The bootstrap refuses an evaluator that shares the proposer's family."""
+        import os
+        from unittest import mock
+
+        env = {
+            "DEEPGRAPH_LLM_EVALUATOR_FAMILY": "deepseek",
+            "DEEPGRAPH_LLM_PRIMARY_FAMILY": "gemini-flash",
+        }
+        with mock.patch.dict(os.environ, env, clear=False):
+            self.assertNotEqual(
+                auto_advance._role_default("EVALUATOR", "_FAMILY"),
+                auto_advance._role_default("PRIMARY", "_FAMILY"),
+            )
+
+    def test_an_unset_role_yields_empty_not_a_stale_name(self):
+        import os
+        from unittest import mock
+
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(auto_advance._role_default("EVALUATOR", ""), "")
+
+
 if __name__ == "__main__":
     unittest.main()
