@@ -19,6 +19,7 @@ from meta_harness.runner_capability import ExperimentRequirements
 from meta_harness.runner_contract import (
     ResearchRunner,
     RunnerContractError,
+    paired_permutation_test,
     recompute_metric,
     validate_final_results,
 )
@@ -91,6 +92,7 @@ class GenericTransformersRunner(ResearchRunner):
         self.torch = None
         self.predictions: list[dict[str, Any]] = []
         self.metrics: dict[str, float] = {}
+        self.significance: dict[str, Any] = {}
         self.started_at = time.time()
 
     def prepare(self) -> None:
@@ -323,6 +325,16 @@ class GenericTransformersRunner(ResearchRunner):
             self.BASELINE_METHOD: recompute_metric(baseline_rows, metric_name),
             self.candidate_method: recompute_metric(candidate_rows, metric_name),
         }
+        # A difference without a significance test cannot become a supported
+        # verdict: decide_evidence blocks on a missing p-value. The arms are
+        # already paired by (seed, sample_index), so the test costs no extra
+        # inference -- only arithmetic over predictions we have already made.
+        self.significance = paired_permutation_test(
+            baseline_rows,
+            candidate_rows,
+            metric_name,
+            seed=int(self.requirements.seeds[0]) if self.requirements.seeds else 0,
+        )
         return self.metrics
 
     def _gpu_environment(self) -> dict[str, Any]:
@@ -340,6 +352,8 @@ class GenericTransformersRunner(ResearchRunner):
     def emit_final_results(self) -> Mapping[str, Any]:
         if not self.metrics:
             raise RunnerContractError("metric_missing")
+        if not self.significance:
+            raise RunnerContractError("p_value_missing", "compute_metrics_not_run")
         raw_path = self.output_dir / "raw_predictions.jsonl"
         raw_path.write_text(
             "".join(
@@ -409,6 +423,7 @@ class GenericTransformersRunner(ResearchRunner):
             "metric_value": candidate,
             "baseline_metric_value": baseline,
             "best_metric_value": candidate,
+            "statistical_tests": dict(self.significance),
             "per_method": {
                 self.BASELINE_METHOD: {
                     self.requirements.metric.name: baseline,

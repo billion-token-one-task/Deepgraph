@@ -255,18 +255,16 @@ def _summary_dataset_count(summary: dict[str, Any]) -> int:
 
 
 def _extract_p_value(summary: dict[str, Any]) -> float | None:
-    sources = []
-    for key in ("bootstrap_ci", "statistical_tests", "significance", "pairwise_tests"):
-        value = summary.get(key)
-        if isinstance(value, dict):
-            sources.append(value)
-    sources.append(summary)
-    for source in sources:
-        for key in ("p_value", "paired_permutation_p", "p", "p_vs_strongest"):
-            parsed = _as_float(source.get(key))
-            if parsed is not None:
-                return parsed
-    return None
+    """Delegate to the runner contract so both ends read the same vocabulary.
+
+    This used to be a second copy of the lookup. The runner contract now refuses
+    a payload that carries no p-value at all, and a gate that accepted a key the
+    contract did not recognise -- or the reverse -- would put the two ends back
+    out of step.
+    """
+    from meta_harness.runner_contract import extract_p_value
+
+    return extract_p_value(summary)
 
 
 def _candidate_and_strongest(summary: dict[str, Any], metric_name: str | None, direction: str) -> tuple[str, float | None, str, float | None, float | None]:

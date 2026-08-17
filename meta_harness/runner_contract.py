@@ -48,6 +48,110 @@ REQUIRED_ARTIFACTS = (
     "model_manifest",
 )
 
+# Where a p-value may live in FINAL_RESULTS, and under which names. This is the
+# single lookup rule: agents/benchmark_audit.py delegates here rather than
+# keeping its own copy, because the evidence gate refuses a positive verdict
+# without a p-value while the runner contract used to demand only a metric. A
+# run could therefore spend its whole budget, produce a clean metric, and only
+# discover at the last gate that `supported` was never reachable.
+P_VALUE_CONTAINERS = ("bootstrap_ci", "statistical_tests", "significance", "pairwise_tests")
+P_VALUE_KEYS = ("p_value", "paired_permutation_p", "p", "p_vs_strongest")
+
+DEFAULT_PERMUTATIONS = 1000
+
+
+def _as_float(value: Any) -> float | None:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def extract_p_value(payload: Mapping[str, Any]) -> float | None:
+    """Find the significance test result a runner reported, if any."""
+    sources: list[Mapping[str, Any]] = []
+    for key in P_VALUE_CONTAINERS:
+        value = payload.get(key)
+        if isinstance(value, Mapping):
+            sources.append(value)
+    sources.append(payload)
+    for source in sources:
+        for key in P_VALUE_KEYS:
+            parsed = _as_float(source.get(key))
+            if parsed is not None:
+                return parsed
+    return None
+
+
+def _pair_key(row: Mapping[str, Any]) -> tuple:
+    return (row.get("seed"), row.get("sample_index"))
+
+
+def paired_permutation_test(
+    baseline_rows: Sequence[Mapping[str, Any]],
+    candidate_rows: Sequence[Mapping[str, Any]],
+    metric_name: str,
+    *,
+    permutations: int = DEFAULT_PERMUTATIONS,
+    seed: int = 0,
+) -> dict[str, Any]:
+    """Two-sided paired permutation test on the metric the run reports.
+
+    The arms are paired on (seed, sample_index), which the runner already
+    stamps on every prediction, so the same example under both methods lines up
+    exactly. Each permutation swaps a random subset of pairs between arms and
+    recomputes the metric from scratch, which keeps the test correct for
+    corpus-level metrics such as macro-F1 that do not decompose per example.
+
+    p is computed with the add-one correction, so an observed difference that no
+    permutation matches reports 1/(permutations+1) rather than an impossible 0.
+    """
+    import random
+
+    if permutations < 1:
+        raise RunnerContractError("permutation_contract_violation", "permutations")
+    baseline_by_key = {_pair_key(row): row for row in baseline_rows}
+    candidate_by_key = {_pair_key(row): row for row in candidate_rows}
+    keys = sorted(
+        baseline_by_key.keys() & candidate_by_key.keys(),
+        key=lambda item: tuple("" if part is None else str(part) for part in item),
+    )
+    if not keys:
+        raise RunnerContractError("permutation_contract_violation", "no_paired_examples")
+
+    paired_baseline = [baseline_by_key[key] for key in keys]
+    paired_candidate = [candidate_by_key[key] for key in keys]
+    observed = recompute_metric(paired_candidate, metric_name) - recompute_metric(
+        paired_baseline, metric_name
+    )
+
+    rng = random.Random(seed)
+    at_least_as_extreme = 0
+    for _ in range(permutations):
+        left: list[Mapping[str, Any]] = []
+        right: list[Mapping[str, Any]] = []
+        for base_row, cand_row in zip(paired_baseline, paired_candidate):
+            if rng.random() < 0.5:
+                left.append(cand_row)
+                right.append(base_row)
+            else:
+                left.append(base_row)
+                right.append(cand_row)
+        difference = recompute_metric(right, metric_name) - recompute_metric(left, metric_name)
+        if abs(difference) >= abs(observed) - 1e-12:
+            at_least_as_extreme += 1
+
+    return {
+        "paired_permutation_p": (at_least_as_extreme + 1) / (permutations + 1),
+        "observed_difference": observed,
+        "n_pairs": len(keys),
+        "permutations": permutations,
+        "seed": seed,
+        "test": "two_sided_paired_permutation",
+        "metric_name": metric_name,
+    }
+
 
 @dataclass(frozen=True)
 class MetricVerification:
@@ -69,7 +173,18 @@ def _finite(value: Any, *, label: str) -> float:
     return number
 
 
-def validate_final_results(payload: Mapping[str, Any]) -> dict[str, Any]:
+def validate_final_results(
+    payload: Mapping[str, Any], *, require_p_value: bool = True
+) -> dict[str, Any]:
+    """Refuse a FINAL_RESULTS payload the evidence gate could never accept.
+
+    ``require_p_value`` defaults to on because the downstream gate is not
+    optional: contracts.scientific_evidence.decide_evidence marks a run
+    ``not_significant`` without a p-value, so ``confirmation_allowed`` is False
+    and a ``supported`` verdict is unreachable no matter how good the metric is.
+    Failing here costs one validation call; failing at the gate costs the whole
+    run's budget first.
+    """
     required_scalars = (
         "task_protocol",
         "dataset_id",
@@ -106,6 +221,17 @@ def validate_final_results(payload: Mapping[str, Any]) -> dict[str, Any]:
         if not isinstance(row, Mapping):
             raise RunnerContractError("metric_missing", method)
         _finite(row.get(metric_name, row.get("metric_value")), label=method)
+    if require_p_value:
+        p_value = extract_p_value(payload)
+        if p_value is None:
+            raise RunnerContractError(
+                "p_value_missing",
+                "expected one of {} at top level or under {}".format(
+                    "/".join(P_VALUE_KEYS), "/".join(P_VALUE_CONTAINERS)
+                ),
+            )
+        if not 0.0 <= p_value <= 1.0:
+            raise RunnerContractError("p_value_invalid", repr(p_value))
     artifacts = payload.get("artifacts")
     if not isinstance(artifacts, Mapping):
         raise RunnerContractError("artifact_contract_violation")

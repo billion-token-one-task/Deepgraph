@@ -57,6 +57,9 @@ class RunnerContractTests(unittest.TestCase):
             "metric_value": 1.0,
             "baseline_metric_value": 0.5,
             "best_metric_value": 1.0,
+            # The contract now refuses a payload with no significance test:
+            # decide_evidence cannot reach a supported verdict without one.
+            "statistical_tests": {"paired_permutation_p": 0.03},
             "label_fallback_used": False,
             "per_method": {
                 "baseline": {"accuracy": 0.5, "metric_value": 0.5},

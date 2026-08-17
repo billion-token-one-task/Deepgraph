@@ -32,6 +32,12 @@ REASON_CODES = {
     "metric_recomputation_mismatch",
     "sample_count_missing",
     "seed_contract_violation",
+    # A run that reports no significance test cannot reach a supported
+    # verdict, so the runner contract refuses it up front rather than
+    # letting it spend a full budget first.
+    "p_value_missing",
+    "p_value_invalid",
+    "permutation_contract_violation",
     "unknown_execution_failure",
 }
 
@@ -48,6 +54,13 @@ RUNNER_CONTRACT_CODES = {
     "metric_recomputation_mismatch",
     "sample_count_missing",
     "seed_contract_violation",
+    # These are code defects in the runner -- it produced predictions but no
+    # statistic -- so they belong on the repair path. Left unregistered they
+    # would degrade to unknown_execution_failure and get a bare defer, the
+    # exact trap the classify_failure comment above documents.
+    "p_value_missing",
+    "p_value_invalid",
+    "permutation_contract_violation",
 }
 
 
