@@ -1229,7 +1229,14 @@ def reconcile_on_startup() -> dict[str, int]:
         terminal_colab_request_ids
     )
     for request_id in terminal_colab_request_ids:
-        settle_colab_request(request_id)
+        try:
+            settle_colab_request(request_id)
+        except Exception as exc:
+            print(
+                f"[COMPUTE] settlement failed for colab request {request_id}: "
+                f"{type(exc).__name__}: {exc}",
+                flush=True,
+            )
     agendas = db.fetchall(
         """
         SELECT DISTINCT agenda_id

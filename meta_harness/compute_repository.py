@@ -542,14 +542,24 @@ class ComputeJobRepository:
                 )
             requested_cap = float(row.get("requested_gpu_hours") or 0)
             grant_cap = float(row.get("max_gpu_hours") or 0)
-            if usage.gpu_hours > requested_cap or usage.gpu_hours > grant_cap:
-                raise ComputeBackendError(
-                    "reported GPU usage exceeds request or ResourceGrant cap"
-                )
+            caps = [c for c in (requested_cap, grant_cap) if c > 0]
+            overrun_hours = max(0.0, usage.gpu_hours - min(caps)) if caps else 0.0
+            # A real spend must be recordable. Refusing to settle an over-cap
+            # measurement left the job permanently unfinalizable -- and this
+            # settlement runs in the web service's startup path, so when
+            # request 8 overshot its 2.0-hour cap by 21 seconds of transport
+            # overhead (2026-08-17) the dashboard crash-looped on it. The
+            # worker's timeout is the enforcement; settlement records the
+            # truth, overrun flagged, exactly what the ledger's
+            # gpu_hours_overrun column exists for.
             failure_reason = (
                 job.failure_reason
                 or f"backend_{job.status}"
             )
+            if overrun_hours > 0:
+                failure_reason = (
+                    f"{failure_reason};gpu_overrun_hours={overrun_hours:.4f}"
+                )
             cursor = db.execute(
                 """
                 UPDATE compute_jobs_v1
@@ -566,6 +576,7 @@ class ComputeJobRepository:
                             "wall_seconds": usage.wall_seconds,
                             "gpu_hours": usage.gpu_hours,
                             "cpu_core_hours": usage.cpu_core_hours,
+                            "gpu_hours_overrun": overrun_hours,
                             "backend_report": usage.backend_report,
                         }
                     ),

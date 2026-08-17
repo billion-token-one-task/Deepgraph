@@ -275,7 +275,17 @@ def run_one() -> dict:
     for pending_request_id in (
         GrantGPUUsageControl().reconcile_terminal_colab_attempts()
     ):
-        settle_colab_request(pending_request_id)
+        # One unsettleable request must not take the whole worker (and, at
+        # startup, the whole web service) down with it: request 8's over-cap
+        # settlement crash-looped the dashboard on 2026-08-17.
+        try:
+            settle_colab_request(pending_request_id)
+        except Exception as exc:
+            print(
+                f"[COLAB] settlement failed for request {pending_request_id}: "
+                f"{type(exc).__name__}: {exc}",
+                flush=True,
+            )
     reconciled_successes = _reconcile_succeeded_runs()
 
     repository = ColabWorkRepository()
