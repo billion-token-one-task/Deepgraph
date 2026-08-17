@@ -8,6 +8,7 @@ the legacy queue no longer owns admission, idempotency, or grant authority.
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -922,7 +923,17 @@ def _submit_experiment_run_on_colab(
             "--candidate-adapter", "candidate_adapter.py",
             "--output-dir", ".",
         ),
-        environment={"PYTHONUNBUFFERED": "1"},
+        environment={
+            "PYTHONUNBUFFERED": "1",
+            # Throughput, not semantics: request 8 (run 160) decoded 1200
+            # generations at batch 8 and ran past its 2-GPU-hour cap; batch 16
+            # fits a <=4B model on the 14.5 GB T4 and halves wall clock. The
+            # runner reads this env; already-materialized bundles pick it up
+            # without a re-forge.
+            "DEEPGRAPH_RUNNER_BATCH_SIZE": os.environ.get(
+                "DEEPGRAPH_RUNNER_BATCH_SIZE", "16"
+            ),
+        },
         artifact_map={name: _RUNNER_ARTIFACT_FILES[name] for name in required},
         artifact_output_dir=str(results_dir),
         timeout_seconds=int(timeout_seconds),

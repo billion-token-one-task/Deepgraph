@@ -225,7 +225,7 @@ class GenericTransformersRunner(ResearchRunner):
             runtime_adjustments.get("generation_batch_size")
             or self.config.get("generation_batch_size")
             or os.environ.get("DEEPGRAPH_RUNNER_BATCH_SIZE")
-            or 8
+            or 16
         )
         pad_id = (
             self.tokenizer.pad_token_id
