@@ -8,14 +8,14 @@ Type=simple
 User=billion-token
 # Immutable release directory.  Rollback changes only this unit back to the
 # protected snapshot; it never edits or replaces that snapshot in place.
-WorkingDirectory=/home/billion-token/releases/deepgraph-public-funnel-20260817
+WorkingDirectory=/home/billion-token/releases/deepgraph-extraction-budget-20260817
 EnvironmentFile=/home/billion-token/Deepgraph/.env
 # Operator-managed secret overrides.  The leading '-' keeps an existing
 # deployment bootable until scripts/configure_llm_runtime.sh is first run.
 EnvironmentFile=-/etc/deepgraph/runtime.env
 Environment=PYTHONUNBUFFERED=1
 Environment=PYTHONDONTWRITEBYTECODE=1
-ExecStart=/home/billion-token/Deepgraph/.venv/bin/python -u /home/billion-token/releases/deepgraph-public-funnel-20260817/main.py
+ExecStart=/home/billion-token/Deepgraph/.venv/bin/python -u /home/billion-token/releases/deepgraph-extraction-budget-20260817/main.py
 Restart=always
 RestartSec=5
 StandardOutput=append:/home/billion-token/Deepgraph/logs/web-systemd.log
