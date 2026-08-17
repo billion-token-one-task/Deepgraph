@@ -9,9 +9,25 @@ from pathlib import Path
 
 from agents.manuscript_pipeline import generate_submission_bundle
 from agents.paperorchestra.figure_orchestra import run_postwriting_api_figure_stage
-from agents.paperorchestra.full_pipeline import _postwriting_api_manifest_is_reusable
 from agents import workspace_layout
 from db import database
+
+# The CRPP-specific manuscript implementation was demoted into the disabled
+# plugins.examples.cggr boundary; agents/paperorchestra/full_pipeline.py is now
+# a fail-closed entry point that no longer carries this helper. Importing the
+# old path aborted collection of this whole file, taking 8 live manuscript
+# tests with it. Gate the two tests that need it behind the same opt-in the
+# runtime uses for that plugin.
+from plugins.examples.cggr.full_pipeline import _postwriting_api_manifest_is_reusable
+
+NONPROD_PLUGINS = os.getenv(
+    "DEEPGRAPH_ENABLE_NONPROD_EXAMPLE_PLUGINS", ""
+).strip().lower() in {"1", "true", "yes"}
+requires_nonprod_plugins = unittest.skipUnless(
+    NONPROD_PLUGINS,
+    "covers demoted plugins.examples.cggr; set "
+    "DEEPGRAPH_ENABLE_NONPROD_EXAMPLE_PLUGINS=1 to run",
+)
 
 
 class ManuscriptBundleTests(unittest.TestCase):
@@ -660,6 +676,7 @@ Candidate & 0.61 & 1.5 \\
         self.assertTrue(result["blockers"])
         self.assertTrue((figures_dir / "postwriting_api_figure_manifest.json").exists())
 
+    @requires_nonprod_plugins
     def test_failed_postwriting_api_figure_manifest_is_not_reused(self):
         figures_dir = self.tmpdir_path / "figures_failed_cache"
         figures_dir.mkdir(parents=True, exist_ok=True)
@@ -687,6 +704,7 @@ Candidate & 0.61 & 1.5 \\
 
         self.assertFalse(_postwriting_api_manifest_is_reusable(manifest, figures_dir))
 
+    @requires_nonprod_plugins
     def test_successful_postwriting_api_figure_manifest_is_reused(self):
         figures_dir = self.tmpdir_path / "figures_success_cache"
         figures_dir.mkdir(parents=True, exist_ok=True)

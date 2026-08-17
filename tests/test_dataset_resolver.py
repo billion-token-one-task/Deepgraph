@@ -1,10 +1,26 @@
+import os
 import sys
 import unittest
 from unittest import mock
 
 from agents import dataset_resolver
 from agents import experiment_forge
-from scripts import run_deepgraph_new_idea_once
+
+# scripts/run_deepgraph_new_idea_once.py was demoted into the disabled
+# plugins.examples.cggr boundary (see agents/paperorchestra/full_pipeline.py).
+# Importing it at module scope used to abort collection of this whole file,
+# taking 9 live dataset_resolver tests down with it. Gate the two tests that
+# need it behind the same opt-in the runtime uses for that plugin.
+from plugins.examples.cggr.scripts import run_deepgraph_new_idea_once
+
+NONPROD_PLUGINS = os.getenv(
+    "DEEPGRAPH_ENABLE_NONPROD_EXAMPLE_PLUGINS", ""
+).strip().lower() in {"1", "true", "yes"}
+requires_nonprod_plugins = unittest.skipUnless(
+    NONPROD_PLUGINS,
+    "covers demoted plugins.examples.cggr; set "
+    "DEEPGRAPH_ENABLE_NONPROD_EXAMPLE_PLUGINS=1 to run",
+)
 
 
 class DatasetResolverTests(unittest.TestCase):
@@ -160,6 +176,7 @@ class DatasetResolverTests(unittest.TestCase):
         self.assertTrue(plan["generated_runner_supported"])
         self.assertEqual(plan["benchmark_targets"][0]["hf_dataset"], "example/spider-text-to-sql")
 
+    @requires_nonprod_plugins
     def test_run_script_resolves_before_execution_blocker(self):
         idea = {
             "title": "Executable QA idea",
@@ -176,6 +193,7 @@ class DatasetResolverTests(unittest.TestCase):
         updated = run_deepgraph_new_idea_once._resolve_idea_datasets(idea)
         self.assertIsNone(run_deepgraph_new_idea_once._execution_blocker(updated))
 
+    @requires_nonprod_plugins
     def test_run_script_stores_unexecutable_recipe_and_routes_to_harness(self):
         idea = {
             "title": "Needs harness",
