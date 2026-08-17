@@ -499,8 +499,10 @@ class ColabWorkRepository:
                      -- out while it waited its turn never became an attempt:
                      -- request 9 sat 2.5h behind a long run and its compute
                      -- job aged into usage_unknown (2026-08-17). No session,
-                     -- no result -- rebind and let it claim.
-                     OR (cwr.status='queued'
+                     -- no result -- rebind and let it claim. Rows the startup
+                     -- sweep already quarantined for exactly that non-event
+                     -- rebind the same way.
+                     OR (cwr.status IN ('queued', 'manual_reconciliation')
                          AND cj.status IN ('usage_unknown', 'submission_unknown',
                                            'timed_out'))
                   )
@@ -523,7 +525,7 @@ class ColabWorkRepository:
                         completed_at=NULL, failure_reason=NULL,
                         updated_at=CURRENT_TIMESTAMP
                     WHERE id=? AND agenda_id=?
-                      AND status IN ('failed', 'queued')
+                      AND status IN ('failed', 'queued', 'manual_reconciliation')
                     """,
                     (int(row["id"]), int(row["agenda_id"])),
                 )
@@ -636,6 +638,12 @@ class ColabWorkRepository:
                   AND cj.idempotency_key=cwr.idempotency_key
                   AND cj.backend_kind='colab_gpu'
                   AND cj.status IN ('submission_unknown', 'usage_unknown')
+                  -- Nothing is uncertain about a queued request that never
+                  -- opened a session and holds no result: it provably never
+                  -- started, and the control-lost recovery rebinds it.
+                  AND NOT (cwr.status='queued'
+                           AND cwr.session_ref IS NULL
+                           AND cwr.result_json IS NULL)
                 """
             )
             db.commit()
