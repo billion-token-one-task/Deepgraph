@@ -1,6 +1,6 @@
 # Web data recovery deployment — 2026-08-17
 
-Release directory: `/home/billion-token/releases/deepgraph-v1-webfix-20260817`
+Release directory: `/home/billion-token/releases/deepgraph-public-funnel-20260817`
 
 The protected source snapshot at `/home/billion-token/Deepgraph` is never
 modified.  Its `.env`, Python environment, logs, and durable workspace remain
