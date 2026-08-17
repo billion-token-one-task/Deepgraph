@@ -78,9 +78,23 @@ api_key_env = "DEEPGRAPH_LLM_SECONDARY_API_KEY"
 rpm = 0
 enabled = true
 
-# Evaluator and reviewer route. A different generation and size class from the
-# proposer so adjudication is not the proposing model grading its own output;
-# same vendor, so the independence this buys is real but partial.
+# Evaluator and reviewer route. A different vendor and different training data
+# from the proposer, so a verdict is not the proposing model grading its own
+# output. Independence is judged on model_family, and this is the only declared
+# route whose family is genuinely unrelated to the proposer's.
+[[llm.providers]]
+name = "novita_deepseek"
+base_url = "https://api.novita.ai/openai"
+model = "deepseek/deepseek-v4-flash-0731"
+model_family = "deepseek"
+protocol = "chat_completions"
+api_key_env = "DEEPGRAPH_LLM_DEEPSEEK_API_KEY"
+rpm = 0
+enabled = true
+
+# Same-vendor fallback for the evaluator and reviewer roles. Kept declared but
+# unreferenced: a different generation and size class from the proposer, so it
+# is better than self-grading and worse than a cross-vendor split.
 [[llm.providers]]
 name = "sora2_gemini_pro"
 base_url = "https://llm.sora2.today/v1"
