@@ -85,6 +85,12 @@ ARTIFACT_REQUIREMENTS = list(REQUIRED_ARTIFACTS)
 # thing standing between a broken candidate and an unbounded retry loop.
 RECYCLE_EPOCH = "evaluator-route-and-pvalue-repair-2026-08-17"
 
+# A preflight whose blockers cannot heal on their own (missing requirements,
+# unresolvable declared repos) is retried this many times before the candidate
+# is retired and its problem returned to the pool. backend_unavailable is
+# exempt: hardware appearing is exactly what re-running preflight is for.
+MAX_PREFLIGHT_RETRIES = 3
+
 # Frontier rationing. The ration per problem is unchanged; what changes is that
 # the pool no longer stops at the top 3, so spending a problem's ration retires
 # that problem instead of the whole agenda. Attempts per pass are capped below
@@ -1096,12 +1102,29 @@ def retry_deferred_preflights(agenda_id: int, state: dict, journal: Journal, arg
     """
     repo = MetaHarnessRepository()
     for row in _rows(
-        "SELECT deep_insight_id FROM auto_research_jobs WHERE agenda_id=?"
-        " AND status='deferred' AND stage='capability_preflight_deferred'"
-        " ORDER BY updated_at ASC",
+        "SELECT arj.deep_insight_id, arj.last_note, di.status AS insight_status"
+        " FROM auto_research_jobs arj"
+        " JOIN deep_insights di ON di.id=arj.deep_insight_id"
+        " WHERE arj.agenda_id=? AND arj.status='deferred'"
+        " AND arj.stage='capability_preflight_deferred'"
+        " ORDER BY arj.updated_at ASC",
         (agenda_id,),
     ):
         idea_id = int(row["deep_insight_id"])
+        if str(row.get("insight_status") or "") in ("archived", "exists"):
+            from orchestrator.auto_research import _upsert_job
+
+            _upsert_job(
+                idea_id,
+                status="failed",
+                stage="proposal_unrealized",
+                assigned_worker=None,
+                last_error=None,
+                last_note="insight archived; deferred preflight job closed with it.",
+            )
+            journal.log("archived_insight_job_closed", agenda_id=agenda_id,
+                        idea_id=idea_id)
+            continue
         if (
             args.spend_limit > 0
             and _guard_spent_delta(state, args) + args.grant_token_cap > args.spend_limit
@@ -1133,6 +1156,73 @@ def retry_deferred_preflights(agenda_id: int, state: dict, journal: Journal, arg
                     selected_backend=preflight.selected_backend,
                     preflight_result_id=preflight.preflight_result_id)
         if not preflight.passed:
+            from orchestrator.auto_research import _upsert_job
+
+            codes = ",".join(preflight.reason_codes)
+            # backend_unavailable heals when hardware appears; a missing
+            # requirements block or an unresolvable declared repo does not
+            # heal by asking the same question again. Retire those so the
+            # research problem returns to the pool for a fresh design --
+            # ideas 123/124 blocked agenda 7's whole pool on 2026-08-17.
+            retriable_forever = set(preflight.reason_codes) <= {"backend_unavailable"}
+            note = str(row.get("last_note") or "")
+            used = 0
+            if note.startswith("preflight retry "):
+                try:
+                    used = int(note.split(" ")[2].split("/")[0])
+                except (IndexError, ValueError):
+                    used = 0
+            if preflight.status == "failed" or (
+                not retriable_forever and used + 1 >= MAX_PREFLIGHT_RETRIES
+            ):
+                _upsert_job(
+                    idea_id,
+                    status="failed",
+                    stage="capability_preflight_blocked",
+                    assigned_worker=None,
+                    last_error="preflight:" + codes,
+                    last_note=(
+                        f"preflight terminal after {used + 1} attempts ({codes}); "
+                        "candidate retired so the problem can be redesigned."
+                    ),
+                )
+                try:
+                    set_outcome(
+                        "deep_insights",
+                        idea_id,
+                        OUTCOME_PROPOSAL_UNREALIZED,
+                        reason=f"capability preflight terminal: {codes}"[:500],
+                        triggered_by=ACTOR,
+                    )
+                    db.execute(
+                        "UPDATE deep_insights SET status='archived',"
+                        " updated_at=CURRENT_TIMESTAMP"
+                        " WHERE id=? AND agenda_id=?"
+                        " AND status IN ('proposal_pending','candidate')",
+                        (idea_id, agenda_id),
+                    )
+                    db.commit()
+                except Exception as retire_exc:
+                    db.rollback()
+                    journal.log("preflight_retire_failed", agenda_id=agenda_id,
+                                idea_id=idea_id,
+                                reason=f"{type(retire_exc).__name__}: {retire_exc}")
+                    continue
+                journal.log("preflight_retired", agenda_id=agenda_id,
+                            idea_id=idea_id, reason_codes=preflight.reason_codes)
+            else:
+                _upsert_job(
+                    idea_id,
+                    status="deferred",
+                    stage="capability_preflight_deferred",
+                    assigned_worker=None,
+                    last_error="preflight:" + codes,
+                    last_note=(
+                        f"preflight retry {used + 1}/{MAX_PREFLIGHT_RETRIES}: {codes}"
+                        if not retriable_forever
+                        else f"preflight waiting on hardware: {codes}"
+                    ),
+                )
             continue
         agenda_backends = json.loads(dict(db.fetchone(
             "SELECT backend_allowlist_json FROM research_agendas WHERE id=?",
