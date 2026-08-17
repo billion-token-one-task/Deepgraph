@@ -205,8 +205,13 @@ You will receive the problem statement and proposed method.
 
 10. **Execution Requirements**: Declare the cheapest falsification run as a
 structured capability contract before any execution grant exists.
-   - Use concrete public dataset/model repository IDs and an explicit revision
-     or tag; never use a display name as a repository ID.
+   - Use concrete public dataset/model repository IDs; never use a display
+     name as a repository ID.
+   - Set "revision" to "main" unless you are copying a revision hash from
+     material provided in this prompt. NEVER invent a commit hash: a
+     fabricated revision fails the metadata preflight and strands the idea
+     (idea 124 did exactly this on 2026-08-17). The preflight resolves
+     "main" to a concrete revision and pins it for reproducibility.
    - Declare task protocol, semantic dataset field roles, model task/framework,
      metric direction, dependency/network/disk/VRAM needs, seeds/sample cap,
      backend preferences, and required raw artifacts.
