@@ -26,6 +26,21 @@ class BalancedObjectSelectionTests(unittest.TestCase):
         parsed, how = parse_llm_json_text('{"a": 1}')
         self.assertEqual((parsed, how), ({"a": 1}, "direct"))
 
+    def test_latex_mixed_escapes_are_repaired(self):
+        # idea 138's method definition mixed legal \\in with bare \Phi; one
+        # illegal escape voided the whole object and only a two-key fragment
+        # survived.
+        text = (
+            '{"method": {"name": "X", '
+            '"definition": "$S = (V, E, \\Phi) \\\\in \\\\mathcal{S}$"}}'
+        )
+        parsed, how = parse_llm_json_text(text)
+        self.assertEqual(parsed["method"]["name"], "X")
+
+    def test_legal_escapes_survive_repair(self):
+        parsed, _ = parse_llm_json_text('{"a": "line\\nbreak \\\\ slash"}')
+        self.assertEqual(parsed, {"a": "line\nbreak \\ slash"})
+
 
 if __name__ == "__main__":
     unittest.main()

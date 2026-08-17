@@ -1612,6 +1612,21 @@ def _json_try_load(s: str) -> dict | list | None:
             return json.loads(fixed)
         except json.JSONDecodeError:
             pass
+    # LaTeX-heavy answers escape inconsistently: idea 138's method definition
+    # mixed \\in with bare \Phi, and one illegal escape voids the whole
+    # object. Scan escape pairs atomically -- a lookahead alone re-doubles
+    # the second backslash of a legal \\ pair -- keeping legal escapes and
+    # doubling the rest, so valid JSON cannot be harmed.
+    relaxed = re.sub(
+        r"\\(.)",
+        lambda m: m.group(0) if m.group(1) in '"\\/bfnrtu' else "\\\\" + m.group(1),
+        fixed,
+    )
+    if relaxed != fixed:
+        try:
+            return json.loads(relaxed)
+        except json.JSONDecodeError:
+            pass
     return None
 
 
