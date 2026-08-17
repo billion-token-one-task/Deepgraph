@@ -2295,11 +2295,26 @@ async function loadDecisions() {
         body.innerHTML = rows.map(d => {
             const cls = VERDICT_CLASS[String(d.verdict)] || '';
             const metrics = decisionMetricLine(d);
-            return `<div class="decision-row">
-                <div class="decision-head">
+            const detail = d.decision_detail || {};
+            const paper = d.manuscript || {};
+
+            const checks = (detail.checks || []).map(c =>
+                `<span class="decision-check ${c.passed ? 'check-pass' : 'check-fail'}">${c.passed ? '✓' : '✗'} ${esc(c.name)}</span>`
+            ).join('');
+
+            const links = [];
+            if (paper.available) {
+                if (paper.pdf_url) links.push(`<a class="decision-link" href="${esc(paper.pdf_url)}" target="_blank" rel="noopener">PDF</a>`);
+                if (paper.tex_url) links.push(`<a class="decision-link" href="${esc(paper.tex_url)}" target="_blank" rel="noopener">TeX</a>`);
+                if (paper.reader_url) links.push(`<a class="decision-link" href="${esc(paper.reader_url)}" target="_blank" rel="noopener">${esc(t('decisions.openPaper'))}</a>`);
+            }
+
+            return `<details class="decision-row">
+                <summary class="decision-head">
                     <span class="decision-verdict ${cls}">${esc(String(d.verdict || '?'))}</span>
                     <span class="decision-title">${esc(trunc(d.insight_title || `#${d.id}`, 110))}</span>
-                </div>
+                    ${paper.available ? `<span class="decision-paper-flag">${esc(t('decisions.hasPaper'))}</span>` : ''}
+                </summary>
                 <div class="decision-meta">
                     agenda #${esc(String(d.agenda_id))}
                     &middot; ${esc(t('decisions.runLabel'))} #${esc(String(d.experiment_run_id ?? '-'))}
@@ -2307,8 +2322,13 @@ async function loadDecisions() {
                     &middot; ${esc(String(d.created_at || '').slice(0, 19))}
                 </div>
                 ${metrics ? `<div class="decision-meta">${metrics}</div>` : ''}
+                ${checks ? `<div class="decision-checks">${checks}</div>` : ''}
+                ${detail.note ? `<div class="decision-note">${esc(detail.note)}</div>` : ''}
+                ${detail.holdout ? `<div class="decision-meta">holdout: ${esc(detail.holdout)}</div>` : ''}
+                ${links.length ? `<div class="decision-links">${links.join('')}
+                    <span class="decision-meta">${esc(String(paper.asset_count || 0))} ${esc(t('decisions.assets'))}${paper.status ? ` &middot; ${esc(String(paper.status))}` : ''}</span></div>` : ''}
                 ${d.verdict_hash ? `<div class="decision-hash">${esc(String(d.verdict_hash).slice(0, 16))}…</div>` : ''}
-            </div>`;
+            </details>`;
         }).join('');
     } catch (e) {
         console.error('Decisions unavailable:', e);

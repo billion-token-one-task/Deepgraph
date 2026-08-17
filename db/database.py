@@ -1095,8 +1095,13 @@ def execute(sql: str, params: tuple = ()):
         safe_retry = _is_safe_pg_retry_sql(sql_a)
         for attempt in range(2):
             conn = get_conn()
-            cur = conn.cursor()
             try:
+                # cursor() must be inside the try: on a connection that closed
+                # after get_conn()'s liveness check, psycopg raises "the
+                # connection is closed" here, and outside the try that bypassed
+                # the retry entirely -- which is why /api/agent_office kept
+                # failing with exactly that message while /api/stats recovered.
+                cur = conn.cursor()
                 cur.execute(sql_a, params_a or ())
                 return cur
             except Exception as exc:

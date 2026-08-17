@@ -2753,3 +2753,50 @@ header#topBar {
     font-size: 0.68rem;
     opacity: 0.7;
 }
+
+/* A decision row expands to show why the verdict was reached and, when the
+   finding produced one, where the manuscript is. */
+.decision-row > summary { cursor: pointer; list-style: none; }
+.decision-row > summary::-webkit-details-marker { display: none; }
+.decision-row > summary::before {
+    content: '\25B8';
+    display: inline-block;
+    margin-right: 6px;
+    color: var(--text-dim);
+    transition: transform 0.15s ease;
+}
+.decision-row[open] > summary::before { transform: rotate(90deg); }
+
+.decision-paper-flag {
+    padding: 1px 6px;
+    border: 1px solid var(--accent);
+    border-radius: 3px;
+    color: var(--accent);
+    font-size: 0.68rem;
+}
+.decision-checks { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 6px; }
+.decision-check {
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+}
+.check-pass { color: var(--green); border: 1px solid var(--green-dim); }
+.check-fail { color: var(--red); border: 1px solid var(--red-dim); }
+
+.decision-note {
+    margin-top: 5px;
+    color: var(--text-secondary);
+    font-size: 0.78rem;
+    line-height: 1.45;
+}
+.decision-links { margin-top: 7px; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.decision-link {
+    padding: 2px 9px;
+    border: 1px solid var(--accent);
+    border-radius: 3px;
+    color: var(--accent);
+    font-size: 0.74rem;
+    text-decoration: none;
+}
+.decision-link:hover { background: var(--accent); color: var(--bg-base); }
