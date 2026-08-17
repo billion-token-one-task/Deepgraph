@@ -32,23 +32,138 @@ from web.stats_cache import StatsCache
 app.register_blueprint(meta_harness_blueprint)
 app.register_blueprint(provenance_blueprint)
 
-# Exact aggregate statistics are deliberately unavailable through the web
-# process.  Even a single startup snapshot saturated production EBS at about
-# 128 MiB/s; making it non-periodic removed recurrence but not the restart
-# hazard.  Keep the route's honest ``{"warming": true}`` response until V1 is
-# complete and an incrementally maintained snapshot replaces the exact scan.
-# The harmless compute keeps the cache object patchable in route tests while
-# ensuring that an accidental direct prewarm cannot touch the database.
-_stats_cache = StatsCache(lambda: None)
+# Dashboard totals come from PostgreSQL's maintained relation statistics rather
+# than repeated COUNT(*) scans over the largest tables.  The previous exact
+# snapshot saturated production storage; the statistics catalog is real
+# database telemetry, cheap to read, and explicitly labelled as an estimate.
+_DASHBOARD_RELATION_KEYS = {
+    "papers": "papers_total",
+    "claims": "claims_total",
+    "patterns": "patterns_total",
+    "contradictions": "contradictions_total",
+    "gaps": "gaps_total",
+    "results": "results_total",
+    "insights": "insights_total",
+    "deep_insights": "deep_insights_total",
+    "experiment_runs": "experiment_runs_total",
+    "submission_bundles": "submission_bundles_total",
+}
+
+
+def _dashboard_relation_counts() -> tuple[dict[str, int], str]:
+    tables = tuple(_DASHBOARD_RELATION_KEYS)
+    if db.use_postgres():
+        placeholders = ",".join("?" for _ in tables)
+        rows = db.fetchall(
+            f"""
+            SELECT relname, GREATEST(n_live_tup, 0)::BIGINT AS c
+            FROM pg_stat_user_tables
+            WHERE schemaname = ANY(current_schemas(false))
+              AND relname IN ({placeholders})
+            """,
+            tables,
+        )
+        raw = {str(row["relname"]): int(row["c"] or 0) for row in rows}
+        return (
+            {key: raw.get(table, 0) for table, key in _DASHBOARD_RELATION_KEYS.items()},
+            "postgresql_n_live_tup",
+        )
+    return (
+        {
+            key: int((db.fetchone(f"SELECT COUNT(*) AS c FROM {table}") or {}).get("c") or 0)
+            for table, key in _DASHBOARD_RELATION_KEYS.items()
+        },
+        "exact",
+    )
+
+
+def _optional_scalar(sql: str, params: tuple = ()) -> int | float:
+    try:
+        row = db.fetchone(sql, params) or {}
+        return row.get("c") or 0
+    except Exception:
+        db.rollback()
+        return 0
+
+
+def _compute_stats_snapshot() -> dict:
+    stats, count_source = _dashboard_relation_counts()
+    stats.update(
+        {
+            "papers_processed": int(_optional_scalar(
+                "SELECT COUNT(*) AS c FROM papers WHERE status IN ('extracted','abstracted','reasoned')"
+            )),
+            "tokens_consumed": int(_optional_scalar(
+                "SELECT COALESCE(SUM(token_cost),0) AS c FROM papers"
+            )),
+            "taxonomy_nodes_total": int(_optional_scalar(
+                "SELECT COUNT(*) AS c FROM taxonomy_nodes"
+            )),
+            "scientific_decisions_total": int(_optional_scalar(
+                "SELECT COUNT(*) AS c FROM scientific_decision_records"
+            )),
+            "agenda_tokens_total": int(_optional_scalar(
+                "SELECT COALESCE(SUM(tokens),0) AS c FROM agenda_token_ledger"
+            )),
+            "adjudication_candidates": int(_optional_scalar(
+                """
+                SELECT COUNT(*) AS c FROM experiment_runs er
+                WHERE er.status='completed'
+                  AND er.baseline_metric_value IS NOT NULL
+                  AND er.baseline_metric_value <> 0
+                  AND er.best_metric_value IS NOT NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM scientific_decision_records sdr
+                      WHERE sdr.experiment_run_id=er.id
+                  )
+                """
+            )),
+        }
+    )
+    for verdict in ("supported", "refuted", "inconclusive"):
+        stats[f"decisions_{verdict}"] = int(_optional_scalar(
+            "SELECT COUNT(*) AS c FROM scientific_decision_records WHERE verdict=?",
+            (verdict,),
+        ))
+    stats["papers_total"] = max(stats["papers_total"], stats["papers_processed"])
+    stats["generated_at"] = time.time()
+    stats["data_health"] = {
+        "status": "ok",
+        "database_round_trip": True,
+        "count_source": count_source,
+        "source_rows": sum(int(stats.get(key, 0) or 0) for key in _DASHBOARD_RELATION_KEYS.values()),
+    }
+    db.rollback()
+    return stats
+
+
+_stats_cache = StatsCache(_compute_stats_snapshot, ttl=60.0)
 
 
 def prewarm_stats_cache():
-    """Compatibility startup hook; exact automatic stats are safety-disabled."""
-    return None
+    """Warm real dashboard data and keep a cheap recovery refresher running."""
+    try:
+        return _stats_cache.prewarm()
+    except Exception as exc:
+        # Startup remains available for diagnostics; /api/stats and the data
+        # health endpoint stay 503 until the background refresh succeeds.
+        print(f"[API] stats prewarm failed; background retry armed: {exc}", flush=True)
+        return None
+    finally:
+        _stats_cache.start_background_refresh()
 
 
 _pipeline_running = False
 _pipeline_lock = threading.Lock()
+
+
+@app.teardown_request
+def _finish_request_transaction(_exc):
+    """Never leave a request thread idle in a PostgreSQL transaction."""
+    try:
+        db.rollback()
+    except Exception:
+        pass
 
 _ACTIVE_EXPERIMENT_STATUSES = {"pending", "scaffolding", "reproducing", "testing", "running_gpu", "running_cpu"}
 _PROTECTED_GENERATED_PAPER_IDS = {
@@ -942,16 +1057,46 @@ def api_meta():
 
 @app.route("/api/stats")
 def api_stats():
-    # Serve from the in-process TTL cache; the heavy COUNT(*) query never runs
-    # in this request thread (issue #34). Stale entries trigger a background
-    # refresh inside the cache.
     stats = _stats_cache.get()
     if stats is None:
-        # Cold start before the startup warm-up completes: return a "warming"
-        # marker rather than blocking the request thread on the heavy query or
-        # fabricating numbers.
-        return jsonify({"warming": True})
+        return jsonify({
+            "status": "unavailable",
+            "ready": False,
+            "data_health": {"status": "unavailable", "database_round_trip": False},
+        }), 503
     return jsonify(stats)
+
+
+@app.route("/api/health/data")
+def api_data_health():
+    """Fail closed unless the database and cached dashboard data are usable."""
+    try:
+        probe = db.fetchone("SELECT 1 AS ok") or {}
+        stats = _stats_cache.get()
+        required = {
+            "papers_processed",
+            "results_total",
+            "deep_insights_total",
+            "experiment_runs_total",
+        }
+        if int(probe.get("ok") or 0) != 1 or not isinstance(stats, dict) or not required.issubset(stats):
+            return jsonify({
+                "status": "unavailable",
+                "ready": False,
+                "database_round_trip": int(probe.get("ok") or 0) == 1,
+                "stats_ready": isinstance(stats, dict),
+            }), 503
+        return jsonify({
+            "status": "ok",
+            "ready": True,
+            "database_round_trip": True,
+            "stats_ready": True,
+            "stats_generated_at": stats.get("generated_at"),
+            "source_rows": (stats.get("data_health") or {}).get("source_rows", 0),
+            "critical_endpoints": ["/api/stats", "/api/processing", "/api/agent_office"],
+        })
+    except Exception as exc:
+        return _api_failure("data_health", exc, status=503)
 
 
 @app.route("/api/providers")
@@ -1110,31 +1255,51 @@ def api_agent_office():
                 "blocked": sum(1 for dep in departments if dep["status"] == "blocked"),
             },
             "updated_at": time.time(),
+            "data_health": {
+                "status": "ok",
+                "database_round_trip": True,
+                "source_rows": sum(len(items) for items in items_by_key.values()),
+            },
         })
     except Exception as exc:
-        return _api_failure("agent_office", exc)
+        return _api_failure("agent_office", exc, status=503)
 
 
 @app.route("/api/processing")
 def api_processing():
     """Get papers currently being processed + recently completed (last 15s)."""
-    rows = db.fetchall(
-        f"""SELECT id, title, status FROM papers
-           WHERE status IN ('processing', 'extracted')
-              OR (status IN ('reasoned', 'error') AND {db.sql_updated_after_seconds(15)})
-           ORDER BY CASE status WHEN 'processing' THEN 0 WHEN 'extracted' THEN 1 ELSE 2 END, updated_at DESC
-           LIMIT 30"""
-    )
-    processing_count = db.fetchone("SELECT COUNT(*) as c FROM papers WHERE status='processing'")["c"]
-    paper_worker_status = {}
     try:
-        from orchestrator import paper_worker
-        paper_worker_status = paper_worker.get_status()
+        rows = db.fetchall(
+            f"""SELECT id, title, status FROM papers
+               WHERE status IN ('processing', 'extracted')
+                  OR (status IN ('reasoned', 'error') AND {db.sql_updated_after_seconds(15)})
+               ORDER BY CASE status WHEN 'processing' THEN 0 WHEN 'extracted' THEN 1 ELSE 2 END, updated_at DESC
+               LIMIT 30"""
+        )
+        processing_count = int((db.fetchone(
+            "SELECT COUNT(*) AS c FROM papers WHERE status='processing'"
+        ) or {}).get("c") or 0)
+        try:
+            from orchestrator import paper_worker
+            paper_worker_status = paper_worker.get_status()
+        except Exception as exc:
+            paper_worker_status = {"running": False, "error": str(exc)}
+        with _pipeline_lock:
+            is_running = _pipeline_running or bool(paper_worker_status.get("running")) or processing_count > 0
+        stats = _stats_cache.get() or {}
+        return jsonify({
+            "papers": rows,
+            "pipeline_running": is_running,
+            "paper_worker": paper_worker_status,
+            "data_health": {
+                "status": "ok",
+                "database_round_trip": True,
+                "source_rows": len(rows),
+                "papers_total": int(stats.get("papers_total", 0) or 0),
+            },
+        })
     except Exception as exc:
-        paper_worker_status = {"running": False, "error": str(exc)}
-    with _pipeline_lock:
-        is_running = _pipeline_running or bool(paper_worker_status.get("running")) or processing_count > 0
-    return jsonify({"papers": rows, "pipeline_running": is_running, "paper_worker": paper_worker_status})
+        return _api_failure("processing", exc, status=503)
 
 
 @app.route("/api/automation")

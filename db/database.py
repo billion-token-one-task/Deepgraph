@@ -182,10 +182,57 @@ def _pg_connect():
         )
 
 
+def _pg_connection_closed(conn) -> bool:
+    """Return whether psycopg has marked a cached connection unusable."""
+    return bool(getattr(conn, "closed", False))
+
+
+def _discard_pg_connection(conn=None) -> None:
+    """Drop one thread-local PostgreSQL connection without masking its error."""
+    cached = getattr(_local, "pg_conn", None)
+    target = conn if conn is not None else cached
+    if target is not None:
+        try:
+            target.close()
+        except Exception:
+            pass
+    if conn is None or cached is conn:
+        _local.pg_conn = None
+
+
+def _is_pg_disconnect_error(exc: BaseException, conn=None) -> bool:
+    """Recognize transport/session loss, not ordinary SQL failures."""
+    if conn is not None and _pg_connection_closed(conn):
+        return True
+    message = str(exc).strip().lower()
+    return any(
+        marker in message
+        for marker in (
+            "connection is closed",
+            "connection not open",
+            "server closed the connection unexpectedly",
+            "terminating connection",
+            "broken pipe",
+            "eof detected",
+            "consuming input failed",
+        )
+    )
+
+
+def _is_safe_pg_retry_sql(sql: str) -> bool:
+    """Only repeat statements that cannot duplicate a production mutation."""
+    normalized = " ".join(str(sql or "").lstrip().split()).lower()
+    return normalized.startswith(("select ", "show ", "values ", "explain "))
+
+
 def get_conn():
     """Thread-local connection (SQLite or PostgreSQL)."""
     if _use_pg():
-        if not hasattr(_local, "pg_conn") or _local.pg_conn is None:
+        cached = getattr(_local, "pg_conn", None)
+        if cached is not None and _pg_connection_closed(cached):
+            _discard_pg_connection(cached)
+            cached = None
+        if cached is None:
             _local.pg_conn = _pg_connect()
         return _local.pg_conn
     sc = getattr(_local, "sqlite_conn", None)
@@ -1044,15 +1091,29 @@ def _ensure_insight_feedback_schema() -> None:
 def execute(sql: str, params: tuple = ()):
     sql_a = _adapt_sql(sql)
     params_a = _sanitize_params(params)
-    conn = get_conn()
     if _use_pg():
-        cur = conn.cursor()
-        try:
-            cur.execute(sql_a, params_a or ())
-        except Exception:
-            conn.rollback()
-            raise
-        return cur
+        safe_retry = _is_safe_pg_retry_sql(sql_a)
+        for attempt in range(2):
+            conn = get_conn()
+            cur = conn.cursor()
+            try:
+                cur.execute(sql_a, params_a or ())
+                return cur
+            except Exception as exc:
+                disconnected = _is_pg_disconnect_error(exc, conn)
+                if disconnected:
+                    _discard_pg_connection(conn)
+                else:
+                    try:
+                        conn.rollback()
+                    except Exception as rollback_exc:
+                        if _is_pg_disconnect_error(rollback_exc, conn):
+                            _discard_pg_connection(conn)
+                if attempt == 0 and safe_retry and disconnected:
+                    continue
+                raise
+        raise RuntimeError("unreachable PostgreSQL retry state")
+    conn = get_conn()
     return _sqlite_with_lock_retry(lambda: conn.execute(sql_a, params_a))
 
 
@@ -1080,7 +1141,24 @@ def commit():
 
 
 def rollback():
-    get_conn().rollback()
+    if _use_pg():
+        conn = getattr(_local, "pg_conn", None)
+        if conn is None:
+            return
+        if _pg_connection_closed(conn):
+            _discard_pg_connection(conn)
+            return
+        try:
+            conn.rollback()
+        except Exception as exc:
+            if _is_pg_disconnect_error(exc, conn):
+                _discard_pg_connection(conn)
+                return
+            raise
+        return
+    conn = getattr(_local, "sqlite_conn", None)
+    if conn is not None:
+        _sqlite_with_lock_retry(conn.rollback)
 
 
 def fetchone(sql: str, params: tuple = ()) -> dict | None:
