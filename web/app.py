@@ -865,12 +865,24 @@ def _recent_evoscientist_sessions(limit: int = 5) -> list[dict]:
     return sessions
 
 
-def _current_work_snapshot() -> dict[str, list[dict]]:
-    recent_run_window = (
-        "er.created_at > NOW() - INTERVAL '12 hours'"
+def _recent_window(column: str, hours: int) -> str:
+    return (
+        f"{column} > NOW() - INTERVAL '{int(hours)} hours'"
         if db.use_postgres()
-        else "er.created_at > datetime('now', '-12 hours')"
+        else f"{column} > datetime('now', '-{int(hours)} hours')"
     )
+
+
+def _current_work_snapshot() -> dict[str, list[dict]]:
+    recent_run_window = _recent_window("er.created_at", 12)
+    # The Agent Office calls itself a live workspace, so every panel needs a
+    # recency bound. Experiment runs already had one; plans and manuscripts did
+    # not, so the office kept presenting May 2026 rows as current activity --
+    # including two failures that the running release had long since fixed
+    # (a missing ICLR2026_TEMPLATE_DIR and an ExperimentResultPacket kwarg).
+    # An honestly idle department is more useful than a stale busy one.
+    recent_plan_window = _recent_window("arj.updated_at", 24)
+    recent_manuscript_window = _recent_window("mr.updated_at", 24)
     recent_pipeline = []
     for event in reversed(get_events(0)[-80:]):
         data = event.get("data") or {}
@@ -915,15 +927,18 @@ def _current_work_snapshot() -> dict[str, list[dict]]:
         """
     )
     plans = db.fetchall(
-        """
+        f"""
         SELECT arj.deep_insight_id, arj.status, arj.stage, arj.last_note, arj.last_error,
                arj.updated_at, di.title
         FROM auto_research_jobs arj
         JOIN deep_insights di ON di.id = arj.deep_insight_id
-        WHERE arj.status IN ('queued', 'eligible', 'review_pending', 'smoke_only', 'harness_required')
-           OR arj.stage LIKE '%review%'
-           OR arj.stage LIKE '%forge%'
-           OR arj.stage LIKE '%formal%'
+        WHERE {recent_plan_window}
+          AND (
+                arj.status IN ('queued', 'eligible', 'review_pending', 'smoke_only', 'harness_required')
+                OR arj.stage LIKE '%review%'
+                OR arj.stage LIKE '%forge%'
+                OR arj.stage LIKE '%formal%'
+              )
         ORDER BY arj.updated_at DESC
         LIMIT 8
         """
@@ -959,11 +974,12 @@ def _current_work_snapshot() -> dict[str, list[dict]]:
         """
     )
     manuscripts = db.fetchall(
-        """
+        f"""
         SELECT mr.id, mr.experiment_run_id, mr.deep_insight_id, mr.status, mr.workdir,
                mr.updated_at, di.title
         FROM manuscript_runs mr
         LEFT JOIN deep_insights di ON di.id = mr.deep_insight_id
+        WHERE {recent_manuscript_window}
         ORDER BY mr.updated_at DESC
         LIMIT 8
         """
@@ -2506,6 +2522,92 @@ def api_manuscript_bundle(run_id):
     return _manual_api_removed_response()
 
 
+def _decision_detail(raw: Any) -> dict[str, Any]:
+    """Unpack the stored rationale so a reader does not get a JSON blob.
+
+    evidence_decision_json already records why a verdict was reached and which
+    checks it passed; nothing displayed it, so the verdict looked like an
+    unexplained label.
+    """
+    try:
+        payload = json.loads(raw) if isinstance(raw, str) else (raw or {})
+    except (json.JSONDecodeError, TypeError):
+        return {"checks": [], "note": "", "path": "", "raw": str(raw or "")[:400]}
+    if not isinstance(payload, dict):
+        return {"checks": [], "note": "", "path": "", "raw": str(payload)[:400]}
+    report = payload.get("evaluator_report")
+    report = report if isinstance(report, dict) else {}
+    raw_checks = report.get("checks")
+    checks = [
+        {"name": str(name), "passed": bool(value)}
+        for name, value in (raw_checks.items() if isinstance(raw_checks, dict) else [])
+    ]
+    return {
+        "checks": sorted(checks, key=lambda c: c["name"]),
+        "passed": report.get("passed"),
+        "evaluator": str(report.get("evaluator") or ""),
+        "note": str(report.get("note") or ""),
+        "holdout": str(payload.get("holdout") or ""),
+        "path": str(payload.get("path") or ""),
+    }
+
+
+def _decision_manuscript(insight_id: Any, agenda_id: Any) -> dict[str, Any]:
+    """Where the paper for this finding lives, if it produced one.
+
+    Ten of the recorded decisions already reach a manuscript through
+    experiment_run -> deep_insight -> manuscript_run, but the chain was only
+    walkable in SQL. This resolves it, and reports which assets actually exist
+    on disk rather than advertising links that 404.
+    """
+    empty = {"available": False}
+    try:
+        insight_id = int(insight_id or 0)
+    except (TypeError, ValueError):
+        return empty
+    if insight_id <= 0:
+        return empty
+    try:
+        run = db.fetchone(
+            """SELECT mr.id AS manuscript_run_id, mr.status,
+                      sb.id AS submission_bundle_id
+               FROM manuscript_runs mr
+               LEFT JOIN submission_bundles sb ON sb.manuscript_run_id = mr.id
+               WHERE mr.deep_insight_id=? AND mr.agenda_id=?
+               ORDER BY mr.updated_at DESC, mr.id DESC""",
+            (insight_id, int(agenda_id or 0)),
+        )
+        if not run:
+            return empty
+        insight = db.fetchone("SELECT * FROM deep_insights WHERE id=?", (insight_id,))
+        assets = list_paper_assets(insight_id, insight=dict(insight) if insight else None)
+    except Exception:  # noqa: BLE001 - a missing workspace must not break the list
+        return empty
+    assets = assets or []
+    scope = int(agenda_id or 0)
+    # Offer a link only when the route behind it would actually serve a file:
+    # /papers/<id>/pdf and /tex both go through _pick_main_asset, so use the
+    # same rule here rather than guessing from file extensions.
+    has_pdf = _pick_main_asset(assets, ".pdf") is not None
+    has_tex = _pick_main_asset(assets, ".tex") is not None
+    figures = [
+        a for a in assets
+        if str(a.get("suffix") or "").lower() in {".png", ".jpg", ".jpeg", ".svg"}
+    ]
+    return {
+        "available": True,
+        "insight_id": insight_id,
+        "manuscript_run_id": run.get("manuscript_run_id"),
+        "submission_bundle_id": run.get("submission_bundle_id"),
+        "status": run.get("status"),
+        "reader_url": f"/papers/{insight_id}?agenda_id={scope}",
+        "pdf_url": f"/papers/{insight_id}/pdf?agenda_id={scope}" if has_pdf else None,
+        "tex_url": f"/papers/{insight_id}/tex?agenda_id={scope}" if has_tex else None,
+        "asset_count": len(assets),
+        "figure_count": len(figures),
+    }
+
+
 @app.route("/api/scientific_decisions")
 def api_scientific_decisions():
     """List adjudicated findings behind the front-page decision counter.
@@ -2528,7 +2630,8 @@ def api_scientific_decisions():
                ear.claim_ledger_hash,
                er.hypothesis_verdict, er.baseline_metric_name,
                er.baseline_metric_value, er.best_metric_value, er.effect_pct,
-               di.id AS deep_insight_id, di.title AS insight_title, di.tier AS insight_tier
+               di.id AS deep_insight_id, di.title AS insight_title, di.tier AS insight_tier,
+               di.submission_status
         FROM scientific_decision_records sdr
         LEFT JOIN evidence_audit_records ear
           ON ear.id = sdr.evidence_audit_record_id
@@ -2545,6 +2648,9 @@ def api_scientific_decisions():
     params.append(limit)
     try:
         rows = db.fetchall(sql, tuple(params))
+        for row in rows:
+            row["decision_detail"] = _decision_detail(row.pop("evidence_decision_json", None))
+            row["manuscript"] = _decision_manuscript(row.get("deep_insight_id"), row.get("agenda_id"))
         by_verdict: dict[str, int] = {}
         for row in db.fetchall(
             "SELECT verdict, COUNT(*) AS c FROM scientific_decision_records"
