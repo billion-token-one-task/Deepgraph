@@ -691,10 +691,21 @@ def generate_submission_bundle(run_id: int, bundle_formats: list[str] | None = N
     return generate_bundle_paper_orchestra(run_id, bundle_formats=bundle_formats or list(SUBMISSION_BUNDLE_FORMATS))
 
 
-def list_manuscripts(*, agenda_id: int, limit: int = 50) -> list[dict]:
-    if int(agenda_id) <= 0:
-        raise ValueError("positive agenda_id is required")
+def list_manuscripts(*, agenda_id: int | str, limit: int = 50) -> list[dict]:
+    """List manuscript runs for one agenda, or for every agenda.
+
+    ``agenda_id="all"`` is the cross-agenda read the dashboard needs: the
+    manuscripts that exist all sit under one older agenda, so a per-agenda-only
+    listing showed an empty library on every other agenda while the front-page
+    counter still reported them.
+    """
     db.init_db()
+    if str(agenda_id).strip().lower() == "all":
+        clause, params = "", []
+    else:
+        if int(agenda_id) <= 0:
+            raise ValueError("positive agenda_id is required")
+        clause, params = " AND mr.agenda_id=?", [int(agenda_id)]
     return db.fetchall(
         """
         SELECT mr.*, di.title AS insight_title, er.hypothesis_verdict
@@ -703,9 +714,9 @@ def list_manuscripts(*, agenda_id: int, limit: int = 50) -> list[dict]:
           ON di.id = mr.deep_insight_id AND di.agenda_id = mr.agenda_id
         LEFT JOIN experiment_runs er
           ON er.id = mr.experiment_run_id AND er.agenda_id = mr.agenda_id
-        WHERE mr.agenda_id=?
+        WHERE 1=1""" + clause + """
         ORDER BY mr.updated_at DESC
         LIMIT ?
         """,
-        (int(agenda_id), limit),
+        tuple([*params, limit]),
     )

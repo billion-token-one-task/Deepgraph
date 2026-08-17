@@ -55,9 +55,22 @@ class WebAppTests(unittest.TestCase):
         response = self.client.get("/api/gpu/status")
         self.assertEqual(response.status_code, 410)
 
-    def test_agenda_owned_read_requires_explicit_scope(self):
-        response = self.client.get("/api/deep_insights")
-        self.assertEqual(response.status_code, 400)
+    def test_unparseable_agenda_scope_is_still_refused(self):
+        """Omitting agenda_id is allowed now, but garbage still is not.
+
+        This replaces test_agenda_owned_read_requires_explicit_scope, which
+        asserted 400 for an omitted scope. That rule was never an authorization
+        boundary: the read API has no per-agenda access control, so any caller
+        could enumerate agenda_id=1..N and see everything the 400 pretended to
+        withhold. What it did do was split the dashboard in half -- the
+        front-page counters sum across every agenda while every detail list was
+        pinned to one, so the page showed large totals above empty tables.
+        AgendaScopeApiTests covers the accepting side.
+        """
+        for value in ("abc", "-1", "1;drop"):
+            with self.subTest(agenda_id=value):
+                response = self.client.get(f"/api/deep_insights?agenda_id={value}")
+                self.assertEqual(response.status_code, 400)
 
 
 class ExperimentGroupApiTests(unittest.TestCase):
@@ -229,6 +242,120 @@ class ExperimentGroupApiTests(unittest.TestCase):
         self.assertEqual(tex_response.status_code, 200)
         self.assertIn("\\documentclass", tex_response.get_data(as_text=True))
         tex_response.close()
+
+
+class AgendaScopeApiTests(unittest.TestCase):
+    """Cross-agenda reads: the front-page counters and the lists must agree.
+
+    The schema comes from database.init_db() rather than hand-rolled CREATE
+    TABLE statements on purpose. Fixtures that build their own schema drift from
+    the migrations, and that drift is what let a production NotNullViolation
+    survive a green suite on 2026-08-17.
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.old_db_path = database.DB_PATH
+        self.old_database_url = database.DATABASE_URL
+        for attr in ("pg_conn", "sqlite_conn", "conn"):
+            if hasattr(database._local, attr):
+                try:
+                    getattr(database._local, attr).close()
+                except Exception:
+                    pass
+                setattr(database._local, attr, None)
+        database.DATABASE_URL = ""
+        database.DB_PATH = Path(self.tmpdir.name) / "test.db"
+        database.init_db()
+        # The V1 agenda column exists in PostgreSQL via the meta-harness
+        # migration; SQLite's init_db() predates it.
+        for table in ("deep_insights", "experiment_runs", "manuscript_runs"):
+            rows = database.fetchall(f"PRAGMA table_info({table})")
+            if not rows:
+                continue
+            if "agenda_id" not in {row["name"] for row in rows}:
+                database.execute(f"ALTER TABLE {table} ADD COLUMN agenda_id INTEGER")
+        # Two agendas, so "all" has to mean more than "the one we asked for".
+        for insight_id, agenda_id, tier in ((1, 7, 1), (2, 9, 2)):
+            database.execute(
+                "INSERT INTO deep_insights (id, agenda_id, tier, title, status)"
+                " VALUES (?, ?, ?, ?, 'candidate')",
+                (insight_id, agenda_id, tier, f"Idea {insight_id} on agenda {agenda_id}"),
+            )
+        database.commit()
+        self.client = web_app.app.test_client()
+
+    def tearDown(self):
+        for attr in ("pg_conn", "sqlite_conn", "conn"):
+            if hasattr(database._local, attr):
+                try:
+                    getattr(database._local, attr).close()
+                except Exception:
+                    pass
+                setattr(database._local, attr, None)
+        database.DB_PATH = self.old_db_path
+        database.DATABASE_URL = self.old_database_url
+        self.tmpdir.cleanup()
+
+    def _ids(self, query: str) -> set:
+        response = self.client.get(query)
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        return {int(row["id"]) for row in response.get_json()}
+
+    def test_omitted_scope_returns_every_agenda(self):
+        self.assertEqual(self._ids("/api/deep_insights"), {1, 2})
+
+    def test_explicit_all_forms_match_the_omitted_form(self):
+        for value in ("all", "0", ""):
+            with self.subTest(agenda_id=value):
+                self.assertEqual(self._ids(f"/api/deep_insights?agenda_id={value}"), {1, 2})
+
+    def test_named_agenda_still_narrows(self):
+        self.assertEqual(self._ids("/api/deep_insights?agenda_id=7"), {1})
+        self.assertEqual(self._ids("/api/deep_insights?agenda_id=9"), {2})
+
+    def test_tier_filter_spans_agendas_when_unscoped(self):
+        """Tier 1 lived only on older agendas, so the filter looked broken."""
+        self.assertEqual(self._ids("/api/deep_insights?tier=1"), {1})
+        self.assertEqual(self._ids("/api/deep_insights?tier=2"), {2})
+        self.assertEqual(self._ids("/api/deep_insights?tier=1&agenda_id=9"), set())
+
+    def test_detail_by_id_no_longer_needs_the_owning_agenda(self):
+        response = self.client.get("/api/deep_insights/1")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json()["agenda_id"], 7)
+
+    def test_detail_still_respects_an_explicit_mismatched_scope(self):
+        self.assertEqual(self.client.get("/api/deep_insights/1?agenda_id=9").status_code, 404)
+
+    def _require_table(self, name: str):
+        """Skip rather than hand-roll a table the migrations own.
+
+        scripts/meta_harness_migration.py is PostgreSQL-only, so init_db() on
+        SQLite has no meta-harness v1 schema. Re-creating those tables here by
+        hand is exactly the drift that hid a production NotNullViolation, so
+        these two cases skip instead.
+        """
+        rows = database.fetchall(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (name,)
+        )
+        if not rows:
+            self.skipTest(f"{name} is owned by the PostgreSQL-only meta-harness migration")
+
+    def test_scientific_decisions_are_listable(self):
+        self._require_table("scientific_decision_records")
+        response = self.client.get("/api/scientific_decisions")
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        payload = response.get_json()
+        self.assertIn("decisions", payload)
+        self.assertIn("counts_by_verdict", payload)
+        self.assertEqual(payload["agenda_scope"], "all")
+
+    def test_manuscripts_list_spans_agendas_when_unscoped(self):
+        self._require_table("manuscript_runs")
+        response = self.client.get("/api/manuscripts")
+        self.assertEqual(response.status_code, 200, response.get_data(as_text=True))
+        self.assertIsInstance(response.get_json(), list)
 
 
 if __name__ == "__main__":

@@ -2693,3 +2693,63 @@ header#topBar {
     margin: 0.9em 0;
     padding-bottom: 2px;
 }
+
+/* ── Adjudicated findings ──────────────────────────────────────────
+   The "Decided Findings" counter used to have nothing behind it. These
+   styles back the list that the counter now opens. */
+.stat-card-link {
+    margin-top: 6px;
+    padding: 0;
+    background: none;
+    border: none;
+    color: var(--accent);
+    font-family: inherit;
+    font-size: 0.72rem;
+    cursor: pointer;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+}
+.stat-card-link:hover { color: var(--text-primary); }
+
+.decision-row {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+}
+.decision-row:last-child { border-bottom: none; }
+
+.decision-head {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+.decision-title {
+    color: var(--text-primary);
+    font-size: 0.88rem;
+}
+.decision-verdict {
+    flex: none;
+    padding: 1px 7px;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    font-family: var(--font-mono);
+    font-size: 0.7rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+.verdict-supported { color: var(--green); border-color: var(--green); }
+.verdict-refuted { color: var(--red); border-color: var(--red); }
+.verdict-inconclusive { color: var(--text-dim); }
+
+.decision-meta {
+    margin-top: 3px;
+    color: var(--text-dim);
+    font-size: 0.75rem;
+}
+.decision-hash {
+    margin-top: 2px;
+    color: var(--text-dim);
+    font-family: var(--font-mono);
+    font-size: 0.68rem;
+    opacity: 0.7;
+}

@@ -77,8 +77,14 @@ const AGENDA_SCOPED_PATHS = [
     '/api/meta_report', '/api/v1/evidence_states',
 ];
 
+// ALL_AGENDAS is the default scope. The front-page counters have always summed
+// across every agenda; pinning every list to one agenda made the page disagree
+// with its own headline numbers, and a first-time visitor landed on the newest
+// agenda, which is also the emptiest one.
+const ALL_AGENDAS = 'all';
+
 function withAgendaScope(path) {
-    if (currentAgendaId == null) return path;
+    if (currentAgendaId == null || currentAgendaId === ALL_AGENDAS) return path;
     if (path.includes('agenda_id=')) return path;
     if (!AGENDA_SCOPED_PATHS.some(p => path.startsWith(p))) return path;
     return path + (path.includes('?') ? '&' : '?') + 'agenda_id=' + currentAgendaId;
@@ -94,28 +100,40 @@ async function initAgendaScope() {
     try {
         const data = await api('/api/v1/agendas');
         agendaList = data.agendas || [];
-        const stored = parseInt(localStorage.getItem('deepgraph.agenda') || '', 10);
-        const fromStore = agendaList.find(a => a.id === stored);
-        const active = fromStore || agendaList.find(a => a.is_active) || agendaList[0];
-        if (active) currentAgendaId = active.id;
+        const stored = localStorage.getItem('deepgraph.agenda');
+        if (stored === ALL_AGENDAS) {
+            currentAgendaId = ALL_AGENDAS;
+        } else {
+            const storedId = parseInt(stored || '', 10);
+            const fromStore = agendaList.find(a => a.id === storedId);
+            // Default to the whole portfolio, not one agenda: the newest agenda
+            // is the emptiest, so defaulting to it showed a blank dashboard.
+            currentAgendaId = fromStore ? fromStore.id : ALL_AGENDAS;
+        }
         renderAgendaSwitcher();
     } catch (e) {
         console.error('Agenda scope unavailable:', e);
+        currentAgendaId = ALL_AGENDAS;
     }
 }
 
 function renderAgendaSwitcher() {
     const select = el('agendaSelect');
-    if (!select || agendaList.length < 2) return;
-    select.innerHTML = agendaList.map(a =>
+    if (!select) return;
+    const allLabel = t('agenda.all') || 'All agendas';
+    select.innerHTML = [
+        `<option value="${ALL_AGENDAS}"${currentAgendaId === ALL_AGENDAS ? ' selected' : ''}>${esc(allLabel)}</option>`,
+    ].concat(agendaList.map(a =>
         `<option value="${a.id}"${a.id === currentAgendaId ? ' selected' : ''}>#${a.id} ${esc(trunc(a.name, 42))}</option>`
-    ).join('');
+    )).join('');
     select.style.display = '';
     if (!select._wired) {
         select._wired = true;
         select.addEventListener('change', () => {
-            const next = parseInt(select.value, 10);
-            if (!next || next === currentAgendaId) return;
+            const raw = select.value;
+            const next = raw === ALL_AGENDAS ? ALL_AGENDAS : parseInt(raw, 10);
+            if (next !== ALL_AGENDAS && !next) return;
+            if (next === currentAgendaId) return;
             currentAgendaId = next;
             localStorage.setItem('deepgraph.agenda', String(next));
             evidenceStateMap = null;
@@ -342,6 +360,7 @@ function onTabActivated(tab) {
             break;
         case 'evidence':
             loadTaxonomyDropdown();
+            loadDecisions();
             break;
         case 'papers':
             if (!papersLoaded) loadPapers();
@@ -2237,6 +2256,65 @@ function gapColor(gapCount, maxGap) {
 }
 
 // ── Evidence Tab ─────────────────────────────────────────────────────
+
+const VERDICT_CLASS = {
+    supported: 'verdict-supported',
+    refuted: 'verdict-refuted',
+    inconclusive: 'verdict-inconclusive',
+};
+
+function decisionMetricLine(d) {
+    const parts = [];
+    if (d.baseline_metric_value != null) {
+        parts.push(`${t('decisions.baseline')} ${esc(String(d.baseline_metric_name || ''))} ${Number(d.baseline_metric_value).toPrecision(4)}`);
+    }
+    if (d.best_metric_value != null) {
+        parts.push(`${t('decisions.best')} ${Number(d.best_metric_value).toPrecision(4)}`);
+    }
+    if (d.effect_pct != null) {
+        parts.push(`${t('decisions.effect')} ${Number(d.effect_pct).toFixed(2)}%`);
+    }
+    return parts.join(' &middot; ');
+}
+
+async function loadDecisions() {
+    const body = el('decisionsBody');
+    if (!body) return;
+    try {
+        const payload = await api('/api/scientific_decisions');
+        const rows = payload.decisions || [];
+        const badge = el('decisionsCountBadge');
+        if (badge) {
+            badge.textContent = Object.entries(payload.counts_by_verdict || {})
+                .map(([verdict, n]) => `${n} ${verdict}`).join(' / ') || '0';
+        }
+        if (!rows.length) {
+            body.innerHTML = `<div class="paper-reader-empty-title">${esc(t('decisions.empty'))}</div>`;
+            return;
+        }
+        body.innerHTML = rows.map(d => {
+            const cls = VERDICT_CLASS[String(d.verdict)] || '';
+            const metrics = decisionMetricLine(d);
+            return `<div class="decision-row">
+                <div class="decision-head">
+                    <span class="decision-verdict ${cls}">${esc(String(d.verdict || '?'))}</span>
+                    <span class="decision-title">${esc(trunc(d.insight_title || `#${d.id}`, 110))}</span>
+                </div>
+                <div class="decision-meta">
+                    agenda #${esc(String(d.agenda_id))}
+                    &middot; ${esc(t('decisions.runLabel'))} #${esc(String(d.experiment_run_id ?? '-'))}
+                    ${d.evaluator_ref ? `&middot; ${esc(t('decisions.evaluator'))} ${esc(String(d.evaluator_ref))}` : ''}
+                    &middot; ${esc(String(d.created_at || '').slice(0, 19))}
+                </div>
+                ${metrics ? `<div class="decision-meta">${metrics}</div>` : ''}
+                ${d.verdict_hash ? `<div class="decision-hash">${esc(String(d.verdict_hash).slice(0, 16))}…</div>` : ''}
+            </div>`;
+        }).join('');
+    } catch (e) {
+        console.error('Decisions unavailable:', e);
+        body.innerHTML = `<div class="paper-reader-empty-title">${esc(t('decisions.empty'))}</div>`;
+    }
+}
 
 async function loadTaxonomyDropdown() {
     if (taxonomyFlat.length > 0) return; // already loaded
@@ -4168,6 +4246,18 @@ function init() {
     el('evidenceNodeSelect').addEventListener('change', (e) => {
         loadEvidenceForNode(e.target.value);
     });
+
+    // The Decided Findings counter now opens the list it is counting.
+    const decidedOpen = el('statDecidedOpen');
+    if (decidedOpen) {
+        decidedOpen.addEventListener('click', () => {
+            switchTab('evidence');
+            window.requestAnimationFrame(() => {
+                const card = el('decisionsCard');
+                if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            });
+        });
+    }
 
     // Manuscripts filters
     el('papersSearch').addEventListener('input', () => {

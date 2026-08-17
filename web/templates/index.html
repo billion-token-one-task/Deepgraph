@@ -159,6 +159,7 @@
                             </div>
                             <div class="stat-number" id="statDecided">0</div>
                             <div class="stat-label" data-i18n="stat.decidedFindings">Decided Findings</div>
+                            <button type="button" id="statDecidedOpen" class="stat-card-link" data-i18n="decisions.title">Adjudicated findings</button>
                             <div class="stat-subtext" id="statDecidedSub"></div>
                         </div>
                         <div class="stat-card" title="LLM tokens spent reading and reasoning over source papers">
@@ -334,6 +335,17 @@
                             <h3 id="evidenceGapsTitle" data-i18n="evidence.gaps">Matrix Gaps</h3>
                         </div>
                         <div id="evidenceGapsBody"></div>
+                    </div>
+                    <!-- The "Decided Findings" counter used to be a dead end: it
+                         summed decision records across every agenda while no
+                         route could list even one of them. -->
+                    <div class="card" id="decisionsCard">
+                        <div class="card-header">
+                            <h3 data-i18n="decisions.title">Adjudicated findings</h3>
+                            <span id="decisionsCountBadge" class="paper-library-subtitle"></span>
+                        </div>
+                        <div class="paper-library-subtitle" data-i18n="decisions.subtitle">Every verdict the evidence ladder has recorded, with the audit record it rests on.</div>
+                        <div id="decisionsBody"></div>
                     </div>
                 </div>
             </section>
