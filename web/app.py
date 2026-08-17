@@ -310,6 +310,52 @@ def _required_agenda_query_id() -> int | None:
     return agenda_id if agenda_id > 0 else None
 
 
+# Sentinel for "every agenda", distinct from None (= the caller sent something
+# we could not parse).
+ALL_AGENDAS = "all"
+
+
+def _agenda_query_scope() -> int | str | None:
+    """Resolve the agenda filter for a read endpoint.
+
+    ``agenda_id`` is a filter here, not an authorization boundary: the read API
+    carries no per-agenda access control, so refusing to answer without one only
+    hid data from the dashboard. The stat cards on the front page count across
+    every agenda while every detail list was pinned to one, so the page showed
+    large totals above empty tables -- the numbers and the lists were answering
+    different questions.
+
+    Returns a positive int when one agenda is requested, ALL_AGENDAS when the
+    caller wants the cross-agenda view (parameter absent, empty, ``all``, or
+    ``0``), and None only when the value was sent but is not usable.
+    """
+    raw = request.args.get("agenda_id", None)
+    if raw is None or not str(raw).strip() or str(raw).strip().lower() == ALL_AGENDAS:
+        return ALL_AGENDAS
+    try:
+        agenda_id = int(raw)
+    except (TypeError, ValueError):
+        return None
+    if agenda_id == 0:
+        return ALL_AGENDAS
+    return agenda_id if agenda_id > 0 else None
+
+
+def _agenda_sql_filter(
+    scope: int | str, column: str = "agenda_id"
+) -> tuple[str, list]:
+    """Build the WHERE fragment and params for an agenda scope."""
+    if scope == ALL_AGENDAS:
+        return "", []
+    return f" AND {column}=?", [int(scope)]
+
+
+def _bad_agenda_scope():
+    return jsonify(
+        {"error": "agenda_id must be a positive integer, 'all', or omitted"}
+    ), 400
+
+
 def _api_failure(scope: str, exc: Exception, status: int = 500):
     try:
         db.rollback()
@@ -1001,9 +1047,10 @@ def _automation_snapshot() -> dict:
 
 def _load_experiment_groups(
     *,
-    agenda_id: int,
+    agenda_id: int | str,
     include_archived: bool = False,
 ) -> list[dict]:
+    agenda_clause, agenda_params = _agenda_sql_filter(agenda_id, "di.agenda_id")
     insights = db.fetchall(
         """
         SELECT di.*, arj.id AS auto_job_id, arj.status AS auto_status, arj.stage AS auto_stage,
@@ -1014,7 +1061,7 @@ def _load_experiment_groups(
         FROM deep_insights di
         LEFT JOIN auto_research_jobs arj
           ON arj.deep_insight_id = di.id AND arj.agenda_id = di.agenda_id
-        WHERE di.agenda_id=?
+        WHERE 1=1""" + agenda_clause + """
           AND (
                arj.id IS NOT NULL
                OR EXISTS (
@@ -1025,7 +1072,7 @@ def _load_experiment_groups(
           )
         ORDER BY COALESCE(arj.updated_at, di.updated_at, di.created_at) DESC
         """,
-        (agenda_id,),
+        tuple(agenda_params),
     )
     if not insights:
         return []
@@ -1921,11 +1968,12 @@ def api_deep_insights():
     status = request.args.get("status", "")
     limit = request.args.get("limit", 50, type=int)
 
-    agenda_id = _required_agenda_query_id()
-    if agenda_id is None:
-        return jsonify({"error": "positive agenda_id query parameter required"}), 400
-    sql = "SELECT * FROM deep_insights WHERE agenda_id=?"
-    params = [agenda_id]
+    scope = _agenda_query_scope()
+    if scope is None:
+        return _bad_agenda_scope()
+    agenda_clause, agenda_params = _agenda_sql_filter(scope)
+    sql = "SELECT * FROM deep_insights WHERE 1=1" + agenda_clause
+    params = list(agenda_params)
     if tier:
         sql += " AND tier=?"
         try:
@@ -1953,12 +2001,13 @@ def api_deep_insights():
 @app.route("/api/deep_insights/<int:insight_id>")
 def api_deep_insight_detail(insight_id):
     """Get full detail for one deep insight."""
-    agenda_id = _required_agenda_query_id()
-    if agenda_id is None:
-        return jsonify({"error": "positive agenda_id query parameter required"}), 400
+    scope = _agenda_query_scope()
+    if scope is None:
+        return _bad_agenda_scope()
+    agenda_clause, agenda_params = _agenda_sql_filter(scope)
     row = db.fetchone(
-        "SELECT * FROM deep_insights WHERE id=? AND agenda_id=?",
-        (insight_id, agenda_id),
+        "SELECT * FROM deep_insights WHERE id=?" + agenda_clause,
+        tuple([insight_id, *agenda_params]),
     )
     if not row:
         return jsonify({"error": "Not found"}), 404
@@ -2053,15 +2102,16 @@ def api_experiments():
     insight_id = request.args.get("insight_id", "", type=str)
     limit = request.args.get("limit", 50, type=int)
 
-    agenda_id = _required_agenda_query_id()
-    if agenda_id is None:
-        return jsonify({"error": "positive agenda_id query parameter required"}), 400
+    scope = _agenda_query_scope()
+    if scope is None:
+        return _bad_agenda_scope()
+    agenda_clause, agenda_params = _agenda_sql_filter(scope, "er.agenda_id")
     sql = """SELECT er.*, di.title as insight_title, di.tier as insight_tier
              FROM experiment_runs er
              JOIN deep_insights di
                ON er.deep_insight_id = di.id AND er.agenda_id = di.agenda_id
-             WHERE er.agenda_id=?"""
-    params = [agenda_id]
+             WHERE 1=1""" + agenda_clause
+    params = list(agenda_params)
     if status:
         sql += " AND er.status=?"
         params.append(status)
@@ -2084,13 +2134,13 @@ def api_experiments():
 @app.route("/api/experiment_groups")
 def api_experiment_groups():
     """List idea-centric experiment groups for the dashboard."""
-    agenda_id = _required_agenda_query_id()
-    if agenda_id is None:
-        return jsonify({"error": "positive agenda_id query parameter required"}), 400
+    scope = _agenda_query_scope()
+    if scope is None:
+        return _bad_agenda_scope()
     status = request.args.get("status", "")
     limit = request.args.get("limit", 50, type=int)
     groups = _load_experiment_groups(
-        agenda_id=agenda_id,
+        agenda_id=scope,
         include_archived=_include_archived_requested(),
     )
     if status:
@@ -2105,10 +2155,10 @@ def api_experiment_groups():
 @app.route("/api/experiment_groups/<int:insight_id>")
 def api_experiment_group_detail(insight_id):
     """Get one idea-centric experiment group with run history."""
-    agenda_id = _required_agenda_query_id()
-    if agenda_id is None:
-        return jsonify({"error": "positive agenda_id query parameter required"}), 400
-    groups = _load_experiment_groups(agenda_id=agenda_id, include_archived=True)
+    scope = _agenda_query_scope()
+    if scope is None:
+        return _bad_agenda_scope()
+    groups = _load_experiment_groups(agenda_id=scope, include_archived=True)
     for group in groups:
         if int(group["insight"]["id"]) == insight_id:
             return jsonify(group)
@@ -2116,12 +2166,13 @@ def api_experiment_group_detail(insight_id):
 
 
 def _load_paper_preview_context(insight_id: int) -> tuple[dict, dict]:
-    agenda_id = _required_agenda_query_id()
-    if agenda_id is None:
+    scope = _agenda_query_scope()
+    if scope is None:
         abort(400)
+    agenda_clause, agenda_params = _agenda_sql_filter(scope)
     insight = db.fetchone(
-        "SELECT * FROM deep_insights WHERE id=? AND agenda_id=?",
-        (insight_id, agenda_id),
+        "SELECT * FROM deep_insights WHERE id=?" + agenda_clause,
+        tuple([insight_id, *agenda_params]),
     )
     if not insight:
         abort(404)
@@ -2183,22 +2234,23 @@ def _paper_generation_complete(paper: dict[str, Any]) -> bool:
 def api_generated_papers():
     """List DeepGraph-generated manuscripts, not imported arXiv papers."""
     try:
-        agenda_id = _required_agenda_query_id()
-        if agenda_id is None:
-            return jsonify({"error": "positive agenda_id query parameter required"}), 400
+        scope = _agenda_query_scope()
+        if scope is None:
+            return _bad_agenda_scope()
+        agenda_clause, agenda_params = _agenda_sql_filter(scope)
         limit = request.args.get("limit", 100, type=int)
         include_archived = _include_archived_requested()
         rows = db.fetchall(
             """
             SELECT *
             FROM deep_insights
-            WHERE agenda_id=?
+            WHERE 1=1""" + agenda_clause + """
             ORDER BY
               CASE WHEN submission_status='bundle_ready' THEN 0 ELSE 1 END,
               updated_at DESC
             LIMIT ?
             """,
-            (agenda_id, limit),
+            tuple([*agenda_params, limit]),
         )
         papers: list[dict[str, Any]] = []
         for raw in rows:
@@ -2305,12 +2357,13 @@ def paper_preview_index(insight_id):
 
 @app.route("/papers/<int:insight_id>/view/<path:asset>")
 def paper_preview_asset(insight_id, asset):
-    agenda_id = _required_agenda_query_id()
-    if agenda_id is None:
+    scope = _agenda_query_scope()
+    if scope is None:
         abort(400)
+    agenda_clause, agenda_params = _agenda_sql_filter(scope)
     insight = db.fetchone(
-        "SELECT * FROM deep_insights WHERE id=? AND agenda_id=?",
-        (insight_id, agenda_id),
+        "SELECT * FROM deep_insights WHERE id=?" + agenda_clause,
+        tuple([insight_id, *agenda_params]),
     )
     if not insight:
         abort(404)
@@ -2346,26 +2399,28 @@ def paper_preview_tex(insight_id):
 @app.route("/api/experiments/<int:run_id>")
 def api_experiment_detail(run_id):
     """Get full detail for one experiment run including iterations."""
-    agenda_id = _required_agenda_query_id()
-    if agenda_id is None:
-        return jsonify({"error": "positive agenda_id query parameter required"}), 400
+    scope = _agenda_query_scope()
+    if scope is None:
+        return _bad_agenda_scope()
+    run_clause, run_params = _agenda_sql_filter(scope, "er.agenda_id")
+    row_clause, row_params = _agenda_sql_filter(scope)
     run = db.fetchone(
         """SELECT er.*, di.title as insight_title, di.tier as insight_tier
            FROM experiment_runs er
            JOIN deep_insights di
              ON er.deep_insight_id = di.id AND er.agenda_id = di.agenda_id
-           WHERE er.id=? AND er.agenda_id=?""", (run_id, agenda_id))
+           WHERE er.id=?""" + run_clause, tuple([run_id, *run_params]))
     if not run:
         return jsonify({"error": "Not found"}), 404
 
     iterations = db.fetchall(
         """SELECT * FROM experiment_iterations
-           WHERE run_id=? AND agenda_id=?
-           ORDER BY iteration_number""", (run_id, agenda_id))
+           WHERE run_id=?""" + row_clause + """
+           ORDER BY iteration_number""", tuple([run_id, *row_params]))
 
     claims = db.fetchall(
-        "SELECT * FROM experimental_claims WHERE run_id=? AND agenda_id=?",
-        (run_id, agenda_id),
+        "SELECT * FROM experimental_claims WHERE run_id=?" + row_clause,
+        tuple([run_id, *row_params]),
     )
 
     return jsonify({
@@ -2439,11 +2494,11 @@ def api_gpu_jobs():
 def api_manuscripts():
     from agents.manuscript_pipeline import list_manuscripts
 
-    agenda_id = _required_agenda_query_id()
-    if agenda_id is None:
-        return jsonify({"error": "positive agenda_id query parameter required"}), 400
+    scope = _agenda_query_scope()
+    if scope is None:
+        return _bad_agenda_scope()
     limit = request.args.get("limit", 50, type=int)
-    return jsonify(list_manuscripts(agenda_id=agenda_id, limit=limit))
+    return jsonify(list_manuscripts(agenda_id=scope, limit=limit))
 
 
 @app.route("/api/manuscripts/<int:run_id>/bundle", methods=["POST"])
@@ -2451,24 +2506,83 @@ def api_manuscript_bundle(run_id):
     return _manual_api_removed_response()
 
 
+@app.route("/api/scientific_decisions")
+def api_scientific_decisions():
+    """List adjudicated findings behind the front-page decision counter.
+
+    The counter was a dead end: it summed decision records across every agenda
+    while no route could list even one of them. This endpoint answers the same
+    question the number does, and joins the audit record so a reader can see
+    what evidence the verdict rests on.
+    """
+    scope = _agenda_query_scope()
+    if scope is None:
+        return _bad_agenda_scope()
+    verdict = request.args.get("verdict", "")
+    limit = max(1, min(request.args.get("limit", 100, type=int), 500))
+    agenda_clause, agenda_params = _agenda_sql_filter(scope, "sdr.agenda_id")
+    sql = """
+        SELECT sdr.id, sdr.agenda_id, sdr.experiment_run_id, sdr.verdict,
+               sdr.verdict_hash, sdr.evidence_decision_json, sdr.created_at,
+               ear.evaluator_ref, ear.holdout_ref, ear.raw_artifacts_hash,
+               ear.claim_ledger_hash,
+               er.hypothesis_verdict, er.baseline_metric_name,
+               er.baseline_metric_value, er.best_metric_value, er.effect_pct,
+               di.id AS deep_insight_id, di.title AS insight_title, di.tier AS insight_tier
+        FROM scientific_decision_records sdr
+        LEFT JOIN evidence_audit_records ear
+          ON ear.id = sdr.evidence_audit_record_id
+        LEFT JOIN experiment_runs er
+          ON er.id = sdr.experiment_run_id AND er.agenda_id = sdr.agenda_id
+        LEFT JOIN deep_insights di
+          ON di.id = er.deep_insight_id AND di.agenda_id = er.agenda_id
+        WHERE 1=1""" + agenda_clause
+    params = list(agenda_params)
+    if verdict:
+        sql += " AND sdr.verdict=?"
+        params.append(verdict)
+    sql += " ORDER BY sdr.created_at DESC, sdr.id DESC LIMIT ?"
+    params.append(limit)
+    try:
+        rows = db.fetchall(sql, tuple(params))
+        by_verdict: dict[str, int] = {}
+        for row in db.fetchall(
+            "SELECT verdict, COUNT(*) AS c FROM scientific_decision_records"
+            " WHERE 1=1" + _agenda_sql_filter(scope)[0] + " GROUP BY verdict",
+            tuple(_agenda_sql_filter(scope)[1]),
+        ):
+            by_verdict[str(row["verdict"])] = int(row["c"])
+        return jsonify(
+            {
+                "decisions": rows,
+                "counts_by_verdict": by_verdict,
+                "total": sum(by_verdict.values()),
+                "agenda_scope": "all" if scope == ALL_AGENDAS else int(scope),
+            }
+        )
+    except Exception as exc:
+        return _api_failure("scientific_decisions", exc)
+
+
 @app.route("/api/submission_bundles/<int:bundle_id>")
 def api_submission_bundle(bundle_id):
-    agenda_id = _required_agenda_query_id()
-    if agenda_id is None:
-        return jsonify({"error": "positive agenda_id query parameter required"}), 400
+    scope = _agenda_query_scope()
+    if scope is None:
+        return _bad_agenda_scope()
+    agenda_clause, agenda_params = _agenda_sql_filter(scope)
     row = db.fetchone(
-        "SELECT * FROM submission_bundles WHERE id=? AND agenda_id=?",
-        (bundle_id, agenda_id),
+        "SELECT * FROM submission_bundles WHERE id=?" + agenda_clause,
+        tuple([bundle_id, *agenda_params]),
     )
     if not row:
         return jsonify({"error": "Not found"}), 404
     manuscript_run = db.fetchone(
-        "SELECT * FROM manuscript_runs WHERE id=? AND agenda_id=?",
-        (row["manuscript_run_id"], agenda_id),
+        "SELECT * FROM manuscript_runs WHERE id=?" + agenda_clause,
+        tuple([row["manuscript_run_id"], *agenda_params]),
     )
     assets = db.fetchall(
         """SELECT * FROM manuscript_assets
-           WHERE manuscript_run_id=? AND agenda_id=? ORDER BY id""",
-        (row["manuscript_run_id"], agenda_id),
+           WHERE manuscript_run_id=?""" + agenda_clause + " ORDER BY id",
+        tuple([row["manuscript_run_id"], *agenda_params]),
     )
     return jsonify({"bundle": row, "manuscript_run": manuscript_run, "assets": assets})
