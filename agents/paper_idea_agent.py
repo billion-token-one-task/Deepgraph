@@ -892,6 +892,7 @@ controlled materialized-trace study or a standard public benchmark with a loader
         # capability preflight.
         try:
             from meta_harness.preflight_repository import runtime_preflight_environment
+            from meta_harness.runner_capability import RunnerRegistry
 
             environment = runtime_preflight_environment()
             live_vram = [
@@ -899,6 +900,17 @@ controlled materialized-trace study or a standard public benchmark with a loader
                 for name in environment.enabled_backends
             ]
             ceiling = max(live_vram, default=0.0)
+            # Idea 114 declared TruthfulQA mc2 on 2026-08-17 and was refused
+            # with three structural blockers: the designer was never told what
+            # the runners can execute. The envelope below is read from the
+            # same registry preflight enforces -- one fact, both ends.
+            envelope = "\n".join(
+                f"- task_protocol {'/'.join(cap.task_protocols)}: model task "
+                f"{'/'.join(cap.model_tasks)}; dataset field roles "
+                f"{'/'.join(cap.dataset_roles)}; metrics "
+                f"{', '.join(cap.metric_names)}"
+                for cap in RunnerRegistry().all()
+            )
             compute_constraint = f"""
 ## Available Execution Hardware (measured, not aspirational)
 Enabled backends: {", ".join(environment.enabled_backends) or "cpu"}.
@@ -906,6 +918,13 @@ Largest verified GPU right now: {ceiling:.1f} GB VRAM.
 Declare a model whose inference fits that VRAM (fp16 weights plus KV cache);
 anything larger fails capability preflight and the idea stalls unexecuted.
 Put larger-model scaling in limitations or future work, not the primary plan.
+
+## Executable Capability Envelope (the only contracts a runner can execute)
+{envelope}
+execution_requirements MUST stay strictly inside one line above: its task
+protocol, model task, dataset field roles and metric. A metric or protocol
+outside this envelope is not creativity, it is an unexecutable plan; the
+preflight gate will refuse it and the idea stalls.
 """
         except Exception:
             compute_constraint = ""
