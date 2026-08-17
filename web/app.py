@@ -1051,8 +1051,34 @@ def _automation_snapshot() -> dict:
             "recent_runs": manuscripts,
         }
 
+    def scoped_ingestion_status():
+        """The worker that actually reads papers under V1.
+
+        orchestrator.paper_worker is fail-closed by design here -- it refuses to
+        run without an agenda-scoped ResourceGrant -- so the dashboard was
+        reporting the retired worker as idle while the scoped worker was
+        processing a 500-paper batch that had no card at all.
+        """
+        from orchestrator import scoped_ingestion_worker
+
+        status = dict(scoped_ingestion_worker.get_status())
+        counts = {
+            str(row["status"]): int(row["c"])
+            for row in db.fetchall(
+                "SELECT status, COUNT(*) AS c FROM scoped_ingestion_jobs_v1 GROUP BY status"
+            )
+        }
+        status["counts"] = counts
+        status["queued_jobs"] = counts.get("queued", 0)
+        status["running_jobs"] = counts.get("running", 0)
+        status["available"] = True
+        return status
+
     return {
         "paper_worker": paper_worker_status,
+        "scoped_ingestion": _safe_service_payload(
+            "scoped_ingestion", scoped_ingestion_status
+        ),
         "auto_research": auto_research_status,
         "gpu_scheduler": _safe_service_payload("gpu_scheduler", gpu_status),
         "evoscientist": _safe_service_payload("evoscientist", evoscientist_status),

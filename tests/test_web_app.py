@@ -436,5 +436,35 @@ class AgendaScopeApiTests(unittest.TestCase):
         self.assertIsInstance(response.get_json(), list)
 
 
+
+class AutomationPanelTests(unittest.TestCase):
+    """The pipeline card must report the worker that does the work.
+
+    orchestrator.paper_worker is fail-closed under V1 -- it refuses to start
+    without an agenda-scoped ResourceGrant -- so the dashboard showed
+    "not_started" while orchestrator.scoped_ingestion_worker was processing a
+    500-paper batch that had no card at all.
+    """
+
+    def setUp(self):
+        self.client = web_app.app.test_client()
+
+    def test_the_snapshot_reports_the_scoped_ingestion_worker(self):
+        snapshot = web_app._automation_snapshot()
+        self.assertIn("scoped_ingestion", snapshot)
+
+    def test_the_legacy_worker_is_still_reported_for_provenance(self):
+        """Both are shown; the card chooses. Dropping one would hide a refusal."""
+        snapshot = web_app._automation_snapshot()
+        self.assertIn("paper_worker", snapshot)
+
+    def test_the_scoped_status_carries_queue_depth(self):
+        scoped = web_app._automation_snapshot().get("scoped_ingestion") or {}
+        if scoped.get("error"):
+            self.skipTest("scoped ingestion tables are PostgreSQL-only")
+        for key in ("running", "queued_jobs", "running_jobs", "counts"):
+            self.assertIn(key, scoped)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -3140,7 +3140,13 @@ function renderAutomationOverview(snapshot) {
     const work = el('currentWorkGrid');
     if (!grid || !work || !snapshot) return;
 
-    const paper = snapshot.paper_worker || {};
+    // Under V1 the legacy paper_worker is fail-closed on purpose: it refuses to
+    // run without an agenda-scoped grant. The scoped ingestion worker is what
+    // actually reads papers, so the pipeline card reports that one and falls
+    // back to the legacy status only where the scoped worker is absent.
+    const scoped = snapshot.scoped_ingestion || {};
+    const legacyPaper = snapshot.paper_worker || {};
+    const paper = Object.keys(scoped).length ? scoped : legacyPaper;
     const auto = snapshot.auto_research || {};
     const evo = snapshot.evoscientist || {};
     const po = snapshot.paperorchestra || {};
@@ -3151,7 +3157,9 @@ function renderAutomationOverview(snapshot) {
         serviceCard(
             'Paper Pipeline',
             serviceState('paper', true, paper.running),
-            `Batch ${esc(paper.batch_size || '?')}, ${esc(paper.status || 'idle')}`
+            paper.counts
+                ? `${paper.running_jobs || 0} running, ${paper.queued_jobs || 0} queued, ${esc(paper.status || 'idle')}`
+                : `Batch ${esc(paper.batch_size || '?')}, ${esc(paper.status || 'idle')}`
         ),
         serviceCard(
             'Auto Research',
