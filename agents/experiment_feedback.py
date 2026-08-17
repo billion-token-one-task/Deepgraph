@@ -253,7 +253,11 @@ def _routing_findings(routing: Any) -> tuple[list[str], list[str]]:
 def _statistical_findings(summary: dict[str, Any]) -> tuple[list[str], list[str]]:
     findings: list[str] = []
     actions: list[str] = []
-    p_value = _as_float(summary.get("paired_bootstrap_p") or summary.get("bootstrap_p") or summary.get("p_value"))
+    # Canonical lookup (audit A14): this agent's private keys are now part of
+    # P_VALUE_KEYS, so the contract gate and this feedback read the same names.
+    from meta_harness.runner_contract import extract_p_value
+
+    p_value = extract_p_value(summary)
     if p_value is not None and p_value > 0.05:
         findings.append(f"Candidate effect is not statistically reliable yet (p={p_value:.4g}).")
         actions.append("Make a mechanism-level method change and rerun the same seeds; do not paper over this with reporting-only edits.")

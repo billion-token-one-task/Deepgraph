@@ -350,7 +350,11 @@ def _statistical_tests(packet: dict[str, Any], summary: dict[str, Any], contract
     )
     bootstrap = _as_dict(summary.get("bootstrap_ci"))
     if bootstrap:
-        p = _first_present(bootstrap.get("paired_permutation_p"), bootstrap.get("p_value"))
+        # Canonical lookup (audit A14) so the reported figure matches what the
+        # evidence gate actually read.
+        from meta_harness.runner_contract import extract_p_value
+
+        p = extract_p_value(summary)
         pieces.append(f"paired bootstrap/permutation p={p}" if p is not None else "paired bootstrap/permutation")
     if packet.get("p_value") is not None:
         pieces.append(f"p={packet.get('p_value')}")

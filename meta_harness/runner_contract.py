@@ -55,7 +55,17 @@ REQUIRED_ARTIFACTS = (
 # run could therefore spend its whole budget, produce a clean metric, and only
 # discover at the last gate that `supported` was never reachable.
 P_VALUE_CONTAINERS = ("bootstrap_ci", "statistical_tests", "significance", "pairwise_tests")
-P_VALUE_KEYS = ("p_value", "paired_permutation_p", "p", "p_vs_strongest")
+P_VALUE_KEYS = (
+    "p_value",
+    "paired_permutation_p",
+    "p",
+    "p_vs_strongest",
+    # experiment_feedback grew these two before the vocabulary had one home;
+    # folded in 2026-08-17 so a bootstrap-reporting runner is visible to the
+    # contract gate and not only to the feedback agent (audit A14).
+    "paired_bootstrap_p",
+    "bootstrap_p",
+)
 
 DEFAULT_PERMUTATIONS = 1000
 

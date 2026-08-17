@@ -3226,18 +3226,14 @@ def _scientific_review_gate(main_tex: str, state: dict) -> dict:
                 return parsed
         return None
 
-    p_value = None
+    # Canonical lookup (audit A14): the private copy here searched only
+    # packet/bootstrap_ci, so container-reported p-values were invisible.
+    from meta_harness.runner_contract import extract_p_value
+
     tests = summary.get("bootstrap_ci") if isinstance(summary.get("bootstrap_ci"), dict) else {}
-    for source in (packet, tests):
-        for key in ("p_value", "paired_permutation_p"):
-            try:
-                if source.get(key) is not None:
-                    p_value = float(source.get(key))
-                    break
-            except (TypeError, ValueError):
-                    pass
-        if p_value is not None:
-            break
+    p_value = extract_p_value(packet)
+    if p_value is None:
+        p_value = extract_p_value(summary)
     per_method = summary.get("per_method") if isinstance(summary.get("per_method"), dict) else {}
     method_names = " ".join(per_method.keys()).lower()
     candidate_name = str(summary.get("candidate_method") or packet.get("candidate_method") or state.get("method_name") or "")

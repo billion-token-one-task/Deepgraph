@@ -2050,21 +2050,12 @@ def _determine_final_verdict(
     if not is_improvement:
         return "inconclusive"
 
-    p_value = None
-    for container in (
-        summary,
-        summary.get("bootstrap_ci") if isinstance(summary.get("bootstrap_ci"), dict) else {},
-        summary.get("significance") if isinstance(summary.get("significance"), dict) else {},
-    ):
-        for key in ("p_value", "paired_permutation_p"):
-            try:
-                if container.get(key) is not None:
-                    p_value = float(container[key])
-                    break
-            except (TypeError, ValueError):
-                continue
-        if p_value is not None:
-            break
+    # One vocabulary, one lookup: a private copy here once made a runner that
+    # reported statistical_tests.paired_permutation_p pass the contract gate
+    # while being invisible to this decision path (audit A14).
+    from meta_harness.runner_contract import extract_p_value
+
+    p_value = extract_p_value(summary)
 
     from contracts.scientific_evidence import EvidenceDecisionInput, decide_evidence
 
