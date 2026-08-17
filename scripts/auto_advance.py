@@ -1059,6 +1059,105 @@ def advance_agenda(agenda_id: int, state: dict, journal: Journal, args) -> None:
                         token_cap=args.grant_token_cap)
             break
 
+    # e. capability_preflight_deferred is only as permanent as the deployed
+    #    capability code, yet nothing ever re-ran preflight (acknowledged
+    #    stranded state since the 2026-08-10 census; ideas 125-128 sat here
+    #    for days). Re-run it each pass. On pass, restage the job first:
+    #    issue_grant's binding UPDATE only matches
+    #    stage='awaiting_portfolio_decision', so granting a job parked in the
+    #    deferred stage would strand an active grant with no bound job.
+    for row in _rows(
+        "SELECT deep_insight_id FROM auto_research_jobs WHERE agenda_id=?"
+        " AND status='deferred' AND stage='capability_preflight_deferred'"
+        " ORDER BY updated_at ASC",
+        (agenda_id,),
+    ):
+        idea_id = int(row["deep_insight_id"])
+        if (
+            args.spend_limit > 0
+            and _guard_spent_delta(state, args) + args.grant_token_cap > args.spend_limit
+        ):
+            journal.log("spend_limit_reached", agenda_id=agenda_id,
+                        limit=args.spend_limit)
+            break
+        packet_row = db.fetchone(
+            "SELECT id FROM idea_decision_packets WHERE agenda_id=? AND idea_id=?"
+            "   AND decision IN ('promote','revisit') ORDER BY id DESC LIMIT 1",
+            (agenda_id, idea_id),
+        )
+        if not packet_row:
+            journal.log("preflight_retry_no_packet", agenda_id=agenda_id,
+                        idea_id=idea_id)
+            continue
+        try:
+            preflight = CandidatePreflightRepository().run_candidate(
+                agenda_id=agenda_id,
+                idea_id=idea_id,
+            )
+        except Exception as exc:
+            db.rollback()
+            journal.log("preflight_retry_failed", agenda_id=agenda_id,
+                        idea_id=idea_id, reason=f"{type(exc).__name__}: {exc}")
+            continue
+        journal.log("preflight_retry", agenda_id=agenda_id, idea_id=idea_id,
+                    status=preflight.status, reason_codes=preflight.reason_codes,
+                    selected_backend=preflight.selected_backend,
+                    preflight_result_id=preflight.preflight_result_id)
+        if not preflight.passed:
+            continue
+        agenda_backends = json.loads(dict(db.fetchone(
+            "SELECT backend_allowlist_json FROM research_agendas WHERE id=?",
+            (agenda_id,),
+        ))["backend_allowlist_json"])
+        if preflight.selected_backend not in agenda_backends:
+            journal.log("preflight_backend_not_in_agenda", agenda_id=agenda_id,
+                        idea_id=idea_id,
+                        selected_backend=preflight.selected_backend)
+            continue
+        decision = _rebuild_decision(agenda_id, idea_id, int(dict(packet_row)["id"]))
+        from orchestrator.auto_research import _upsert_job
+
+        _upsert_job(
+            idea_id,
+            status="queued",
+            stage="awaiting_portfolio_decision",
+            assigned_worker=None,
+            last_error=None,
+            last_note="preflight retry passed; restaged for grant binding.",
+        )
+        compute_backend = str(preflight.selected_backend)
+        selected_backends = [compute_backend]
+        if "llm" in agenda_backends:
+            selected_backends.append("llm")
+        gpu_selected = compute_backend != "cpu"
+        try:
+            grant = issue_resource_grant(
+                decision,
+                stage="pilot",
+                token_cap=args.grant_token_cap,
+                gpu_class=args.gpu_class if gpu_selected else "none",
+                max_gpu_hours=args.grant_gpu_hours if gpu_selected else 0.0,
+                backend_allowlist=selected_backends,
+                artifact_requirements=ARTIFACT_REQUIREMENTS,
+                expires_at=(
+                    _now() + timedelta(hours=12 if gpu_selected else 24)
+                ).isoformat(),
+                idempotency_key=_grant_key(agenda_id, idea_id, "preflight"),
+                preflight_result_id=preflight.preflight_result_id,
+            )
+            grant_id = repo.issue_grant(grant)
+        except Exception as exc:
+            db.rollback()
+            journal.log("grant_refused", agenda_id=agenda_id, idea_id=idea_id,
+                        variant="preflight_retry",
+                        reason=f"{type(exc).__name__}: {exc}")
+            continue
+        journal.log("granted", agenda_id=agenda_id, idea_id=idea_id,
+                    resource_grant_id=grant_id, variant="preflight_retry",
+                    backends=selected_backends,
+                    gpu_hours=args.grant_gpu_hours if gpu_selected else 0.0,
+                    token_cap=args.grant_token_cap)
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)

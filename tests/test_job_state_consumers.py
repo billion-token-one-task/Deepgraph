@@ -72,7 +72,6 @@ ACKNOWLEDGED_STRANDED: dict[tuple[str, str], str] = {
     ("blocked", "experiment_automation_failed_final"): "census 2026-08-10",
     ("blocked", "novelty_verification_required"): "census 2026-08-10",
     ("blocked", "review_scaffold_stale_repair_exhausted"): "census 2026-08-10",
-    ("deferred", "capability_preflight_deferred"): "census 2026-08-10; nothing re-runs preflight",
     ("failed", "deep_research_launch_failed"): "census 2026-08-10",
     ("failed", "experiment_review_failed"): "census 2026-08-10",
     ("failed", "gpu_blocked"): "census 2026-08-10",

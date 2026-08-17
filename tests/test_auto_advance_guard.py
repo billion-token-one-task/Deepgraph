@@ -280,7 +280,8 @@ class AutoAdvanceGuardTests(unittest.TestCase):
         repository = mock.Mock()
 
         with (
-            mock.patch.object(auto_advance, "_rows", side_effect=[[], waiting]),
+            # third [] answers step e's capability_preflight_deferred sweep
+            mock.patch.object(auto_advance, "_rows", side_effect=[[], waiting, []]),
             mock.patch.object(auto_advance, "select_next", return_value=None),
             mock.patch.object(auto_advance, "ensure_frontier_packet", return_value=7),
             mock.patch.object(auto_advance, "build_packet", side_effect=packets),
