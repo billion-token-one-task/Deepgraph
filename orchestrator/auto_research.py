@@ -1228,6 +1228,41 @@ def _run_belongs_to_active_grant(run: dict | None, active_grant_id: int | None) 
     return int((run or {}).get("resource_grant_id") or 0) == active_grant_id
 
 
+def _run_superseded_by_harness_recovery(insight: dict, run: dict) -> bool:
+    """A failed review run older than the plan's harness recovery is stale.
+
+    The supported-subset recovery repairs the plan and requeues one fresh
+    forge, but ideas 131/133/130 (2026-08-17) never got it: the old run's
+    blocked verdict was re-applied by recovery sweeps and the claim itself,
+    and the outcome finalizer closed the candidate. The recovery stamps
+    harness_recovery_fresh_forge_at; any review-blocked run completed before
+    that stamp belongs to the pre-repair plan.
+    """
+    if str(run.get("status") or "") != "failed":
+        return False
+    if str(run.get("phase") or "") != "experiment_review_blocked":
+        return False
+    plan = _json_mapping(insight.get("experimental_plan"))
+    if not plan.get("harness_recovery_fresh_forge"):
+        return False
+    stamp = str(plan.get("harness_recovery_fresh_forge_at") or "").strip()
+    completed = run.get("completed_at")
+    if not stamp or completed is None:
+        # Flag present but unstampable: fail toward the fresh forge the
+        # recovery explicitly authorized.
+        return True
+    try:
+        stamp_dt = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+        completed_dt = completed
+        if isinstance(completed_dt, str):
+            completed_dt = datetime.fromisoformat(completed_dt)
+        if completed_dt.tzinfo is None:
+            completed_dt = completed_dt.replace(tzinfo=UTC)
+        return stamp_dt >= completed_dt
+    except (TypeError, ValueError):
+        return True
+
+
 def _existing_run_for_candidate(insight: dict) -> dict | None:
     insight_id = int(insight["id"])
     raw_active_grant_id = insight.get("auto_resource_grant_id") or insight.get("resource_grant_id")
@@ -4070,6 +4105,18 @@ def _process_candidate(insight: dict) -> None:
             )
 
     existing_run = _existing_run_for_candidate(insight)
+    if existing_run and _run_superseded_by_harness_recovery(insight, existing_run):
+        _upsert_job(
+            insight_id,
+            stage="reforge_from_unfinished_run",
+            experiment_run_id=None,
+            last_note=(
+                f"Run {existing_run['id']} predates the harness recovery of this "
+                "candidate's plan; its verdict belongs to the old plan. Forging fresh."
+            ),
+            last_error=None,
+        )
+        existing_run = None
     if _manual_reforge_requested(insight, existing_run):
         _upsert_job(
             insight_id,
