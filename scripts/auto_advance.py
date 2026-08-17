@@ -821,12 +821,36 @@ def advance_agenda(agenda_id: int, state: dict, journal: Journal, args) -> None:
                     idea_id=selection.selected_insight_id, score=selection.score)
 
     # c/d. decide + grant for waiting jobs
+    # A retired insight must not keep a live job: idea 123 was archived by the
+    # proposal-retire path on 2026-08-17 while its job stayed queued, so the
+    # zombie won the portfolio's single promote slot every pass and starved
+    # the designed candidate behind it. Close such jobs before deciding.
+    for zombie in _rows(
+        "SELECT arj.deep_insight_id FROM auto_research_jobs arj"
+        " JOIN deep_insights di ON di.id=arj.deep_insight_id"
+        " WHERE arj.agenda_id=? AND arj.status='queued'"
+        " AND COALESCE(di.status,'candidate') IN ('archived','exists')",
+        (agenda_id,),
+    ):
+        from orchestrator.auto_research import _upsert_job
+
+        _upsert_job(
+            int(zombie["deep_insight_id"]),
+            status="failed",
+            stage="proposal_unrealized",
+            assigned_worker=None,
+            last_error=None,
+            last_note="insight archived; job closed so it stops holding a portfolio slot.",
+        )
+        journal.log("archived_insight_job_closed", agenda_id=agenda_id,
+                    idea_id=zombie["deep_insight_id"])
     waiting = _rows(
         "SELECT arj.id, arj.deep_insight_id, di.status AS insight_status"
         " FROM auto_research_jobs arj"
         " JOIN deep_insights di ON di.id=arj.deep_insight_id"
         " WHERE arj.agenda_id=? AND arj.status='queued'"
         " AND arj.stage='awaiting_portfolio_decision'"
+        " AND COALESCE(di.status,'candidate') NOT IN ('archived','exists')"
         " ORDER BY arj.updated_at ASC, arj.id ASC LIMIT ?",
         (agenda_id, args.max_new_grants),
     )

@@ -43,6 +43,7 @@ TERMINAL_BY_DESIGN: dict[tuple[str, str], str] = {
     ("blocked", "prior_work_exists"): "novelty gate found prior work; idea retired",
     ("blocked", "novelty_partially_exists"): "novelty gate rejection",
     ("failed", "capability_preflight_blocked"): "candidate is outside declared runner capabilities",
+    ("failed", "proposal_unrealized"): "insight archived by the proposal-retire path; job closed with it",
 }
 
 # States whose consumer exists but is not a stage predicate, so no SQL scan can
