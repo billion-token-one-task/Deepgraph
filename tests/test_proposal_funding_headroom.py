@@ -239,3 +239,37 @@ class RetirementWiringTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UndeliveredProposalCeilingTests(unittest.TestCase):
+    """The guard must stay anchored to proposal waste, not to corpus size.
+
+    An agenda that also funds paper ingestion carries a budget sized by how many
+    papers there are to read. Before the absolute cap, raising that budget from
+    500k to 1.6B to cover a 15k-paper backlog would have raised this ceiling
+    from 50k to 160M -- silently retiring the guard that exists because nine
+    grants once spent 205393 tokens delivering no idea at all.
+    """
+
+    def test_share_still_governs_small_budgets(self):
+        from meta_harness.repository import _undelivered_proposal_ceiling
+
+        self.assertEqual(_undelivered_proposal_ceiling(500_000), 50_000)
+        self.assertEqual(_undelivered_proposal_ceiling(100_000), 10_000)
+
+    def test_absolute_cap_governs_corpus_sized_budgets(self):
+        from meta_harness.repository import (
+            UNDELIVERED_PROPOSAL_ABSOLUTE_CEILING,
+            _undelivered_proposal_ceiling,
+        )
+
+        self.assertEqual(
+            _undelivered_proposal_ceiling(1_600_000_000),
+            UNDELIVERED_PROPOSAL_ABSOLUTE_CEILING,
+        )
+
+    def test_cap_exceeds_the_waste_that_motivated_the_guard(self):
+        from meta_harness.repository import UNDELIVERED_PROPOSAL_ABSOLUTE_CEILING
+
+        # grants 20-28 on 2026-08-10 burned 205393 tokens producing nothing.
+        self.assertGreater(UNDELIVERED_PROPOSAL_ABSOLUTE_CEILING, 205_393)
