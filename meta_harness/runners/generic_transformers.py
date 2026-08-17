@@ -192,15 +192,25 @@ class GenericTransformersRunner(ResearchRunner):
             return self.torch.device("cuda" if self.torch.cuda.is_available() else "cpu")
 
     def _qa_prediction(self, prompt: str) -> tuple[str, bool]:
-        """Return the continuation and whether generation ran out of budget.
+        """Return the continuation and whether generation ran out of budget."""
+        return self._qa_predictions([prompt])[0]
 
-        A generation that stops on the token cap did not answer the question, it
-        was interrupted. Run 153 spent its whole grant with all 24 predictions
-        cut off mid-sentence under the 64-token default, so exact_match was zero
-        by construction and the result was filed as a refutation.
+    def _qa_predictions(self, prompts: list[str]) -> list[tuple[str, bool]]:
+        """Batched greedy generation; one (text, truncated) tuple per prompt.
+
+        A generation that stops on the token cap did not answer the question,
+        it was interrupted. Run 153 spent its whole grant with all 24
+        predictions cut off mid-sentence under the 64-token default, so
+        exact_match was zero by construction and the result was filed as a
+        refutation. Batching exists for the same honesty reason from the other
+        side: single-stream decoding of a floor-compliant run (200 examples,
+        two arms, three seeds, 512 tokens) needs ~8-12 GPU-hours on a T4 and
+        would burn through the pilot grant's compute cap mid-measurement.
         """
-        tokens = self.tokenizer(prompt, return_tensors="pt")
-        tokens = {key: value.to(self._device()) for key, value in tokens.items()}
+        # _qa_prediction stays the override point: harness fakes and any
+        # subclass that stubs single-prompt decoding keep working unchanged.
+        if type(self)._qa_prediction is not GenericTransformersRunner._qa_prediction:
+            return [self._qa_prediction(prompt) for prompt in prompts]
         runtime_adjustments = dict(self.config.get("runtime_adjustments") or {})
         # Default measured, not guessed: the 2026-08-17 M0 probe on GSM8K
         # showed 59% of generations still hit a 256-token cap, and truncated
@@ -211,25 +221,62 @@ class GenericTransformersRunner(ResearchRunner):
             or self.config.get("max_new_tokens")
             or 512
         )
-        with self.torch.inference_mode():
-            generated = self.model.generate(
-                **tokens,
-                do_sample=False,
-                max_new_tokens=max_new_tokens,
-                pad_token_id=(
-                    self.tokenizer.pad_token_id
-                    if self.tokenizer.pad_token_id is not None
-                    else self.tokenizer.eos_token_id
-                ),
-            )
-        continuation = generated[0][tokens["input_ids"].shape[1] :]
+        batch_size = int(
+            runtime_adjustments.get("generation_batch_size")
+            or self.config.get("generation_batch_size")
+            or os.environ.get("DEEPGRAPH_RUNNER_BATCH_SIZE")
+            or 8
+        )
+        pad_id = (
+            self.tokenizer.pad_token_id
+            if self.tokenizer.pad_token_id is not None
+            else self.tokenizer.eos_token_id
+        )
         eos_id = self.tokenizer.eos_token_id
-        stopped_on_eos = bool(
-            eos_id is not None and int(continuation[-1]) == int(eos_id)
-        ) if len(continuation) else False
-        truncated = bool(len(continuation) >= max_new_tokens and not stopped_on_eos)
-        text = self.tokenizer.decode(continuation, skip_special_tokens=True).strip()
-        return text, truncated
+        # Decoder-only batch generation must left-pad or continuations start
+        # from pad positions.
+        previous_side = getattr(self.tokenizer, "padding_side", "right")
+        self.tokenizer.padding_side = "left"
+        if self.tokenizer.pad_token is None and self.tokenizer.eos_token is not None:
+            self.tokenizer.pad_token = self.tokenizer.eos_token
+        results: list[tuple[str, bool]] = []
+        try:
+            for start in range(0, len(prompts), max(1, batch_size)):
+                chunk = prompts[start:start + max(1, batch_size)]
+                tokens = self.tokenizer(chunk, return_tensors="pt", padding=True)
+                tokens = {
+                    key: value.to(self._device()) for key, value in tokens.items()
+                }
+                with self.torch.inference_mode():
+                    generated = self.model.generate(
+                        **tokens,
+                        do_sample=False,
+                        max_new_tokens=max_new_tokens,
+                        pad_token_id=pad_id,
+                    )
+                prompt_length = tokens["input_ids"].shape[1]
+                for row in range(generated.shape[0]):
+                    continuation = generated[row][prompt_length:].tolist()
+                    while continuation and pad_id is not None and continuation[-1] == pad_id:
+                        continuation.pop()
+                    stopped_on_eos = bool(
+                        continuation
+                        and eos_id is not None
+                        and int(continuation[-1]) == int(eos_id)
+                    )
+                    # pad == eos on many chat models: the terminating eos is
+                    # stripped with the padding, so any sequence shorter than
+                    # the cap stopped on its own.
+                    truncated = bool(
+                        len(continuation) >= max_new_tokens and not stopped_on_eos
+                    )
+                    text = self.tokenizer.decode(
+                        continuation, skip_special_tokens=True
+                    ).strip()
+                    results.append((text, truncated))
+        finally:
+            self.tokenizer.padding_side = previous_side
+        return results
 
     def _classification_prediction(self, text: str) -> str:
         tokens = self.tokenizer(text, return_tensors="pt", truncation=True)
@@ -244,15 +291,17 @@ class GenericTransformersRunner(ResearchRunner):
         for seed in self.requirements.seeds:
             random.seed(seed)
             self.torch.manual_seed(seed)
-            for index, example in enumerate(self.dataset_rows):
-                if self.requirements.task_protocol == "generative_qa":
+            if self.requirements.task_protocol == "generative_qa":
+                model_inputs: list[str] = []
+                targets: list[str] = []
+                for example in self.dataset_rows:
                     baseline_input = str(example[mapping["prompt"]])
                     candidate_example = {
                         key: value
                         for key, value in example.items()
                         if key != mapping["target"]
                     }
-                    model_input = (
+                    model_inputs.append(
                         str(
                             self.candidate_module.candidate_prompt(
                                 candidate_example, baseline_input
@@ -261,27 +310,49 @@ class GenericTransformersRunner(ResearchRunner):
                         if candidate
                         else baseline_input
                     )
-                    prediction, truncated = self._qa_prediction(model_input)
-                    target = str(example[mapping["target"]])
-                else:
-                    baseline_input = str(example[mapping["text"]])
-                    candidate_example = {
-                        key: value
-                        for key, value in example.items()
-                        if key != mapping["label"]
-                    }
-                    model_input = (
-                        str(
-                            self.candidate_module.candidate_text(
-                                candidate_example, baseline_input
-                            )
-                        )
-                        if candidate
-                        else baseline_input
+                    targets.append(str(example[mapping["target"]]))
+                generations = self._qa_predictions(model_inputs)
+                for index, (model_input, target, (prediction, truncated)) in enumerate(
+                    zip(model_inputs, targets, generations)
+                ):
+                    output.append(
+                        {
+                            "method": method,
+                            "seed": seed,
+                            "sample_index": index,
+                            "prediction": prediction,
+                            # Recorded so a run that was interrupted cannot be
+                            # read as a model that answered badly.
+                            "truncated": bool(truncated),
+                            "target": target,
+                            "input_sha256": hashlib.sha256(
+                                model_input.encode("utf-8")
+                            ).hexdigest(),
+                            "normalized_input_sha256": _normalized_input_sha256(
+                                model_input
+                            ),
+                        }
                     )
-                    prediction = self._classification_prediction(model_input)
-                    truncated = False
-                    target = str(example[mapping["label"]])
+                continue
+            for index, example in enumerate(self.dataset_rows):
+                baseline_input = str(example[mapping["text"]])
+                candidate_example = {
+                    key: value
+                    for key, value in example.items()
+                    if key != mapping["label"]
+                }
+                model_input = (
+                    str(
+                        self.candidate_module.candidate_text(
+                            candidate_example, baseline_input
+                        )
+                    )
+                    if candidate
+                    else baseline_input
+                )
+                prediction = self._classification_prediction(model_input)
+                truncated = False
+                target = str(example[mapping["label"]])
                 output.append(
                     {
                         "method": method,
