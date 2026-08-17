@@ -6,6 +6,7 @@ import unittest
 from meta_harness.runner_capability import (
     GENERATIVE_QA_MIN_SAMPLE_CAP,
     apply_measurement_floors,
+    fold_field_mapping_roles,
     requirements_from_plan,
 )
 from meta_harness.runner_contract import recompute_metric
@@ -83,6 +84,39 @@ class MeasurementFloorTests(unittest.TestCase):
     def test_floor_application_is_idempotent(self):
         once = requirements_from_plan(_gsm8k_plan())
         self.assertEqual(apply_measurement_floors(once), once)
+
+
+class FieldRoleAliasTests(unittest.TestCase):
+    def _explicit(self, field_mapping):
+        base = requirements_from_plan(_gsm8k_plan()).to_dict()
+        base["dataset"]["field_mapping"] = field_mapping
+        return {"execution_requirements": base}
+
+    def test_plan_role_synonyms_are_folded_onto_the_contract(self):
+        requirements = requirements_from_plan(
+            self._explicit({"input": "question", "ground_truth": "answer"})
+        )
+        self.assertEqual(
+            requirements.dataset.field_mapping,
+            {"prompt": "question", "target": "answer"},
+        )
+
+    def test_colliding_roles_are_left_for_preflight_to_refuse(self):
+        requirements = requirements_from_plan(
+            self._explicit({"input": "q1", "question": "q2"})
+        )
+        self.assertEqual(
+            requirements.dataset.field_mapping, {"input": "q1", "question": "q2"}
+        )
+
+    def test_contract_roles_pass_through_untouched(self):
+        requirements = requirements_from_plan(
+            self._explicit({"prompt": "question", "target": "answer"})
+        )
+        self.assertEqual(
+            requirements.dataset.field_mapping,
+            {"prompt": "question", "target": "answer"},
+        )
 
 
 class NumericAccuracyTests(unittest.TestCase):

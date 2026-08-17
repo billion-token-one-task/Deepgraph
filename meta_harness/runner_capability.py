@@ -73,6 +73,47 @@ GENERATIVE_QA_MIN_SAMPLE_CAP = 200
 NUMERIC_ANSWER_DATASETS = frozenset({"openai/gsm8k"})
 
 
+# Plan-authored field mappings name their roles freely ("input",
+# "ground_truth"); the adapter contract names them precisely ("prompt",
+# "target"). Same rule as METRIC_NAME_ALIASES: fold exact synonyms only —
+# idea 129's plan was refused with dataset_schema_role_mismatch on
+# 2026-08-17 for spelling, not for a real capability gap.
+GENERATIVE_QA_ROLE_ALIASES: Mapping[str, str] = {
+    "input": "prompt",
+    "question": "prompt",
+    "query": "prompt",
+    "instruction": "prompt",
+    "ground_truth": "target",
+    "answer": "target",
+    "reference": "target",
+    "expected_output": "target",
+    "output": "target",
+}
+
+
+def fold_field_mapping_roles(
+    requirements: "ExperimentRequirements",
+) -> "ExperimentRequirements":
+    """Fold plan-authored field-mapping role synonyms onto the contract's."""
+    if requirements.task_protocol != "generative_qa":
+        return requirements
+    mapping = dict(requirements.dataset.field_mapping)
+    if {"prompt", "target"} <= set(mapping):
+        return requirements
+    folded = {
+        GENERATIVE_QA_ROLE_ALIASES.get(str(role).strip().lower(), role): column
+        for role, column in mapping.items()
+    }
+    if folded == mapping or len(folded) != len(mapping):
+        # A collision (two roles folding onto one) is ambiguity, not spelling;
+        # keep the original and let preflight refuse it.
+        return requirements
+    return dataclasses.replace(
+        requirements,
+        dataset=dataclasses.replace(requirements.dataset, field_mapping=folded),
+    )
+
+
 def apply_measurement_floors(
     requirements: "ExperimentRequirements",
     *,
@@ -740,7 +781,9 @@ def requirements_from_plan(plan: Mapping[str, Any]) -> ExperimentRequirements:
     """Translate a candidate design without inspecting repository names."""
     explicit = plan.get("execution_requirements")
     if isinstance(explicit, Mapping):
-        return apply_measurement_floors(ExperimentRequirements.from_dict(explicit))
+        return apply_measurement_floors(
+            fold_field_mapping_roles(ExperimentRequirements.from_dict(explicit))
+        )
     targets = [
         item for item in plan.get("benchmark_targets", []) if isinstance(item, Mapping)
     ]
