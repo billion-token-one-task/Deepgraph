@@ -475,6 +475,34 @@ def _repair_harness_job_from_task_plan(row: dict) -> dict | None:
     # recovery this function exists for could never fire (job 3 / idea 131,
     # 2026-08-17). Manuscript evidence stays blocked either way.
     plan["harness_recovery_fresh_forge"] = True
+    # Two generations of plan schema: new-style designs declare an explicit
+    # execution_requirements contract (which preflight enforces) and never
+    # fill the legacy model_targets rows the pre-execution review reads to
+    # decide generated_real_runner. Without them the review refused idea
+    # 131's recovered probe as "scratch; formal path not allowed" and the
+    # finalizer closed the candidate. Bridge the authoritative contract back
+    # into the legacy fields rather than keeping two truths.
+    if not plan.get("model_targets"):
+        requirement_row = db.fetchone(
+            """
+            SELECT requirements_json FROM candidate_execution_requirements_v1
+            WHERE idea_id=? ORDER BY id DESC LIMIT 1
+            """,
+            (int(row["deep_insight_id"]),),
+        )
+        declared = _json_mapping((requirement_row or {}).get("requirements_json"))
+        model_block = declared.get("model") if isinstance(declared.get("model"), dict) else {}
+        if model_block.get("repository_id"):
+            plan["model_targets"] = [
+                {
+                    "hf_model": str(model_block.get("repository_id")),
+                    "revision": str(model_block.get("revision") or "main"),
+                    "backend": str(model_block.get("framework") or "transformers"),
+                    "task": str(model_block.get("task") or "causal_lm"),
+                    "requires_cuda": bool(model_block.get("requires_cuda")),
+                    "min_vram_gb": float(model_block.get("min_vram_gb") or 0.0),
+                }
+            ]
     if deferred:
         plan["deferred_benchmark_targets"] = [
             t.get("name") or t.get("hf_dataset") or t.get("dataset")
