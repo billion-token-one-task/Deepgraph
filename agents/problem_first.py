@@ -424,6 +424,57 @@ def upsert_research_problem(problem: dict, *, agenda_id: int) -> int:
     return rid
 
 
+DIRECTION_EVIDENCE_NODE_LIMIT = 4
+DIRECTION_EVIDENCE_PAPER_LIMIT = 40
+
+
+def _direction_evidence(agenda) -> tuple[list[str], list[str]]:
+    """Corpus evidence for a problem derived from a direction, not a signal.
+
+    A direction problem is created when no harvested signal matches the
+    agenda's scope. It used to be written with empty node_ids and paper_ids,
+    which made it permanently unusable: EvidenceGraphFrontierSource refuses a
+    problem with no linked papers, so every such problem failed the frontier
+    gate forever while still consuming a per-problem ration. Fourteen problems,
+    two on each of seven agendas, sat in that state.
+
+    The evidence is not invented. The agenda's own scope terms select taxonomy
+    nodes, and the corpus already records which papers sit under them, so the
+    link is the same one the signal path would have produced had a signal
+    existed.
+    """
+    from db import taxonomy as tax
+
+    terms = [term for term in agenda_scope_terms(agenda) if len(term) > 3]
+    if not terms:
+        return [], []
+    try:
+        nodes = tax.get_taxonomy_flat()
+    except Exception:  # noqa: BLE001 - a missing taxonomy must not break discovery
+        return [], []
+
+    matched: list[str] = []
+    for node in nodes:
+        haystack = f"{node.get('id') or ''} {node.get('name') or ''}".lower()
+        if any(term in haystack for term in terms):
+            matched.append(str(node["id"]))
+        if len(matched) >= DIRECTION_EVIDENCE_NODE_LIMIT:
+            break
+    if not matched:
+        return [], []
+
+    paper_ids: list[str] = []
+    for node_id in matched:
+        try:
+            rows = tax.get_node_papers(node_id, limit=DIRECTION_EVIDENCE_PAPER_LIMIT)
+        except Exception:  # noqa: BLE001
+            continue
+        paper_ids.extend(str(row["id"]) for row in rows if row.get("id"))
+        if len(paper_ids) >= DIRECTION_EVIDENCE_PAPER_LIMIT:
+            break
+    return _dedupe(matched), _dedupe(paper_ids)[:DIRECTION_EVIDENCE_PAPER_LIMIT]
+
+
 def discover_research_problems(
     limit: int = 20,
     *,
@@ -451,6 +502,9 @@ def discover_research_problems(
         else:
             direction = str(agenda.description or agenda.name).strip()
             focus = ", ".join(terms)
+            # Attach the corpus evidence the agenda's own scope selects, so a
+            # direction problem can clear the frontier gate at all.
+            direction_nodes, direction_papers = _direction_evidence(agenda)
             candidates = [
                 {
                     "problem_statement": (
@@ -465,9 +519,9 @@ def discover_research_problems(
                         "agenda_id": agenda_id,
                         "agenda_version": agenda.version,
                     },
-                    "node_ids": [],
-                    "paper_ids": [],
-                    "support_count": 0,
+                    "node_ids": list(direction_nodes),
+                    "paper_ids": list(direction_papers),
+                    "support_count": len(direction_papers),
                     "status": "open",
                     "attempts_count": 0,
                     "ruled_out_approaches": [],
@@ -486,9 +540,9 @@ def discover_research_problems(
                         "agenda_id": agenda_id,
                         "agenda_version": agenda.version,
                     },
-                    "node_ids": [],
-                    "paper_ids": [],
-                    "support_count": 0,
+                    "node_ids": list(direction_nodes),
+                    "paper_ids": list(direction_papers),
+                    "support_count": len(direction_papers),
                     "status": "open",
                     "attempts_count": 0,
                     "ruled_out_approaches": [],
