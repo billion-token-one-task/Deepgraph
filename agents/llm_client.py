@@ -1650,16 +1650,31 @@ def parse_llm_json_text(text: str) -> tuple[dict | list, str]:
     if got is not None:
         return got, "direct"
 
-    # Greedy {...} often overshoots; try every '{' position with brace matching
-    for i, ch in enumerate(t):
-        if ch != "{":
+    # Greedy {...} often overshoots; try every '{' position with brace
+    # matching. A response that mixes prose with JSON fragments can hold
+    # several balanced objects -- four method-invention failures on
+    # 2026-08-17 came from this scan returning a two-key complexity
+    # fragment instead of the method object further down. Prefer the
+    # largest parseable object, not the first.
+    best_len, best_at, best_obj = 0, -1, None
+    i = 0
+    while i < len(t):
+        if t[i] != "{":
+            i += 1
             continue
         chunk = _first_balanced_json_slice(t, i)
         if not chunk:
+            i += 1
             continue
         got = _json_try_load(chunk)
-        if got is not None:
-            return got, f"balanced_object@{i}"
+        if got is None:
+            i += 1
+            continue
+        if len(chunk) > best_len:
+            best_len, best_at, best_obj = len(chunk), i, got
+        i += len(chunk)
+    if best_obj is not None:
+        return best_obj, f"balanced_object@{best_at}"
 
     for i, ch in enumerate(t):
         if ch != "[":
