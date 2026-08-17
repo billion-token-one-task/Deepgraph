@@ -1059,13 +1059,18 @@ def advance_agenda(agenda_id: int, state: dict, journal: Journal, args) -> None:
                         token_cap=args.grant_token_cap)
             break
 
-    # e. capability_preflight_deferred is only as permanent as the deployed
-    #    capability code, yet nothing ever re-ran preflight (acknowledged
-    #    stranded state since the 2026-08-10 census; ideas 125-128 sat here
-    #    for days). Re-run it each pass. On pass, restage the job first:
-    #    issue_grant's binding UPDATE only matches
-    #    stage='awaiting_portfolio_decision', so granting a job parked in the
-    #    deferred stage would strand an active grant with no bound job.
+
+def retry_deferred_preflights(agenda_id: int, state: dict, journal: Journal, args) -> None:
+    """Re-run preflight for jobs parked at capability_preflight_deferred.
+
+    A structural deferral is only as permanent as the deployed capability
+    code, yet nothing ever re-ran preflight (acknowledged stranded state
+    since the 2026-08-10 census; ideas 125-129 all sat here). On a passing
+    retry the job is restaged first: issue_grant's binding UPDATE only
+    matches stage='awaiting_portfolio_decision', so granting a job parked
+    in the deferred stage would strand an active grant with no bound job.
+    """
+    repo = MetaHarnessRepository()
     for row in _rows(
         "SELECT deep_insight_id FROM auto_research_jobs WHERE agenda_id=?"
         " AND status='deferred' AND stage='capability_preflight_deferred'"
@@ -1253,6 +1258,7 @@ def main() -> int:
                 journal.log("spend_limit_reached", spent=spent, limit=args.spend_limit)
                 break
             recycle_stranded(agenda_id, state, journal, args)
+            retry_deferred_preflights(agenda_id, state, journal, args)
             advance_agenda(agenda_id, state, journal, args)
     finally:
         _save_state(state_path, state)
