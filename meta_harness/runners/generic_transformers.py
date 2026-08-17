@@ -191,7 +191,14 @@ class GenericTransformersRunner(ResearchRunner):
         except (StopIteration, AttributeError):
             return self.torch.device("cuda" if self.torch.cuda.is_available() else "cpu")
 
-    def _qa_prediction(self, prompt: str) -> str:
+    def _qa_prediction(self, prompt: str) -> tuple[str, bool]:
+        """Return the continuation and whether generation ran out of budget.
+
+        A generation that stops on the token cap did not answer the question, it
+        was interrupted. Run 153 spent its whole grant with all 24 predictions
+        cut off mid-sentence under the 64-token default, so exact_match was zero
+        by construction and the result was filed as a refutation.
+        """
         tokens = self.tokenizer(prompt, return_tensors="pt")
         tokens = {key: value.to(self._device()) for key, value in tokens.items()}
         runtime_adjustments = dict(self.config.get("runtime_adjustments") or {})
@@ -212,7 +219,13 @@ class GenericTransformersRunner(ResearchRunner):
                 ),
             )
         continuation = generated[0][tokens["input_ids"].shape[1] :]
-        return self.tokenizer.decode(continuation, skip_special_tokens=True).strip()
+        eos_id = self.tokenizer.eos_token_id
+        stopped_on_eos = bool(
+            eos_id is not None and int(continuation[-1]) == int(eos_id)
+        ) if len(continuation) else False
+        truncated = bool(len(continuation) >= max_new_tokens and not stopped_on_eos)
+        text = self.tokenizer.decode(continuation, skip_special_tokens=True).strip()
+        return text, truncated
 
     def _classification_prediction(self, text: str) -> str:
         tokens = self.tokenizer(text, return_tensors="pt", truncation=True)
@@ -244,7 +257,7 @@ class GenericTransformersRunner(ResearchRunner):
                         if candidate
                         else baseline_input
                     )
-                    prediction = self._qa_prediction(model_input)
+                    prediction, truncated = self._qa_prediction(model_input)
                     target = str(example[mapping["target"]])
                 else:
                     baseline_input = str(example[mapping["text"]])
@@ -263,6 +276,7 @@ class GenericTransformersRunner(ResearchRunner):
                         else baseline_input
                     )
                     prediction = self._classification_prediction(model_input)
+                    truncated = False
                     target = str(example[mapping["label"]])
                 output.append(
                     {
@@ -270,6 +284,9 @@ class GenericTransformersRunner(ResearchRunner):
                         "seed": seed,
                         "sample_index": index,
                         "prediction": prediction,
+                        # Recorded so a run that was interrupted cannot be read as
+                        # a model that answered badly.
+                        "truncated": bool(truncated),
                         "target": target,
                         "input_sha256": hashlib.sha256(
                             model_input.encode("utf-8")
@@ -354,6 +371,16 @@ class GenericTransformersRunner(ResearchRunner):
             raise RunnerContractError("metric_missing")
         if not self.significance:
             raise RunnerContractError("p_value_missing", "compute_metrics_not_run")
+        # A run where nothing finished generating did not test the hypothesis;
+        # it ran out of token budget. Run 153 emitted 24 truncated predictions
+        # under the 64-token default and the zero-vs-zero result was filed as a
+        # refutation.
+        truncated = sum(1 for row in self.predictions if row.get("truncated"))
+        if self.predictions and truncated == len(self.predictions):
+            raise RunnerContractError(
+                "generation_truncated",
+                f"all {truncated} predictions stopped on the token cap",
+            )
         raw_path = self.output_dir / "raw_predictions.jsonl"
         raw_path.write_text(
             "".join(

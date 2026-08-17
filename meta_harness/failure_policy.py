@@ -38,6 +38,11 @@ REASON_CODES = {
     "p_value_missing",
     "p_value_invalid",
     "permutation_contract_violation",
+    # A result that measured nothing is a broken instrument, not a
+    # scientific negative. Run 153 reported exact_match 0.0 against 0.0
+    # from 24 truncated generations and was filed as a refutation.
+    "metric_degenerate",
+    "generation_truncated",
     "unknown_execution_failure",
 }
 
@@ -61,6 +66,8 @@ RUNNER_CONTRACT_CODES = {
     "p_value_missing",
     "p_value_invalid",
     "permutation_contract_violation",
+    "metric_degenerate",
+    "generation_truncated",
 }
 
 
