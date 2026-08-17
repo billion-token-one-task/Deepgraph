@@ -96,6 +96,27 @@ def _agenda_per_grant_gpu_cap(agenda: dict[str, Any]) -> float:
 # expiry, and so on.
 UNDELIVERED_PROPOSAL_BUDGET_SHARE = 0.10
 
+# ...but the share alone ties this guard to a number that has nothing to do with
+# it. An agenda that also funds corpus ingestion carries a budget sized by how
+# many papers there are to read, so raising it from 500k to 1.6B to cover a
+# 15k-paper backlog would silently raise this ceiling from 50k to 160M and let
+# the exact failure mode above burn 3200x more before tripping. The absolute cap
+# keeps the guard anchored to what it is actually about: the 205393 tokens that
+# nine grants spent delivering nothing.
+UNDELIVERED_PROPOSAL_ABSOLUTE_CEILING = 250_000
+
+
+def _undelivered_proposal_ceiling(token_budget: int) -> int:
+    """How much an agenda may spend on proposals that deliver nothing.
+
+    Both callers below need this number, and the module already warns that a
+    second copy of the arithmetic would drift -- so it lives here once.
+    """
+    return min(
+        int(int(token_budget) * UNDELIVERED_PROPOSAL_BUDGET_SHARE),
+        UNDELIVERED_PROPOSAL_ABSOLUTE_CEILING,
+    )
+
 
 def _undelivered_proposal_spend(agenda_id: int, idea_id: int) -> int:
     """Tokens already charged for proposals that never delivered.
@@ -157,7 +178,7 @@ def proposal_problem_is_over_budget(agenda_id: int, problem_id: int) -> bool:
         "SELECT token_budget FROM research_agendas WHERE id=?", (int(agenda_id),)
     )
     token_budget = int((agenda or {}).get("token_budget") or 0)
-    ceiling = int(token_budget * UNDELIVERED_PROPOSAL_BUDGET_SHARE)
+    ceiling = _undelivered_proposal_ceiling(token_budget)
     if ceiling <= 0:
         return False
     row = db.fetchone(
@@ -191,7 +212,7 @@ def _require_proposal_funding_headroom(grant: ResourceGrant, token_budget: int) 
 
     if grant.stage != "proposal":
         return
-    ceiling = int(token_budget * UNDELIVERED_PROPOSAL_BUDGET_SHARE)
+    ceiling = _undelivered_proposal_ceiling(token_budget)
     if ceiling <= 0:
         return
     spent = _undelivered_proposal_spend(grant.agenda_id, grant.idea_id)
