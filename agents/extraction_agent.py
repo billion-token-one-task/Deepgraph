@@ -1,9 +1,16 @@
 """Extraction Agent: scientific paper -> taxonomy classification, evidence rows, and graph evidence."""
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import Any
 
-from db.taxonomy import get_all_leaf_ids
-from config import MULTI_AGENT_EXTRACTION_ENABLED
+from db.taxonomy import get_all_leaf_ids, get_leaf_ids_under, get_nodes_to_depth
+from config import (
+    EXTRACTION_MAX_PROMPT_CHARS,
+    EXTRACTION_ROUTING_HEAD_CHARS,
+    EXTRACTION_TAXONOMY_LEAF_BUDGET_CHARS,
+    EXTRACTION_TAXONOMY_ROUTING_DEPTH,
+    EXTRACTION_TAXONOMY_ROUTING_ENABLED,
+    MULTI_AGENT_EXTRACTION_ENABLED,
+)
 from meta_harness.scoped_llm import proposer_json
 
 SYSTEM_PROMPT = """You are a scientific paper analysis agent. Extract structured, concrete information from research papers.
@@ -118,7 +125,22 @@ Rules:
   - If you cannot find supporting text, omit that claim or result row rather than inventing a quote.
 - Return ONLY valid JSON, no markdown formatting"""
 
-MAX_PROMPT_CHARS = 28000
+TAXONOMY_ROUTING_SYSTEM_PROMPT = """You route a paper to the research areas it belongs to.
+
+You are given a coarse slice of a research taxonomy (area IDs and names) and the
+opening of a paper. Pick the 1-3 areas whose subtrees are most likely to contain
+the paper's precise topic. Prefer the most specific area you are confident in; a
+broader area is better than a wrong narrow one.
+
+Return ONLY valid JSON:
+{"areas": ["ml.dl.nlp", "ml.dl.foundation"]}
+
+Rules:
+- Use ONLY area IDs listed by the user, copied exactly.
+- 1 area when the paper is clearly single-topic, up to 3 when it spans areas.
+- No prose, no markdown."""
+
+MAX_PROMPT_CHARS = EXTRACTION_MAX_PROMPT_CHARS
 PRIORITY_SECTION_KEYWORDS = (
     "abstract",
     "introduction",
@@ -190,6 +212,107 @@ def _compact_paper_text(text: str, max_chars: int = MAX_PROMPT_CHARS) -> str:
     return "\n\n".join(kept)[:max_chars]
 
 
+def format_taxonomy_hint(leaf_ids: Sequence[str]) -> tuple[str, bool]:
+    """Render a leaf-ID hint inside the character budget.
+
+    Truncation is returned rather than swallowed: a hint that silently dropped
+    half the taxonomy looks exactly like one that had room for all of it, and
+    this pipeline has already been bitten once by a cap nobody could see.
+    """
+    unique = sorted({str(leaf_id).strip() for leaf_id in leaf_ids if str(leaf_id).strip()})
+    budget = max(int(EXTRACTION_TAXONOMY_LEAF_BUDGET_CHARS), 0)
+    kept: list[str] = []
+    used = 0
+    # Shortest IDs first: those are the more general nodes, so overrunning the
+    # budget costs precision instead of dropping an entire branch.
+    for leaf_id in sorted(unique, key=lambda value: (len(value), value)):
+        cost = len(leaf_id) + 3
+        if budget and used + cost > budget and kept:
+            break
+        kept.append(leaf_id)
+        used += cost
+    hint = "Available taxonomy leaf nodes:\n" + "\n".join(
+        f"  {nid}" for nid in sorted(kept)
+    )
+    return hint, len(kept) < len(unique)
+
+
+def _route_to_leaf_ids(
+    paper_id: str,
+    title: str,
+    compact_text: str,
+    llm_scope: Mapping[str, Any] | None,
+) -> tuple[list[str], dict]:
+    """Narrow ~4k taxonomy leaves to the branch this paper actually belongs to.
+
+    The full leaf list costs several times more than the paper being classified,
+    and only the taxonomy reader ever needs it.  Routing on the paper's opening
+    is enough to pick a branch, so the expensive list is never sent whole.
+    """
+    nodes = get_nodes_to_depth(EXTRACTION_TAXONOMY_ROUTING_DEPTH)
+    if not nodes:
+        return get_all_leaf_ids(), {"taxonomy_routing": "unavailable"}
+
+    listing = "\n".join(f"  {node['id']} | {node['name']}" for node in nodes)
+    head = (compact_text or "").strip()[: max(int(EXTRACTION_ROUTING_HEAD_CHARS), 0)]
+    user_prompt = (
+        f"Candidate research areas:\n{listing}\n\n"
+        f"Paper ID: {paper_id}\n"
+        f"Title: {title}\n\n"
+        f"Paper opening:\n{head}"
+    )
+    routed, tokens, _route = proposer_json(
+        TAXONOMY_ROUTING_SYSTEM_PROMPT,
+        user_prompt,
+        llm_scope=llm_scope,
+        operation=f"paper_extraction:{paper_id}:taxonomy_routing",
+    )
+    known = {str(node["id"]) for node in nodes}
+    areas = (routed or {}).get("areas") if isinstance(routed, dict) else None
+    picked = [
+        str(area).strip()
+        for area in (areas or [])
+        if str(area).strip() in known
+    ]
+    leaf_ids = get_leaf_ids_under(picked) if picked else []
+    if not leaf_ids:
+        return get_all_leaf_ids(), {
+            "taxonomy_routing": "fallback_full",
+            "taxonomy_routing_tokens": tokens,
+        }
+    return leaf_ids, {
+        "taxonomy_routing": "routed",
+        "taxonomy_areas": picked,
+        "taxonomy_routing_tokens": tokens,
+    }
+
+
+def resolve_taxonomy_hint(
+    paper_id: str,
+    title: str,
+    compact_text: str,
+    llm_scope: Mapping[str, Any] | None,
+) -> tuple[str, dict]:
+    """Return the taxonomy hint for this paper plus the routing audit trail."""
+    if not EXTRACTION_TAXONOMY_ROUTING_ENABLED:
+        leaf_ids, meta = get_all_leaf_ids(), {"taxonomy_routing": "disabled"}
+    else:
+        try:
+            leaf_ids, meta = _route_to_leaf_ids(paper_id, title, compact_text, llm_scope)
+        except Exception as exc:
+            # Routing is an optimisation.  Losing it must cost tokens, not the
+            # paper: fall back to the full list, which the budget still caps.
+            leaf_ids = get_all_leaf_ids()
+            meta = {
+                "taxonomy_routing": "error",
+                "taxonomy_routing_error": str(exc)[:200],
+            }
+    hint, truncated = format_taxonomy_hint(leaf_ids)
+    meta["taxonomy_leaf_count"] = len(leaf_ids)
+    meta["taxonomy_hint_truncated"] = truncated
+    return hint, meta
+
+
 def extract_paper(
     paper_id: str,
     title: str,
@@ -198,11 +321,11 @@ def extract_paper(
     llm_scope: Mapping[str, Any] | None = None,
 ) -> tuple[dict, int]:
     """Extract structured info from a paper. Returns (extraction_dict, tokens_used)."""
-    leaf_ids = get_all_leaf_ids()
-    taxonomy_hint = "Available taxonomy leaf nodes:\n" + "\n".join(
-        f"  {nid}" for nid in leaf_ids
-    )
     compact_text = _compact_paper_text(text)
+    taxonomy_hint, routing_meta = resolve_taxonomy_hint(
+        paper_id, title, compact_text, llm_scope
+    )
+    routing_tokens = int(routing_meta.get("taxonomy_routing_tokens") or 0)
 
     if MULTI_AGENT_EXTRACTION_ENABLED:
         from agents.multi_agent_extraction import extract_paper_multi_agent
@@ -215,12 +338,13 @@ def extract_paper(
             llm_scope=llm_scope,
         )
         result.setdefault("extraction_mode", "multi_agent")
-        return result, tokens
+        result.setdefault("prompt_routing", routing_meta)
+        return result, tokens + routing_tokens
 
-    user_prompt = f"""Paper ID: {paper_id}
+    user_prompt = f"""{taxonomy_hint}
+
+Paper ID: {paper_id}
 Title: {title}
-
-{taxonomy_hint}
 
 Full text:
 {compact_text}"""
@@ -233,4 +357,5 @@ Full text:
     )
     if isinstance(result, dict):
         result.setdefault("extraction_mode", "monolithic")
-    return result, tokens
+        result.setdefault("prompt_routing", routing_meta)
+    return result, tokens + routing_tokens

@@ -2,6 +2,7 @@
 import hashlib
 import json
 from collections import Counter, defaultdict
+from collections.abc import Sequence
 from config import PAPER_CLUSTER_MIN_PAPERS, ROOT_NODE_ID
 from db import database as db
 from db import evidence_graph as graph
@@ -389,6 +390,41 @@ def get_all_leaf_ids() -> list[str]:
            ORDER BY t.id"""
         ,
         (ROOT_NODE_ID, ROOT_NODE_ID),
+    )
+    return [r["id"] for r in rows]
+
+
+def get_nodes_to_depth(max_depth: int) -> list[dict]:
+    """Return the coarse slice of the taxonomy used to route a paper to a branch."""
+    return db.fetchall(
+        """SELECT id, name, depth FROM taxonomy_nodes
+           WHERE depth <= ?
+             AND (id = ? OR id LIKE ? || '.%')
+           ORDER BY depth, sort_order, id""",
+        (int(max_depth), ROOT_NODE_ID, ROOT_NODE_ID),
+    )
+
+
+def get_leaf_ids_under(node_ids: Sequence[str]) -> list[str]:
+    """Return leaf IDs inside the given subtrees.
+
+    A selected node that is itself a leaf counts as its own subtree, so routing
+    to a deep node never returns an empty list.
+    """
+    wanted = [str(node_id).strip() for node_id in node_ids if str(node_id).strip()]
+    if not wanted:
+        return []
+    clauses = []
+    params: list[str] = []
+    for node_id in wanted:
+        clauses.append("(t.id = ? OR t.id LIKE ? || '.%')")
+        params.extend([node_id, node_id])
+    rows = db.fetchall(
+        f"""SELECT t.id FROM taxonomy_nodes t
+            LEFT JOIN taxonomy_nodes c ON c.parent_id = t.id
+            WHERE c.id IS NULL AND ({" OR ".join(clauses)})
+            ORDER BY t.id""",
+        tuple(params),
     )
     return [r["id"] for r in rows]
 

@@ -553,6 +553,28 @@ DISCOVERY_MIN_TIER2_BACKLOG = _env_int("DEEPGRAPH_DISCOVERY_MIN_TIER2_BACKLOG", 
 DISCOVERY_AUTO_TRIGGER_PAPERS = _env_int("DEEPGRAPH_DISCOVERY_AUTO_TRIGGER", 100, "discovery.auto_trigger_papers")
 # Paper reading / idea review gates
 MULTI_AGENT_EXTRACTION_ENABLED = _env_bool("DEEPGRAPH_MULTI_AGENT_EXTRACTION", True, "extraction.multi_agent_enabled")
+# Extraction prompt budget.  The taxonomy has ~3.9k leaf nodes whose dotted IDs
+# average ~120 characters, so sending the whole leaf list costs far more than
+# the paper it is meant to classify.  Only the taxonomy reader needs that list,
+# and it only needs the branch the paper actually belongs to, so the reader
+# routes to coarse areas first and receives the matching leaves second.
+EXTRACTION_MAX_PROMPT_CHARS = _env_int(
+    "DEEPGRAPH_EXTRACTION_MAX_PROMPT_CHARS", 60_000, "extraction.max_prompt_chars"
+)
+EXTRACTION_ROUTING_HEAD_CHARS = _env_int(
+    "DEEPGRAPH_EXTRACTION_ROUTING_HEAD_CHARS", 6_000, "extraction.routing_head_chars"
+)
+EXTRACTION_TAXONOMY_ROUTING_DEPTH = _env_int(
+    "DEEPGRAPH_EXTRACTION_TAXONOMY_ROUTING_DEPTH", 3, "extraction.taxonomy_routing_depth"
+)
+EXTRACTION_TAXONOMY_LEAF_BUDGET_CHARS = _env_int(
+    "DEEPGRAPH_EXTRACTION_TAXONOMY_LEAF_BUDGET_CHARS",
+    40_000,
+    "extraction.taxonomy_leaf_budget_chars",
+)
+EXTRACTION_TAXONOMY_ROUTING_ENABLED = _env_bool(
+    "DEEPGRAPH_EXTRACTION_TAXONOMY_ROUTING", True, "extraction.taxonomy_routing_enabled"
+)
 TIER2_EVOSCI_PREINSERT_REVIEW = _env_bool("DEEPGRAPH_TIER2_EVOSCI_PREINSERT_REVIEW", True, "discovery.tier2_evosci_preinsert_review")
 TIER2_EVOSCI_REVIEW_TIMEOUT_SECONDS = _env_int("DEEPGRAPH_TIER2_EVOSCI_REVIEW_TIMEOUT_SECONDS", 1200, "discovery.tier2_evosci_review_timeout_seconds")
 TIER2_DEBATE_ROUNDS = _env_int("DEEPGRAPH_TIER2_DEBATE_ROUNDS", 10, "discovery.tier2_debate_rounds")
