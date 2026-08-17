@@ -177,18 +177,34 @@ def paired_permutation_test(
         paired_baseline, metric_name
     )
 
+    # The exchange unit is the example, not the (seed, example) row. The
+    # runner decodes greedily, so per-seed rows are replicates of the same
+    # measurement; flipping them independently narrows the null distribution
+    # by sqrt(replicates) and overstates significance (pseudo-replication).
+    # All replicates of one example swap arms together.
+    example_groups: dict[Any, list[int]] = {}
+    for position, key in enumerate(keys):
+        example_groups.setdefault(key[1], []).append(position)
+    group_indices = [example_groups[k] for k in sorted(
+        example_groups, key=lambda item: "" if item is None else str(item)
+    )]
+
     rng = random.Random(seed)
     at_least_as_extreme = 0
     for _ in range(permutations):
         left: list[Mapping[str, Any]] = []
         right: list[Mapping[str, Any]] = []
-        for base_row, cand_row in zip(paired_baseline, paired_candidate):
-            if rng.random() < 0.5:
-                left.append(cand_row)
-                right.append(base_row)
-            else:
-                left.append(base_row)
-                right.append(cand_row)
+        for positions in group_indices:
+            flip = rng.random() < 0.5
+            for position in positions:
+                base_row = paired_baseline[position]
+                cand_row = paired_candidate[position]
+                if flip:
+                    left.append(cand_row)
+                    right.append(base_row)
+                else:
+                    left.append(base_row)
+                    right.append(cand_row)
         difference = recompute_metric(right, metric_name) - recompute_metric(left, metric_name)
         if abs(difference) >= abs(observed) - 1e-12:
             at_least_as_extreme += 1
@@ -197,6 +213,7 @@ def paired_permutation_test(
         "paired_permutation_p": (at_least_as_extreme + 1) / (permutations + 1),
         "observed_difference": observed,
         "n_pairs": len(keys),
+        "n_examples": len(group_indices),
         "permutations": permutations,
         "seed": seed,
         "test": "two_sided_paired_permutation",
