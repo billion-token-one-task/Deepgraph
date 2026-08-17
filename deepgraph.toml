@@ -58,7 +58,7 @@ max_output_tokens = 32000
 #
 # [[llm.providers]]
 # name = "gpt5"                                   # referenced by llm_routes.*
-# base_url = "https://api.example.com/v1"
+# base_url = "https://api.example.com/v1"          # or base_url_env for a private gateway
 # model = "gpt-5.4"
 # model_family = "gpt"                            # independence is judged on this
 # protocol = "chat_completions"                   # or "responses"
@@ -70,7 +70,7 @@ max_output_tokens = 32000
 # pass and experiment design goes through it.
 [[llm.providers]]
 name = "sora2_gemini"
-base_url = "https://llm.sora2.today/v1"
+base_url_env = "DEEPGRAPH_LLM_SORA2_BASE_URL"
 model = "gemini-3.7-flash-high"
 model_family = "gemini-flash"
 protocol = "chat_completions"
@@ -84,7 +84,7 @@ enabled = true
 # route whose family is genuinely unrelated to the proposer's.
 [[llm.providers]]
 name = "novita_deepseek"
-base_url = "https://api.novita.ai/openai"
+base_url_env = "DEEPGRAPH_LLM_DEEPSEEK_BASE_URL"
 model = "deepseek/deepseek-v4-flash-0731"
 model_family = "deepseek"
 protocol = "chat_completions"
@@ -97,7 +97,7 @@ enabled = true
 # is better than self-grading and worse than a cross-vendor split.
 [[llm.providers]]
 name = "sora2_gemini_pro"
-base_url = "https://llm.sora2.today/v1"
+base_url_env = "DEEPGRAPH_LLM_SORA2_BASE_URL"
 model = "gemini-3.1-pro-high"
 model_family = "gemini-pro"
 protocol = "chat_completions"
