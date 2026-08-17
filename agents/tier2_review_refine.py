@@ -454,7 +454,12 @@ def _call_role(
         idempotency_key=f"{operation}:{digest}",
         prompt_version=configured_role_prompt_version(role),
         proposer_route=proposer_route,
-        max_tokens=4096,
+        # 4096 was measured hitting the cap on 2026-08-17: the evaluator
+        # (deepseek-v4-flash) spent exactly 4096 output tokens on 18k chars of
+        # prose and the JSON never arrived, killing the whole tier-2 design
+        # pass. Same failure shape as run 153's generation truncation. Raised
+        # per the quality-over-speed rule: fix by raising tolerance.
+        max_tokens=16384,
     )
     return payload if isinstance(payload, dict) else {}, tokens, provider
 
