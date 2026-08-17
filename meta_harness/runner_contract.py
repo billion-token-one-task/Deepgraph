@@ -84,6 +84,47 @@ def extract_p_value(payload: Mapping[str, Any]) -> float | None:
     return None
 
 
+def degenerate_measurement(payload: Mapping[str, Any]) -> str:
+    """Name the reason a result measured nothing, or "" if it measured something.
+
+    Run 153 on 2026-08-16 is the case this exists for. It cost 15114 tokens and
+    reported exact_match 0.0 against 0.0, which the pipeline recorded as a
+    refutation. The forensic read showed the hypothesis was never tested: the
+    target was GSM8K's full worked solution while the prediction was a
+    chain-of-thought truncated mid-sentence, so exact_match could not have been
+    anything but zero for any model. Twenty-four of twenty-four predictions were
+    cut off, and the true answer sat behind a '####' marker nobody extracted.
+
+    A statistic computed on that comparison is valid and useless: a permutation
+    test on 0.0 against 0.0 returns p=1.0, and the run would be filed as "no
+    effect" when the truth is "no measurement". Both arms pinned to the same
+    floor is a broken instrument, and belongs on the repair path.
+    """
+    metric_name = str(payload.get("metric_name") or "")
+    per_method = payload.get("per_method")
+    if not isinstance(per_method, Mapping):
+        return ""
+    baseline_method = str(payload.get("baseline_method") or "")
+    candidate_method = str(payload.get("candidate_method") or "")
+    values = []
+    for method in (baseline_method, candidate_method):
+        row = per_method.get(method)
+        if not isinstance(row, Mapping):
+            return ""
+        value = _as_float(row.get(metric_name, row.get("metric_value")))
+        if value is None:
+            return ""
+        values.append(value)
+    baseline, candidate = values
+    # A metric pinned to the same floor on both arms distinguishes nothing. The
+    # ceiling case is the same instrument failure seen from the other side.
+    if baseline == candidate == 0.0:
+        return f"{metric_name or 'metric'}=0.0 on both arms; nothing was measured"
+    if baseline == candidate and baseline in (1.0, 100.0):
+        return f"{metric_name or 'metric'}={baseline} on both arms; nothing was measured"
+    return ""
+
+
 def _pair_key(row: Mapping[str, Any]) -> tuple:
     return (row.get("seed"), row.get("sample_index"))
 
@@ -221,6 +262,9 @@ def validate_final_results(
         if not isinstance(row, Mapping):
             raise RunnerContractError("metric_missing", method)
         _finite(row.get(metric_name, row.get("metric_value")), label=method)
+    degenerate = degenerate_measurement(payload)
+    if degenerate:
+        raise RunnerContractError("metric_degenerate", degenerate)
     if require_p_value:
         p_value = extract_p_value(payload)
         if p_value is None:
