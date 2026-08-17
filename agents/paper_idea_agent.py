@@ -883,6 +883,32 @@ Use only concrete executable datasets or local artifacts. Do not name a new benc
 unless the plan also provides an executable local artifact recipe; otherwise choose a
 controlled materialized-trace study or a standard public benchmark with a loader.
 """
+    else:
+        # Tell the designer what hardware actually exists. Idea 129 declared
+        # Meta-Llama-3-8B on 2026-08-17 while the only live accelerator was a
+        # 14.5 GB Colab T4; preflight correctly refused it and the idea
+        # stalled. The ceiling below is the measured canary value, not an
+        # aspiration; models that cannot run inference within it will fail
+        # capability preflight.
+        try:
+            from meta_harness.preflight_repository import runtime_preflight_environment
+
+            environment = runtime_preflight_environment()
+            live_vram = [
+                environment.backend_vram_gb.get(name, 0.0)
+                for name in environment.enabled_backends
+            ]
+            ceiling = max(live_vram, default=0.0)
+            compute_constraint = f"""
+## Available Execution Hardware (measured, not aspirational)
+Enabled backends: {", ".join(environment.enabled_backends) or "cpu"}.
+Largest verified GPU right now: {ceiling:.1f} GB VRAM.
+Declare a model whose inference fits that VRAM (fp16 weights plus KV cache);
+anything larger fails capability preflight and the idea stalls unexecuted.
+Put larger-model scaling in limitations or future work, not the primary plan.
+"""
+        except Exception:
+            compute_constraint = ""
 
     return f"""# PROPOSED RESEARCH
 
