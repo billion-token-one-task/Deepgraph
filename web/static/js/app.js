@@ -371,17 +371,29 @@ async function refreshStats() {
         // on screen instead of overwriting real numbers with zeros.
         if (s && s.warming) return;
         statsCache = s;
+        const publicCount = (key) => {
+            const value = fmt(s[key] || 0);
+            return (s.estimated_fields || []).includes(key) ? `~${value}` : value;
+        };
 
         // Top bar
-        el('hdrPapers').textContent  = fmt(s.papers_processed || 0);
-        el('hdrResults').textContent = fmt(s.results_total || 0);
-        el('hdrInsights').textContent = fmt(s.insights_total || 0);
+        el('hdrPapers').textContent  = publicCount('papers_total');
+        el('hdrResults').textContent = publicCount('results_total');
+        el('hdrInsights').textContent = publicCount('insights_total');
         el('hdrTokens').textContent  = fmt(s.tokens_consumed || 0);
 
         // Core stat row (always visible)
         el('statPapers').textContent        = fmt(s.papers_processed || 0);
         el('statDeepDiscoveries').textContent = fmt(s.deep_insights_total || 0);
         el('statExperiments').textContent   = fmt(s.experiment_runs_total || 0);
+        const experimentSub = el('statExperimentsSub');
+        if (experimentSub) {
+            experimentSub.textContent = tr(
+                'stat.experimentBreakdown',
+                '{completed} completed · {failed} failed'
+            ).replace('{completed}', fmt(s.experiments_completed || 0))
+             .replace('{failed}', fmt(s.experiments_failed || 0));
+        }
         const decidedEl = el('statDecided');
         if (decidedEl) {
             decidedEl.textContent = fmt(s.scientific_decisions_total || 0);
@@ -403,10 +415,15 @@ async function refreshStats() {
         el('statTokens').textContent        = fmt(s.tokens_consumed || 0);
 
         // Detail stat cards (collapsed section)
-        el('statResults').textContent       = fmt(s.results_total || 0);
+        el('statCorpusPapers').textContent  = publicCount('papers_total');
+        el('statPendingPapers').textContent = publicCount('papers_pending');
+        el('statErrorPapers').textContent   = publicCount('papers_error');
+        el('statResults').textContent       = publicCount('results_total');
         el('statTaxonomy').textContent = fmt(s.taxonomy_nodes_total || 0);
         el('statContradictions').textContent = fmt(s.contradictions_total || 0);
-        el('statInsights').textContent      = fmt(s.insights_total || 0);
+        el('statInsights').textContent      = publicCount('insights_total');
+        el('statGraphEntities').textContent = publicCount('graph_entities_total');
+        el('statGraphRelations').textContent = publicCount('graph_relations_total');
         el('statAgendaTokens').textContent  = fmt(s.agenda_tokens_total || 0);
         el('statCompletePapers').textContent = fmt(s.submission_bundles_total || 0);
     } catch (e) {

@@ -257,6 +257,37 @@ class StatsCacheRouteTests(unittest.TestCase):
         cache.prewarm.assert_called_once_with()
         cache.start_background_refresh.assert_called_once_with()
 
+    def test_postgres_relation_counts_use_catalog_estimates_not_reset_stats(self):
+        relation_rows = [
+            {"relname": "results", "c": 142460},
+            {"relname": "insights", "c": 11749},
+            {"relname": "graph_relations", "c": 711900},
+        ]
+        with (
+            mock.patch.object(web_app.db, "use_postgres", return_value=True),
+            mock.patch.object(web_app.db, "fetchall", return_value=relation_rows),
+            mock.patch.object(web_app.db, "fetchone", return_value={"present": False}),
+        ):
+            counts, source, estimated, mismatches = web_app._dashboard_relation_counts()
+
+        self.assertEqual(source, "postgresql_reltuples")
+        self.assertEqual(counts["results_total"], 142460)
+        self.assertEqual(counts["insights_total"], 11749)
+        self.assertEqual(counts["graph_relations_total"], 711900)
+        self.assertIn("results_total", estimated)
+        self.assertEqual(mismatches, [])
+
+    def test_nonempty_relation_reported_as_zero_is_a_semantic_mismatch(self):
+        with (
+            mock.patch.object(web_app.db, "use_postgres", return_value=True),
+            mock.patch.object(web_app.db, "fetchall", return_value=[]),
+            mock.patch.object(web_app.db, "fetchone", return_value={"present": True}),
+        ):
+            _counts, _source, _estimated, mismatches = web_app._dashboard_relation_counts()
+
+        self.assertIn("results_total", mismatches)
+        self.assertIn("insights_total", mismatches)
+
 
 class LeakGuardTests(unittest.TestCase):
     """No public JSON response may carry server filesystem paths, raw log
@@ -325,12 +356,14 @@ class LeakGuardTests(unittest.TestCase):
 
     def test_critical_data_endpoints_report_health_and_structured_data(self):
         snapshot = {
+            "papers_total": 4,
             "papers_processed": 3,
             "results_total": 2,
+            "insights_total": 2,
             "deep_insights_total": 1,
             "experiment_runs_total": 1,
             "generated_at": 123.0,
-            "data_health": {"status": "ok", "source_rows": 7},
+            "data_health": {"status": "ok", "source_rows": 8, "zero_nonempty_fields": []},
         }
         with mock.patch.object(
             web_app, "_stats_cache", web_app.StatsCache(lambda: snapshot)
@@ -354,6 +387,33 @@ class LeakGuardTests(unittest.TestCase):
             self.assertEqual(office.status_code, 200)
             self.assertGreater(len(office.get_json()["departments"]), 0)
             self.assertEqual(office.get_json()["data_health"]["status"], "ok")
+
+    def test_data_health_rejects_zero_nonempty_semantic_mismatch(self):
+        snapshot = {
+            "papers_total": 4,
+            "papers_processed": 3,
+            "results_total": 0,
+            "insights_total": 0,
+            "deep_insights_total": 1,
+            "experiment_runs_total": 1,
+            "data_health": {
+                "status": "degraded",
+                "source_rows": 5,
+                "zero_nonempty_fields": ["results_total", "insights_total"],
+            },
+        }
+        with mock.patch.object(
+            web_app, "_stats_cache", web_app.StatsCache(lambda: snapshot)
+        ) as cache:
+            cache.prewarm()
+            health = self.client.get("/api/health/data")
+
+        self.assertEqual(health.status_code, 503)
+        self.assertFalse(health.get_json()["ready"])
+        self.assertEqual(
+            health.get_json()["zero_nonempty_fields"],
+            ["results_total", "insights_total"],
+        )
 
 
 if __name__ == "__main__":
