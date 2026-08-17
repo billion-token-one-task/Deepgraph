@@ -567,9 +567,12 @@ EXTRACTION_ROUTING_HEAD_CHARS = _env_int(
 EXTRACTION_TAXONOMY_ROUTING_DEPTH = _env_int(
     "DEEPGRAPH_EXTRACTION_TAXONOMY_ROUTING_DEPTH", 3, "extraction.taxonomy_routing_depth"
 )
+# 60k characters holds the largest routed branch measured on the live taxonomy
+# (613 leaves / ~40k chars) with headroom, and the listing reaches only one of
+# the five roles, so it is ~5% of the per-paper prompt rather than ~94%.
 EXTRACTION_TAXONOMY_LEAF_BUDGET_CHARS = _env_int(
     "DEEPGRAPH_EXTRACTION_TAXONOMY_LEAF_BUDGET_CHARS",
-    40_000,
+    60_000,
     "extraction.taxonomy_leaf_budget_chars",
 )
 EXTRACTION_TAXONOMY_ROUTING_ENABLED = _env_bool(
