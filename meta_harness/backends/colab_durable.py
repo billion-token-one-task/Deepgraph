@@ -533,9 +533,12 @@ class ColabWorkRepository:
                     """
                     UPDATE compute_jobs_v1
                     SET status='submitted', failure_reason=NULL,
-                        updated_at=CURRENT_TIMESTAMP
+                        timeout_at=CURRENT_TIMESTAMP + make_interval(secs =>
+                            GREATEST(timeout_seconds, 900) + 900),
+                    updated_at=CURRENT_TIMESTAMP
                     WHERE id=? AND agenda_id=?
-                      AND status IN ('failed', 'queued')
+                      AND status IN ('failed', 'queued', 'usage_unknown',
+                                     'submission_unknown', 'timed_out')
                     """,
                     (int(row["compute_job_id"]), int(row["agenda_id"])),
                 )
