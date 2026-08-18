@@ -100,9 +100,26 @@ def _candidate_rows(limit: int) -> list[dict[str, Any]]:
           -- a terminal state to settle: the first full_benchmark grant in
           -- the repo's history (grant 78, 2026-08-18) was assembled into an
           -- outcome and closed before the completion mode could claim it.
-          AND COALESCE(arj.status, '') NOT IN (
-                'queued', 'running_gpu', 'running_cpu', 'review_pending',
-                'eligible', 'queued_gpu', 'harness_required'
+          -- One narrow exception: a gpu_scheduler job still parked at
+          -- queued_gpu after its run completed and its compute went terminal
+          -- is not pending, it is frozen -- job 145 squatted the single
+          -- execution slot this way and iced the whole candidate funnel
+          -- (run 171 done, outcome unrecordable, slot never released).
+          AND NOT (
+                COALESCE(arj.status, '') IN (
+                    'queued', 'running_gpu', 'running_cpu', 'review_pending',
+                    'eligible', 'queued_gpu', 'harness_required'
+                )
+                AND NOT (
+                    arj.status='queued_gpu'
+                    AND arj.stage='gpu_scheduler'
+                    AND er.status='completed'
+                    AND NOT EXISTS (
+                        SELECT 1 FROM colab_work_requests_v1 c
+                        WHERE c.experiment_run_id=er.id
+                          AND c.status IN ('queued', 'admitting', 'running')
+                    )
+                )
               )
         ORDER BY er.completed_at ASC NULLS LAST, er.id ASC
         LIMIT ?
