@@ -140,7 +140,11 @@ def independent_evaluator_review(
     ledger_path: Path,
 ) -> dict[str, Any]:
     """Cross-vendor evaluator reads the ledger and may dissent."""
-    from agents.llm_client import call_llm_for_role, parse_llm_json_text
+    from agents.llm_client import (
+        call_llm_for_role,
+        configured_role_prompt_version,
+        parse_llm_json_text,
+    )
 
     ledger_text = ledger_path.read_text(encoding="utf-8")
     prompt = (
@@ -164,7 +168,7 @@ def independent_evaluator_review(
         resource_grant_id=resource_grant_id,
         operation="evidence_audit_review",
         idempotency_key=f"evidence-audit:{agenda_id}:{idea_id}:{_sha256_text(ledger_text)[:16]}",
-        prompt_version="evidence_audit_v1",
+        prompt_version=configured_role_prompt_version("evaluator"),
         max_tokens=4096,
     )
     parsed, _how = parse_llm_json_text(raw)
