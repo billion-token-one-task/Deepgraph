@@ -100,6 +100,12 @@ def _safe_remote_environment(environment: Mapping[str, str]) -> dict[str, str]:
         if key.startswith(("BENCHMARK_", "DG_PUBLIC_")) or key in {
             "OMP_NUM_THREADS",
             "TOKENIZERS_PARALLELISM",
+            # Decode throughput knob. This allowlist silently dropped it, so
+            # runs 159/160 executed at the materialized default of batch 8
+            # (~4 GPU-hours of work) and were both killed at their 2-hour
+            # caps (2026-08-18).
+            "DEEPGRAPH_RUNNER_BATCH_SIZE",
+            "PYTHONUNBUFFERED",
         }:
             allowed[str(key)] = str(value)
     return allowed

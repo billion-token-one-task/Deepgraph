@@ -931,7 +931,7 @@ def _submit_experiment_run_on_colab(
             # runner reads this env; already-materialized bundles pick it up
             # without a re-forge.
             "DEEPGRAPH_RUNNER_BATCH_SIZE": os.environ.get(
-                "DEEPGRAPH_RUNNER_BATCH_SIZE", "16"
+                "DEEPGRAPH_RUNNER_BATCH_SIZE", "24"
             ),
         },
         artifact_map={name: _RUNNER_ARTIFACT_FILES[name] for name in required},
