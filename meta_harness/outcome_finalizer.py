@@ -167,6 +167,34 @@ def finalize_terminal_outcomes(*, limit: int = 50) -> OutcomeFinalizationReport:
     """
     report = OutcomeFinalizationReport()
     try:
+        # A job left in an execution status whose grant already carries an
+        # OutcomeRecord is bookkeeping debt, not live work: job 137 sat at
+        # queued_gpu for eight hours after its transport died and its outcome
+        # was recorded, occupying the launcher's single execution slot -- and
+        # the pending-work guard above now protects exactly that zombie from
+        # ever being closed. Only rows with no live colab request close here.
+        db.execute(
+            """
+            UPDATE auto_research_jobs
+            SET status='completed', stage='outcome_recorded',
+                assigned_worker=NULL, updated_at=CURRENT_TIMESTAMP,
+                last_note='Outcome already recorded for this grant; execution-state job closed by reconciliation.'
+            WHERE status IN ('queued_gpu', 'running_gpu', 'running_cpu',
+                             'running_experiment')
+              AND resource_grant_id IN (
+                  SELECT resource_grant_id FROM outcome_records
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM colab_work_requests_v1 c
+                  WHERE c.resource_grant_id=auto_research_jobs.resource_grant_id
+                    AND c.status IN ('queued', 'running')
+              )
+            """
+        )
+        db.commit()
+    except Exception:
+        db.rollback()
+    try:
         report.recovery = _recover_terminal_usage()
     except Exception as exc:  # recovery remains retryable on the next timer tick
         db.rollback()
