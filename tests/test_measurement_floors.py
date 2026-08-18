@@ -144,3 +144,16 @@ def test_dependency_available_accepts_requirement_specifiers():
     assert probe("json>=99.9") in (True, False)  # must not raise
     assert probe("definitely-not-a-real-module>=1.0") is False
     assert probe("json") is True
+
+
+def test_pilot_seed_clamp_is_prefix_and_off_by_default(monkeypatch):
+    from meta_harness.runners.generic_transformers import _clamped_seeds
+
+    monkeypatch.delenv("DEEPGRAPH_RUNNER_MAX_SEEDS", raising=False)
+    assert _clamped_seeds([42, 137, 2024]) == [42, 137, 2024]
+    monkeypatch.setenv("DEEPGRAPH_RUNNER_MAX_SEEDS", "1")
+    assert _clamped_seeds([42, 137, 2024]) == [42]
+    monkeypatch.setenv("DEEPGRAPH_RUNNER_MAX_SEEDS", "0")
+    assert _clamped_seeds([42, 137, 2024]) == [42, 137, 2024]
+    monkeypatch.setenv("DEEPGRAPH_RUNNER_MAX_SEEDS", "junk")
+    assert _clamped_seeds([42]) == [42]

@@ -41,6 +41,23 @@ def _normalized_input_sha256(value: str) -> str:
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
+def _clamped_seeds(seeds: Sequence[int]) -> list[int]:
+    """Honor DEEPGRAPH_RUNNER_MAX_SEEDS as a prefix cap on the seed list.
+
+    Set only on pilot-stage compute requests. Zero or absent means the full
+    declared list; the clamp keeps list order so one seed always means the
+    design's first seed, and manifests report whatever actually ran.
+    """
+    declared = [int(seed) for seed in seeds]
+    try:
+        cap = int(os.environ.get("DEEPGRAPH_RUNNER_MAX_SEEDS", "0") or 0)
+    except ValueError:
+        cap = 0
+    if cap > 0:
+        return declared[:cap]
+    return declared
+
+
 def _load_candidate(path: Path, protocol: str):
     if not path.is_file():
         raise RunnerContractError("runner_contract_violation", "candidate_adapter_missing")
@@ -72,6 +89,12 @@ class GenericTransformersRunner(ResearchRunner):
     ):
         requirement_payload = config.get("requirements") or config
         self.requirements = ExperimentRequirements.from_dict(requirement_payload)
+        # Stage policy, not science: a pilot exists to prove the measurement
+        # works, and one seed at full n already does that (run 164's pilot
+        # was accepted at one seed). The full benchmark and the audit holdout
+        # never set this env, so every scientific claim still carries the
+        # design's complete seed list, recorded truthfully in the manifests.
+        self.seeds = _clamped_seeds(self.requirements.seeds)
         self.config = dict(config)
         self.dataset_revision = str(
             config.get("resolved_dataset_revision")
@@ -106,7 +129,7 @@ class GenericTransformersRunner(ResearchRunner):
         except ImportError as exc:
             raise RunnerContractError("dependency_missing", "torch") from exc
         self.torch = torch
-        for seed in self.requirements.seeds:
+        for seed in self.seeds:
             random.seed(seed)
             torch.manual_seed(seed)
             if torch.cuda.is_available():
@@ -302,7 +325,7 @@ class GenericTransformersRunner(ResearchRunner):
     def _run_method(self, method: str, *, candidate: bool) -> list[dict[str, Any]]:
         mapping = self.requirements.dataset.field_mapping
         output: list[dict[str, Any]] = []
-        for seed in self.requirements.seeds:
+        for seed in self.seeds:
             random.seed(seed)
             self.torch.manual_seed(seed)
             if self.requirements.task_protocol == "generative_qa":
@@ -439,7 +462,7 @@ class GenericTransformersRunner(ResearchRunner):
             baseline_rows,
             candidate_rows,
             metric_name,
-            seed=int(self.requirements.seeds[0]) if self.requirements.seeds else 0,
+            seed=int(self.seeds[0]) if self.seeds else 0,
         )
         return self.metrics
 
@@ -529,8 +552,8 @@ class GenericTransformersRunner(ResearchRunner):
             "dataset_revision": self.dataset_revision,
             "model_id": self.requirements.model.repository_id,
             "model_revision": self.model_revision,
-            "seeds": list(self.requirements.seeds),
-            "num_seeds": len(self.requirements.seeds),
+            "seeds": list(self.seeds),
+            "num_seeds": len(self.seeds),
             "num_examples": len(self.dataset_rows),
             "baseline_method": self.BASELINE_METHOD,
             "candidate_method": self.candidate_method,
@@ -573,7 +596,7 @@ class GenericTransformersRunner(ResearchRunner):
                         self.requirements.metric.name,
                     ),
                 }
-                for seed in self.requirements.seeds
+                for seed in self.seeds
             ],
             "scientific_negative_result": negative,
             "execution_reason_code": (

@@ -294,7 +294,9 @@ def _submit_holdout(run: Mapping[str, Any], grant_id: int, attempt: int) -> int:
             "model_manifest": "model_manifest.json",
         },
         artifact_output_dir=str(holdout_dir),
-        timeout_seconds=5400,
+        # Full declared seed list at n=200 measured ~31 min/seed on a T4;
+        # three seeds plus queue jitter needs the 3h ceiling, not 90 min.
+        timeout_seconds=10800,
     )
     job = submit_colab_work(spec)
     return int(getattr(job, "id", 0) or 0)

@@ -114,6 +114,7 @@ def _safe_remote_environment(environment: Mapping[str, str]) -> dict[str, str]:
             # caps (2026-08-18).
             "DEEPGRAPH_RUNNER_BATCH_SIZE",
             "DEEPGRAPH_RUNNER_EXAMPLE_OFFSET",
+            "DEEPGRAPH_RUNNER_MAX_SEEDS",
             "PYTHONUNBUFFERED",
         }:
             allowed[str(key)] = str(value)

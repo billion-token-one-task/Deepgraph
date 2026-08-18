@@ -933,6 +933,19 @@ def _submit_experiment_run_on_colab(
             "DEEPGRAPH_RUNNER_BATCH_SIZE": os.environ.get(
                 "DEEPGRAPH_RUNNER_BATCH_SIZE", "24"
             ),
+            # Pilot stage proves the measurement works; one seed at full n
+            # does that (run 164's accepted pilot). Full-benchmark and audit
+            # requests never set this key, so scientific claims keep the
+            # design's complete seed list.
+            **(
+                {
+                    "DEEPGRAPH_RUNNER_MAX_SEEDS": os.environ.get(
+                        "DEEPGRAPH_RUNNER_PILOT_MAX_SEEDS", "1"
+                    )
+                }
+                if str(grant.stage) == "pilot"
+                else {}
+            ),
         },
         artifact_map={name: _RUNNER_ARTIFACT_FILES[name] for name in required},
         artifact_output_dir=str(results_dir),
