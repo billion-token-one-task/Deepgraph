@@ -445,19 +445,35 @@ class ColabCLIExecutor:
                 )
                 if returncode is None:
                     raise ColabCLIError("Colab output omitted the return-code sentinel")
-                downloaded = self._run(
-                    account,
-                    (
-                        "download",
-                        "-s",
-                        session,
-                        "/content/deepgraph-artifacts.tar.gz",
-                        str(artifact_archive),
-                    ),
-                    self.config.download_timeout_seconds,
-                )
-                if downloaded.returncode != 0 or not artifact_archive.exists():
-                    raise ColabCLIError("Colab artifact collection failed")
+                # Run 163 finished 2.8 hours of decoding with returncode 0
+                # and lost everything to one failed download (2026-08-18).
+                # The archive already exists remotely; pulling it is the one
+                # step retries cannot corrupt.
+                download_error = ""
+                for attempt in range(1, 5):
+                    downloaded = self._run(
+                        account,
+                        (
+                            "download",
+                            "-s",
+                            session,
+                            "/content/deepgraph-artifacts.tar.gz",
+                            str(artifact_archive),
+                        ),
+                        self.config.download_timeout_seconds,
+                    )
+                    if downloaded.returncode == 0 and artifact_archive.exists() \
+                            and artifact_archive.stat().st_size > 0:
+                        break
+                    download_error = (
+                        downloaded.stderr or downloaded.stdout or "no output"
+                    )[-300:]
+                    time.sleep(min(10 * attempt, 30))
+                else:
+                    raise ColabCLIError(
+                        "Colab artifact collection failed after 4 attempts: "
+                        + download_error
+                    )
                 with tarfile.open(artifact_archive) as archive:
                     archive.extractall(output_dir, filter="data")
                 files = []
