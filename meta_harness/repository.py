@@ -1503,6 +1503,11 @@ class MetaHarnessRepository:
             raise MetaHarnessPersistenceError(
                 "ResourceGrant and decision packet were not found"
             )
+        # A run points only at its most recently attached grant, so an
+        # earlier stage's grant loses the direct pointer the moment a later
+        # stage attaches (full_benchmark grants after the audit grant lands).
+        # A recorded compute request binding this grant to this run is
+        # equally hard evidence of scope, so either linkage settles.
         run = db.fetchone(
             """
             SELECT id, agenda_id, deep_insight_id, status,
@@ -1510,9 +1515,17 @@ class MetaHarnessRepository:
                    best_metric_value, effect_size, hypothesis_verdict,
                    error_message
             FROM experiment_runs
-            WHERE id=? AND resource_grant_id=?
+            WHERE id=?
+              AND (
+                resource_grant_id=?
+                OR EXISTS (
+                  SELECT 1 FROM colab_work_requests_v1 c
+                  WHERE c.experiment_run_id=experiment_runs.id
+                    AND c.resource_grant_id=?
+                )
+              )
             """,
-            (experiment_run_id, resource_grant_id),
+            (experiment_run_id, resource_grant_id, resource_grant_id),
         )
         if (
             not run
