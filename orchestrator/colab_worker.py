@@ -205,6 +205,51 @@ def _record_terminal_run_success(row: dict, observed) -> None:
             ),
             actor="colab_terminal_handoff_v1",
         )
+    elif str(run.get("scientific_evidence_state") or "") == "sanity_passed":
+        # A run executed under a full_benchmark-stage grant advances one more
+        # rung. Until 2026-08-18 no code ever targeted this transition -- the
+        # upper ladder had readers and no writers -- so no run in the repo's
+        # history had passed sanity_passed. The contract hash is the
+        # requirements hash the preflight locked, which is what the run's
+        # bundle was materialized from.
+        grant_row = db.fetchone(
+            "SELECT stage, preflight_result_id FROM resource_grants WHERE id=?",
+            (int(row["resource_grant_id"]),),
+        )
+        if grant_row and str(dict(grant_row).get("stage") or "") == "full_benchmark":
+            from orchestrator.bounded_execution import raw_artifacts_hash
+
+            digest, present, missing = raw_artifacts_hash(
+                agenda_id=int(run["agenda_id"]), experiment_run_id=int(run["id"])
+            )
+            contract_row = db.fetchone(
+                """
+                SELECT cer.requirements_hash
+                FROM candidate_preflight_results_v1 cpr
+                JOIN candidate_execution_requirements_v1 cer
+                  ON cer.id=cpr.requirement_id
+                WHERE cpr.id=?
+                """,
+                (int(dict(grant_row).get("preflight_result_id") or 0),),
+            )
+            contract_hash = str(dict(contract_row or {}).get("requirements_hash") or "")
+            if present > 0 and not missing and contract_hash:
+                MetaHarnessRepository().advance_experiment_state(
+                    agenda_id=int(run["agenda_id"]),
+                    experiment_run_id=int(run["id"]),
+                    target="full_benchmark_complete",
+                    context=EvidenceTransitionContext(
+                        resource_grant_valid=True,
+                        resource_grant_id=int(row["resource_grant_id"]),
+                        execution_succeeded=True,
+                        pilot_only=False,
+                        full_benchmark_complete=True,
+                        raw_artifacts_present=True,
+                        raw_artifacts_hash=digest,
+                        benchmark_contract_hash=contract_hash,
+                    ),
+                    actor="colab_terminal_handoff_v1",
+                )
 
 
 def _reconcile_succeeded_runs() -> int:
