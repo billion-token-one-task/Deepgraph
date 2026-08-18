@@ -191,6 +191,40 @@ def finalize_terminal_outcomes(*, limit: int = 50) -> OutcomeFinalizationReport:
               )
             """
         )
+        # The complementary deadlock: an execution-state job whose transport
+        # died WITHOUT an outcome could neither finalize (the pending-work
+        # guard excludes execution statuses) nor close (no outcome exists).
+        # Job 137 orbited that circle for nine hours. Surrender it to the
+        # normal failed-run finalization path instead.
+        db.execute(
+            """
+            UPDATE auto_research_jobs
+            SET status='failed', stage='experiment_failed',
+                assigned_worker=NULL, updated_at=CURRENT_TIMESTAMP,
+                last_error='colab transport terminal with no outcome; surrendered for finalization',
+                experiment_run_id=COALESCE(
+                    experiment_run_id,
+                    (SELECT MAX(er.id) FROM experiment_runs er
+                     WHERE er.resource_grant_id=auto_research_jobs.resource_grant_id)
+                )
+            WHERE status IN ('queued_gpu', 'running_gpu', 'running_cpu',
+                             'running_experiment')
+              AND resource_grant_id IS NOT NULL
+              AND resource_grant_id NOT IN (
+                  SELECT resource_grant_id FROM outcome_records
+              )
+              AND EXISTS (
+                  SELECT 1 FROM colab_work_requests_v1 c
+                  WHERE c.resource_grant_id=auto_research_jobs.resource_grant_id
+                    AND c.status IN ('failed', 'timed_out', 'cancelled')
+              )
+              AND NOT EXISTS (
+                  SELECT 1 FROM colab_work_requests_v1 c2
+                  WHERE c2.resource_grant_id=auto_research_jobs.resource_grant_id
+                    AND c2.status IN ('queued', 'running')
+              )
+            """
+        )
         db.commit()
     except Exception:
         db.rollback()
