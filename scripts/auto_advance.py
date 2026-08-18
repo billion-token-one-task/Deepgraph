@@ -1210,6 +1210,107 @@ def advance_to_full_benchmark(agenda_id: int, state: dict, journal: Journal, arg
                     experiment_run_id=run_id, verdict=row["verdict"])
 
 
+def advance_evidence_audit(agenda_id: int, state: dict, journal: Journal, args) -> None:
+    """Issue the audit grant and drive the audit for full-benchmark runs.
+
+    The final two ladder rungs (evidence_audited, scientifically_decided)
+    never had an executor before 2026-08-18; meta_harness/evidence_audit.py
+    is that executor and this step is its driver.
+    """
+    from meta_harness.evidence_audit import EvidenceAuditError, run_evidence_audit_phase
+
+    repo = MetaHarnessRepository()
+    for row in _rows(
+        """
+        SELECT er.id AS run_id, er.deep_insight_id AS idea_id,
+               er.resource_grant_id, rg.stage AS grant_stage, rg.status AS grant_status
+        FROM experiment_runs er
+        LEFT JOIN resource_grants rg ON rg.id=er.resource_grant_id
+        WHERE er.agenda_id=?
+          AND er.scientific_evidence_state IN ('full_benchmark_complete', 'evidence_audited')
+        ORDER BY er.id ASC
+        """,
+        (agenda_id,),
+    ):
+        idea_id = int(row["idea_id"])
+        run_id = int(row["run_id"])
+        grant_id = int(row["resource_grant_id"] or 0)
+        if str(row.get("grant_stage") or "") != "evidence_audit" or str(
+            row.get("grant_status") or ""
+        ) != "active":
+            if (
+                args.spend_limit > 0
+                and _guard_spent_delta(state, args) + args.grant_token_cap > args.spend_limit
+            ):
+                journal.log("spend_limit_reached", agenda_id=agenda_id,
+                            limit=args.spend_limit)
+                return
+            packet_row = db.fetchone(
+                "SELECT id FROM idea_decision_packets WHERE agenda_id=? AND idea_id=?"
+                "   AND decision IN ('promote','revisit') ORDER BY id DESC LIMIT 1",
+                (agenda_id, idea_id),
+            )
+            preflight_row = db.fetchone(
+                "SELECT id FROM candidate_preflight_results_v1"
+                " WHERE agenda_id=? AND idea_id=? AND status='passed'"
+                " ORDER BY id DESC LIMIT 1",
+                (agenda_id, idea_id),
+            )
+            if not packet_row or not preflight_row:
+                journal.log("evidence_audit_inputs_missing", agenda_id=agenda_id,
+                            idea_id=idea_id)
+                continue
+            decision = _rebuild_decision(agenda_id, idea_id, int(dict(packet_row)["id"]))
+            try:
+                grant = issue_resource_grant(
+                    decision,
+                    stage="evidence_audit",
+                    token_cap=args.grant_token_cap,
+                    gpu_class=args.gpu_class,
+                    max_gpu_hours=args.grant_gpu_hours,
+                    backend_allowlist=["colab_gpu", "llm"],
+                    artifact_requirements=ARTIFACT_REQUIREMENTS,
+                    expires_at=(_now() + timedelta(hours=24)).isoformat(),
+                    idempotency_key=_grant_key(agenda_id, idea_id, "evidence_audit"),
+                    preflight_result_id=int(dict(preflight_row)["id"]),
+                )
+                grant_id = repo.issue_grant(grant)
+                repo.attach_grant_to_run(
+                    agenda_id=agenda_id,
+                    idea_id=idea_id,
+                    experiment_run_id=run_id,
+                    resource_grant_id=grant_id,
+                )
+            except Exception as exc:
+                db.rollback()
+                journal.log("evidence_audit_grant_refused", agenda_id=agenda_id,
+                            idea_id=idea_id, reason=f"{type(exc).__name__}: {exc}")
+                continue
+            journal.log("evidence_audit_granted", agenda_id=agenda_id,
+                        idea_id=idea_id, resource_grant_id=grant_id,
+                        experiment_run_id=run_id)
+        try:
+            disposition = run_evidence_audit_phase(
+                agenda_id=agenda_id,
+                idea_id=idea_id,
+                run_id=run_id,
+                resource_grant_id=grant_id,
+            )
+        except EvidenceAuditError as exc:
+            db.rollback()
+            journal.log("evidence_audit_blocked", agenda_id=agenda_id,
+                        idea_id=idea_id, run_id=run_id, reason=str(exc))
+            continue
+        except Exception as exc:
+            db.rollback()
+            journal.log("evidence_audit_failed", agenda_id=agenda_id,
+                        idea_id=idea_id, run_id=run_id,
+                        reason=f"{type(exc).__name__}: {exc}")
+            continue
+        journal.log("evidence_audit_phase", agenda_id=agenda_id, idea_id=idea_id,
+                    run_id=run_id, disposition=disposition)
+
+
 def retry_deferred_preflights(agenda_id: int, state: dict, journal: Journal, args) -> None:
     """Re-run preflight for jobs parked at capability_preflight_deferred.
 
@@ -1492,6 +1593,7 @@ def main() -> int:
             recycle_stranded(agenda_id, state, journal, args)
             retry_deferred_preflights(agenda_id, state, journal, args)
             advance_to_full_benchmark(agenda_id, state, journal, args)
+            advance_evidence_audit(agenda_id, state, journal, args)
             advance_agenda(agenda_id, state, journal, args)
     finally:
         _save_state(state_path, state)

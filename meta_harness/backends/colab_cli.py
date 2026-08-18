@@ -105,6 +105,7 @@ def _safe_remote_environment(environment: Mapping[str, str]) -> dict[str, str]:
             # (~4 GPU-hours of work) and were both killed at their 2-hour
             # caps (2026-08-18).
             "DEEPGRAPH_RUNNER_BATCH_SIZE",
+            "DEEPGRAPH_RUNNER_EXAMPLE_OFFSET",
             "PYTHONUNBUFFERED",
         }:
             allowed[str(key)] = str(value)
