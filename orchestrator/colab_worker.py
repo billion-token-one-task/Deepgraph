@@ -267,6 +267,16 @@ def _reconcile_succeeded_runs() -> int:
           AND (
               er.status <> 'completed'
               OR COALESCE(er.scientific_evidence_state, 'planned') = 'planned'
+              -- A full-benchmark run whose handoff ran under code that only
+              -- knew the sanity rung still owes its ladder advance.
+              OR (
+                  COALESCE(er.scientific_evidence_state, 'planned') = 'sanity_passed'
+                  AND EXISTS (
+                      SELECT 1 FROM resource_grants g
+                      WHERE g.id=cwr.resource_grant_id
+                        AND g.stage='full_benchmark'
+                  )
+              )
           )
         ORDER BY cwr.completed_at ASC, cwr.id ASC
         LIMIT 20
