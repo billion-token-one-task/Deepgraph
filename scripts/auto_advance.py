@@ -1122,6 +1122,7 @@ def advance_to_full_benchmark(agenda_id: int, state: dict, journal: Journal, arg
               SELECT 1 FROM resource_grants g
               WHERE g.agenda_id=o.agenda_id AND g.idea_id=o.idea_id
                 AND g.stage='full_benchmark'
+                AND g.status='active'
           )
         ORDER BY o.id ASC
         """,
@@ -1129,6 +1130,19 @@ def advance_to_full_benchmark(agenda_id: int, state: dict, journal: Journal, arg
     ):
         idea_id = int(row["idea_id"])
         run_id = int(row["experiment_run_id"])
+        prior_grants = db.fetchone(
+            "SELECT COUNT(*) AS n FROM resource_grants"
+            " WHERE agenda_id=? AND idea_id=? AND stage='full_benchmark'",
+            (agenda_id, idea_id),
+        )
+        attempt_n = int(dict(prior_grants or {}).get("n") or 0)
+        if attempt_n >= 3:
+            journal.log("full_benchmark_attempts_exhausted", agenda_id=agenda_id,
+                        idea_id=idea_id, attempts=attempt_n)
+            continue
+        grant_suffix = (
+            "full_benchmark" if attempt_n == 0 else f"full_benchmark{attempt_n + 1}"
+        )
         if (
             args.spend_limit > 0
             and _guard_spent_delta(state, args) + args.grant_token_cap > args.spend_limit
@@ -1164,7 +1178,7 @@ def advance_to_full_benchmark(agenda_id: int, state: dict, journal: Journal, arg
                 backend_allowlist=[compute_backend, "llm"],
                 artifact_requirements=ARTIFACT_REQUIREMENTS,
                 expires_at=(_now() + timedelta(hours=24)).isoformat(),
-                idempotency_key=_grant_key(agenda_id, idea_id, "full_benchmark"),
+                idempotency_key=_grant_key(agenda_id, idea_id, grant_suffix),
                 preflight_result_id=int(dict(preflight_row)["id"]),
             )
             grant_id = repo.issue_grant(grant)

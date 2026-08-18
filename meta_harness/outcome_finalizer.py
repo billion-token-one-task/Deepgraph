@@ -96,6 +96,14 @@ def _candidate_rows(limit: int) -> list[dict[str, Any]]:
           AND COALESCE(arj.stage, '') NOT IN (
                 'retry_failed_run', 'gpu_failed'
               )
+          -- A queued or running job on an active grant is pending work, not
+          -- a terminal state to settle: the first full_benchmark grant in
+          -- the repo's history (grant 78, 2026-08-18) was assembled into an
+          -- outcome and closed before the completion mode could claim it.
+          AND COALESCE(arj.status, '') NOT IN (
+                'queued', 'running_gpu', 'running_cpu', 'review_pending',
+                'eligible', 'queued_gpu', 'harness_required'
+              )
         ORDER BY er.completed_at ASC NULLS LAST, er.id ASC
         LIMIT ?
         """,
