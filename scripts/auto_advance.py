@@ -1354,6 +1354,122 @@ def advance_evidence_audit(agenda_id: int, state: dict, journal: Journal, args) 
                     run_id=run_id, disposition=disposition)
 
 
+MAX_PILOT_GRANTS_PER_IDEA = 3
+
+
+def retry_infra_failed_pilots(agenda_id: int, state: dict, journal: Journal, args) -> None:
+    """Return infrastructure-killed pilots to the funnel, attempts bounded.
+
+    (failed, experiment_failed) was an acknowledged stranded state in the
+    2026-08-10 census. A pilot whose compute died in transport (VM recycled,
+    controller lost) or whose outcome is 'invalid' measured nothing -- that
+    is an infrastructure event, not a scientific result, so the idea earns a
+    bounded retry through the manual-reforge lane. Scientific failures keep
+    their terminal state.
+    """
+    from orchestrator.auto_research import _upsert_job
+
+    repo = MetaHarnessRepository()
+    for row in _rows(
+        """
+        SELECT arj.deep_insight_id AS idea_id, er.id AS run_id
+        FROM auto_research_jobs arj
+        JOIN experiment_runs er ON er.id=arj.experiment_run_id
+        JOIN deep_insights di ON di.id=arj.deep_insight_id
+        WHERE arj.agenda_id=?
+          AND di.status NOT IN ('archived', 'exists')
+          AND (
+            (arj.status='failed' AND arj.stage='experiment_failed'
+             AND er.phase='colab_compute_failed')
+            OR (arj.status='completed' AND arj.stage='outcome_recorded'
+                AND (SELECT o.verdict FROM outcome_records o
+                     WHERE o.experiment_run_id=er.id
+                     ORDER BY o.id DESC LIMIT 1) = 'invalid')
+          )
+        ORDER BY arj.updated_at ASC
+        """,
+        (agenda_id,),
+    ):
+        idea_id = int(row["idea_id"])
+        run_id = int(row["run_id"])
+        prior = db.fetchone(
+            "SELECT COUNT(*) AS n FROM resource_grants"
+            " WHERE agenda_id=? AND idea_id=? AND stage='pilot'",
+            (agenda_id, idea_id),
+        )
+        attempt_n = int(dict(prior or {}).get("n") or 0)
+        if attempt_n >= MAX_PILOT_GRANTS_PER_IDEA:
+            journal.log("pilot_infra_retry_exhausted", agenda_id=agenda_id,
+                        idea_id=idea_id, attempts=attempt_n)
+            continue
+        if (
+            args.spend_limit > 0
+            and _guard_spent_delta(state, args) + args.grant_token_cap > args.spend_limit
+        ):
+            journal.log("spend_limit_reached", agenda_id=agenda_id,
+                        limit=args.spend_limit)
+            return
+        packet_row = db.fetchone(
+            "SELECT id FROM idea_decision_packets WHERE agenda_id=? AND idea_id=?"
+            "   AND decision IN ('promote','revisit') ORDER BY id DESC LIMIT 1",
+            (agenda_id, idea_id),
+        )
+        preflight_row = db.fetchone(
+            "SELECT id FROM candidate_preflight_results_v1"
+            " WHERE agenda_id=? AND idea_id=? AND status='passed'"
+            " ORDER BY id DESC LIMIT 1",
+            (agenda_id, idea_id),
+        )
+        if not packet_row or not preflight_row:
+            journal.log("pilot_infra_retry_inputs_missing", agenda_id=agenda_id,
+                        idea_id=idea_id)
+            continue
+        # issue_grant's binding UPDATE only matches awaiting_portfolio_decision,
+        # so restage first (same ordering the preflight-retry path relies on).
+        _upsert_job(
+            idea_id,
+            status="queued",
+            stage="awaiting_portfolio_decision",
+            last_error=None,
+            last_note=f"infra-failed pilot (run {run_id}); restaged for retry grant",
+        )
+        decision = _rebuild_decision(agenda_id, idea_id, int(dict(packet_row)["id"]))
+        try:
+            grant = issue_resource_grant(
+                decision,
+                stage="pilot",
+                token_cap=args.grant_token_cap,
+                gpu_class=args.gpu_class,
+                max_gpu_hours=args.grant_gpu_hours,
+                backend_allowlist=["colab_gpu", "llm"],
+                artifact_requirements=ARTIFACT_REQUIREMENTS,
+                expires_at=(_now() + timedelta(hours=24)).isoformat(),
+                idempotency_key=_grant_key(
+                    agenda_id, idea_id, f"pilot_retry{attempt_n}"
+                ),
+                preflight_result_id=int(dict(preflight_row)["id"]),
+            )
+            grant_id = repo.issue_grant(grant)
+        except Exception as exc:
+            db.rollback()
+            journal.log("pilot_infra_retry_grant_refused", agenda_id=agenda_id,
+                        idea_id=idea_id, reason=f"{type(exc).__name__}: {exc}")
+            continue
+        _upsert_job(
+            idea_id,
+            status="queued",
+            stage="retry_failed_run",
+            last_error=None,
+            last_note=(
+                f"pilot retry {attempt_n} after infrastructure failure "
+                f"of run {run_id} (grant {grant_id})"
+            ),
+        )
+        journal.log("pilot_infra_retry", agenda_id=agenda_id, idea_id=idea_id,
+                    run_id=run_id, resource_grant_id=grant_id,
+                    attempt=attempt_n)
+
+
 def retry_deferred_preflights(agenda_id: int, state: dict, journal: Journal, args) -> None:
     """Re-run preflight for jobs parked at capability_preflight_deferred.
 
@@ -1635,6 +1751,7 @@ def main() -> int:
                 break
             recycle_stranded(agenda_id, state, journal, args)
             retry_deferred_preflights(agenda_id, state, journal, args)
+            retry_infra_failed_pilots(agenda_id, state, journal, args)
             advance_to_full_benchmark(agenda_id, state, journal, args)
             advance_evidence_audit(agenda_id, state, journal, args)
             advance_agenda(agenda_id, state, journal, args)

@@ -493,6 +493,11 @@ class ColabWorkRepository:
                   AND (
                         (cwr.status='failed'
                          AND cwr.failure_reason LIKE 'colab_worker_control_lost:%')
+                     -- The startup sweep writes the bare reason when it finds
+                     -- a running request whose worker died (request 17,
+                     -- 2026-08-18): same provable non-attempt, same recovery.
+                     OR (cwr.status='failed'
+                         AND cwr.failure_reason='controller_lost')
                      OR (cwr.status='queued'
                          AND res.status IN ('settled', 'released'))
                      -- A queued request whose durable compute authority timed

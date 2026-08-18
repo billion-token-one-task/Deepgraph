@@ -62,7 +62,6 @@ ACKNOWLEDGED_STRANDED: dict[tuple[str, str], str] = {
     ("blocked", "evosci_binary_missing"): "census 2026-08-10",
     ("blocked", "evosci_report_required_before_compute"): "census 2026-08-10",
     ("blocked", "gpu_unavailable"): "census 2026-08-10",
-    ("failed", "experiment_failed"): "census 2026-08-10; 35 live rows",
     ("failed", "missing_run"): "census 2026-08-10",
     ("failed", "verification_failed"): "census 2026-08-10",
     ("failed", "verification_stale"): "census 2026-08-10",
