@@ -188,11 +188,82 @@ def _run_paths(run: Mapping[str, Any]) -> tuple[Path, Path, Path]:
     return workdir, results, holdout
 
 
-def _submit_holdout(run: Mapping[str, Any], grant_id: int) -> int:
+MAX_HOLDOUT_ATTEMPTS = 3
+
+
+def _raw_input_hashes(path: Path) -> set[str]:
+    return {
+        str(json.loads(line).get("input_sha256") or "")
+        for line in path.read_text().splitlines()
+        if line.strip()
+    }
+
+
+def holdout_provenance_problem(results_dir: Path, holdout_dir: Path) -> str:
+    """Refuse a holdout that is not demonstrably disjoint from the audited run.
+
+    The first holdout flight (request 14, 2026-08-18) reproduced the audited
+    numbers bit for bit: the run's vendored runner snapshot predated example
+    offset support, so the env knob was silently ignored and test[0:200] ran
+    twice. A manifest field alone is a claim; the raw input hash sets are the
+    evidence, so both are checked.
+    """
+    manifest_path = holdout_dir / "dataset_manifest.json"
+    if not manifest_path.exists():
+        return "holdout_dataset_manifest_missing"
+    manifest = json.loads(manifest_path.read_text())
+    offset = manifest.get("example_offset")
+    if offset is None or int(offset) != HOLDOUT_OFFSET:
+        return f"holdout_offset_not_applied:{offset}"
+    raw_path = holdout_dir / "raw_predictions.jsonl"
+    if not raw_path.exists():
+        return "holdout_raw_predictions_missing"
+    overlap = _raw_input_hashes(results_dir / "raw_predictions.jsonl") & _raw_input_hashes(
+        raw_path
+    )
+    overlap.discard("")
+    if overlap:
+        return f"holdout_examples_overlap_audited_run:{len(overlap)}"
+    return ""
+
+
+def _prepare_holdout_code(workdir: Path) -> Path:
+    """Copy the run's code with its vendored measurement layer refreshed.
+
+    The method identity (candidate_adapter, execution_requirements) is copied
+    untouched; only the vendored meta_harness snapshot is replaced with this
+    release's files so the runner understands the example offset. The original
+    code dir stays byte-identical for provenance.
+    """
+    import shutil
+
+    code_dir = workdir / "code"
+    holdout_code = workdir / "code_holdout"
+    if holdout_code.exists():
+        shutil.rmtree(holdout_code)
+    shutil.copytree(
+        code_dir, holdout_code, ignore=shutil.ignore_patterns("__pycache__")
+    )
+    release_root = Path(__file__).resolve().parents[1]
+    vendored_root = holdout_code / "meta_harness"
+    for vendored in sorted(vendored_root.rglob("*.py")):
+        rel = vendored.relative_to(holdout_code)
+        source = release_root / rel
+        if not source.exists():
+            raise EvidenceAuditError(f"no current source for vendored {rel}")
+        vendored.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
+    return holdout_code
+
+
+def _submit_holdout(run: Mapping[str, Any], grant_id: int, attempt: int) -> int:
     from orchestrator.meta_compute_runtime import ColabWorkSpec, submit_colab_work
 
     workdir, _results, holdout_dir = _run_paths(run)
     holdout_dir.mkdir(parents=True, exist_ok=True)
+    holdout_code = _prepare_holdout_code(workdir)
+    key_suffix = "evidence_audit_holdout" if attempt <= 1 else (
+        f"evidence_audit_holdout{attempt}"
+    )
     spec = ColabWorkSpec(
         agenda_id=int(run["agenda_id"]),
         idea_id=int(run["deep_insight_id"]),
@@ -201,9 +272,9 @@ def _submit_holdout(run: Mapping[str, Any], grant_id: int) -> int:
         stage="evidence_audit",
         idempotency_key=(
             f"experiment-run:{run['agenda_id']}:{run['deep_insight_id']}:"
-            f"{run['id']}:evidence_audit_holdout"
+            f"{run['id']}:{key_suffix}"
         ),
-        code_dir=str(workdir / "code"),
+        code_dir=str(holdout_code),
         command_tokens=(
             "python", "train.py",
             "--config", "execution_requirements.json",
@@ -264,21 +335,36 @@ def run_evidence_audit_phase(
         )
 
     holdout_final_path = holdout_dir / "final_results.json"
+    if holdout_final_path.exists():
+        problem = holdout_provenance_problem(results_dir, holdout_dir)
+        if problem:
+            # Quarantine the invalid flight for forensics; the audit must
+            # never advance on a holdout that is not provably disjoint.
+            quarantine = holdout_dir.with_name(
+                f"{holdout_dir.name}_invalid_{_sha256_text(problem)[:8]}"
+            )
+            if not quarantine.exists():
+                holdout_dir.rename(quarantine)
+            log(f"[AUDIT] run {run_id} holdout rejected ({problem}); quarantined")
     if not holdout_final_path.exists():
-        pending = db.fetchone(
+        rows = db.fetchall(
             """
             SELECT id, status FROM colab_work_requests_v1
-            WHERE experiment_run_id=? AND idempotency_key LIKE '%evidence_audit_holdout'
-            ORDER BY id DESC LIMIT 1
+            WHERE experiment_run_id=? AND idempotency_key LIKE '%evidence_audit_holdout%'
+            ORDER BY id DESC
             """,
             (run_id,),
         )
-        if pending and str(dict(pending).get("status")) in {"queued", "running", "admitting"}:
+        if rows and str(rows[0].get("status")) in {"queued", "running", "admitting"}:
             return "holdout_pending"
-        if pending and str(dict(pending).get("status")) == "succeeded":
-            return "holdout_artifacts_missing"
-        _submit_holdout(run, resource_grant_id)
-        log(f"[AUDIT] holdout submitted for run {run_id} at offset {HOLDOUT_OFFSET}")
+        attempt = len(rows) + 1
+        if attempt > MAX_HOLDOUT_ATTEMPTS:
+            raise EvidenceAuditError("holdout attempts exhausted")
+        _submit_holdout(run, resource_grant_id, attempt)
+        log(
+            f"[AUDIT] holdout attempt {attempt} submitted for run {run_id} "
+            f"at offset {HOLDOUT_OFFSET}"
+        )
         return "holdout_submitted"
 
     final = json.loads((results_dir / "final_results.json").read_text())

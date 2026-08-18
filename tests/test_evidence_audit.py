@@ -15,6 +15,7 @@ from meta_harness.evidence_audit import (
     _verify_arms,
     build_claim_ledger,
     holdout_consistent,
+    holdout_provenance_problem,
 )
 
 
@@ -108,3 +109,43 @@ def test_holdout_consistency_by_verdict():
 def test_holdout_offset_clears_full_benchmark_window():
     # the audited run consumed test[0:200]; the holdout must start past it
     assert HOLDOUT_OFFSET >= 200
+
+
+def _write_arm(dirpath, hashes):
+    dirpath.mkdir(exist_ok=True)
+    (dirpath / "raw_predictions.jsonl").write_text(
+        "\n".join(json.dumps({"input_sha256": h}) for h in hashes)
+    )
+
+
+def test_holdout_provenance_rejects_missing_or_wrong_offset(tmp_path):
+    results, holdout = tmp_path / "results", tmp_path / "holdout"
+    _write_arm(results, ["a", "b"])
+    _write_arm(holdout, ["c", "d"])
+    # request 14's failure mode: manifest with no offset recorded
+    (holdout / "dataset_manifest.json").write_text(json.dumps({"num_examples": 2}))
+    assert "holdout_offset_not_applied" in holdout_provenance_problem(results, holdout)
+    (holdout / "dataset_manifest.json").write_text(
+        json.dumps({"example_offset": 0, "num_examples": 2})
+    )
+    assert "holdout_offset_not_applied" in holdout_provenance_problem(results, holdout)
+
+
+def test_holdout_provenance_rejects_example_overlap(tmp_path):
+    results, holdout = tmp_path / "results", tmp_path / "holdout"
+    _write_arm(results, ["a", "b"])
+    _write_arm(holdout, ["b", "c"])
+    (holdout / "dataset_manifest.json").write_text(
+        json.dumps({"example_offset": HOLDOUT_OFFSET})
+    )
+    assert "overlap" in holdout_provenance_problem(results, holdout)
+
+
+def test_holdout_provenance_accepts_disjoint_offset_run(tmp_path):
+    results, holdout = tmp_path / "results", tmp_path / "holdout"
+    _write_arm(results, ["a", "b"])
+    _write_arm(holdout, ["c", "d"])
+    (holdout / "dataset_manifest.json").write_text(
+        json.dumps({"example_offset": HOLDOUT_OFFSET})
+    )
+    assert holdout_provenance_problem(results, holdout) == ""
