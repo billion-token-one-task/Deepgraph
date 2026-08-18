@@ -130,7 +130,21 @@ class GenericTransformersRunner(ResearchRunner):
             reason = classify_failure(message=f"dataset unavailable:{exc}")
             raise RunnerContractError(reason, str(exc)) from exc
         cap = self.requirements.sample_cap or len(dataset)
-        self.dataset_rows = [dict(dataset[index]) for index in range(min(len(dataset), cap))]
+        # A holdout audit evaluates examples the original run never saw.
+        # The offset is execution addressing, not scientific identity: the
+        # sample window is recorded per-row via sample_index and in the
+        # dataset manifest, so the evidence trail states exactly which
+        # examples were measured.
+        offset = int(
+            dict(self.config.get("runtime_adjustments") or {}).get("example_offset")
+            or self.config.get("example_offset")
+            or os.environ.get("DEEPGRAPH_RUNNER_EXAMPLE_OFFSET")
+            or 0
+        )
+        start = max(0, min(offset, len(dataset)))
+        end = min(len(dataset), start + cap)
+        self.dataset_rows = [dict(dataset[index]) for index in range(start, end)]
+        self.example_offset = start
         if not self.dataset_rows:
             raise RunnerContractError("dataset_unavailable", "empty_split")
         missing = sorted(
@@ -477,6 +491,7 @@ class GenericTransformersRunner(ResearchRunner):
                 "split": self.requirements.dataset.split,
                 "field_mapping": dict(self.requirements.dataset.field_mapping),
                 "num_examples": len(self.dataset_rows),
+                "example_offset": int(getattr(self, "example_offset", 0)),
             },
         )
         _dump(
