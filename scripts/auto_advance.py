@@ -151,6 +151,34 @@ def _next_discovery_agenda(agenda_ids: list[int], state: dict) -> int | None:
     ordered = [int(agenda_id) for agenda_id in agenda_ids]
     if not ordered:
         return None
+    # Proposal grants carry a short TTL, and only discovery realizes a funded
+    # design. Under pure rotation a funded agenda can wait active-agenda-count
+    # passes while its grant burns down (grant 79 expired unrealized on
+    # 2026-08-18; grants 82/84 were 30 minutes from repeating it). Funded
+    # realization therefore preempts rotation; the pin self-clears because the
+    # job leaves proposal_generation_granted on realization and the grant
+    # leaves 'active' on expiry.
+    try:
+        funded = _rows(
+            """
+            SELECT rg.agenda_id, MIN(rg.expires_at) AS first_expiry
+            FROM resource_grants rg
+            JOIN auto_research_jobs arj
+              ON arj.agenda_id=rg.agenda_id AND arj.deep_insight_id=rg.idea_id
+            WHERE rg.stage='proposal' AND rg.status='active'
+              AND arj.status='deferred' AND arj.stage='proposal_generation_granted'
+            GROUP BY rg.agenda_id
+            ORDER BY first_expiry ASC
+            """
+        )
+    except Exception:
+        db.rollback()
+        funded = []
+    for row in funded:
+        candidate = int(row["agenda_id"])
+        if candidate in ordered:
+            state["discovery_agenda_last"] = candidate
+            return candidate
     previous = state.get("discovery_agenda_last")
     try:
         index = (ordered.index(int(previous)) + 1) % len(ordered)
