@@ -1118,6 +1118,7 @@ def advance_to_full_benchmark(agenda_id: int, state: dict, journal: Journal, arg
           AND o.baseline IS NOT NULL AND o.baseline <> 0
           AND o.state_decision='sanity_passed'
           AND er.status='completed'
+          AND er.scientific_evidence_state='sanity_passed'
           AND NOT EXISTS (
               SELECT 1 FROM resource_grants g
               WHERE g.agenda_id=o.agenda_id AND g.idea_id=o.idea_id
