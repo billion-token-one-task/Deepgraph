@@ -1094,6 +1094,108 @@ def advance_agenda(agenda_id: int, state: dict, journal: Journal, args) -> None:
             break
 
 
+def advance_to_full_benchmark(agenda_id: int, state: dict, journal: Journal, args) -> None:
+    """Fund the locked full benchmark for pilots that measured something real.
+
+    The evidence ladder's upper states had readers and no writers: nothing in
+    the repository's history ever issued a validation/full_benchmark/
+    evidence_audit grant, so no run has moved past sanity_passed (runs 153
+    and 164 both stopped there). A pilot whose OutcomeRecord carries a real
+    two-arm measurement earns the publication benchmark; supported, refuted
+    and inconclusive all qualify -- a confirmed negative is a scientific
+    result, and manuscript authority still requires supported downstream.
+    """
+    from orchestrator.auto_research import BENCHMARK_COMPLETION_STAGE, _upsert_job
+
+    repo = MetaHarnessRepository()
+    for row in _rows(
+        """
+        SELECT o.idea_id, o.experiment_run_id, o.verdict
+        FROM outcome_records o
+        JOIN experiment_runs er ON er.id=o.experiment_run_id
+        WHERE o.agenda_id=?
+          AND o.verdict IN ('supported', 'refuted', 'inconclusive')
+          AND o.baseline IS NOT NULL AND o.baseline <> 0
+          AND o.state_decision='sanity_passed'
+          AND er.status='completed'
+          AND NOT EXISTS (
+              SELECT 1 FROM resource_grants g
+              WHERE g.agenda_id=o.agenda_id AND g.idea_id=o.idea_id
+                AND g.stage='full_benchmark'
+          )
+        ORDER BY o.id ASC
+        """,
+        (agenda_id,),
+    ):
+        idea_id = int(row["idea_id"])
+        run_id = int(row["experiment_run_id"])
+        if (
+            args.spend_limit > 0
+            and _guard_spent_delta(state, args) + args.grant_token_cap > args.spend_limit
+        ):
+            journal.log("spend_limit_reached", agenda_id=agenda_id,
+                        limit=args.spend_limit)
+            break
+        packet_row = db.fetchone(
+            "SELECT id FROM idea_decision_packets WHERE agenda_id=? AND idea_id=?"
+            "   AND decision IN ('promote','revisit') ORDER BY id DESC LIMIT 1",
+            (agenda_id, idea_id),
+        )
+        preflight_row = db.fetchone(
+            "SELECT id, selected_backend FROM candidate_preflight_results_v1"
+            " WHERE agenda_id=? AND idea_id=? AND status='passed'"
+            " ORDER BY id DESC LIMIT 1",
+            (agenda_id, idea_id),
+        )
+        if not packet_row or not preflight_row:
+            journal.log("full_benchmark_inputs_missing", agenda_id=agenda_id,
+                        idea_id=idea_id,
+                        packet=bool(packet_row), preflight=bool(preflight_row))
+            continue
+        decision = _rebuild_decision(agenda_id, idea_id, int(dict(packet_row)["id"]))
+        compute_backend = str(dict(preflight_row)["selected_backend"] or "colab_gpu")
+        try:
+            grant = issue_resource_grant(
+                decision,
+                stage="full_benchmark",
+                token_cap=args.grant_token_cap,
+                gpu_class=args.gpu_class,
+                max_gpu_hours=args.grant_gpu_hours,
+                backend_allowlist=[compute_backend, "llm"],
+                artifact_requirements=ARTIFACT_REQUIREMENTS,
+                expires_at=(_now() + timedelta(hours=24)).isoformat(),
+                idempotency_key=_grant_key(agenda_id, idea_id, "full_benchmark"),
+                preflight_result_id=int(dict(preflight_row)["id"]),
+            )
+            grant_id = repo.issue_grant(grant)
+            repo.attach_grant_to_run(
+                agenda_id=agenda_id,
+                idea_id=idea_id,
+                experiment_run_id=run_id,
+                resource_grant_id=grant_id,
+            )
+        except Exception as exc:
+            db.rollback()
+            journal.log("full_benchmark_grant_refused", agenda_id=agenda_id,
+                        idea_id=idea_id, reason=f"{type(exc).__name__}: {exc}")
+            continue
+        _upsert_job(
+            idea_id,
+            status="queued",
+            stage=BENCHMARK_COMPLETION_STAGE,
+            experiment_run_id=run_id,
+            assigned_worker=None,
+            last_error=None,
+            last_note=(
+                f"Pilot outcome verdict={row['verdict']} with a real two-arm "
+                f"measurement; full benchmark funded on grant {grant_id}."
+            ),
+        )
+        journal.log("full_benchmark_granted", agenda_id=agenda_id,
+                    idea_id=idea_id, resource_grant_id=grant_id,
+                    experiment_run_id=run_id, verdict=row["verdict"])
+
+
 def retry_deferred_preflights(agenda_id: int, state: dict, journal: Journal, args) -> None:
     """Re-run preflight for jobs parked at capability_preflight_deferred.
 
@@ -1375,6 +1477,7 @@ def main() -> int:
                 break
             recycle_stranded(agenda_id, state, journal, args)
             retry_deferred_preflights(agenda_id, state, journal, args)
+            advance_to_full_benchmark(agenda_id, state, journal, args)
             advance_agenda(agenda_id, state, journal, args)
     finally:
         _save_state(state_path, state)
