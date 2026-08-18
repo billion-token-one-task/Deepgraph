@@ -7,6 +7,7 @@ startup code; an operator must configure and validate it in isolated canary.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -26,6 +27,13 @@ from meta_harness.grants import ResourceRequest, authorize
 
 
 _SENTINEL = "__DEEPGRAPH_COLAB_RETURN_CODE__:"
+# Long sessions lose their VM the moment compute ends (runs 163 and 166 both
+# finished with returncode 0 and then found /content empty on download), so
+# the archive also rides the exec stdout stream -- the one channel that
+# demonstrably survives -- as base64, and collection falls back to it.
+_EMBED_BEGIN = "__DEEPGRAPH_COLAB_ARTIFACT_B64_BEGIN__:"
+_EMBED_END = "__DEEPGRAPH_COLAB_ARTIFACT_B64_END__"
+_EMBED_MAX_BYTES = 25 * 1024 * 1024
 _SESSION_SAFE = re.compile(r"[^a-zA-Z0-9_-]+")
 
 
@@ -247,8 +255,44 @@ with tarfile.open(artifact_archive, "w:gz") as archive:
         path = root / relative
         if path.exists():
             archive.add(path, arcname=relative)
+if artifact_archive.is_file() and artifact_archive.stat().st_size <= {_EMBED_MAX_BYTES}:
+    import base64 as _b64
+    _payload = _b64.b64encode(artifact_archive.read_bytes()).decode()
+    print("\\n{_EMBED_BEGIN}" + str(len(_payload)))
+    for _start in range(0, len(_payload), 65536):
+        print(_payload[_start:_start + 65536])
+    print("{_EMBED_END}")
 print("\\n{_SENTINEL}" + str(process.returncode))
 """
+
+
+def _strip_embedded_archive(stdout: str) -> tuple[str, bytes | None]:
+    """Split the base64 artifact payload out of the exec stream.
+
+    Returns the stdout with the payload removed (so tails and hashes stay
+    readable) plus the decoded archive bytes, or None when absent/corrupt.
+    """
+    begin = stdout.rfind(_EMBED_BEGIN)
+    if begin < 0:
+        return stdout, None
+    after = stdout[begin + len(_EMBED_BEGIN):]
+    head, sep, rest = after.partition("\n")
+    end = rest.find(_EMBED_END)
+    if not sep or end < 0:
+        return stdout, None
+    payload = "".join(rest[:end].split())
+    cleaned = (stdout[:begin] + rest[end + len(_EMBED_END):]).rstrip()
+    try:
+        expected = int(head.strip() or "0")
+    except ValueError:
+        return cleaned, None
+    if expected and len(payload) != expected:
+        return cleaned, None
+    try:
+        data = base64.b64decode(payload, validate=True)
+    except Exception:
+        return cleaned, None
+    return cleaned, data or None
 
 
 def _split_result(stdout: str, process_returncode: int) -> tuple[int | None, str]:
@@ -446,6 +490,7 @@ class ColabCLIExecutor:
                 )
                 if returncode is None:
                     raise ColabCLIError("Colab output omitted the return-code sentinel")
+                stdout, embedded_archive = _strip_embedded_archive(stdout)
                 # Run 163 finished 2.8 hours of decoding with returncode 0
                 # and lost everything to one failed download (2026-08-18).
                 # The archive already exists remotely; pulling it is the one
@@ -471,10 +516,15 @@ class ColabCLIExecutor:
                     )[-300:]
                     time.sleep(min(10 * attempt, 30))
                 else:
-                    raise ColabCLIError(
-                        "Colab artifact collection failed after 4 attempts: "
-                        + download_error
-                    )
+                    if embedded_archive:
+                        # The VM (and its tar) is gone, but the archive also
+                        # rode the exec stream; restore it from there.
+                        artifact_archive.write_bytes(embedded_archive)
+                    else:
+                        raise ColabCLIError(
+                            "Colab artifact collection failed after 4 attempts: "
+                            + download_error
+                        )
                 with tarfile.open(artifact_archive) as archive:
                     archive.extractall(output_dir, filter="data")
                 files = []
