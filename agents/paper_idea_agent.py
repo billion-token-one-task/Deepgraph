@@ -545,8 +545,27 @@ def _find_existing_tier2_duplicate(
         )
     except Exception:
         return None
+    # Every unrealized proposal shell, not only the candidate's own: two
+    # funded shells raised from one problem otherwise dup-kill each other's
+    # realization symmetrically, and neither can ever realize (ideas 141/142
+    # deadlocked this way on 2026-08-18, burning grant 79 to expiry). A
+    # pending shell is a funding stub, not a prior idea. Failing open to an
+    # empty set only narrows the exclusion, never disables the gate.
+    try:
+        pending_shells = {
+            int(r["deep_insight_id"])
+            for r in db.fetchall(
+                "SELECT deep_insight_id FROM auto_research_jobs"
+                " WHERE status='deferred' AND stage='proposal_generation_granted'"
+            )
+        }
+    except Exception:
+        pending_shells = set()
     for row in rows:
-        if skip and int(row.get("id") or 0) == skip:
+        row_id = int(row.get("id") or 0)
+        if skip and row_id == skip:
+            continue
+        if row_id in pending_shells:
             continue
         title_score = _token_jaccard(title, row.get("title") or "")
         node_score = _node_jaccard(nodes, row.get("source_node_ids"))
