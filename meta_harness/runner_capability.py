@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import re
 import json
 import shutil
 import urllib.parse
@@ -578,7 +579,18 @@ class HuggingFaceMetadataProbe:
         )
 
     def dependency_available(self, name: str) -> bool:
-        return importlib.util.find_spec(str(name).replace("-", "_")) is not None
+        # Designs declare requirement specifiers ("transformers>=4.44"), not
+        # module names. find_spec on the raw string reads the version dot as
+        # a package separator and raises ModuleNotFoundError for the parent
+        # (crashed the 13:11 advance pass, 2026-08-18); only the
+        # distribution name is the question being asked here.
+        base = re.split(r"[><=!~\[;,\s]", str(name).strip(), maxsplit=1)[0]
+        if not base:
+            return False
+        try:
+            return importlib.util.find_spec(base.replace("-", "_")) is not None
+        except (ModuleNotFoundError, ValueError):
+            return False
 
 
 @dataclass(frozen=True)

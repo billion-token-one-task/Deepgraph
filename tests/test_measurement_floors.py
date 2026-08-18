@@ -134,3 +134,13 @@ class NumericAccuracyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_dependency_available_accepts_requirement_specifiers():
+    """A version specifier's dot must not be read as a package separator."""
+    from meta_harness.runner_capability import HuggingFaceMetadataProbe
+
+    probe = HuggingFaceMetadataProbe().dependency_available
+    assert probe("json>=99.9") in (True, False)  # must not raise
+    assert probe("definitely-not-a-real-module>=1.0") is False
+    assert probe("json") is True
