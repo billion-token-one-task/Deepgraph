@@ -300,6 +300,46 @@ def _submit_holdout(run: Mapping[str, Any], grant_id: int, attempt: int) -> int:
     return int(getattr(job, "id", 0) or 0)
 
 
+def _settle_completed_grants(run: Mapping[str, Any], log=print) -> None:
+    """Close upper-ladder grants whose mission the decided run has completed.
+
+    Grants for earlier stages are consumed when the finalizer records their
+    outcome; full_benchmark and evidence_audit grants had no closer, so they
+    sat active and held agenda concurrency slots until natural expiry (seen
+    2026-08-18: grants 80/81 blocked every new proposal for a day). The
+    closer is the same operator path the finalizer uses: an OutcomeRecord
+    assembled purely from persisted metering.
+    """
+    repo = MetaHarnessRepository()
+    for grant in db.fetchall(
+        """
+        SELECT id FROM resource_grants
+        WHERE agenda_id=? AND idea_id=? AND status='active'
+          AND stage IN ('full_benchmark', 'evidence_audit')
+          AND NOT EXISTS (
+            SELECT 1 FROM colab_work_requests_v1 c
+            WHERE c.resource_grant_id=resource_grants.id
+              AND c.status IN ('queued', 'admitting', 'running')
+          )
+        ORDER BY id
+        """,
+        (int(run["agenda_id"]), int(run["deep_insight_id"])),
+    ):
+        grant_id = int(grant["id"])
+        try:
+            outcome_id = repo.assemble_and_record_outcome(
+                resource_grant_id=grant_id,
+                experiment_run_id=int(run["id"]),
+            )
+        except Exception as exc:
+            db.rollback()
+            log(f"[AUDIT] grant {grant_id} settlement deferred: "
+                f"{type(exc).__name__}: {exc}")
+            continue
+        log(f"[AUDIT] grant {grant_id} settled and consumed "
+            f"(outcome {outcome_id})")
+
+
 def run_evidence_audit_phase(
     *,
     agenda_id: int,
@@ -314,6 +354,7 @@ def run_evidence_audit_phase(
         raise EvidenceAuditError("missing run")
     state = str(run.get("scientific_evidence_state") or "")
     if state == "scientifically_decided":
+        _settle_completed_grants(run, log=log)
         return "decided"
     if state not in {"full_benchmark_complete", "evidence_audited"}:
         return f"not_ready:{state}"
@@ -452,6 +493,7 @@ def run_evidence_audit_phase(
             actor=AUDIT_ACTOR,
         )
         log(f"[AUDIT] run {run_id} scientifically_decided verdict={verdict}")
+    _settle_completed_grants(run, log=log)
     return "decided"
 
 

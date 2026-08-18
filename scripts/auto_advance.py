@@ -1223,11 +1223,23 @@ def advance_evidence_audit(agenda_id: int, state: dict, journal: Journal, args) 
     for row in _rows(
         """
         SELECT er.id AS run_id, er.deep_insight_id AS idea_id,
-               er.resource_grant_id, rg.stage AS grant_stage, rg.status AS grant_status
+               er.resource_grant_id, er.scientific_evidence_state AS evidence_state,
+               rg.stage AS grant_stage, rg.status AS grant_status
         FROM experiment_runs er
         LEFT JOIN resource_grants rg ON rg.id=er.resource_grant_id
         WHERE er.agenda_id=?
-          AND er.scientific_evidence_state IN ('full_benchmark_complete', 'evidence_audited')
+          AND (
+            er.scientific_evidence_state IN ('full_benchmark_complete', 'evidence_audited')
+            OR (
+              er.scientific_evidence_state = 'scientifically_decided'
+              AND EXISTS (
+                SELECT 1 FROM resource_grants g
+                WHERE g.agenda_id=er.agenda_id AND g.idea_id=er.deep_insight_id
+                  AND g.status='active'
+                  AND g.stage IN ('full_benchmark', 'evidence_audit')
+              )
+            )
+          )
         ORDER BY er.id ASC
         """,
         (agenda_id,),
@@ -1235,9 +1247,11 @@ def advance_evidence_audit(agenda_id: int, state: dict, journal: Journal, args) 
         idea_id = int(row["idea_id"])
         run_id = int(row["run_id"])
         grant_id = int(row["resource_grant_id"] or 0)
-        if str(row.get("grant_stage") or "") != "evidence_audit" or str(
-            row.get("grant_status") or ""
-        ) != "active":
+        already_decided = str(row.get("evidence_state") or "") == "scientifically_decided"
+        if not already_decided and (
+            str(row.get("grant_stage") or "") != "evidence_audit"
+            or str(row.get("grant_status") or "") != "active"
+        ):
             if (
                 args.spend_limit > 0
                 and _guard_spent_delta(state, args) + args.grant_token_cap > args.spend_limit
