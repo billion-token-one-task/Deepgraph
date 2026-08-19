@@ -192,6 +192,45 @@ def test_two_consecutive_refusals_cool_the_account():
     assert _cooling(_history(2, marker=_REFUSAL)) is True
 
 
+def test_the_wait_doubles_with_each_further_refusal():
+    # colab-pro-2's record: three refusals in a row, each landing right after
+    # the previous flat-hour cooldown expired, each costing an experiment run
+    from meta_harness.backends import colab_cli
+
+    base = colab_cli._PROVISION_COOLDOWN_SECONDS
+    # streak of 2 -> one base window: expired at 1.5x base
+    assert _cooling(_history(2, marker=_REFUSAL, age_seconds=base * 1.5)) is False
+    # streak of 3 -> two base windows: still cooling at 1.5x base
+    assert _cooling(_history(3, marker=_REFUSAL, age_seconds=base * 1.5)) is True
+    # streak of 4 -> four base windows
+    assert _cooling(_history(4, marker=_REFUSAL, age_seconds=base * 3.5)) is True
+
+
+def test_the_wait_is_capped():
+    from meta_harness.backends import colab_cli
+
+    cap = colab_cli._PROVISION_COOLDOWN_CAP_SECONDS
+    assert _cooling(_history(10, marker=_REFUSAL, age_seconds=cap + 60)) is False
+
+
+def test_any_intervening_success_ends_the_streak():
+    rows = _history(4, marker=_REFUSAL)
+    rows[2] = {
+        "status": "succeeded",
+        "failure_reason": None,
+        "created_at": rows[2]["created_at"],
+    }
+    # only the two newest refusals count, so it is back to one base window
+    from meta_harness.backends import colab_cli
+
+    base = colab_cli._PROVISION_COOLDOWN_SECONDS
+    rows_recent = [dict(r) for r in rows]
+    assert _cooling(rows_recent) is True  # inside the base window
+    for r in rows_recent[:2]:
+        r["created_at"] = r["created_at"].replace(year=2020)
+    assert _cooling(rows_recent) is False
+
+
 def test_a_recent_success_clears_the_cooldown():
     rows = _history(2, marker=_REFUSAL)
     rows[0] = {

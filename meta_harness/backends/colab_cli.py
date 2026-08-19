@@ -423,6 +423,10 @@ class ColabAccountPool:
             self._blocked_until.pop(account.account_ref, None)
 
 
+_PROVISION_COOLDOWN_CAP_SECONDS = 12 * 3600
+_PROVISION_STREAK_LOOKBACK = 12
+
+
 def durable_provision_cooldown(account_ref: str) -> bool:
     """Is this account cooling off, according to the record that survives?
 
@@ -433,10 +437,15 @@ def durable_provision_cooldown(account_ref: str) -> bool:
     record of what each lane did already exists in colab_work_requests_v1;
     read it rather than keeping a second, more forgetful copy.
 
-    Cooling means: the account's last _PROVISION_FAILURES_BEFORE_COOLDOWN
-    requests were all provisioning refusals -- no success since -- and the
-    most recent is inside the cooldown window. Fails open: an unreadable
-    history must never take a lane out of service.
+    The wait doubles with each consecutive refusal. A flat hour assumed the
+    vendor's quota window was about an hour; colab-pro-2's record says
+    otherwise -- ten refusals against one success across a whole day, and
+    three refusals in a row (22:25, 22:27, 23:42) each landing immediately
+    after the previous cooldown expired, costing one experiment run every
+    time. Doubling lets the record tell us how long the window really is
+    instead of guessing again.
+
+    Fails open: an unreadable history must never take a lane out of service.
     """
     try:
         rows = db.fetchall(
@@ -447,24 +456,39 @@ def durable_provision_cooldown(account_ref: str) -> bool:
             ORDER BY id DESC
             LIMIT ?
             """,
-            (str(account_ref), int(_PROVISION_FAILURES_BEFORE_COOLDOWN)),
+            (str(account_ref), int(_PROVISION_STREAK_LOOKBACK)),
         )
     except Exception:
         return False
-    if len(rows) < _PROVISION_FAILURES_BEFORE_COOLDOWN:
-        return False
+
+    streak = 0
+    newest = None
     for row in rows:
-        if str(row.get("status")) != "failed":
-            return False
-        if _PROVISION_REFUSAL_MARKER not in str(row.get("failure_reason") or "").lower():
-            return False
-    newest = rows[0].get("created_at")
+        is_refusal = (
+            str(row.get("status")) == "failed"
+            and _PROVISION_REFUSAL_MARKER
+            in str(row.get("failure_reason") or "").lower()
+        )
+        if not is_refusal:
+            break  # a success, or any other failure, ends the streak
+        if newest is None:
+            newest = row.get("created_at")
+        streak += 1
+
+    if streak < _PROVISION_FAILURES_BEFORE_COOLDOWN:
+        return False
     if not isinstance(newest, datetime):
         return False
     if newest.tzinfo is None:
         newest = newest.replace(tzinfo=timezone.utc)
+
+    extra = streak - _PROVISION_FAILURES_BEFORE_COOLDOWN
+    cooldown = min(
+        _PROVISION_COOLDOWN_SECONDS * (2**extra),
+        _PROVISION_COOLDOWN_CAP_SECONDS,
+    )
     age = (datetime.now(timezone.utc) - newest).total_seconds()
-    return age < _PROVISION_COOLDOWN_SECONDS
+    return age < cooldown
 
 
 class ColabCLIExecutor:
