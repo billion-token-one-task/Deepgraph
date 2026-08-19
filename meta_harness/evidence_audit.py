@@ -36,6 +36,9 @@ from meta_harness.runner_contract import (
 
 HOLDOUT_OFFSET = 200
 AUDIT_ACTOR = "evidence_audit_v1"
+# Bumped when the evaluator prompt's semantics change; a cached judgement
+# made under an older prompt is re-collected rather than trusted.
+AUDIT_EVALUATOR_PROMPT_REF = "evidence_audit_evaluator_v2"
 _VERIFY_TOLERANCE = 1e-9
 
 
@@ -97,6 +100,7 @@ def build_claim_ledger(results_dir: Path) -> tuple[Path, str]:
     verdict = str(final.get("hypothesis_verdict") or (
         "refuted" if final.get("scientific_negative_result") else "inconclusive"
     ))
+    direction = str(final.get("metric_direction") or "higher")
     ledger = {
         "schema_version": "claim_ledger_v1",
         "dataset_id": final.get("dataset_id"),
@@ -104,6 +108,11 @@ def build_claim_ledger(results_dir: Path) -> tuple[Path, str]:
         "model_id": final.get("model_id"),
         "model_revision": final.get("model_revision"),
         "metric": verified["metric"],
+        "metric_direction": direction,
+        "hypothesis": (
+            f"the candidate IMPROVES {verified['metric']} "
+            f"({direction} is better) versus the baseline"
+        ),
         "claims": [
             {
                 "claim_id": "primary_effect",
@@ -112,7 +121,8 @@ def build_claim_ledger(results_dir: Path) -> tuple[Path, str]:
                     f"{verified['metric']} versus "
                     f"'{final.get('baseline_method')}' on "
                     f"{final.get('dataset_id')} by {delta:+.4f} "
-                    f"({verified['baseline']:.4f} -> {verified['candidate']:.4f})"
+                    f"({verified['baseline']:.4f} -> {verified['candidate']:.4f}; "
+                    f"{direction} is better)"
                 ),
                 "baseline_value": verified["baseline"],
                 "candidate_value": verified["candidate"],
@@ -150,9 +160,19 @@ def independent_evaluator_review(
     prompt = (
         "You are the independent evidence auditor for an autonomous research "
         "system. Below is a claim ledger recomputed from raw prediction "
-        "artifacts. Judge whether the recorded verdict follows from the "
-        "numbers under a two-sided alpha of 0.05. Dissent freely; your "
-        "concurrence is not assumed.\n\n"
+        "artifacts. The preregistered hypothesis is DIRECTIONAL: the "
+        "candidate method is claimed to IMPROVE the metric in the stated "
+        "metric_direction. Verdict semantics:\n"
+        "- supported: the candidate is significantly BETTER than the "
+        "baseline in the preferred direction (p < 0.05).\n"
+        "- refuted: the improvement hypothesis is rejected -- the candidate "
+        "is significantly WORSE, or the measured difference shows no "
+        "improvement (a significant harm still means refuted, never "
+        "supported).\n"
+        "- inconclusive: the measurement cannot decide either way.\n"
+        "Judge whether the recorded verdict follows from the numbers under "
+        "a two-sided alpha of 0.05. Dissent freely; your concurrence is not "
+        "assumed.\n\n"
         f"CLAIM LEDGER:\n{ledger_text}\n\n"
         'Answer with one JSON object only: {"concur": true|false, '
         '"verdict": "supported"|"refuted"|"inconclusive", '
@@ -178,6 +198,7 @@ def independent_evaluator_review(
         "judgement": parsed,
         "evaluator_ref": f"{route.get('provider')}:{route.get('model')}",
         "evaluator_hash": _sha256_text(raw),
+        "prompt_ref": AUDIT_EVALUATOR_PROMPT_REF,
     }
 
 
@@ -389,9 +410,15 @@ def run_evidence_audit_phase(
 
     ledger_path, ledger_hash = build_claim_ledger(results_dir)
     evaluator_path = results_dir / "audit_evaluator.json"
+    evaluator = None
     if evaluator_path.exists():
-        evaluator = json.loads(evaluator_path.read_text())
-    else:
+        cached = json.loads(evaluator_path.read_text())
+        # A judgement made under an older prompt whose semantics differed is
+        # re-collected, not trusted (v1 never stated the hypothesis is
+        # directional and misread run 171's significant harm as support).
+        if str(cached.get("prompt_ref") or "") == AUDIT_EVALUATOR_PROMPT_REF:
+            evaluator = cached
+    if evaluator is None:
         evaluator = independent_evaluator_review(
             agenda_id=agenda_id,
             idea_id=idea_id,
