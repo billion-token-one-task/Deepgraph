@@ -149,3 +149,18 @@ def test_holdout_provenance_accepts_disjoint_offset_run(tmp_path):
         json.dumps({"example_offset": HOLDOUT_OFFSET})
     )
     assert holdout_provenance_problem(results, holdout) == ""
+
+
+def test_transport_failures_do_not_spend_the_science_retry_budget():
+    from meta_harness.evidence_audit import _transport_class_failure
+
+    for reason in (
+        "transport:ColabCLIError:Colab output omitted the return-code sentinel",
+        "transport:ColabCLIError:colab provision failed: TooManyAssignments",
+        "controller_lost",
+        "admission_abandoned_grant_inactive",
+    ):
+        assert _transport_class_failure(reason) is True
+    # a real measurement failure still counts against the cap
+    for reason in ("experiment_exit_2", "required_artifacts_missing", "", None):
+        assert _transport_class_failure(reason) is False

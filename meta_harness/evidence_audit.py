@@ -210,6 +210,24 @@ def _run_paths(run: Mapping[str, Any]) -> tuple[Path, Path, Path]:
 
 
 MAX_HOLDOUT_ATTEMPTS = 3
+# A transport death measured nothing, so it buys a separate, larger budget:
+# the science retry cap stays 3, but infrastructure may fail more often than
+# that without condemning the run.
+MAX_TRANSPORT_RETRIES = 5
+_TRANSPORT_MARKERS = (
+    "transport:",
+    "controller_lost",
+    "admission_abandoned",
+    "colab provision failed",
+)
+
+
+def _transport_class_failure(reason: object) -> bool:
+    """True when a flight died before it could evaluate anything."""
+    text = str(reason or "").strip().lower()
+    if not text:
+        return False
+    return any(marker in text for marker in _TRANSPORT_MARKERS)
 
 
 def _raw_input_hashes(path: Path) -> set[str]:
@@ -444,7 +462,7 @@ def run_evidence_audit_phase(
     if not holdout_final_path.exists():
         rows = db.fetchall(
             """
-            SELECT id, status FROM colab_work_requests_v1
+            SELECT id, status, failure_reason FROM colab_work_requests_v1
             WHERE experiment_run_id=? AND idempotency_key LIKE '%evidence_audit_holdout%'
             ORDER BY id DESC
             """,
@@ -453,8 +471,23 @@ def run_evidence_audit_phase(
         if rows and str(rows[0].get("status")) in {"queued", "running", "admitting"}:
             return "holdout_pending"
         attempt = len(rows) + 1
-        if attempt > MAX_HOLDOUT_ATTEMPTS:
+        # A flight that died in transport never evaluated a single example, so
+        # it must not spend the holdout's retry budget: run 180 burned all
+        # three attempts on two lost notebook sessions and one refused
+        # provision, and the cap then blocked the attempt that the dedicated
+        # host would have completed in fourteen minutes (2026-08-19).
+        scientific_failures = sum(
+            1
+            for row in rows
+            if not _transport_class_failure(row.get("failure_reason"))
+        )
+        if scientific_failures >= MAX_HOLDOUT_ATTEMPTS:
             raise EvidenceAuditError("holdout attempts exhausted")
+        if attempt > MAX_HOLDOUT_ATTEMPTS + MAX_TRANSPORT_RETRIES:
+            raise EvidenceAuditError(
+                "holdout transport retries exhausted; infrastructure is not "
+                "delivering a measurement"
+            )
         _submit_holdout(run, resource_grant_id, attempt)
         log(
             f"[AUDIT] holdout attempt {attempt} submitted for run {run_id} "
