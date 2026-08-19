@@ -118,6 +118,38 @@ def _undelivered_proposal_ceiling(token_budget: int) -> int:
     )
 
 
+def _undelivered_proposal_spend_for_problem(agenda_id: int, problem_id: int) -> int:
+    """Undelivered proposal tokens charged to a problem since its last delivery.
+
+    The single copy of this arithmetic. Both the grant-time check and the
+    seeding-time check must ask the same question of the same window, or one
+    of them silently enforces a different rule -- which is what happened on
+    2026-08-19, when the spend helper was scoped to the last delivery and the
+    over-budget predicate kept its own lifetime-gross copy.
+    """
+    row = db.fetchone(
+        """
+        SELECT COALESCE(SUM(u.tokens_used), 0) AS spent
+        FROM resource_grant_usage_reservations u
+        JOIN resource_grants g ON g.id = u.resource_grant_id
+        JOIN deep_insights d ON d.id = g.idea_id
+        WHERE g.agenda_id=? AND d.research_problem_id=? AND g.stage='proposal'
+          AND g.status <> 'consumed' AND u.status='settled'
+          AND g.created_at > COALESCE(
+                (SELECT MAX(dg.created_at)
+                   FROM resource_grants dg
+                   JOIN deep_insights dd ON dd.id = dg.idea_id
+                  WHERE dg.agenda_id = g.agenda_id
+                    AND dd.research_problem_id = d.research_problem_id
+                    AND dg.stage = 'proposal'
+                    AND dg.status = 'consumed'),
+                TIMESTAMP '1970-01-01 00:00:00')
+        """,
+        (int(agenda_id), int(problem_id)),
+    )
+    return int((row or {}).get("spent") or 0)
+
+
 def _undelivered_proposal_spend(agenda_id: int, idea_id: int) -> int:
     """Tokens already charged for proposals that never delivered.
 
@@ -131,6 +163,16 @@ def _undelivered_proposal_spend(agenda_id: int, idea_id: int) -> int:
     handed a fresh 10% of the agenda budget every time a dead candidate was
     archived. What proved unproductive is the problem; the bill follows it.
     Candidates with no research problem still fall back to their own id.
+
+    Measured from the problem's most recent DELIVERED proposal, not from the
+    beginning of time. The gross lifetime figure never decays and delivery
+    never credits it, so every problem crosses the ceiling eventually and the
+    funnel is guaranteed to dry up. Problem 49 had delivered six realized
+    proposals -- the most recent five hours earlier -- and was still locked
+    out on 2026-08-19 by 264k of historical wastage against a 250k ceiling,
+    while only 32k had been spent since that last delivery. A problem that
+    has never delivered still accumulates from the start and still gets
+    stopped: problems 8 and 28 stayed blocked under this rule, correctly.
     """
 
     problem = db.fetchone(
@@ -139,17 +181,7 @@ def _undelivered_proposal_spend(agenda_id: int, idea_id: int) -> int:
     )
     problem_id = int((problem or {}).get("research_problem_id") or 0)
     if problem_id:
-        row = db.fetchone(
-            """
-            SELECT COALESCE(SUM(u.tokens_used), 0) AS spent
-            FROM resource_grant_usage_reservations u
-            JOIN resource_grants g ON g.id = u.resource_grant_id
-            JOIN deep_insights d ON d.id = g.idea_id
-            WHERE g.agenda_id=? AND d.research_problem_id=? AND g.stage='proposal'
-              AND g.status <> 'consumed' AND u.status='settled'
-            """,
-            (int(agenda_id), problem_id),
-        )
+        return _undelivered_proposal_spend_for_problem(agenda_id, problem_id)
     else:
         row = db.fetchone(
             """
@@ -181,18 +213,7 @@ def proposal_problem_is_over_budget(agenda_id: int, problem_id: int) -> bool:
     ceiling = _undelivered_proposal_ceiling(token_budget)
     if ceiling <= 0:
         return False
-    row = db.fetchone(
-        """
-        SELECT COALESCE(SUM(u.tokens_used), 0) AS spent
-        FROM resource_grant_usage_reservations u
-        JOIN resource_grants g ON g.id = u.resource_grant_id
-        JOIN deep_insights d ON d.id = g.idea_id
-        WHERE g.agenda_id=? AND d.research_problem_id=? AND g.stage='proposal'
-          AND g.status <> 'consumed' AND u.status='settled'
-        """,
-        (int(agenda_id), int(problem_id)),
-    )
-    return int((row or {}).get("spent") or 0) >= ceiling
+    return _undelivered_proposal_spend_for_problem(agenda_id, problem_id) >= ceiling
 
 
 def _require_proposal_funding_headroom(grant: ResourceGrant, token_budget: int) -> None:
