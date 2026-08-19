@@ -3403,11 +3403,52 @@ def _refresh_running_jobs() -> None:
                 _upsert_job(insight_id, status="failed", stage="missing_run", last_error="Experiment run missing.")
             elif run["status"] == "completed":
                 if job.get("stage") == BENCHMARK_COMPLETION_STAGE:
-                    _queue_benchmark_completion_run(
-                        insight_id,
-                        run,
-                        str(job.get("resource_class") or run.get("resource_class") or "gpu_large"),
-                    )
+                    # A run that already climbed past the benchmark has no
+                    # benchmark left to complete: idea 146's job sat here
+                    # after run 176 was decided, and every launch pass died
+                    # trying to re-run it through the experiment lane under
+                    # an audit-stage grant (2026-08-19).
+                    if str(run.get("scientific_evidence_state") or "") in {
+                        "full_benchmark_complete",
+                        "evidence_audited",
+                        "scientifically_decided",
+                    }:
+                        _upsert_job(
+                            insight_id,
+                            status="completed",
+                            stage="outcome_recorded",
+                            last_error=None,
+                            last_note=(
+                                "Benchmark completion satisfied; run reached "
+                                f"{run.get('scientific_evidence_state')}."
+                            ),
+                        )
+                        continue
+                    try:
+                        _queue_benchmark_completion_run(
+                            insight_id,
+                            run,
+                            str(job.get("resource_class") or run.get("resource_class") or "gpu_large"),
+                        )
+                    except Exception as exc:
+                        # One candidate's refusal must not abort the pass for
+                        # every other candidate.
+                        db.rollback()
+                        _upsert_job(
+                            insight_id,
+                            status="queued",
+                            stage=BENCHMARK_COMPLETION_STAGE,
+                            last_error=f"{type(exc).__name__}: {exc}",
+                            last_note="Benchmark completion submission deferred.",
+                        )
+                        log_event(
+                            "warning",
+                            {
+                                "step": "benchmark_completion_submit_failed",
+                                "insight_id": insight_id,
+                                "error": f"{type(exc).__name__}: {exc}",
+                            },
+                        )
                     continue
                 if _run_closed_loop_complete(int(run["id"])):
                     note = f"Verdict={run.get('hypothesis_verdict')}, effect_pct={run.get('effect_pct')}"
