@@ -549,6 +549,15 @@ class ColabWorkRepository:
                      OR (cwr.status IN ('queued', 'manual_reconciliation')
                          AND cj.status IN ('usage_unknown', 'submission_unknown',
                                            'timed_out'))
+                     -- A requeued request whose compute row was left at
+                     -- 'running' can never be claimed again (claim_next
+                     -- only takes 'submitted'), and with no session and no
+                     -- result that 'running' is provably stale: claim_next
+                     -- marks the REQUEST running before any work starts, so
+                     -- a queued request never owns a live compute job.
+                     -- Request 32 stalled the whole queue for 40 minutes
+                     -- this way on 2026-08-19.
+                     OR (cwr.status='queued' AND cj.status='running')
                   )
                   -- The compute row's backend_job_id is this request's own
                   -- reference, assigned at admission; it is not a Colab
@@ -581,8 +590,9 @@ class ColabWorkRepository:
                             GREATEST(timeout_seconds, 900) + 900),
                     updated_at=CURRENT_TIMESTAMP
                     WHERE id=? AND agenda_id=?
-                      AND status IN ('failed', 'queued', 'usage_unknown',
-                                     'submission_unknown', 'timed_out')
+                      AND status IN ('failed', 'queued', 'running',
+                                     'usage_unknown', 'submission_unknown',
+                                     'timed_out')
                     """,
                     (int(row["compute_job_id"]), int(row["agenda_id"])),
                 )
