@@ -21,6 +21,13 @@ class AgendaScopeError(RuntimeError):
     pass
 
 
+def _outstanding_gpu_hours(row: Any) -> float:
+    """GPU hours of a reservation that no settlement has released yet."""
+    reserved = float(row.get("gpu_hours_reserved") or 0.0)
+    used = float(row.get("gpu_hours_used") or 0.0)
+    return max(0.0, reserved - used)
+
+
 class BudgetReservationError(RuntimeError):
     pass
 
@@ -510,6 +517,9 @@ class AgendaRepository:
                 return
             if row.get("status") != "reserved":
                 raise BudgetReservationError("reservation is not releasable")
+            # Attempt-level GPU settlement already released the hours it
+            # burned while leaving this row 'reserved'; releasing the full cap
+            # again drove agendas 7 and 10 negative on 2026-08-19.
             db.execute(
                 """
                 UPDATE research_agendas
@@ -520,7 +530,7 @@ class AgendaRepository:
                 """,
                 (
                     int(row.get("token_reserved") or 0),
-                    float(row.get("gpu_hours_reserved") or 0),
+                    _outstanding_gpu_hours(row),
                     int(row["agenda_id"]),
                 ),
             )
@@ -605,7 +615,13 @@ class AgendaRepository:
                     updated_at=CURRENT_TIMESTAMP
                 WHERE id=?
                 """,
-                (token_cap, gpu_cap, tokens_used, gpu_hours_used, agenda_id),
+                (
+                    token_cap,
+                    _outstanding_gpu_hours(row),
+                    tokens_used,
+                    gpu_hours_used,
+                    agenda_id,
+                ),
             )
             db.execute(
                 """

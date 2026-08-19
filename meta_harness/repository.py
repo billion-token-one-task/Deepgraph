@@ -308,6 +308,18 @@ def _require_execution_preflight(grant: ResourceGrant) -> None:
         raise MetaHarnessPersistenceError(str(exc)) from exc
 
 
+def _outstanding_gpu_hours(row: Any) -> float:
+    """GPU hours of a reservation that no settlement has released yet.
+
+    Attempt-level settlement releases hours as they are burned but keeps the
+    ledger row 'reserved'; terminal paths must release only the remainder or
+    the agenda's reservation goes negative.
+    """
+    reserved = float(row.get("gpu_hours_reserved") or 0.0)
+    used = float(row.get("gpu_hours_used") or 0.0)
+    return max(0.0, reserved - used)
+
+
 def _canonical_hash(value: str) -> str:
     text = str(value or "").strip().lower()
     return text.removeprefix("sha256:")
@@ -1198,6 +1210,7 @@ class MetaHarnessRepository:
                 """
                 SELECT rg.id, rg.agenda_id, rg.reservation_id,
                        arl.token_reserved, arl.gpu_hours_reserved,
+                       arl.gpu_hours_used,
                        arl.status AS reservation_status
                 FROM resource_grants rg
                 JOIN agenda_resource_ledger arl ON arl.id=rg.reservation_id
@@ -1209,6 +1222,14 @@ class MetaHarnessRepository:
                 db.commit()
                 return False
             if row.get("reservation_status") == "reserved":
+                    # Attempt-level settlement already released the hours it
+                    # actually burned (attempt_gpu_usage.settle_attempt) while
+                    # leaving this ledger row 'reserved'. Releasing the full cap
+                    # here releases those hours a second time: agendas 7 and 10
+                    # drifted to -1.64 and -4.61 reserved hours by 2026-08-19,
+                    # and a negative reservation fails the agenda contract, so
+                    # agenda 7 could not select any work at all. Release only
+                    # what is still outstanding.
                 db.execute(
                     """
                     UPDATE research_agendas
@@ -1219,7 +1240,7 @@ class MetaHarnessRepository:
                     """,
                     (
                         int(row.get("token_reserved") or 0),
-                        float(row.get("gpu_hours_reserved") or 0),
+                        _outstanding_gpu_hours(row),
                         int(agenda_id),
                     ),
                 )
@@ -1318,6 +1339,7 @@ class MetaHarnessRepository:
                 f"""
                 SELECT rg.id, rg.agenda_id, rg.reservation_id,
                        arl.token_reserved, arl.gpu_hours_reserved,
+                       arl.gpu_hours_used,
                        arl.status AS reservation_status
                 FROM resource_grants rg
                 JOIN agenda_resource_ledger arl ON arl.id=rg.reservation_id
@@ -1330,6 +1352,7 @@ class MetaHarnessRepository:
             for row in rows:
                 grant_id = int(row["id"])
                 if row.get("reservation_status") == "reserved":
+                    # Same partial-release invariant as revocation above.
                     db.execute(
                         """
                         UPDATE research_agendas
@@ -1340,7 +1363,7 @@ class MetaHarnessRepository:
                         """,
                         (
                             int(row.get("token_reserved") or 0),
-                            float(row.get("gpu_hours_reserved") or 0),
+                            _outstanding_gpu_hours(row),
                             int(row["agenda_id"]),
                         ),
                     )
