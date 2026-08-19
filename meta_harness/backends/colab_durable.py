@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1013,6 +1014,10 @@ def pre_materialized_secret_check(account: ColabAccount) -> None:
         raise ColabCLIError("Colab credential material is outside isolated HOME")
 
 
+_TRANSPORT_CACHE: dict[tuple, "DurableColabTransport"] = {}
+_TRANSPORT_CACHE_LOCK = threading.Lock()
+
+
 def build_transport(
     *,
     binary: str,
@@ -1020,17 +1025,28 @@ def build_transport(
     allowed_code_root: str,
     allowed_artifact_root: str,
 ) -> DurableColabTransport:
-    accounts = load_colab_accounts(accounts_manifest_ref)
-    executor = ColabCLIExecutor(
-        ColabCLIConfig(
-            binary=binary,
-            allowed_code_root=allowed_code_root,
-            allowed_artifact_root=allowed_artifact_root,
-        ),
-        accounts,
-        secret_materializer=pre_materialized_secret_check,
-    )
-    return DurableColabTransport(executor=executor, accounts=accounts)
+    # Process-level singleton per configuration: the account pool's lease
+    # ledger lives in memory, so every worker lane must share ONE pool or two
+    # lanes could each believe the same account is free. build_scheduler runs
+    # per claim, which used to rebuild the pool every time.
+    key = (binary, accounts_manifest_ref, allowed_code_root, allowed_artifact_root)
+    with _TRANSPORT_CACHE_LOCK:
+        cached = _TRANSPORT_CACHE.get(key)
+        if cached is not None:
+            return cached
+        accounts = load_colab_accounts(accounts_manifest_ref)
+        executor = ColabCLIExecutor(
+            ColabCLIConfig(
+                binary=binary,
+                allowed_code_root=allowed_code_root,
+                allowed_artifact_root=allowed_artifact_root,
+            ),
+            accounts,
+            secret_materializer=pre_materialized_secret_check,
+        )
+        transport = DurableColabTransport(executor=executor, accounts=accounts)
+        _TRANSPORT_CACHE[key] = transport
+        return transport
 
 
 def execution_request_from_row(row: Mapping[str, Any]) -> ColabExecutionRequest:

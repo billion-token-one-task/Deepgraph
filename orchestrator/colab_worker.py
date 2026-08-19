@@ -24,13 +24,19 @@ from meta_harness.runner_contract import validate_final_results, verify_metric_f
 
 
 _thread: threading.Thread | None = None
+_threads: list[threading.Thread] = []
 _lock = threading.Lock()
 _stop = threading.Event()
 _last_status: dict = {"status": "not_started"}
 
 
 def _worker_id() -> str:
-    return f"{socket.gethostname()}:{os.getpid()}:colab"
+    # Thread-qualified: with two accounts the worker runs one thread per
+    # lane, and claim/requeue bookkeeping must not mix their claims.
+    return (
+        f"{socket.gethostname()}:{os.getpid()}:"
+        f"{threading.current_thread().name}:colab"
+    )
 
 
 def _record_terminal_run_failure(row: dict, result, observed) -> None:
@@ -478,18 +484,31 @@ def _loop() -> None:
 
 
 def start() -> dict:
-    global _thread
+    global _thread, _threads
     with _lock:
-        if _thread and _thread.is_alive():
+        alive = [t for t in _threads if t.is_alive()]
+        if alive:
             return {"status": "already_running", **_last_status}
         _stop.clear()
-        _thread = threading.Thread(
-            target=_loop,
-            daemon=True,
-            name="deepgraph-colab-worker",
-        )
-        _thread.start()
-    return {"status": "started"}
+        # One lane per configured account (bounded by the env knob): the
+        # shared account pool arbitrates so each lane holds a distinct
+        # account, and the durable claim layer row-locks the queue.
+        try:
+            lanes = max(1, int(os.environ.get(
+                "DEEPGRAPH_COLAB_WORKER_THREADS", "1") or 1))
+        except ValueError:
+            lanes = 1
+        _threads = []
+        for index in range(lanes):
+            worker = threading.Thread(
+                target=_loop,
+                daemon=True,
+                name=f"deepgraph-colab-worker-{index}",
+            )
+            worker.start()
+            _threads.append(worker)
+        _thread = _threads[0]
+    return {"status": "started", "lanes": lanes}
 
 
 def stop() -> dict:
@@ -499,5 +518,6 @@ def stop() -> dict:
 
 def get_status() -> dict:
     with _lock:
-        running = bool(_thread and _thread.is_alive())
-    return {"running": running, **_last_status}
+        alive = [t for t in _threads if t.is_alive()]
+        running = bool(alive) or bool(_thread and _thread.is_alive())
+    return {"running": running, "lanes": len(alive), **_last_status}
