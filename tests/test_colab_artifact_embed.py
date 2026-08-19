@@ -338,3 +338,24 @@ def test_a_full_pool_raises_the_distinct_capacity_error():
     with _with_cooling(cooling):
         with _pytest.raises(ColabCapacityUnavailable):
             pool.acquire(1.0)
+
+
+def test_the_worker_reaches_the_real_pool_not_a_raw_tuple():
+    """Pin the path from the configured backend to the ColabAccountPool.
+
+    Three objects in this chain expose an `.accounts` attribute and only one
+    of them is the pool: ColabGPUBackend.accounts and
+    DurableColabTransport.accounts are both raw tuples, while the pool lives
+    on ColabCLIExecutor. The first version of the capacity guard reached for
+    the backend's, raised AttributeError into a bare `except`, and turned
+    itself into a silent no-op -- the fail-open-and-hide-it shape the guard
+    exists to prevent.
+    """
+    import inspect
+
+    from orchestrator import colab_worker
+
+    source = inspect.getsource(colab_worker.run_one)
+    assert "_transport.executor.accounts" in source
+    # and the failure of the probe must be reported, never swallowed silently
+    assert "capacity probe unavailable" in source

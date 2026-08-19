@@ -361,12 +361,28 @@ def run_one() -> dict:
     # pool. Request 65 burned ten attempts in three minutes that way on
     # 2026-08-19 and run 189's audit could not proceed. Waiting for capacity
     # must cost the request nothing.
+    # The pool lives on the CLI executor; the durable backend's own .accounts
+    # is the raw tuple. Reaching for the wrong one raised AttributeError into
+    # a bare `except`, which turned this whole guard into a silent no-op --
+    # the same fail-open-and-hide-it shape the guard exists to stop. Report
+    # the mistake instead of swallowing it.
+    pool = None
     try:
-        pool = build_scheduler().configured_backend("colab_gpu").accounts
-    except Exception:
-        pool = None
+        # ColabGPUBackend -> DurableColabTransport -> ColabCLIExecutor.accounts
+        # is the pool. The backend's and the transport's own .accounts are both
+        # the raw tuple; only the executor holds the ColabAccountPool.
+        _backend = build_scheduler().configured_backend("colab_gpu")
+        pool = _backend._transport.executor.accounts
+    except Exception as exc:
+        print(
+            f"[COLAB] capacity probe unavailable: {type(exc).__name__}: {exc}",
+            flush=True,
+        )
     if pool is not None and not pool.has_capacity():
-        return {"status": "no_capacity", "reconciled_succeeded_runs": reconciled_successes}
+        return {
+            "status": "no_capacity",
+            "reconciled_succeeded_runs": reconciled_successes,
+        }
     row = repository.claim_next(worker_id=_worker_id())
     if not row:
         return {"status": "idle", "reconciled_succeeded_runs": reconciled_successes}
