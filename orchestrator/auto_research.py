@@ -451,6 +451,55 @@ def _reset_review_repair_history_after_harness_recovery(plan: dict) -> dict:
     return repaired
 
 
+def _legacy_targets_from_execution_requirements(plan: dict) -> dict | None:
+    """Render the legacy benchmark/model view from the modern contract.
+
+    Returns None when the plan carries no usable contract, so the caller
+    falls back to the harness-task path unchanged.
+    """
+    contract = plan.get("execution_requirements")
+    if not isinstance(contract, dict):
+        return None
+    dataset = contract.get("dataset")
+    model = contract.get("model")
+    if not isinstance(dataset, dict) or not isinstance(model, dict):
+        return None
+    dataset_id = str(dataset.get("repository_id") or "").strip()
+    model_id = str(model.get("repository_id") or "").strip()
+    if not dataset_id or not model_id:
+        return None
+    mapping = dataset.get("field_mapping")
+    mapping = mapping if isinstance(mapping, dict) else {}
+    target = {
+        "name": dataset_id,
+        "hf_dataset": dataset_id,
+        "hf_candidates": [dataset_id],
+        "config": str(dataset.get("config") or ""),
+        "split": str(dataset.get("split") or "test"),
+        "task_type": str(contract.get("task_protocol") or "generative_qa"),
+        "question_field": str(mapping.get("prompt") or "question"),
+        "answer_field": str(mapping.get("target") or "answer"),
+        "why": "declared by the candidate's execution_requirements contract",
+    }
+    return {
+        "benchmark_targets": [target],
+        "datasets": [{"name": dataset_id}],
+        "model_targets": [
+            {
+                "name": model_id,
+                "hf_model": model_id,
+                "revision": str(model.get("revision") or "main"),
+                "backend": str(model.get("framework") or "transformers"),
+                "task": str(model.get("task") or "causal_lm"),
+                "requires_cuda": bool(model.get("requires_cuda")),
+                "min_vram_gb": float(model.get("min_vram_gb") or 0.0),
+            }
+        ],
+        "generated_runner_supported": True,
+        "real_benchmark_required": True,
+    }
+
+
 def _repair_harness_job_from_task_plan(row: dict) -> dict | None:
     task = _json_mapping(row.get("task_plan"))
     if not task:
@@ -4175,6 +4224,38 @@ def _process_candidate(insight: dict) -> None:
         # second forge did the real work (runs 165/167/170/175, 2026-08-19).
         # Apply the same enrichment BEFORE the first review instead.
         plan_now = _json_mapping(insight.get("experimental_plan"))
+        if plan_now.get("generated_runner_supported") is not True:
+            # Two generations of plan schema live side by side: a modern
+            # design declares one authoritative `execution_requirements`
+            # contract, while the pre-execution review still reads the legacy
+            # benchmark_targets/model_targets rows. Idea 154 carried a
+            # complete contract (openai/gsm8k, generative_qa, a real model)
+            # and was still refused as "scratch; formal path not allowed"
+            # because nobody translated it. Derive the legacy view from the
+            # contract rather than keeping two sources of truth.
+            bridged = _legacy_targets_from_execution_requirements(plan_now)
+            if bridged:
+                plan_now.update(bridged)
+                db.execute(
+                    "UPDATE deep_insights SET experimental_plan=?,"
+                    " updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                    (
+                        json.dumps(plan_now, ensure_ascii=False, default=str),
+                        insight_id,
+                    ),
+                )
+                db.commit()
+                insight = dict(insight)
+                insight["experimental_plan"] = json.dumps(
+                    plan_now, ensure_ascii=False, default=str
+                )
+                log_event(
+                    "auto_research",
+                    {
+                        "step": "pre_forge_contract_bridged",
+                        "insight_id": insight_id,
+                    },
+                )
         if plan_now.get("generated_runner_supported") is not True:
             try:
                 from agents.benchmark_manager import build_harness_task
