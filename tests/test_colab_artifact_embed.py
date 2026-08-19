@@ -157,3 +157,66 @@ def test_long_stages_prefer_a_dedicated_host_but_fall_back():
     # with the host busy, a long stage falls back rather than failing
     pool2 = ColabAccountPool([acct("nb2", priority=0)])
     assert pool2.acquire(1.0, stage="evidence_audit").account_ref == "nb2"
+
+
+# --- durable provisioning cooldown -------------------------------------------
+# The cooldown counter lived in process memory keyed on time.monotonic().
+# Deploy restarts on 2026-08-19 wiped it, colab-pro-2 got fresh chances within
+# two minutes and refused each one, and every refusal burned a whole
+# experiment run out of the M2 acceptance window (runs 188 and 190).
+
+_REFUSAL = "transport:ColabCLIError:colab provision failed: TooManyAssignments"
+_LOST_SESSION = "transport:ColabCLIError:Colab output omitted the return-code sentinel"
+
+
+def _history(n, *, marker, status="failed", age_seconds=60):
+    from datetime import datetime, timedelta, timezone
+
+    when = datetime.now(timezone.utc) - timedelta(seconds=age_seconds)
+    return [
+        {"status": status, "failure_reason": marker, "created_at": when}
+        for _ in range(n)
+    ]
+
+
+def _cooling(rows):
+    from unittest import mock
+
+    from meta_harness.backends import colab_cli
+
+    with mock.patch.object(colab_cli.db, "fetchall", return_value=rows):
+        return colab_cli.durable_provision_cooldown("colab-pro-2")
+
+
+def test_two_consecutive_refusals_cool_the_account():
+    assert _cooling(_history(2, marker=_REFUSAL)) is True
+
+
+def test_a_recent_success_clears_the_cooldown():
+    rows = _history(2, marker=_REFUSAL)
+    rows[0] = {
+        "status": "succeeded",
+        "failure_reason": None,
+        "created_at": rows[0]["created_at"],
+    }
+    assert _cooling(rows) is False
+
+
+def test_an_expired_window_no_longer_cools():
+    assert _cooling(_history(2, marker=_REFUSAL, age_seconds=7200)) is False
+
+
+def test_a_lost_session_is_not_a_provisioning_refusal():
+    # losing a notebook VM says nothing about quota; it must not park the lane
+    assert _cooling(_history(2, marker=_LOST_SESSION)) is False
+
+
+def test_an_unreadable_history_fails_open():
+    from unittest import mock
+
+    from meta_harness.backends import colab_cli
+
+    with mock.patch.object(
+        colab_cli.db, "fetchall", side_effect=RuntimeError("no db")
+    ):
+        assert colab_cli.durable_provision_cooldown("colab-pro-2") is False

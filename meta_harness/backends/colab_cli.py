@@ -18,10 +18,12 @@ import tempfile
 import threading
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
 from contracts.meta_harness import ResourceGrant
+from db import database as db
 from meta_harness.compute import ColabAccount, ComputeBackendError
 from meta_harness.grants import ResourceRequest, authorize
 
@@ -37,6 +39,7 @@ _EMBED_MAX_BYTES = 25 * 1024 * 1024
 _SESSION_SAFE = re.compile(r"[^a-zA-Z0-9_-]+")
 # Scaffold: a provisioning refusal is a quota-window verdict, not a blip.
 _PROVISION_FAILURES_BEFORE_COOLDOWN = 2
+_PROVISION_REFUSAL_MARKER = "colab provision failed"
 # Stages whose single job is an hour or more of irreplaceable work.
 _LONG_RUNNING_STAGES = frozenset({"full_benchmark", "evidence_audit", "validation"})
 _PROVISION_COOLDOWN_SECONDS = 3600
@@ -349,6 +352,7 @@ class ColabAccountPool:
                 <= account.quota_gpu_hours
                 and self._active[account.account_ref] == 0
                 and self._blocked_until.get(account.account_ref, 0.0) <= now
+                and not durable_provision_cooldown(account.account_ref)
             ]
             # Measured 2026-08-19: hosted notebook sessions lose their VM on
             # roughly half of the hour-plus jobs (requests 28, 38, 46), while
@@ -369,6 +373,7 @@ class ColabAccountPool:
                 # right now; say so distinctly from a genuinely full pool.
                 if any(
                     self._blocked_until.get(account.account_ref, 0.0) > now
+                    or durable_provision_cooldown(account.account_ref)
                     for account in self._accounts
                 ):
                     raise ColabCLIError(
@@ -416,6 +421,50 @@ class ColabAccountPool:
         with self._lock:
             self._provision_failures[account.account_ref] = 0
             self._blocked_until.pop(account.account_ref, None)
+
+
+def durable_provision_cooldown(account_ref: str) -> bool:
+    """Is this account cooling off, according to the record that survives?
+
+    The in-memory counter is process state keyed on time.monotonic(), so a web
+    restart forgets every refusal. Deploy restarts on 2026-08-19 handed
+    colab-pro-2 fresh chances within two minutes of each other and it refused
+    each one, and every refusal costs a whole experiment run. The durable
+    record of what each lane did already exists in colab_work_requests_v1;
+    read it rather than keeping a second, more forgetful copy.
+
+    Cooling means: the account's last _PROVISION_FAILURES_BEFORE_COOLDOWN
+    requests were all provisioning refusals -- no success since -- and the
+    most recent is inside the cooldown window. Fails open: an unreadable
+    history must never take a lane out of service.
+    """
+    try:
+        rows = db.fetchall(
+            """
+            SELECT status, failure_reason, created_at
+            FROM colab_work_requests_v1
+            WHERE account_ref=?
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (str(account_ref), int(_PROVISION_FAILURES_BEFORE_COOLDOWN)),
+        )
+    except Exception:
+        return False
+    if len(rows) < _PROVISION_FAILURES_BEFORE_COOLDOWN:
+        return False
+    for row in rows:
+        if str(row.get("status")) != "failed":
+            return False
+        if _PROVISION_REFUSAL_MARKER not in str(row.get("failure_reason") or "").lower():
+            return False
+    newest = rows[0].get("created_at")
+    if not isinstance(newest, datetime):
+        return False
+    if newest.tzinfo is None:
+        newest = newest.replace(tzinfo=timezone.utc)
+    age = (datetime.now(timezone.utc) - newest).total_seconds()
+    return age < _PROVISION_COOLDOWN_SECONDS
 
 
 class ColabCLIExecutor:
