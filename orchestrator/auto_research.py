@@ -4127,6 +4127,60 @@ def _process_candidate(insight: dict) -> None:
         )
         existing_run = None
     if not existing_run:
+        # Every fresh idea's first forge used to pay a "shell tax": the raw
+        # design plan lacks the bridged fields (model_targets,
+        # benchmark_targets, generated_runner_supported) that only the
+        # post-block harness recovery added, so review blocked run #1 and a
+        # second forge did the real work (runs 165/167/170/175, 2026-08-19).
+        # Apply the same enrichment BEFORE the first review instead.
+        plan_now = _json_mapping(insight.get("experimental_plan"))
+        if plan_now.get("generated_runner_supported") is not True:
+            try:
+                from agents.benchmark_manager import build_harness_task
+
+                pre_task = build_harness_task(
+                    insight, source="pre_forge_enrichment"
+                )
+                enriched = _repair_harness_job_from_task_plan(
+                    {
+                        "task_plan": json.dumps(
+                            pre_task, ensure_ascii=False, default=str
+                        ),
+                        "deep_insight_id": insight_id,
+                        "resource_class": insight.get("resource_class"),
+                    }
+                )
+            except Exception as exc:
+                enriched = None
+                log_event(
+                    "warning",
+                    {
+                        "step": "pre_forge_enrichment_failed",
+                        "insight_id": insight_id,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    },
+                )
+            if enriched:
+                db.execute(
+                    "UPDATE deep_insights SET experimental_plan=?,"
+                    " updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                    (
+                        json.dumps(enriched, ensure_ascii=False, default=str),
+                        insight_id,
+                    ),
+                )
+                db.commit()
+                insight = dict(insight)
+                insight["experimental_plan"] = json.dumps(
+                    enriched, ensure_ascii=False, default=str
+                )
+                log_event(
+                    "auto_research",
+                    {
+                        "step": "pre_forge_plan_enriched",
+                        "insight_id": insight_id,
+                    },
+                )
         prior_review_repairs = _experiment_review_repair_attempt_from_plan_data(insight.get("experimental_plan"))
         max_review_repairs = max(0, MAX_EXPERIMENT_REVIEW_REPAIR_ATTEMPTS)
         if max_review_repairs and prior_review_repairs >= max_review_repairs:
