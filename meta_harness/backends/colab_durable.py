@@ -478,6 +478,39 @@ class ColabWorkRepository:
             raise ColabCLIError("durable Colab recovery requires PostgreSQL")
         requeued = 0
         try:
+            # An admission that threw after inserting the row but before any
+            # compute job exists leaves the request parked at 'admitting'
+            # forever; once its grant is gone nothing can ever admit it, and
+            # audit phase drivers read it as in-flight (request 24,
+            # 2026-08-19). No session, no result, no compute job: judging it
+            # failed abandons nothing.
+            db.execute(
+                """
+                UPDATE colab_work_requests_v1 AS cwr
+                SET status='failed',
+                    failure_reason='admission_abandoned_grant_inactive',
+                    updated_at=CURRENT_TIMESTAMP
+                WHERE cwr.status='admitting'
+                  AND cwr.session_ref IS NULL
+                  AND cwr.result_json IS NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM compute_jobs_v1 cj
+                      WHERE cj.agenda_id=cwr.agenda_id
+                        AND cj.idempotency_key=cwr.idempotency_key
+                        AND cj.backend_kind='colab_gpu'
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM resource_grants rg
+                      WHERE rg.id=cwr.resource_grant_id
+                        AND rg.status='active'
+                        AND rg.expires_at > CURRENT_TIMESTAMP
+                  )
+                """
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+        try:
             rows = db.fetchall(
                 """
                 SELECT cwr.id, cwr.agenda_id, cwr.compute_job_id

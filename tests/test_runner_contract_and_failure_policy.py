@@ -851,11 +851,22 @@ class ColabControlLostRequeueTests(unittest.TestCase):
         ):
             with self.subTest(guard=guard):
                 self.assertIn(guard, predicate)
+        # The abandoned-admission sweep runs first; find the requeue update
+        # by content, not position.
         request_update = next(
-            s for s, _ in statements if "colab_work_requests_v1" in s
+            s for s, _ in statements
+            if "colab_work_requests_v1" in s and "status='queued'" in s
         )
         self.assertIn("status='queued'", request_update)
-        compute_update = next(s for s, _ in statements if "compute_jobs_v1" in s)
+        abandoned_sweep = next(
+            s for s, _ in statements
+            if "admission_abandoned_grant_inactive" in s
+        )
+        self.assertIn("cwr.status='admitting'", abandoned_sweep)
+        compute_update = next(
+            s for s, _ in statements
+            if "compute_jobs_v1" in s and "status='submitted'" in s
+        )
         self.assertIn("status='submitted'", compute_update)
         # claim_next marks the attempt started before the executor runs, so a
         # worker that dies in between settles a reservation holding only
