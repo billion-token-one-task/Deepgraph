@@ -1281,6 +1281,14 @@ def advance_evidence_audit(agenda_id: int, state: dict, journal: Journal, args) 
             str(row.get("grant_stage") or "") != "evidence_audit"
             or str(row.get("grant_status") or "") != "active"
         ):
+            # The finished full_benchmark grant still holds a concurrency
+            # slot; settle it before asking for the audit slot, or the two
+            # deadlock at the agenda cap (run 171, grant 104, 2026-08-19).
+            from meta_harness.evidence_audit import _settle_completed_grants
+
+            _settle_completed_grants(
+                {"agenda_id": agenda_id, "deep_insight_id": idea_id, "id": run_id}
+            )
             if (
                 args.spend_limit > 0
                 and _guard_spent_delta(state, args) + args.grant_token_cap > args.spend_limit
