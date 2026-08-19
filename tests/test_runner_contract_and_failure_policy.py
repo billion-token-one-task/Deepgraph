@@ -862,7 +862,7 @@ class ColabControlLostRequeueTests(unittest.TestCase):
             s for s, _ in statements
             if "admission_abandoned_grant_inactive" in s
         )
-        self.assertIn("cwr.status='admitting'", abandoned_sweep)
+        self.assertIn("cwr.status IN ('admitting', 'queued')", abandoned_sweep)
         compute_update = next(
             s for s, _ in statements
             if "compute_jobs_v1" in s and "status='submitted'" in s

@@ -491,15 +491,14 @@ class ColabWorkRepository:
                 SET status='failed',
                     failure_reason='admission_abandoned_grant_inactive',
                     updated_at=CURRENT_TIMESTAMP
-                WHERE cwr.status='admitting'
+                WHERE cwr.status IN ('admitting', 'queued')
                   AND cwr.session_ref IS NULL
                   AND cwr.result_json IS NULL
-                  AND NOT EXISTS (
-                      SELECT 1 FROM compute_jobs_v1 cj
-                      WHERE cj.agenda_id=cwr.agenda_id
-                        AND cj.idempotency_key=cwr.idempotency_key
-                        AND cj.backend_kind='colab_gpu'
-                  )
+                  -- A request whose grant is no longer active can never
+                  -- legally execute; whether or not a compute row exists,
+                  -- judging it failed abandons nothing. Request 13 sat
+                  -- queued on a consumed grant and would have re-run a
+                  -- decided run's benchmark over its own artifacts.
                   AND NOT EXISTS (
                       SELECT 1 FROM resource_grants rg
                       WHERE rg.id=cwr.resource_grant_id
