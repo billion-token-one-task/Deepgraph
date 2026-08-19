@@ -259,3 +259,82 @@ def test_an_unreadable_history_fails_open():
         colab_cli.db, "fetchall", side_effect=RuntimeError("no db")
     ):
         assert colab_cli.durable_provision_cooldown("colab-pro-2") is False
+
+
+# --- capacity is a condition of the pool, not a failure of the work ----------
+# acquire() is only reached deep inside the executor, so a full pool surfaced
+# as an exception AFTER the request was claimed. The worker treats any
+# exception as losing control of its claim, so it failed the request and
+# requeued it straight back into the same full pool. Request 65 burned ten
+# attempts in three minutes that way on 2026-08-19, and run 189's audit --
+# already at full_benchmark_complete -- could not proceed.
+
+
+def _pool(*, cooling=(), busy=()):
+    from meta_harness.backends import colab_cli
+    from meta_harness.compute import ColabAccount
+
+    accounts = [
+        ColabAccount(
+            account_ref=ref,
+            credential_ref=f"env:{ref}",
+            isolated_home=f"/home/{ref}",
+            oauth_store=f"/home/{ref}/token.json",
+            session_namespace=ref,
+            quota_gpu_hours=8,
+        )
+        for ref in ("lane-a", "lane-b")
+    ]
+    pool = colab_cli.ColabAccountPool(accounts)
+    for ref in busy:
+        pool._active[ref] = 1
+    return pool, set(cooling)
+
+
+def _with_cooling(cooling):
+    from unittest import mock
+
+    from meta_harness.backends import colab_cli
+
+    return mock.patch.object(
+        colab_cli,
+        "durable_provision_cooldown",
+        side_effect=lambda ref: ref in cooling,
+    )
+
+
+def test_capacity_probe_sees_a_free_lane():
+    pool, cooling = _pool(busy=("lane-a",))
+    with _with_cooling(cooling):
+        assert pool.has_capacity() is True
+
+
+def test_capacity_probe_reports_a_full_pool():
+    pool, cooling = _pool(busy=("lane-a", "lane-b"))
+    with _with_cooling(cooling):
+        assert pool.has_capacity() is False
+
+
+def test_capacity_probe_counts_a_cooling_lane_as_unavailable():
+    pool, cooling = _pool(busy=("lane-a",), cooling=("lane-b",))
+    with _with_cooling(cooling):
+        assert pool.has_capacity() is False
+
+
+def test_the_probe_does_not_claim_anything():
+    pool, cooling = _pool()
+    with _with_cooling(cooling):
+        before = dict(pool._active)
+        pool.has_capacity()
+        assert pool._active == before
+
+
+def test_a_full_pool_raises_the_distinct_capacity_error():
+    import pytest as _pytest
+
+    from meta_harness.backends.colab_cli import ColabCapacityUnavailable
+
+    pool, cooling = _pool(busy=("lane-a", "lane-b"))
+    with _with_cooling(cooling):
+        with _pytest.raises(ColabCapacityUnavailable):
+            pool.acquire(1.0)

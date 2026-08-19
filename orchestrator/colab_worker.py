@@ -354,6 +354,19 @@ def run_one() -> dict:
     # cannot be recreated, because its idempotency key is derived from the run.
     # Give those back to the queue before claiming.
     repository.requeue_control_lost()
+    # Ask whether any lane is free BEFORE claiming. The pool is only consulted
+    # deep inside the executor, so a full pool used to surface as an exception
+    # after the claim -- and the worker treats any exception as losing control,
+    # so it failed the request and requeued it straight back into the same full
+    # pool. Request 65 burned ten attempts in three minutes that way on
+    # 2026-08-19 and run 189's audit could not proceed. Waiting for capacity
+    # must cost the request nothing.
+    try:
+        pool = build_scheduler().configured_backend("colab_gpu").accounts
+    except Exception:
+        pool = None
+    if pool is not None and not pool.has_capacity():
+        return {"status": "no_capacity", "reconciled_succeeded_runs": reconciled_successes}
     row = repository.claim_next(worker_id=_worker_id())
     if not row:
         return {"status": "idle", "reconciled_succeeded_runs": reconciled_successes}
@@ -456,7 +469,9 @@ def run_one() -> dict:
             repository.quarantine_claim(
                 int(row["id"]),
                 worker_id=worker_id,
-                reason=f"colab_worker_control_lost:{type(exc).__name__}",
+                # Keep the message, not just the type: "ColabCLIError" alone
+                # could not distinguish a full pool from a real control loss.
+                reason=f"colab_worker_control_lost:{type(exc).__name__}:{exc}"[:400],
             )
         raise
     return {

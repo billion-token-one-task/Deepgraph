@@ -49,6 +49,18 @@ class ColabCLIError(ComputeBackendError):
     pass
 
 
+class ColabCapacityUnavailable(ColabCLIError):
+    """No lane is free right now -- a condition of the pool, not of the work.
+
+    Every lane busy, or every lane cooling off after provisioning refusals,
+    used to surface as a bare ColabCLIError. The worker treats any exception
+    as losing control of its claim, so it failed the request and requeued it
+    immediately, which failed again against the same full pool: request 65
+    burned ten attempts in three minutes on 2026-08-19 and run 189's audit
+    could not proceed. Waiting for capacity must cost the request nothing.
+    """
+
+
 @dataclass(frozen=True)
 class ColabCLIConfig:
     binary: str
@@ -340,34 +352,55 @@ class ColabAccountPool:
         self._blocked_until: dict[str, float] = {}
         self._lock = threading.Lock()
 
+    def _eligible_locked(
+        self, requested_hours: float, stage: str | None
+    ) -> list[ColabAccount]:
+        """Lanes that could take this work right now. Caller holds the lock."""
+        now = time.monotonic()
+        eligible = [
+            account
+            for account in self._accounts
+            if self._used_hours[account.account_ref] + requested_hours
+            <= account.quota_gpu_hours
+            and self._active[account.account_ref] == 0
+            and self._blocked_until.get(account.account_ref, 0.0) <= now
+            and not durable_provision_cooldown(account.account_ref)
+        ]
+        # Measured 2026-08-19: hosted notebook sessions lose their VM on
+        # roughly half of the hour-plus jobs (requests 28, 38, 46), while
+        # the dedicated host finished every one. A full benchmark or an
+        # audit holdout is an hour of work whose loss costs a whole run,
+        # so those stages take a dedicated host whenever one is free and
+        # fall back to a notebook lane only when none is.
+        if stage in _LONG_RUNNING_STAGES:
+            dedicated = [
+                account
+                for account in eligible
+                if getattr(account, "transport", "colab") == "ssh"
+            ]
+            if dedicated:
+                eligible = dedicated
+        return eligible
+
+    def has_capacity(
+        self, requested_hours: float = 0.0, *, stage: str | None = None
+    ) -> bool:
+        """Could any lane take this work right now, without claiming one?
+
+        Probed before a request is claimed. Claiming first and discovering the
+        pool is full made a temporary capacity condition look like a failure
+        of the work: request 65 burned ten attempts in three minutes against a
+        full pool on 2026-08-19 and run 189's audit could not proceed.
+        """
+        with self._lock:
+            return bool(self._eligible_locked(requested_hours, stage))
+
     def acquire(
         self, requested_hours: float, *, stage: str | None = None
     ) -> ColabAccount:
         with self._lock:
             now = time.monotonic()
-            eligible = [
-                account
-                for account in self._accounts
-                if self._used_hours[account.account_ref] + requested_hours
-                <= account.quota_gpu_hours
-                and self._active[account.account_ref] == 0
-                and self._blocked_until.get(account.account_ref, 0.0) <= now
-                and not durable_provision_cooldown(account.account_ref)
-            ]
-            # Measured 2026-08-19: hosted notebook sessions lose their VM on
-            # roughly half of the hour-plus jobs (requests 28, 38, 46), while
-            # the dedicated host finished every one. A full benchmark or an
-            # audit holdout is an hour of work whose loss costs a whole run,
-            # so those stages take a dedicated host whenever one is free and
-            # fall back to a notebook lane only when none is.
-            if stage in _LONG_RUNNING_STAGES:
-                dedicated = [
-                    account
-                    for account in eligible
-                    if getattr(account, "transport", "colab") == "ssh"
-                ]
-                if dedicated:
-                    eligible = dedicated
+            eligible = self._eligible_locked(requested_hours, stage)
             if not eligible:
                 # A cooling account is capacity that exists but is unusable
                 # right now; say so distinctly from a genuinely full pool.
@@ -376,10 +409,12 @@ class ColabAccountPool:
                     or durable_provision_cooldown(account.account_ref)
                     for account in self._accounts
                 ):
-                    raise ColabCLIError(
+                    raise ColabCapacityUnavailable(
                         "every Colab account is cooling off after provisioning failures"
                     )
-                raise ColabCLIError("no Colab account has isolated quota capacity")
+                raise ColabCapacityUnavailable(
+                    "no Colab account has isolated quota capacity"
+                )
             account = min(
                 eligible,
                 key=lambda item: (
