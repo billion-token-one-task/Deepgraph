@@ -658,6 +658,48 @@ class ColabWorkRepository:
                 # makes start_attempt refuse the retry. Only reservations for a
                 # request that never held a session are reopened, and the
                 # discarded figure is bounded by that same fact.
+                # Reopening a settled attempt un-measures it, so its charge
+                # must come back off the ledger too. Without the refund the
+                # ledger kept hours no attempt could account for, and the
+                # settlement gate then refused to record the run's outcome --
+                # grants 128 and 139 both stalled that way on 2026-08-19,
+                # holding agenda concurrency slots with finished work.
+                try:
+                    refunded = db.fetchone(
+                        """
+                        SELECT COALESCE(SUM(actual_gpu_seconds), 0) / 3600.0 AS hours,
+                               MAX(resource_grant_id) AS grant_id
+                        FROM experiment_attempt_gpu_reservations_v1
+                        WHERE compute_job_id=? AND agenda_id=?
+                          AND status IN ('settled', 'released')
+                        """,
+                        (int(row["compute_job_id"]), int(row["agenda_id"])),
+                    )
+                    hours = float(dict(refunded or {}).get("hours") or 0.0)
+                    grant_id = int(dict(refunded or {}).get("grant_id") or 0)
+                except Exception:
+                    # Accounting is best effort here; never let it block the
+                    # recovery this function exists for.
+                    hours, grant_id = 0.0, 0
+                if hours > 0 and grant_id:
+                    db.execute(
+                        """
+                        UPDATE agenda_resource_ledger
+                        SET gpu_hours_used=GREATEST(0, COALESCE(gpu_hours_used,0)-?)
+                        WHERE id=(SELECT reservation_id FROM resource_grants
+                                  WHERE id=?)
+                        """,
+                        (hours, grant_id),
+                    )
+                    db.execute(
+                        """
+                        UPDATE research_agendas
+                        SET gpu_hours_spent=GREATEST(0, gpu_hours_spent-?),
+                            updated_at=CURRENT_TIMESTAMP
+                        WHERE id=?
+                        """,
+                        (hours, int(row["agenda_id"])),
+                    )
                 db.execute(
                     """
                     UPDATE experiment_attempt_gpu_reservations_v1

@@ -872,9 +872,12 @@ class ColabControlLostRequeueTests(unittest.TestCase):
         # worker that dies in between settles a reservation holding only
         # controller overhead; leaving it terminal makes start_attempt refuse
         # the retry.
+        # The refund lookup queries the same table first; pick the update by
+        # content rather than by position.
         attempt_update = next(
             s for s, _ in statements
             if "experiment_attempt_gpu_reservations_v1" in s
+            and "status='reserved'" in s
         )
         self.assertIn("status='reserved'", attempt_update)
         self.assertIn("started_at=NULL", attempt_update)
