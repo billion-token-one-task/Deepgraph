@@ -37,6 +37,8 @@ _EMBED_MAX_BYTES = 25 * 1024 * 1024
 _SESSION_SAFE = re.compile(r"[^a-zA-Z0-9_-]+")
 # Scaffold: a provisioning refusal is a quota-window verdict, not a blip.
 _PROVISION_FAILURES_BEFORE_COOLDOWN = 2
+# Stages whose single job is an hour or more of irreplaceable work.
+_LONG_RUNNING_STAGES = frozenset({"full_benchmark", "evidence_audit", "validation"})
 _PROVISION_COOLDOWN_SECONDS = 3600
 
 
@@ -335,7 +337,9 @@ class ColabAccountPool:
         self._blocked_until: dict[str, float] = {}
         self._lock = threading.Lock()
 
-    def acquire(self, requested_hours: float) -> ColabAccount:
+    def acquire(
+        self, requested_hours: float, *, stage: str | None = None
+    ) -> ColabAccount:
         with self._lock:
             now = time.monotonic()
             eligible = [
@@ -346,6 +350,20 @@ class ColabAccountPool:
                 and self._active[account.account_ref] == 0
                 and self._blocked_until.get(account.account_ref, 0.0) <= now
             ]
+            # Measured 2026-08-19: hosted notebook sessions lose their VM on
+            # roughly half of the hour-plus jobs (requests 28, 38, 46), while
+            # the dedicated host finished every one. A full benchmark or an
+            # audit holdout is an hour of work whose loss costs a whole run,
+            # so those stages take a dedicated host whenever one is free and
+            # fall back to a notebook lane only when none is.
+            if stage in _LONG_RUNNING_STAGES:
+                dedicated = [
+                    account
+                    for account in eligible
+                    if getattr(account, "transport", "colab") == "ssh"
+                ]
+                if dedicated:
+                    eligible = dedicated
             if not eligible:
                 # A cooling account is capacity that exists but is unusable
                 # right now; say so distinctly from a genuinely full pool.
@@ -567,7 +585,7 @@ class ColabCLIExecutor:
             label="Colab artifact_output_dir",
         )
         output_dir.mkdir(parents=True, exist_ok=True)
-        account = self.accounts.acquire(requested_hours)
+        account = self.accounts.acquire(requested_hours, stage=request.stage)
         started = False
         start = time.monotonic()
         returncode: int | None = None

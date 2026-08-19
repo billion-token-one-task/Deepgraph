@@ -131,3 +131,29 @@ def test_manifest_priority_zero_survives_parsing(tmp_path, monkeypatch):
     by_ref = {a.account_ref: a for a in accounts}
     assert by_ref["fast"].priority == 0
     assert by_ref["slow"].priority == 100
+
+
+def test_long_stages_prefer_a_dedicated_host_but_fall_back():
+    from meta_harness.backends.colab_cli import ColabAccountPool
+    from meta_harness.compute import ColabAccount
+
+    def acct(ref, transport="colab", priority=50):
+        return ColabAccount(
+            account_ref=ref, credential_ref=f"env:C_{ref}",
+            isolated_home=f"/tmp/{ref}", oauth_store=f"/tmp/{ref}/k",
+            session_namespace=ref, quota_gpu_hours=8.0, priority=priority,
+            transport=transport,
+            ssh_target="u@h" if transport == "ssh" else "",
+            ssh_key_path=f"/tmp/{ref}/k" if transport == "ssh" else "",
+        )
+
+    notebook, host = acct("nb", priority=0), acct("host", "ssh", priority=90)
+    pool = ColabAccountPool([notebook, host])
+    # an hour-long stage takes the dedicated host even though it ranks worse
+    picked = pool.acquire(1.0, stage="full_benchmark")
+    assert picked.account_ref == "host"
+    # a pilot still follows plain priority
+    assert pool.acquire(1.0, stage="pilot").account_ref == "nb"
+    # with the host busy, a long stage falls back rather than failing
+    pool2 = ColabAccountPool([acct("nb2", priority=0)])
+    assert pool2.acquire(1.0, stage="evidence_audit").account_ref == "nb2"
