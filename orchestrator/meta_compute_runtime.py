@@ -919,9 +919,13 @@ def _submit_experiment_run_on_colab(
         experiment_run_id=int(run["id"]),
         resource_grant_id=int(run["resource_grant_id"]),
         stage=str(grant.stage),
+        # Grant-scoped: the retry unit is (run, stage, grant). Keyed on run
+        # and stage alone, a rerun under a replacement grant collided with
+        # the dead request forever (request 28 timed out on a 2h grant and
+        # its 4h replacement could never create a new request).
         idempotency_key=(
             f"experiment-run:{run['agenda_id']}:{run['deep_insight_id']}:"
-            f"{run['id']}:{grant.stage}"
+            f"{run['id']}:{grant.stage}:g{int(run['resource_grant_id'])}"
         ),
         code_dir=str(code_dir),
         # Keep portable-runner artifacts inside the uploaded code tree.  The
