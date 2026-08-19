@@ -255,6 +255,33 @@ def _prepare_holdout_code(workdir: Path) -> Path:
     return holdout_code
 
 
+def _holdout_timeout_seconds(results_dir: Path, grant_id: int) -> int:
+    """Size the holdout window from evidence, bounded by its funding.
+
+    The audited run's measured wall clock is the best estimate of the
+    holdout's cost (same model, same n, same seed list); a fixed 3h constant
+    exceeded the 2h grants the timer issues, so admission refused every
+    holdout before it started (grant 111, 2026-08-19).
+    """
+    try:
+        wall = float(
+            json.loads((results_dir / "final_results.json").read_text()).get(
+                "wall_seconds"
+            )
+            or 0
+        )
+    except Exception:
+        wall = 0.0
+    sized = max(3600, int(wall * 2.0) + 900) if wall else 10800
+    grant = db.fetchone(
+        "SELECT max_gpu_hours FROM resource_grants WHERE id=?", (int(grant_id),)
+    )
+    funded = int(float(dict(grant or {}).get("max_gpu_hours") or 0) * 3600)
+    if funded > 600:
+        sized = min(sized, funded - 300)
+    return max(1800, min(10800, sized))
+
+
 def _submit_holdout(run: Mapping[str, Any], grant_id: int, attempt: int) -> int:
     from orchestrator.meta_compute_runtime import ColabWorkSpec, submit_colab_work
 
@@ -294,9 +321,7 @@ def _submit_holdout(run: Mapping[str, Any], grant_id: int, attempt: int) -> int:
             "model_manifest": "model_manifest.json",
         },
         artifact_output_dir=str(holdout_dir),
-        # Full declared seed list at n=200 measured ~31 min/seed on a T4;
-        # three seeds plus queue jitter needs the 3h ceiling, not 90 min.
-        timeout_seconds=10800,
+        timeout_seconds=_holdout_timeout_seconds(_results, grant_id),
     )
     job = submit_colab_work(spec)
     return int(getattr(job, "id", 0) or 0)
