@@ -1046,7 +1046,14 @@ def load_colab_accounts(manifest_ref: str) -> tuple[ColabAccount, ...]:
             ssh_target=str(item.get("ssh_target") or ""),
             ssh_key_path=str(item.get("ssh_key_path") or ""),
             gpu_type=str(item.get("gpu_type") or ""),
-            priority=int(item.get("priority") or 100),
+            # `or 100` would swallow the most important value this field can
+            # take: priority 0 is the fastest lane, and zero is falsy. The
+            # A10G sat last in line behind two T4s because of it.
+            priority=(
+                int(item["priority"])
+                if item.get("priority") is not None
+                else 100
+            ),
         )
         for item in payload
         if isinstance(item, dict)

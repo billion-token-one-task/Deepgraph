@@ -102,3 +102,32 @@ def test_all_accounts_cooling_reports_the_distinct_reason():
         pool.record_provision_failure(only)
     with _pytest.raises(ColabCLIError, match="cooling off"):
         pool.acquire(0.5)
+
+
+def test_manifest_priority_zero_survives_parsing(tmp_path, monkeypatch):
+    """Priority 0 is the fastest lane, and zero is falsy: it must not default."""
+    import json as _json
+
+    from meta_harness.backends.colab_durable import load_colab_accounts
+
+    key = tmp_path / "key.pem"
+    key.write_text("x")
+    manifest = tmp_path / "accounts.json"
+    manifest.write_text(_json.dumps([
+        {
+            "account_ref": "fast", "credential_ref": "env:CRED",
+            "isolated_home": str(tmp_path), "oauth_store": str(key),
+            "session_namespace": "ns", "quota_gpu_hours": 8, "priority": 0,
+            "transport": "ssh", "ssh_target": "u@h", "ssh_key_path": str(key),
+        },
+        {
+            "account_ref": "slow", "credential_ref": "env:CRED2",
+            "isolated_home": str(tmp_path), "oauth_store": str(key),
+            "session_namespace": "ns2", "quota_gpu_hours": 8,
+        },
+    ]))
+    monkeypatch.setenv("DG_TEST_MANIFEST", str(manifest))
+    accounts = load_colab_accounts("env:DG_TEST_MANIFEST")
+    by_ref = {a.account_ref: a for a in accounts}
+    assert by_ref["fast"].priority == 0
+    assert by_ref["slow"].priority == 100
