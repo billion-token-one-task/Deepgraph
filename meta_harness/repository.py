@@ -1917,11 +1917,35 @@ class MetaHarnessRepository:
                 # 101/115, 2026-08-19), so exact equality froze every
                 # settlement. The gate's purpose is catching UNMETERED
                 # spend -- hours-scale gaps -- which the tolerance keeps.
-                gpu_gap = abs(gpu_already_spent - outcome.actual_gpu_hours)
-                if gpu_gap > max(150.0 / 3600.0, 0.05 * outcome.actual_gpu_hours):
+                tolerance = max(150.0 / 3600.0, 0.05 * outcome.actual_gpu_hours)
+                gpu_gap = gpu_already_spent - outcome.actual_gpu_hours
+                if gpu_gap < -tolerance:
+                    # The ledger was charged LESS than the attempts measured:
+                    # someone burned accelerator time nobody billed. This is
+                    # the direction the gate exists for; fail closed.
                     raise MetaHarnessPersistenceError(
                         "grant ledger GPU usage does not match metered attempts"
                     )
+                if gpu_gap > tolerance:
+                    # The other direction is phantom charge, not unmetered
+                    # spend: a reopened attempt whose hours never came back
+                    # off the ledger. Grant 135 held 466 phantom seconds
+                    # across four holdout attempts on 2026-08-19 and could
+                    # not settle at all, stranding an audited run's grant.
+                    # The metered attempts are the canonical record, so
+                    # reconcile down to them and give the agenda its
+                    # over-charge back. The ledger write below already sets
+                    # gpu_hours_used to the metered truth.
+                    db.execute(
+                        """
+                        UPDATE research_agendas
+                        SET gpu_hours_spent=GREATEST(0, gpu_hours_spent-?),
+                            updated_at=CURRENT_TIMESTAMP
+                        WHERE id=?
+                        """,
+                        (gpu_gap, outcome.agenda_id),
+                    )
+                    gpu_already_spent = outcome.actual_gpu_hours
                 gpu_outstanding = max(0.0, gpu_reserved - gpu_already_spent)
                 db.execute(
                     """

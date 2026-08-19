@@ -46,5 +46,37 @@ class GpuReservationReleaseInvariantTests(unittest.TestCase):
             )
 
 
+class LedgerSettlementDirectionTests(unittest.TestCase):
+    """The settlement gate must distinguish unmetered spend from phantom charge.
+
+    Grant 135's ledger held 2.6193 GPU-hours while its four holdout attempts
+    metered 2.4900 -- 466 phantom seconds left behind by a reopened attempt.
+    The gate compared abs(gap) and refused, so an audited run that had already
+    reached scientifically_decided could never settle its grant (2026-08-19).
+
+    Under-charge is the dangerous direction: hours burned that nobody billed.
+    Over-charge is a bookkeeping error against a canonical record that exists.
+    """
+
+    @staticmethod
+    def _tolerance(actual):
+        return max(150.0 / 3600.0, 0.05 * actual)
+
+    def test_grant_135_over_charge_is_outside_the_old_symmetric_tolerance(self):
+        ledger, metered = 2.6193461413888883, 2.4899507938888883
+        gap = ledger - metered
+        self.assertGreater(gap, self._tolerance(metered))
+        self.assertGreater(gap, 0, "this is over-charge, not unmetered spend")
+
+    def test_source_refuses_only_the_under_charge_direction(self):
+        import inspect
+
+        from meta_harness import repository
+
+        source = inspect.getsource(repository.MetaHarnessRepository.record_outcome)
+        self.assertIn("if gpu_gap < -tolerance:", source)
+        self.assertNotIn("gpu_gap = abs(", source)
+
+
 if __name__ == "__main__":
     unittest.main()

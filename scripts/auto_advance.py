@@ -49,6 +49,7 @@ from db.insight_outcomes import (  # noqa: E402
     OUTCOME_PROPOSAL_UNREALIZED,
     set_outcome,
 )
+from meta_harness.failure_policy import is_transport_class_failure  # noqa: E402
 from meta_harness.frontier_authority import FrontierAuthorityRepository  # noqa: E402
 from meta_harness.frontier_bootstrap import run_bootstrap_evaluation  # noqa: E402
 from meta_harness.job_states import RECYCLABLE  # noqa: E402
@@ -1387,6 +1388,12 @@ def advance_evidence_audit(agenda_id: int, state: dict, journal: Journal, args) 
 
 
 MAX_PILOT_GRANTS_PER_IDEA = 3
+# Infrastructure may fail more often than the science budget allows without
+# condemning an idea, but not forever. Ideas 130 and 141 sat blocked on
+# 2026-08-19 with every pilot killed by a refused Colab provision or a failed
+# artifact download -- three grants spent, not one example measured, and the
+# M2 funnel went dry with candidates still waiting.
+MAX_PILOT_TRANSPORT_RETRIES = 5
 
 
 def retry_infra_failed_pilots(agenda_id: int, state: dict, journal: Journal, args) -> None:
@@ -1430,9 +1437,30 @@ def retry_infra_failed_pilots(agenda_id: int, state: dict, journal: Journal, arg
             (agenda_id, idea_id),
         )
         attempt_n = int(dict(prior or {}).get("n") or 0)
-        if attempt_n >= MAX_PILOT_GRANTS_PER_IDEA:
+        # Count only the grants that bought a real measurement attempt. A
+        # grant whose request died in transport, or that expired before any
+        # request existed, measured nothing and says nothing about the idea.
+        measured_n = 0
+        for req in _rows(
+            "SELECT cwr.failure_reason, cwr.status"
+            " FROM colab_work_requests_v1 cwr"
+            " JOIN resource_grants rg ON rg.id=cwr.resource_grant_id"
+            " WHERE rg.agenda_id=? AND rg.idea_id=? AND rg.stage='pilot'",
+            (agenda_id, idea_id),
+        ):
+            if str(req.get("status")) == "succeeded":
+                measured_n += 1
+            elif not is_transport_class_failure(req.get("failure_reason")):
+                measured_n += 1
+        if measured_n >= MAX_PILOT_GRANTS_PER_IDEA:
             journal.log("pilot_infra_retry_exhausted", agenda_id=agenda_id,
-                        idea_id=idea_id, attempts=attempt_n)
+                        idea_id=idea_id, attempts=attempt_n,
+                        measured_attempts=measured_n)
+            continue
+        if attempt_n >= MAX_PILOT_GRANTS_PER_IDEA + MAX_PILOT_TRANSPORT_RETRIES:
+            journal.log("pilot_transport_retry_exhausted", agenda_id=agenda_id,
+                        idea_id=idea_id, attempts=attempt_n,
+                        measured_attempts=measured_n)
             continue
         if (
             args.spend_limit > 0

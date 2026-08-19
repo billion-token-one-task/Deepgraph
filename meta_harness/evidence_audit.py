@@ -28,6 +28,7 @@ from typing import Any, Mapping
 
 from db import database as db
 from meta_harness.evidence_state import EvidenceTransitionContext
+from meta_harness.failure_policy import is_transport_class_failure
 from meta_harness.repository import MetaHarnessRepository
 from meta_harness.runner_contract import (
     extract_p_value,
@@ -214,20 +215,7 @@ MAX_HOLDOUT_ATTEMPTS = 3
 # the science retry cap stays 3, but infrastructure may fail more often than
 # that without condemning the run.
 MAX_TRANSPORT_RETRIES = 5
-_TRANSPORT_MARKERS = (
-    "transport:",
-    "controller_lost",
-    "admission_abandoned",
-    "colab provision failed",
-)
-
-
-def _transport_class_failure(reason: object) -> bool:
-    """True when a flight died before it could evaluate anything."""
-    text = str(reason or "").strip().lower()
-    if not text:
-        return False
-    return any(marker in text for marker in _TRANSPORT_MARKERS)
+_transport_class_failure = is_transport_class_failure
 
 
 def _raw_input_hashes(path: Path) -> set[str]:

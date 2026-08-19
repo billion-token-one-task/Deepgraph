@@ -482,6 +482,32 @@ def _token_jaccard(a: str, b: str) -> float:
 MIN_NODES_FOR_OVERLAP_EVIDENCE = 2
 
 
+# The mechanism taxonomy the Tier-2 prompt actually asks for. Anything else
+# in the column is a provenance label, not a mechanism: discovery_supervisor
+# stamps the candidate pool's name there, so every idea raised from the
+# research-problem pool carries the literal string "problem". Twelve of
+# agenda 10's ideas shared that value on 2026-08-19, which made
+# ``same_mechanism`` true for essentially every pair and reduced the
+# duplicate gate to "any title sharing 18% of its tokens with any prior
+# idea". Agenda 10 could then never invent anything again -- the M2 funnel
+# went dry with a funded proposal grant in hand.
+MECHANISM_TAXONOMY = frozenset(
+    {
+        "protocol_artifact",
+        "mechanism_mismatch",
+        "negative_space_gap",
+        "hidden_variable_bridge",
+        "claim_method_gap",
+        "plateau",
+    }
+)
+
+
+def _is_mechanism(value: object) -> bool:
+    """True only for a real mechanism, never for a pool-provenance label."""
+    return str(value or "").strip().lower() in MECHANISM_TAXONOMY
+
+
 def _node_overlap_is_decisive(a, b) -> bool:
     """Are both node sets large enough for their overlap to mean anything?"""
 
@@ -570,7 +596,12 @@ def _find_existing_tier2_duplicate(
         title_score = _token_jaccard(title, row.get("title") or "")
         node_score = _node_jaccard(nodes, row.get("source_node_ids"))
         family_score = _node_family_jaccard(nodes, row.get("source_node_ids"))
-        same_mechanism = mechanism and mechanism == str(row.get("mechanism_type") or "")
+        # Only a taxonomy mechanism may stand in for identity; see
+        # MECHANISM_TAXONOMY on why a provenance label must not.
+        same_mechanism = (
+            _is_mechanism(mechanism)
+            and mechanism == str(row.get("mechanism_type") or "")
+        )
         # Two ideas raised from the same research problem inherit that
         # problem's source_node_ids verbatim, so their node overlap is 1.0 by
         # construction and carries no information about whether the ideas are

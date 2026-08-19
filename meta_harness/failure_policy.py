@@ -8,6 +8,28 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 
+TRANSPORT_CLASS_MARKERS = (
+    "transport:",
+    "controller_lost",
+    "admission_abandoned",
+    "colab provision failed",
+)
+
+
+def is_transport_class_failure(reason: object) -> bool:
+    """True when a flight died before it could measure anything.
+
+    A refused provision, a recycled VM, an abandoned admission -- none of
+    these evaluated an example, so they say nothing about the science and must
+    not spend a science retry budget. Callers pair this with a separate,
+    larger infrastructure budget that still terminates.
+    """
+    text = str(reason or "").strip().lower()
+    if not text:
+        return False
+    return any(marker in text for marker in TRANSPORT_CLASS_MARKERS)
+
+
 REASON_CODES = {
     "dataset_unavailable",
     "model_download_timeout",
