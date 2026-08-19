@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import socket
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Sequence
@@ -144,6 +146,78 @@ class ScopedIngestionRepository:
             db.rollback()
             raise
 
+    def release_dead_worker_claims(self, *, agenda_id: int) -> int:
+        """Reclaim jobs held by a worker process that no longer exists.
+
+        The lease is a timeout, which is a guess about whether the worker is
+        alive. worker_id carries host:pid, so on this host a claim whose PID
+        is gone is provably abandoned -- a stronger signal, available
+        immediately. On 2026-08-19 a 30-minute lease outlived the web
+        restarts that killed the worker, so a 20-paper batch spent most of a
+        38-minute window waiting for leases to expire rather than working.
+
+        The attempt is still charged. A process that dies because of the job
+        it is running (rather than because of a restart) must not be able to
+        retry forever, and this method cannot tell the two apart; charging the
+        attempt keeps the exhaustion path (manual_reconciliation) reachable.
+        """
+        if int(agenda_id or 0) <= 0:
+            raise ScopedLLMError(
+                "ingestion recovery requires an explicit agenda scope"
+            )
+        if not db._use_pg():  # noqa: SLF001
+            raise ScopedLLMError("durable scoped ingestion requires PostgreSQL")
+        released = 0
+        try:
+            host = socket.gethostname()
+            rows = db.fetchall(
+                """
+                SELECT id, lease_owner, attempt_count, max_attempts
+                FROM scoped_ingestion_jobs_v1
+                WHERE status='running' AND agenda_id=? AND lease_owner LIKE ?
+                """,
+                (int(agenda_id), f"{host}:%"),
+            )
+            for row in rows:
+                parts = str(row.get("lease_owner") or "").split(":")
+                if len(parts) < 2 or not parts[1].isdigit():
+                    continue
+                pid = int(parts[1])
+                if pid == os.getpid():
+                    continue
+                try:
+                    os.kill(pid, 0)
+                    continue  # the claiming process is alive; leave it alone
+                except ProcessLookupError:
+                    pass
+                except PermissionError:
+                    continue  # exists under another user; not ours to reclaim
+                exhausted = int(row.get("attempt_count") or 0) >= int(
+                    row.get("max_attempts") or 0
+                )
+                db.execute(
+                    """
+                    UPDATE scoped_ingestion_jobs_v1
+                    SET status=?, lease_owner=NULL, lease_expires_at=NULL,
+                        failure_reason=?, updated_at=CURRENT_TIMESTAMP
+                    WHERE id=? AND agenda_id=? AND status='running'
+                    """,
+                    (
+                        "manual_reconciliation" if exhausted else "retryable",
+                        "worker_process_gone_attempts_exhausted"
+                        if exhausted
+                        else "worker_process_gone_checkpoint_resume",
+                        int(row["id"]),
+                        int(agenda_id),
+                    ),
+                )
+                released += 1
+            db.commit()
+            return released
+        except Exception:
+            db.rollback()
+            raise
+
     def recover_expired_leases(self, *, agenda_id: int) -> dict[str, int]:
         if int(agenda_id or 0) <= 0:
             raise ScopedLLMError(
@@ -151,6 +225,9 @@ class ScopedIngestionRepository:
             )
         if not db._use_pg():  # noqa: SLF001
             raise ScopedLLMError("durable scoped ingestion requires PostgreSQL")
+        # A dead claiming process is knowable now; the lease below only
+        # catches workers that are alive but stuck, or that died elsewhere.
+        dead = self.release_dead_worker_claims(agenda_id=agenda_id)
         try:
             retryable = db.execute(
                 """
@@ -183,6 +260,7 @@ class ScopedIngestionRepository:
                 "manual_reconciliation": int(
                     getattr(manual, "rowcount", 0) or 0
                 ),
+                "dead_worker_claims": dead,
             }
         except Exception:
             db.rollback()

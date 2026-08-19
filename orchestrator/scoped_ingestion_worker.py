@@ -128,12 +128,20 @@ def _loop() -> None:
 def start() -> dict:
     global _thread
     repository = ScopedIngestionRepository()
-    recovery = {"retryable": 0, "manual_reconciliation": 0}
+    recovery = {
+        "retryable": 0,
+        "manual_reconciliation": 0,
+        "dead_worker_claims": 0,
+    }
+    # Every running job, not only the lease-expired ones: a worker killed by
+    # a restart leaves a valid lease behind, and that is precisely the case
+    # the dead-PID reclaim inside recover_expired_leases exists to catch.
+    # Filtering on expiry here made the reclaim unreachable for it.
     agendas = db.fetchall(
         """
         SELECT DISTINCT agenda_id
         FROM scoped_ingestion_jobs_v1
-        WHERE status='running' AND lease_expires_at <= CURRENT_TIMESTAMP
+        WHERE status='running'
         ORDER BY agenda_id
         """
     )
@@ -145,6 +153,9 @@ def start() -> dict:
         recovery["manual_reconciliation"] += recovered[
             "manual_reconciliation"
         ]
+        recovery["dead_worker_claims"] += recovered.get(
+            "dead_worker_claims", 0
+        )
     with _lock:
         if _thread and _thread.is_alive():
             return {"status": "already_running", "recovery": recovery}
