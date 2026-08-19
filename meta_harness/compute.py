@@ -299,6 +299,13 @@ class ColabAccount:
     oauth_store: str
     session_namespace: str
     quota_gpu_hours: float
+    # V1 glue: an entry may point at a plain SSH GPU host instead of a Colab
+    # identity; the executor translates its five transport verbs. The lease
+    # pool, durable queue, worker lanes and every grant gate stay identical.
+    transport: str = "colab"
+    ssh_target: str = ""
+    ssh_key_path: str = ""
+    gpu_type: str = ""
 
     def validate(self) -> None:
         if not all(
@@ -313,6 +320,12 @@ class ColabAccount:
             raise ComputeBackendError("Colab account isolation fields are required")
         if self.quota_gpu_hours <= 0:
             raise ComputeBackendError("Colab quota must be positive")
+        if self.transport not in {"colab", "ssh"}:
+            raise ComputeBackendError("account transport must be colab or ssh")
+        if self.transport == "ssh" and not (self.ssh_target and self.ssh_key_path):
+            raise ComputeBackendError(
+                "ssh transport requires ssh_target and ssh_key_path"
+            )
         if any(marker in self.credential_ref.lower() for marker in ("token=", "secret=", "cookie=")):
             raise ComputeBackendError("Colab credential_ref must be a secret reference")
 

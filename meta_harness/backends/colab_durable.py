@@ -977,6 +977,10 @@ def load_colab_accounts(manifest_ref: str) -> tuple[ColabAccount, ...]:
             oauth_store=str(item.get("oauth_store") or ""),
             session_namespace=str(item.get("session_namespace") or ""),
             quota_gpu_hours=float(item.get("quota_gpu_hours") or 0),
+            transport=str(item.get("transport") or "colab"),
+            ssh_target=str(item.get("ssh_target") or ""),
+            ssh_key_path=str(item.get("ssh_key_path") or ""),
+            gpu_type=str(item.get("gpu_type") or ""),
         )
         for item in payload
         if isinstance(item, dict)
@@ -1004,6 +1008,14 @@ def load_colab_accounts(manifest_ref: str) -> tuple[ColabAccount, ...]:
 
 def pre_materialized_secret_check(account: ColabAccount) -> None:
     """Validate that an external secret manager populated this account only."""
+    if getattr(account, "transport", "colab") == "ssh":
+        key = Path(account.ssh_key_path).resolve()
+        home = Path(account.isolated_home).resolve()
+        if not key.is_file():
+            raise ColabCLIError("ssh transport key material is not pre-provisioned")
+        if home not in key.parents and key != home:
+            raise ColabCLIError("ssh key material is outside isolated HOME")
+        return
     match = _ENV_REF.fullmatch(account.credential_ref)
     if not match:
         raise ColabCLIError("Colab credential_ref must be an env:NAME reference")

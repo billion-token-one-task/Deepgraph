@@ -380,6 +380,8 @@ class ColabCLIExecutor:
         args: Sequence[str],
         timeout: int,
     ) -> subprocess.CompletedProcess:
+        if getattr(account, "transport", "colab") == "ssh":
+            return self._run_ssh(account, args, timeout)
         environment = dict(os.environ)
         environment["HOME"] = account.isolated_home
         environment["DEEPGRAPH_COLAB_OAUTH_STORE"] = account.oauth_store
@@ -392,6 +394,70 @@ class ColabCLIExecutor:
             errors="replace",
             env=environment,
         )
+
+    def _run_ssh(
+        self,
+        account: ColabAccount,
+        args: Sequence[str],
+        timeout: int,
+    ) -> subprocess.CompletedProcess:
+        """Translate the five transport verbs onto a plain SSH GPU host.
+
+        The remote wrapper is unchanged: /content exists as a real directory
+        on the host, so new/upload/exec/download/stop are the only pieces
+        that differ from the Colab tunnel.
+        """
+        opts = [
+            "-i", account.ssh_key_path,
+            "-o", "StrictHostKeyChecking=accept-new",
+            "-o", "ConnectTimeout=20",
+            "-o", "ServerAliveInterval=30",
+            "-o", "ServerAliveCountMax=6",
+        ]
+        target = account.ssh_target
+        verb = str(args[0])
+
+        def _go(cmd: Sequence[str]) -> subprocess.CompletedProcess:
+            return self.runner(
+                list(cmd),
+                timeout=timeout,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+
+        if verb == "new":
+            return _go([
+                "ssh", *opts, target,
+                "sudo mkdir -p /content && sudo chown $(whoami) /content"
+                " && rm -rf /content/* && nvidia-smi -L",
+            ])
+        if verb == "upload":
+            local, remote = str(args[3]), str(args[4])
+            return _go(["scp", *opts, local, f"{target}:{remote}"])
+        if verb == "exec":
+            runner_file = str(args[args.index("--file") + 1])
+            exec_timeout = int(args[args.index("--timeout") + 1])
+            pushed = _go(
+                ["scp", *opts, runner_file, f"{target}:/content/dg-exec-runner.py"]
+            )
+            if pushed.returncode != 0:
+                return pushed
+            return _go([
+                "ssh", *opts, target,
+                f"cd /content && timeout {exec_timeout} "
+                "$HOME/dgvenv/bin/python /content/dg-exec-runner.py",
+            ])
+        if verb == "download":
+            remote, local = str(args[3]), str(args[4])
+            return _go(["scp", *opts, f"{target}:{remote}", local])
+        if verb == "stop":
+            return _go([
+                "ssh", *opts, target,
+                "pkill -f dg-exec-runner.py 2>/dev/null; rm -rf /content/*; true",
+            ])
+        raise ColabCLIError(f"unsupported ssh transport verb: {verb}")
 
     def run_request(
         self,
@@ -584,7 +650,7 @@ class ColabCLIExecutor:
             stdout=stdout,
             session=session,
             account_ref=account.account_ref,
-            gpu_type=self.config.gpu_type,
+            gpu_type=getattr(account, "gpu_type", "") or self.config.gpu_type,
             wall_seconds=wall_seconds,
             artifact_manifest=manifest,
             failure_reason=failure_reason,
