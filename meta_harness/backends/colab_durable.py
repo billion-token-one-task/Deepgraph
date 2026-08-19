@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import socket
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -467,6 +468,59 @@ class ColabWorkRepository:
             db.rollback()
             raise
 
+    def _release_dead_worker_claims(self) -> int:
+        """Free requests still claimed by a worker process that no longer exists.
+
+        The startup quarantine only runs when the scheduler boots, and it did
+        not reclaim request 40 after a web restart on 2026-08-19 -- the row
+        sat 'running' under a dead PID while three GPU lanes idled. worker_id
+        carries host:pid, so on this host a claim whose PID is gone is
+        provably abandoned; that is a stronger signal than any timeout.
+        """
+        released = 0
+        try:
+            host = socket.gethostname()
+            rows = db.fetchall(
+                """
+                SELECT id, agenda_id, worker_id
+                FROM colab_work_requests_v1
+                WHERE status='running' AND worker_id LIKE ?
+                """,
+                (f"{host}:%",),
+            )
+            for row in rows:
+                parts = str(row.get("worker_id") or "").split(":")
+                if len(parts) < 2 or not parts[1].isdigit():
+                    continue
+                pid = int(parts[1])
+                if pid == os.getpid():
+                    continue
+                try:
+                    os.kill(pid, 0)
+                    continue  # the claiming process is alive; leave it alone
+                except ProcessLookupError:
+                    pass
+                except PermissionError:
+                    continue  # exists under another user; not ours to reclaim
+                db.execute(
+                    """
+                    UPDATE colab_work_requests_v1
+                    SET status='failed', completed_at=CURRENT_TIMESTAMP,
+                        failure_reason='controller_lost',
+                        updated_at=CURRENT_TIMESTAMP
+                    WHERE id=? AND agenda_id=? AND status='running'
+                    """,
+                    (int(row["id"]), int(row["agenda_id"])),
+                )
+                released += 1
+            if released:
+                db.commit()
+            else:
+                db.rollback()
+        except Exception:
+            db.rollback()
+        return released
+
     def requeue_control_lost(self) -> int:
         """Re-queue requests a controller defect failed before any session.
 
@@ -484,6 +538,7 @@ class ColabWorkRepository:
         if not db._use_pg():  # noqa: SLF001
             raise ColabCLIError("durable Colab recovery requires PostgreSQL")
         requeued = 0
+        self._release_dead_worker_claims()
         try:
             # An admission that threw after inserting the row but before any
             # compute job exists leaves the request parked at 'admitting'
