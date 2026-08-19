@@ -500,6 +500,36 @@ class ColabCLIExecutor:
             ])
         raise ColabCLIError(f"unsupported ssh transport verb: {verb}")
 
+    def _reap_orphan_sessions(self, account: ColabAccount) -> int:
+        """Stop every session on an account the pool says is idle.
+
+        ColabAccountPool.acquire only hands out an account with zero active
+        requests, so a session found here belongs to a controller that died
+        without stopping it. Those sessions keep consuming the account's GPU
+        assignment quota and make every later provision fail immediately.
+        """
+        if getattr(account, "transport", "colab") == "ssh":
+            return 0
+        listed = self._run(
+            account, ("sessions",), self.config.provision_timeout_seconds
+        )
+        if listed.returncode != 0:
+            return 0
+        reaped = 0
+        for line in (listed.stdout or "").splitlines():
+            match = re.match(r"^\[([^\]]+)\]", line.strip())
+            if not match:
+                continue
+            name = match.group(1).strip()
+            if not name or name == "?":
+                continue
+            stopped = self._run(
+                account, ("stop", "-s", name), self.config.stop_timeout_seconds
+            )
+            if stopped.returncode == 0:
+                reaped += 1
+        return reaped
+
     def run_request(
         self,
         request: ColabExecutionRequest,
@@ -559,6 +589,20 @@ class ColabCLIExecutor:
                     ("new", "-s", session, "--gpu", self.config.gpu_type),
                     self.config.provision_timeout_seconds,
                 )
+                if created.returncode != 0:
+                    # The pool guarantees one live request per account, so
+                    # any session already open on this account is an orphan
+                    # from a killed controller -- and Colab counts it against
+                    # the account's GPU assignments, which is why provisioning
+                    # kept being refused within 1.3 seconds (2026-08-19).
+                    # Reap them and try once more before giving up.
+                    reaped = self._reap_orphan_sessions(account)
+                    if reaped:
+                        created = self._run(
+                            account,
+                            ("new", "-s", session, "--gpu", self.config.gpu_type),
+                            self.config.provision_timeout_seconds,
+                        )
                 if created.returncode != 0:
                     self.accounts.record_provision_failure(account)
                     raise ColabCLIError(
