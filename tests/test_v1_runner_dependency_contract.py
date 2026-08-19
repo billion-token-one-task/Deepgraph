@@ -33,13 +33,14 @@ def _four_bit_preflight() -> dict[str, object]:
             {
                 "task_protocol": "generative_qa",
                 "dataset": {
-                    "repository_id": "dataset",
+                    # a well-formed HF id: the contract requires namespace/name
+                    "repository_id": "fixture-org/dataset",
                     "revision": "dataset-revision",
                     "split": "test",
                     "field_mapping": {"prompt": "question", "target": "answer"},
                 },
                 "model": {
-                    "repository_id": "model",
+                    "repository_id": "fixture-org/model",
                     "revision": "model-revision",
                     "framework": "transformers",
                     "task": "causal_lm",

@@ -32,6 +32,7 @@ def is_transport_class_failure(reason: object) -> bool:
 
 REASON_CODES = {
     "dataset_unavailable",
+    "repository_id_malformed",
     "model_download_timeout",
     "authentication_required",
     "runner_contract_violation",
@@ -134,6 +135,19 @@ def classify_failure(
     final_results_present: bool = False,
 ) -> str:
     text = str(message or "").lower()
+    # Ahead of the embedded-reason-code scan below, because the remote's own
+    # self-report is what is wrong here: the HF client prints "You are sending
+    # unauthenticated requests to the HF Hub" directly above the real error,
+    # the runner stamped reason_code=authentication_required into its output,
+    # and that code routes to 'defer' -- exactly wrong for a plan defect no
+    # credential can fix. Idea 131 lost three grants to "gsm8k" instead of
+    # "openai/gsm8k" (2026-08-19).
+    if (
+        "repository id must be" in text
+        or "repo id must be" in text
+        or "invalid hf uri" in text
+    ):
+        return "repository_id_malformed"
     for code in sorted(REASON_CODES):
         if code in text:
             return code
@@ -190,6 +204,10 @@ def decide_recovery(
         return RecoveryDecision("record_outcome", False, False, reason)
     if reason in {"grant_gpu_hours_exhausted", "authentication_required"}:
         return RecoveryDecision("defer", False, False, reason)
+    if reason == "repository_id_malformed":
+        # No retry can fix a plan that names a dataset that cannot exist; the
+        # candidate has to be repaired or abandoned, never re-flown.
+        return RecoveryDecision("repair_plan", False, False, reason)
     if reason in {"network_transient", "model_download_timeout"}:
         retryable = context.retry_count < 3 and context.remaining_gpu_seconds > 30
         return RecoveryDecision(

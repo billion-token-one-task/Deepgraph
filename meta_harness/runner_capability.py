@@ -153,6 +153,21 @@ def apply_measurement_floors(
     return dataclasses.replace(requirements, **updates)
 
 
+_HF_REPO_ID = re.compile(r"^[A-Za-z0-9][\w.\-]*/[A-Za-z0-9][\w.\-]*$")
+
+
+def _is_hf_repository_id(value: str) -> bool:
+    """Hugging Face repository ids are 'namespace/name', always.
+
+    A bare name reaches the GPU and dies there: idea 131 declared "gsm8k"
+    instead of "openai/gsm8k" and burned three pilot grants on an eleven-second
+    crash, three times, because nothing checked the shape before spending.
+    The remote error even arrives misclassified as authentication_required,
+    so the failure does not look like the plan defect it is.
+    """
+    return bool(_HF_REPO_ID.match(str(value or "").strip()))
+
+
 @dataclass(frozen=True)
 class DatasetRequirement:
     repository_id: str
@@ -211,6 +226,8 @@ class ExperimentRequirements:
             raise CapabilityContractError("task_protocol_required")
         if not self.dataset.repository_id.strip():
             raise CapabilityContractError("dataset_repository_required")
+        if not _is_hf_repository_id(self.dataset.repository_id):
+            raise CapabilityContractError("dataset_repository_id_malformed")
         if not self.dataset.revision.strip():
             raise CapabilityContractError("dataset_revision_required")
         if not self.dataset.split.strip():
@@ -222,6 +239,8 @@ class ExperimentRequirements:
             raise CapabilityContractError("dataset_field_mapping_required")
         if not self.model.repository_id.strip() or not self.model.revision.strip():
             raise CapabilityContractError("model_repository_and_revision_required")
+        if not _is_hf_repository_id(self.model.repository_id):
+            raise CapabilityContractError("model_repository_id_malformed")
         if not self.model.framework.strip() or not self.model.task.strip():
             raise CapabilityContractError("model_contract_required")
         if self.model.min_vram_gb < 0 or self.min_disk_gb < 0:
