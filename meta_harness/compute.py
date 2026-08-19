@@ -306,6 +306,9 @@ class ColabAccount:
     ssh_target: str = ""
     ssh_key_path: str = ""
     gpu_type: str = ""
+    # Lower wins when several accounts are free: measured throughput, not
+    # preference. Default keeps unranked accounts behind ranked ones.
+    priority: int = 100
 
     def validate(self) -> None:
         if not all(

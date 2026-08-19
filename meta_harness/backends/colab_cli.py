@@ -35,6 +35,9 @@ _EMBED_BEGIN = "__DEEPGRAPH_COLAB_ARTIFACT_B64_BEGIN__:"
 _EMBED_END = "__DEEPGRAPH_COLAB_ARTIFACT_B64_END__"
 _EMBED_MAX_BYTES = 25 * 1024 * 1024
 _SESSION_SAFE = re.compile(r"[^a-zA-Z0-9_-]+")
+# Scaffold: a provisioning refusal is a quota-window verdict, not a blip.
+_PROVISION_FAILURES_BEFORE_COOLDOWN = 2
+_PROVISION_COOLDOWN_SECONDS = 3600
 
 
 class ColabCLIError(ComputeBackendError):
@@ -328,22 +331,39 @@ class ColabAccountPool:
         self._accounts = tuple(accounts)
         self._active = {account.account_ref: 0 for account in accounts}
         self._used_hours = {account.account_ref: 0.0 for account in accounts}
+        self._provision_failures: dict[str, int] = {}
+        self._blocked_until: dict[str, float] = {}
         self._lock = threading.Lock()
 
     def acquire(self, requested_hours: float) -> ColabAccount:
         with self._lock:
+            now = time.monotonic()
             eligible = [
                 account
                 for account in self._accounts
                 if self._used_hours[account.account_ref] + requested_hours
                 <= account.quota_gpu_hours
                 and self._active[account.account_ref] == 0
+                and self._blocked_until.get(account.account_ref, 0.0) <= now
             ]
             if not eligible:
+                # A cooling account is capacity that exists but is unusable
+                # right now; say so distinctly from a genuinely full pool.
+                if any(
+                    self._blocked_until.get(account.account_ref, 0.0) > now
+                    for account in self._accounts
+                ):
+                    raise ColabCLIError(
+                        "every Colab account is cooling off after provisioning failures"
+                    )
                 raise ColabCLIError("no Colab account has isolated quota capacity")
             account = min(
                 eligible,
                 key=lambda item: (
+                    # Faster, already-paid-for hardware goes first; the
+                    # measured A10G lane runs a pilot in 8 minutes against
+                    # the T4 lanes' 33-54 (2026-08-19).
+                    int(getattr(item, "priority", 100)),
                     self._used_hours[item.account_ref],
                     item.account_ref,
                 ),
@@ -357,6 +377,27 @@ class ColabAccountPool:
                 0, self._active[account.account_ref] - 1
             )
             self._used_hours[account.account_ref] += max(0.0, float(used_hours))
+
+    def record_provision_failure(self, account: ColabAccount) -> None:
+        """Cool an account off after repeated provisioning refusals.
+
+        Colab hands out TooManyAssignmentsError for the rest of a quota
+        window; colab-pro-2 burned four candidate launches in 1.3s each on
+        2026-08-19 because nothing remembered that. Consecutive failures
+        park the account; any success clears the count.
+        """
+        with self._lock:
+            ref = account.account_ref
+            self._provision_failures[ref] = self._provision_failures.get(ref, 0) + 1
+            if self._provision_failures[ref] >= _PROVISION_FAILURES_BEFORE_COOLDOWN:
+                self._blocked_until[ref] = (
+                    time.monotonic() + _PROVISION_COOLDOWN_SECONDS
+                )
+
+    def record_provision_success(self, account: ColabAccount) -> None:
+        with self._lock:
+            self._provision_failures[account.account_ref] = 0
+            self._blocked_until.pop(account.account_ref, None)
 
 
 class ColabCLIExecutor:
@@ -519,10 +560,12 @@ class ColabCLIExecutor:
                     self.config.provision_timeout_seconds,
                 )
                 if created.returncode != 0:
+                    self.accounts.record_provision_failure(account)
                     raise ColabCLIError(
                         "colab provision failed: "
                         + (created.stderr or created.stdout or "")[-400:]
                     )
+                self.accounts.record_provision_success(account)
                 started = True
                 for local, remote in (
                     (code_archive, "/content/code.tar.gz"),

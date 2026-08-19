@@ -981,6 +981,7 @@ def load_colab_accounts(manifest_ref: str) -> tuple[ColabAccount, ...]:
             ssh_target=str(item.get("ssh_target") or ""),
             ssh_key_path=str(item.get("ssh_key_path") or ""),
             gpu_type=str(item.get("gpu_type") or ""),
+            priority=int(item.get("priority") or 100),
         )
         for item in payload
         if isinstance(item, dict)

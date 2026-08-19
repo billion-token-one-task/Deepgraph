@@ -52,3 +52,53 @@ def test_missing_end_marker_keeps_stdout_untouched():
     cleaned, restored = _strip_embedded_archive(stream)
     assert restored is None
     assert cleaned == stream
+
+
+def _account(ref, priority=100, quota=8.0):
+    from meta_harness.compute import ColabAccount
+
+    return ColabAccount(
+        account_ref=ref,
+        credential_ref=f"env:CRED_{ref}",
+        isolated_home=f"/tmp/{ref}",
+        oauth_store=f"/tmp/{ref}/token.json",
+        session_namespace=ref,
+        quota_gpu_hours=quota,
+        priority=priority,
+    )
+
+
+def test_pool_prefers_lower_priority_then_least_used():
+    from meta_harness.backends.colab_cli import ColabAccountPool
+
+    pool = ColabAccountPool([_account("slow", priority=100), _account("fast", priority=0)])
+    picked = pool.acquire(0.5)
+    assert picked.account_ref == "fast"
+    pool.release(picked, 0.5)
+    assert pool.acquire(0.5).account_ref == "fast"  # still preferred while quota lasts
+
+
+def test_provision_failures_cool_an_account_off_and_success_clears_it():
+    from meta_harness.backends.colab_cli import ColabAccountPool, ColabCLIError
+
+    fast, slow = _account("fast", priority=0), _account("slow", priority=100)
+    pool = ColabAccountPool([fast, slow])
+    for _ in range(2):
+        pool.record_provision_failure(fast)
+    picked = pool.acquire(0.5)
+    assert picked.account_ref == "slow"  # cooling account is skipped, not fatal
+    pool.release(picked, 0.5)
+    pool.record_provision_success(fast)
+    assert pool.acquire(0.5).account_ref == "fast"
+
+
+def test_all_accounts_cooling_reports_the_distinct_reason():
+    from meta_harness.backends.colab_cli import ColabAccountPool, ColabCLIError
+    import pytest as _pytest
+
+    only = _account("only", priority=0)
+    pool = ColabAccountPool([only])
+    for _ in range(2):
+        pool.record_provision_failure(only)
+    with _pytest.raises(ColabCLIError, match="cooling off"):
+        pool.acquire(0.5)
