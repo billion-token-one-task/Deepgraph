@@ -240,6 +240,16 @@ def finalize_terminal_outcomes(*, limit: int = 50) -> OutcomeFinalizationReport:
                   WHERE c2.resource_grant_id=auto_research_jobs.resource_grant_id
                     AND c2.status IN ('queued', 'running')
               )
+              -- A grant that produced a completed run has a PENDING outcome,
+              -- not a missing one: an earlier failed request on the same
+              -- grant must not condemn the successful retry that followed.
+              -- Job 140 was surrendered this way while its run 180 held a
+              -- verified measurement (2026-08-19).
+              AND NOT EXISTS (
+                  SELECT 1 FROM experiment_runs er2
+                  WHERE er2.resource_grant_id=auto_research_jobs.resource_grant_id
+                    AND er2.status='completed'
+              )
             """
         )
         db.commit()
