@@ -734,7 +734,7 @@ class GrantGPUUsageControl:
                 )
             reserved_release_hours = min(actual_hours, outstanding_hours)
             overrun_hours = max(0.0, actual_hours - outstanding_hours)
-            db.execute(
+            settled = db.execute(
                 """
                 UPDATE experiment_attempt_gpu_reservations_v1
                 SET status='settled', completed_at=?, actual_gpu_seconds=?,
@@ -748,6 +748,22 @@ class GrantGPUUsageControl:
                     int(reservation_id),
                 ),
             )
+            if int(getattr(settled, "rowcount", 0) or 0) != 1:
+                # The attempt was already settled: this call is a repeat from
+                # another worker lane or a recovery sweep. The attempt UPDATE
+                # is guarded and no-ops, but the ledger and agenda charges
+                # below were not -- seven repeats billed grant 118 for 0.93
+                # GPU-hours against one 477-second run and made its honest
+                # measurement unrecordable (2026-08-19). Settling twice must
+                # cost nothing.
+                db.commit()
+                return _snapshot(
+                    db.fetchone(
+                        "SELECT * FROM experiment_attempt_gpu_reservations_v1"
+                        " WHERE id=?",
+                        (int(reservation_id),),
+                    )
+                )
             db.execute(
                 """
                 UPDATE agenda_resource_ledger
