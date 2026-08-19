@@ -140,6 +140,12 @@ def active_agenda_ids() -> list[int]:
     ]
 
 
+# How many consecutive discovery passes one funded agenda may preempt before
+# rotation gets a turn. Agenda 11 held the pin indefinitely on 2026-08-19
+# because its candidate could never realize; two passes is enough for a
+# genuine realization (which needs one) without starving the others.
+MAX_DISCOVERY_PREEMPT_STREAK = 2
+
 def _next_discovery_agenda(agenda_ids: list[int], state: dict) -> int | None:
     """Choose one agenda per pass, rotating across the active ordered set.
 
@@ -156,9 +162,19 @@ def _next_discovery_agenda(agenda_ids: list[int], state: dict) -> int | None:
     # design. Under pure rotation a funded agenda can wait active-agenda-count
     # passes while its grant burns down (grant 79 expired unrealized on
     # 2026-08-18; grants 82/84 were 30 minutes from repeating it). Funded
-    # realization therefore preempts rotation; the pin self-clears because the
-    # job leaves proposal_generation_granted on realization and the grant
-    # leaves 'active' on expiry.
+    # realization therefore preempts rotation.
+    #
+    # The pin was assumed to self-clear -- the job leaves
+    # proposal_generation_granted on realization, the grant leaves 'active' on
+    # expiry. That assumption fails when the candidate can never realize.
+    # Agenda 11's idea 110 held grant 147 while its research problem was
+    # blocked from seeding, so the pin never cleared, and each expiry brought a
+    # fresh grant that re-pinned it. Agenda 10 -- the only agenda with work
+    # ready to run -- received zero discovery passes for over an hour on
+    # 2026-08-19 while the M2 window sat empty. Preemption without a fairness
+    # bound is starvation, so the pin now yields after a bounded number of
+    # consecutive passes regardless of WHY it is stuck.
+    streaks = state.setdefault("discovery_preempt_streak", {})
     try:
         funded = _rows(
             """
@@ -177,15 +193,29 @@ def _next_discovery_agenda(agenda_ids: list[int], state: dict) -> int | None:
         funded = []
     for row in funded:
         candidate = int(row["agenda_id"])
-        if candidate in ordered:
-            state["discovery_agenda_last"] = candidate
-            return candidate
-    previous = state.get("discovery_agenda_last")
+        if candidate not in ordered:
+            continue
+        key = str(candidate)
+        if int(streaks.get(key) or 0) >= MAX_DISCOVERY_PREEMPT_STREAK:
+            continue  # this agenda has had its turn; let rotation breathe
+        streaks[key] = int(streaks.get(key) or 0) + 1
+        state["discovery_agenda_last"] = candidate
+        return candidate
+    # Rotation reached: every pinned agenda has yielded, so their streaks
+    # start over and a genuinely funded one can preempt again next pass.
+    streaks.clear()
+    # Rotation advances from the last ROTATION pick, not the last pick of any
+    # kind. Resuming from a preempted agenda meant the cursor was dragged back
+    # to the pinned one every time it yielded, so rotation only ever stepped to
+    # that agenda's single successor: with 11 pinned, the sequence was
+    # 11, 11, 7, 11, 11, 7 ... and agenda 10 was never reached at all.
+    previous = state.get("discovery_rotation_last")
     try:
         index = (ordered.index(int(previous)) + 1) % len(ordered)
     except (TypeError, ValueError):
         index = 0
     selected = ordered[index]
+    state["discovery_rotation_last"] = selected
     state["discovery_agenda_last"] = selected
     return selected
 
