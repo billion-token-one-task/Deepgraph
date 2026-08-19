@@ -201,15 +201,21 @@ class ColabWorkRepository:
                 # dedupe over it froze requests 8/9 on a cap-blowing batch
                 # size on 2026-08-17. An env-only difference updates the
                 # stored row; every other field still refuses.
-                if mismatches == ["environment_json"]:
-                    db.execute(
-                        """
-                        UPDATE colab_work_requests_v1
-                        SET environment_json=?, updated_at=CURRENT_TIMESTAMP
-                        WHERE id=?
-                        """,
-                        (expected["environment_json"], int(existing["id"])),
-                    )
+                # timeout_seconds joins the transport class: callers derive
+                # it (grant hours, measured wall), so drift between passes is
+                # expected and the stored value governs. Refusing it crashed
+                # every launch pass on 2026-08-19 and froze the candidate
+                # pipeline entirely.
+                if set(mismatches) <= {"environment_json", "timeout_seconds"}:
+                    if "environment_json" in mismatches:
+                        db.execute(
+                            """
+                            UPDATE colab_work_requests_v1
+                            SET environment_json=?, updated_at=CURRENT_TIMESTAMP
+                            WHERE id=?
+                            """,
+                            (expected["environment_json"], int(existing["id"])),
+                        )
                     db.commit()
                     return int(existing["id"])
                 if mismatches:
