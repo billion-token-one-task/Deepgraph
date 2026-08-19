@@ -888,6 +888,16 @@ def _submit_experiment_run_on_colab(
     )
     if not run:
         raise ComputeBackendError("experiment run not found for Colab submission")
+    if str(dict(grant_row).get("stage") or "") == "evidence_audit":
+        # Audit compute (the disjoint holdout) is owned by
+        # meta_harness/evidence_audit.py with its own code dir, offset env and
+        # output dir. Launching the standard bundle under an audit grant
+        # re-ran run 171's benchmark straight into results/ and burned the
+        # grant hours the holdout needed (request 23, 2026-08-19).
+        raise ComputeBackendError(
+            "evidence_audit grants are executed by the audit driver, "
+            "not the experiment lane"
+        )
     workdir = Path(str(run.get("workdir") or ""))
     code_dir = workdir / "code"
     results_dir = workdir / "results"

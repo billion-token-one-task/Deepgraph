@@ -1269,8 +1269,12 @@ class MetaHarnessRepository:
         resource_grant_expired for the standard requeue. Exists because an
         attempts- or cap-exhausted proposal grant otherwise pins its candidate
         and the agenda's concurrency slot for the rest of a 4-hour TTL
-        (grants 62/67/68, 2026-08-17). Deliberately narrow: proposal stage
-        only; pilot and later stages settle through the outcome finalizer.
+        (grants 62/67/68, 2026-08-17). Deliberately narrow: proposal and
+        evidence_audit stages only -- both are token/holdout stages whose
+        exhausted grants pin their candidate (grant 108's hours were burned
+        by a parasitic experiment-lane launch, 2026-08-19, and the audit
+        could not fund its holdout); pilot and benchmark stages settle
+        through the outcome finalizer.
         """
         if not str(reason or "").strip():
             raise MetaHarnessPersistenceError("a reason is required to end a TTL early")
@@ -1280,7 +1284,8 @@ class MetaHarnessRepository:
                 UPDATE resource_grants
                 SET expires_at=CURRENT_TIMESTAMP,
                     grant_reason=grant_reason || ?
-                WHERE id=? AND agenda_id=? AND status='active' AND stage='proposal'
+                WHERE id=? AND agenda_id=? AND status='active'
+                  AND stage IN ('proposal', 'evidence_audit')
                 """,
                 (f";operator_expired:{reason[:200]}", int(grant_id), int(agenda_id)),
             )

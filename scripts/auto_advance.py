@@ -1289,6 +1289,16 @@ def advance_evidence_audit(agenda_id: int, state: dict, journal: Journal, args) 
             _settle_completed_grants(
                 {"agenda_id": agenda_id, "deep_insight_id": idea_id, "id": run_id}
             )
+            audit_attempts = int(dict(db.fetchone(
+                "SELECT COUNT(*) AS n FROM resource_grants"
+                " WHERE agenda_id=? AND idea_id=? AND stage='evidence_audit'",
+                (agenda_id, idea_id),
+            ) or {}).get("n") or 0)
+            if audit_attempts >= 3:
+                journal.log("evidence_audit_attempts_exhausted",
+                            agenda_id=agenda_id, idea_id=idea_id,
+                            attempts=audit_attempts)
+                continue
             if (
                 args.spend_limit > 0
                 and _guard_spent_delta(state, args) + args.grant_token_cap > args.spend_limit
@@ -1322,7 +1332,21 @@ def advance_evidence_audit(agenda_id: int, state: dict, journal: Journal, args) 
                     backend_allowlist=["colab_gpu", "llm"],
                     artifact_requirements=ARTIFACT_REQUIREMENTS,
                     expires_at=(_now() + timedelta(hours=24)).isoformat(),
-                    idempotency_key=_grant_key(agenda_id, idea_id, "evidence_audit"),
+                    idempotency_key=_grant_key(
+                        agenda_id,
+                        idea_id,
+                        # Numbered like full_benchmark{n}: a replacement must
+                        # be issuable after an earlier audit grant died with
+                        # its hours burned (grant 108, 2026-08-19).
+                        "evidence_audit"
+                        if not (prior_audit := int(dict(db.fetchone(
+                            "SELECT COUNT(*) AS n FROM resource_grants"
+                            " WHERE agenda_id=? AND idea_id=?"
+                            "   AND stage='evidence_audit'",
+                            (agenda_id, idea_id),
+                        ) or {}).get("n") or 0))
+                        else f"evidence_audit{prior_audit + 1}",
+                    ),
                     preflight_result_id=int(dict(preflight_row)["id"]),
                 )
                 grant_id = repo.issue_grant(grant)
