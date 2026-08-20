@@ -26,6 +26,7 @@ import json
 from pathlib import Path
 from typing import Any, Mapping
 
+from contracts.scientific_evidence import EvidenceDecisionInput, decide_evidence
 from db import database as db
 from meta_harness.evidence_state import EvidenceTransitionContext
 from meta_harness.failure_policy import measured_nothing
@@ -638,7 +639,57 @@ def run_evidence_audit_phase(
     )
     contract_hash = str(dict(contract_row or {}).get("requirements_hash") or "")
     repo = MetaHarnessRepository()
+    # The audit recomputes both arms from the raw rows and refuses on any
+    # mismatch -- and until 2026-08-20 it discarded those numbers before
+    # building the transition context. metric_value, baseline_value and
+    # p_value all fell through to None, so decide_evidence saw
+    # metric_missing/baseline_missing/p_value_missing on every single run and
+    # confirmation_allowed was False by construction.
+    #
+    # Negative verdicts never consult that decision, so nothing looked wrong:
+    # nineteen runs reached scientifically_decided carrying an empty decision
+    # record. But a 'supported' verdict is gated on it, so a supported verdict
+    # could not be persisted at all. Probed against the exact field set this
+    # function builds: refuted and inconclusive advance, supported raises
+    # positive_evidence_decision_failed. V1's success terminal state was
+    # unreachable in code, and no experiment design could have reached it.
+    #
+    # The values are supplied here, never the verdict: evidence_decision_passed
+    # is derived from decide_evidence itself, so a missing number or p >= alpha
+    # still blocks a positive claim. This feeds the gate, it does not open it.
+    measured: dict[str, float] | None = None
+    try:
+        measured = _verify_arms(final, _load_results(results_dir)["rows"])
+    except (EvidenceAuditError, OSError, ValueError, KeyError) as exc:
+        # Loud, never silent. The claim-ledger stage verified these same
+        # artifacts to get here, so a failure now means they changed underneath
+        # us. Leaving the values unset keeps the gate fail-closed -- a positive
+        # verdict still cannot pass without them -- rather than guessing.
+        log(
+            f"[AUDIT] run {run_id} arm re-verification failed, positive claims "
+            f"stay blocked: {type(exc).__name__}: {exc}"
+        )
+    measured_context: dict[str, Any] = {}
+    if measured is not None:
+        measured_context = dict(
+            metric_value=measured["candidate"],
+            baseline_value=measured["baseline"],
+            p_value=measured["p_value"],
+        )
+        measured_context["evidence_decision_passed"] = decide_evidence(
+            EvidenceDecisionInput(
+                verdict=verdict,
+                p_value=measured["p_value"],
+                metric_value=measured["candidate"],
+                baseline_value=measured["baseline"],
+                full_benchmark_complete=True,
+                raw_artifacts_complete=True,
+                claim_ledger_complete=True,
+                evaluator_id=str(evaluator["evaluator_ref"]),
+            )
+        ).confirmation_allowed
     base_context = dict(
+        **measured_context,
         resource_grant_valid=True,
         resource_grant_id=resource_grant_id,
         execution_succeeded=True,
