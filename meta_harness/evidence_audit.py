@@ -176,25 +176,37 @@ MAX_EVALUATOR_ATTEMPTS = 3
 AUDIT_EVALUATOR_MAX_TOKENS = 16384
 
 
-def _evaluator_attempt(resource_grant_id: int) -> int:
-    """How many evaluator calls this grant has already paid for."""
-    # Only attempts made under the CURRENT ceiling count. A call that was
-    # truncated at a smaller budget says nothing about whether the evaluator
-    # can answer at this one -- run 191 spent all three attempts hitting the
-    # old 4096 ceiling and was then refused as "attempts exhausted" for a
-    # limit that no longer exists (2026-08-20).
+def _evaluator_attempt(resource_grant_id: int) -> tuple[int, int]:
+    """How many evaluator calls this grant has paid for: (total, budgeted).
+
+    Two different counts, for two different questions.
+
+    ``budgeted`` -- attempts made under the CURRENT token ceiling -- answers
+    "has the evaluator had a fair chance?". A call truncated at a smaller
+    budget says nothing about whether it can answer at this one: run 191
+    spent all three attempts hitting the old 4096 ceiling and was then
+    refused as "attempts exhausted" for a limit that no longer exists.
+
+    ``total`` -- every attempt ever -- answers "what suffix is free?". Using
+    the budgeted count for the key collided with an old-ceiling key that
+    already held that suffix, and the reservation was refused as "idempotency
+    key already exists with status settled" (run 195, 2026-08-20).
+    """
     try:
         row = db.fetchone(
             """
-            SELECT COUNT(*) AS n FROM resource_grant_usage_reservations
+            SELECT COUNT(*) AS total,
+                   COALESCE(SUM(CASE WHEN token_reserved >= ? THEN 1 ELSE 0 END), 0)
+                       AS budgeted
+            FROM resource_grant_usage_reservations
             WHERE resource_grant_id=? AND operation='evidence_audit_review'
-              AND token_reserved >= ?
             """,
-            (int(resource_grant_id), int(AUDIT_EVALUATOR_MAX_TOKENS)),
+            (int(AUDIT_EVALUATOR_MAX_TOKENS), int(resource_grant_id)),
         )
     except Exception:
-        return 0
-    return int((row or {}).get("n") or 0)
+        return 0, 0
+    row = row or {}
+    return int(row.get("total") or 0), int(row.get("budgeted") or 0)
 
 
 def independent_evaluator_review(
@@ -237,8 +249,8 @@ def independent_evaluator_review(
         '"verdict": "supported"|"refuted"|"inconclusive", '
         '"reasons": ["..."]}'
     )
-    attempt = _evaluator_attempt(resource_grant_id)
-    if attempt >= MAX_EVALUATOR_ATTEMPTS:
+    attempt, budgeted = _evaluator_attempt(resource_grant_id)
+    if budgeted >= MAX_EVALUATOR_ATTEMPTS:
         raise EvidenceAuditError("evaluator attempts exhausted")
     raw, _tokens, route = call_llm_for_role(
         "Audit scientific evidence. Judge only from the numbers provided.",

@@ -213,13 +213,17 @@ def test_evaluator_attempt_counts_what_the_grant_already_paid_for():
 
     from meta_harness import evidence_audit
 
-    with mock.patch.object(evidence_audit.db, "fetchone", return_value={"n": 2}):
-        assert evidence_audit._evaluator_attempt(135) == 2
+    with mock.patch.object(
+        evidence_audit.db, "fetchone", return_value={"total": 3, "budgeted": 1}
+    ):
+        # the key suffix uses every attempt ever, so it cannot collide with an
+        # old-ceiling key; the cap uses only attempts at the current ceiling
+        assert evidence_audit._evaluator_attempt(135) == (3, 1)
     # an unreadable ledger must not block the first call
     with mock.patch.object(
         evidence_audit.db, "fetchone", side_effect=RuntimeError("no db")
     ):
-        assert evidence_audit._evaluator_attempt(135) == 0
+        assert evidence_audit._evaluator_attempt(135) == (0, 0)
 
 
 def test_a_cached_judgement_is_bound_to_the_ledger_it_judged():
