@@ -359,3 +359,71 @@ def test_the_worker_reaches_the_real_pool_not_a_raw_tuple():
     assert "_transport.executor.accounts" in source
     # and the failure of the probe must be reported, never swallowed silently
     assert "capacity probe unavailable" in source
+
+
+# --- route work to a lane that can actually host it --------------------------
+# A hosted notebook session is rebuilt from scratch each time, so a package
+# installed into one does not survive to the next; only the dedicated host can
+# hold a pre-provisioned runtime. Work declaring anything beyond the base
+# therefore has exactly one lane that can run it. idea 175 declared POT, drew
+# colab-pro-2 and then colab-pro, and lost a run to exit 78 each time while
+# aws-g5-1 sat ready (2026-08-20).
+
+
+def _reqs(tmp_path, *lines):
+    (tmp_path / "requirements.txt").write_text("\n".join(lines), encoding="utf-8")
+    return tmp_path
+
+
+def test_base_only_requirements_need_no_dedicated_lane(tmp_path):
+    from meta_harness.backends.colab_cli import _requires_provisioned_runtime
+
+    d = _reqs(tmp_path, "torch>=2.2.0", "transformers>=4.44.0", "datasets", "accelerate")
+    assert _requires_provisioned_runtime(d) is False
+
+
+def test_the_exact_declaration_that_lost_two_runs_wants_a_dedicated_lane(tmp_path):
+    from meta_harness.backends.colab_cli import _requires_provisioned_runtime
+
+    d = _reqs(
+        tmp_path,
+        "torch>=2.2.0",
+        "transformers>=4.44.0",
+        "accelerate>=0.30.0",
+        "networkx>=3.0",
+        "scipy>=1.11.0",
+        "POT>=0.9.0",
+    )
+    assert _requires_provisioned_runtime(d) is True
+
+
+def test_comments_and_blanks_are_ignored(tmp_path):
+    from meta_harness.backends.colab_cli import _requires_provisioned_runtime
+
+    d = _reqs(tmp_path, "# a comment", "", "torch", "   ")
+    assert _requires_provisioned_runtime(d) is False
+
+
+def test_a_missing_requirements_file_does_not_force_a_lane(tmp_path):
+    from meta_harness.backends.colab_cli import _requires_provisioned_runtime
+
+    assert _requires_provisioned_runtime(tmp_path) is False
+
+
+def test_the_submit_path_passes_the_preference(tmp_path):
+    import inspect
+
+    from meta_harness.backends import colab_cli
+
+    source = inspect.getsource(colab_cli.ColabCLIExecutor.run_request)
+    assert "prefer_dedicated=_requires_provisioned_runtime(code_dir)" in source
+
+
+def test_long_stages_keep_their_own_preference(tmp_path):
+    # the dependency rule adds to the stage rule, it must not replace it
+    import inspect
+
+    from meta_harness.backends import colab_cli
+
+    source = inspect.getsource(colab_cli.ColabAccountPool._eligible_locked)
+    assert "prefer_dedicated or stage in _LONG_RUNNING_STAGES" in source

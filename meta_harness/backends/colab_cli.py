@@ -41,6 +41,37 @@ _SESSION_SAFE = re.compile(r"[^a-zA-Z0-9_-]+")
 _PROVISION_FAILURES_BEFORE_COOLDOWN = 2
 _PROVISION_REFUSAL_MARKER = "colab provision failed"
 # Stages whose single job is an hour or more of irreplaceable work.
+# What every lane is assumed to carry. A hosted notebook session is recreated
+# from scratch each time, so anything installed into one does not survive to
+# the next -- only the dedicated host can hold a pre-provisioned runtime.
+# Work declaring anything beyond this base therefore has exactly one lane that
+# can host it, and sending it elsewhere is a lottery: idea 175 declared POT,
+# drew colab-pro-2 and then colab-pro, and lost a run to exit 78 each time
+# while aws-g5-1 sat ready (2026-08-20).
+_BASE_RUNTIME = frozenset(
+    {"torch", "transformers", "datasets", "accelerate", "numpy", "pip",
+     "setuptools", "wheel", "huggingface-hub", "tokenizers", "safetensors"}
+)
+
+
+def _requires_provisioned_runtime(code_dir: Path) -> bool:
+    """Does this work declare a dependency only a provisioned lane will have?"""
+    try:
+        text = (Path(code_dir) / "requirements.txt").read_text(encoding="utf-8")
+    except Exception:
+        return False
+    for line in text.splitlines():
+        name = line.strip()
+        if not name or name.startswith("#"):
+            continue
+        for separator in ("==", ">=", "<=", "~=", ">", "<", "["):
+            name = name.split(separator)[0]
+        name = name.strip().lower().replace("_", "-")
+        if name and name not in _BASE_RUNTIME:
+            return True
+    return False
+
+
 _LONG_RUNNING_STAGES = frozenset({"full_benchmark", "evidence_audit", "validation"})
 _PROVISION_COOLDOWN_SECONDS = 3600
 
@@ -365,7 +396,10 @@ class ColabAccountPool:
         self._lock = threading.Lock()
 
     def _eligible_locked(
-        self, requested_hours: float, stage: str | None
+        self,
+        requested_hours: float,
+        stage: str | None,
+        prefer_dedicated: bool = False,
     ) -> list[ColabAccount]:
         """Lanes that could take this work right now. Caller holds the lock."""
         now = time.monotonic()
@@ -384,7 +418,7 @@ class ColabAccountPool:
         # audit holdout is an hour of work whose loss costs a whole run,
         # so those stages take a dedicated host whenever one is free and
         # fall back to a notebook lane only when none is.
-        if stage in _LONG_RUNNING_STAGES:
+        if prefer_dedicated or stage in _LONG_RUNNING_STAGES:
             dedicated = [
                 account
                 for account in eligible
@@ -408,11 +442,15 @@ class ColabAccountPool:
             return bool(self._eligible_locked(requested_hours, stage))
 
     def acquire(
-        self, requested_hours: float, *, stage: str | None = None
+        self,
+        requested_hours: float,
+        *,
+        stage: str | None = None,
+        prefer_dedicated: bool = False,
     ) -> ColabAccount:
         with self._lock:
             now = time.monotonic()
-            eligible = self._eligible_locked(requested_hours, stage)
+            eligible = self._eligible_locked(requested_hours, stage, prefer_dedicated)
             if not eligible:
                 # A cooling account is capacity that exists but is unusable
                 # right now; say so distinctly from a genuinely full pool.
@@ -705,7 +743,11 @@ class ColabCLIExecutor:
             label="Colab artifact_output_dir",
         )
         output_dir.mkdir(parents=True, exist_ok=True)
-        account = self.accounts.acquire(requested_hours, stage=request.stage)
+        account = self.accounts.acquire(
+            requested_hours,
+            stage=request.stage,
+            prefer_dedicated=_requires_provisioned_runtime(code_dir),
+        )
         started = False
         start = time.monotonic()
         returncode: int | None = None
