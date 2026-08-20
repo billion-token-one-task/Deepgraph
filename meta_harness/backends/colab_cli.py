@@ -776,37 +776,50 @@ class ColabCLIExecutor:
                 # The archive already exists remotely; pulling it is the one
                 # step retries cannot corrupt.
                 download_error = ""
-                for attempt in range(1, 5):
-                    downloaded = self._run(
-                        account,
-                        (
-                            "download",
-                            "-s",
-                            session,
-                            "/content/deepgraph-artifacts.tar.gz",
-                            str(artifact_archive),
-                        ),
-                        self.config.download_timeout_seconds,
-                    )
-                    if downloaded.returncode == 0 and artifact_archive.exists() \
-                            and artifact_archive.stat().st_size > 0:
-                        break
-                    download_error = (
-                        downloaded.stderr or downloaded.stdout or "no output"
-                    )[-300:]
-                    time.sleep(min(10 * attempt, 30))
-                else:
-                    if embedded_archive:
-                        # The VM (and its tar) is gone, but the archive also
-                        # rode the exec stream; restore it from there.
-                        artifact_archive.write_bytes(embedded_archive)
-                    else:
-                        raise ColabCLIError(
-                            "Colab artifact collection failed after 4 attempts: "
-                            + download_error
+                # A runner that already failed has no artifacts to collect.
+                # Trying anyway spent four download retries and then reported
+                # "artifact collection failed", which masked a clean
+                # dependency_install_blocked (exit 78, request 66 on
+                # 2026-08-20) as a TRANSPORT failure. That misclassification
+                # is not cosmetic: transport failures draw on the larger
+                # infrastructure retry budget, so a deterministic environment
+                # mismatch would be retried as though a different lane could
+                # fix it. The exit code is the cause; missing artifacts are
+                # the consequence.
+                collected = returncode == 0 or bool(embedded_archive)
+                if collected:
+                    for attempt in range(1, 5):
+                        downloaded = self._run(
+                            account,
+                            (
+                                "download",
+                                "-s",
+                                session,
+                                "/content/deepgraph-artifacts.tar.gz",
+                                str(artifact_archive),
+                            ),
+                            self.config.download_timeout_seconds,
                         )
-                with tarfile.open(artifact_archive) as archive:
-                    archive.extractall(output_dir, filter="data")
+                        if downloaded.returncode == 0 and artifact_archive.exists() \
+                                and artifact_archive.stat().st_size > 0:
+                            break
+                        download_error = (
+                            downloaded.stderr or downloaded.stdout or "no output"
+                        )[-300:]
+                        time.sleep(min(10 * attempt, 30))
+                    else:
+                        if embedded_archive:
+                            # The VM (and its tar) is gone, but the archive
+                            # also rode the exec stream; restore it from there.
+                            artifact_archive.write_bytes(embedded_archive)
+                        else:
+                            raise ColabCLIError(
+                                "Colab artifact collection failed after 4 "
+                                "attempts: " + download_error
+                            )
+                if collected:
+                    with tarfile.open(artifact_archive) as archive:
+                        archive.extractall(output_dir, filter="data")
                 files = []
                 for path in sorted(output_dir.rglob("*")):
                     if path.is_file():
