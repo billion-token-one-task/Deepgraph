@@ -220,3 +220,26 @@ def test_evaluator_attempt_counts_what_the_grant_already_paid_for():
         evidence_audit.db, "fetchone", side_effect=RuntimeError("no db")
     ):
         assert evidence_audit._evaluator_attempt(135) == 0
+
+
+def test_a_cached_judgement_is_bound_to_the_ledger_it_judged():
+    """"concur" answers a question about a specific claim.
+
+    Run 189's evaluator said concur=false because the ledger claimed
+    "refuted" at p=0.220 -- it argued the result was inconclusive, and it was
+    right. Once the verdict was corrected to inconclusive (exactly what the
+    evaluator asked for), the cached concur=false went on blocking the
+    ladder: an objection to a claim that was no longer being made.
+
+    A judgement is reusable only while the ledger it judged is unchanged.
+    """
+    import inspect
+
+    from meta_harness import evidence_audit
+
+    source = inspect.getsource(evidence_audit.run_evidence_audit_phase)
+    assert "stale_ledger" in source
+    assert 'cached.get("ledger_hash")' in source
+
+    review = inspect.getsource(evidence_audit.independent_evaluator_review)
+    assert '"ledger_hash": _sha256_text(ledger_text)' in review

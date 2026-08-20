@@ -255,6 +255,10 @@ def independent_evaluator_review(
         "evaluator_ref": f"{route.get('provider')}:{route.get('model')}",
         "evaluator_hash": _sha256_text(raw),
         "prompt_ref": AUDIT_EVALUATOR_PROMPT_REF,
+        # The judgement is about THIS ledger. "concur" is an answer to the
+        # verdict the ledger carried at the time, so a cached judgement is
+        # only reusable while the ledger it judged is unchanged.
+        "ledger_hash": _sha256_text(ledger_text),
     }
 
 
@@ -477,7 +481,19 @@ def run_evidence_audit_phase(
         # A judgement made under an older prompt whose semantics differed is
         # re-collected, not trusted (v1 never stated the hypothesis is
         # directional and misread run 171's significant harm as support).
-        if str(cached.get("prompt_ref") or "") == AUDIT_EVALUATOR_PROMPT_REF:
+        #
+        # It is also re-collected when the ledger itself has changed. The
+        # evaluator's "concur" answers a question about the verdict the
+        # ledger carried when it was asked: run 189's judgement said
+        # concur=false because the ledger claimed "refuted" at p=0.220. Once
+        # the verdict was corrected to "inconclusive" -- which is exactly
+        # what the evaluator had argued for -- the stale concur=false kept
+        # blocking the ladder, an objection to a claim no longer being made.
+        stale_ledger = str(cached.get("ledger_hash") or "") != ledger_hash
+        if (
+            str(cached.get("prompt_ref") or "") == AUDIT_EVALUATOR_PROMPT_REF
+            and not stale_ledger
+        ):
             evaluator = cached
     if evaluator is None:
         evaluator = independent_evaluator_review(
