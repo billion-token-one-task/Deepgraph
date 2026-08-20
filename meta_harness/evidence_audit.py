@@ -39,7 +39,13 @@ HOLDOUT_OFFSET = 200
 AUDIT_ACTOR = "evidence_audit_v1"
 # Bumped when the evaluator prompt's semantics change; a cached judgement
 # made under an older prompt is re-collected rather than trusted.
-AUDIT_EVALUATOR_PROMPT_REF = "evidence_audit_evaluator_v2"
+# v3 states one significance-gated rule in both directions. v2 said refuted
+# covered "the measured difference shows no improvement", which contradicted
+# the code's own rule once that became significance-gated: the same evaluator
+# then called run 189 inconclusive (reading it strictly) and runs 191 and 195
+# refuted (reading v2 literally) on identical evidence shapes. The
+# disagreement was the prompt's, not the evaluator's.
+AUDIT_EVALUATOR_PROMPT_REF = "evidence_audit_evaluator_v3"
 _VERIFY_TOLERANCE = 1e-9
 
 
@@ -172,13 +178,19 @@ AUDIT_EVALUATOR_MAX_TOKENS = 16384
 
 def _evaluator_attempt(resource_grant_id: int) -> int:
     """How many evaluator calls this grant has already paid for."""
+    # Only attempts made under the CURRENT ceiling count. A call that was
+    # truncated at a smaller budget says nothing about whether the evaluator
+    # can answer at this one -- run 191 spent all three attempts hitting the
+    # old 4096 ceiling and was then refused as "attempts exhausted" for a
+    # limit that no longer exists (2026-08-20).
     try:
         row = db.fetchone(
             """
             SELECT COUNT(*) AS n FROM resource_grant_usage_reservations
             WHERE resource_grant_id=? AND operation='evidence_audit_review'
+              AND token_reserved >= ?
             """,
-            (int(resource_grant_id),),
+            (int(resource_grant_id), int(AUDIT_EVALUATOR_MAX_TOKENS)),
         )
     except Exception:
         return 0
@@ -205,17 +217,21 @@ def independent_evaluator_review(
         "system. Below is a claim ledger recomputed from raw prediction "
         "artifacts. The preregistered hypothesis is DIRECTIONAL: the "
         "candidate method is claimed to IMPROVE the metric in the stated "
-        "metric_direction. Verdict semantics:\n"
-        "- supported: the candidate is significantly BETTER than the "
-        "baseline in the preferred direction (p < 0.05).\n"
-        "- refuted: the improvement hypothesis is rejected -- the candidate "
-        "is significantly WORSE, or the measured difference shows no "
-        "improvement (a significant harm still means refuted, never "
-        "supported).\n"
-        "- inconclusive: the measurement cannot decide either way.\n"
-        "Judge whether the recorded verdict follows from the numbers under "
-        "a two-sided alpha of 0.05. Dissent freely; your concurrence is not "
-        "assumed.\n\n"
+        "metric_direction.\n\n"
+        "Verdict semantics. Significance is decided at a two-sided alpha of "
+        "0.05, and it gates BOTH directions:\n"
+        "- supported: the difference is significant (p < 0.05) AND the "
+        "candidate is better in the preferred direction.\n"
+        "- refuted: the difference is significant (p < 0.05) AND the "
+        "candidate is worse in the preferred direction.\n"
+        "- inconclusive: the difference is NOT significant (p >= 0.05), in "
+        "either direction, however large the point estimate looks.\n\n"
+        "'Refuted' is a scientific claim and carries the same evidential "
+        "burden as 'supported'. Failing to show an improvement is not the "
+        "same as showing harm: a negative delta that is not significant is "
+        "inconclusive, never refuted.\n\n"
+        "Judge whether the recorded verdict follows from the numbers. "
+        "Dissent freely; your concurrence is not assumed.\n\n"
         f"CLAIM LEDGER:\n{ledger_text}\n\n"
         'Answer with one JSON object only: {"concur": true|false, '
         '"verdict": "supported"|"refuted"|"inconclusive", '

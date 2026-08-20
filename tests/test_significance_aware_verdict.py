@@ -101,5 +101,58 @@ class SignificanceAwareVerdictTests(unittest.TestCase):
         self.assertIn('payload.get("hypothesis_verdict")', source)
 
 
+class EvaluatorPromptStatesOneRuleTests(unittest.TestCase):
+    """The prompt must state the rule the code actually uses.
+
+    v2 said refuted covered "the measured difference shows no improvement".
+    Once the code's rule became significance-gated (floors84), the prompt
+    contradicted it -- and the same evaluator then reached opposite verdicts
+    on identical evidence shapes, reading whichever clause it weighted:
+
+        run 189 (p=0.220): "a non-significant result cannot be classified as
+                            refuted" -> inconclusive
+        run 191 (p=0.633): "under the stated verdict semantics, any measured
+                            difference showing no improvement..." -> refuted
+        run 195 (p=0.254): same, -> refuted
+
+    The disagreement was the prompt's, not the evaluator's.
+    """
+
+    def _prompt(self):
+        import inspect
+
+        from meta_harness import evidence_audit
+
+        return inspect.getsource(evidence_audit.independent_evaluator_review)
+
+    def test_significance_gates_both_directions(self):
+        prompt = self._prompt()
+        self.assertIn("it gates BOTH directions", prompt)
+        self.assertIn("refuted: the difference is significant", prompt)
+
+    def test_the_sign_only_clause_is_gone(self):
+        self.assertNotIn(
+            "the measured difference shows no "
+            "improvement (a significant harm still means refuted",
+            self._prompt(),
+        )
+
+    def test_the_prompt_ref_was_bumped_so_cached_judgements_are_recollected(self):
+        from meta_harness.evidence_audit import AUDIT_EVALUATOR_PROMPT_REF
+
+        self.assertEqual(AUDIT_EVALUATOR_PROMPT_REF, "evidence_audit_evaluator_v3")
+
+    def test_attempts_under_a_smaller_ceiling_do_not_count(self):
+        # run 191 spent all three attempts hitting the old 4096 ceiling and
+        # was then refused for a limit that no longer exists
+        import inspect
+
+        from meta_harness import evidence_audit
+
+        source = inspect.getsource(evidence_audit._evaluator_attempt)
+        self.assertIn("token_reserved >= ?", source)
+        self.assertIn("AUDIT_EVALUATOR_MAX_TOKENS", source)
+
+
 if __name__ == "__main__":
     unittest.main()
