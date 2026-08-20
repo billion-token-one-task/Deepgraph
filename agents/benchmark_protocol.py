@@ -362,6 +362,12 @@ def resolve_benchmark_protocol(
 
     plan = plan or {}
     method = method or {}
+    _requirements = plan.get("execution_requirements")
+    capability_bound = (
+        isinstance(_requirements, Mapping)
+        and str(_requirements.get("schema_version") or "")
+        == "experiment_requirements_v1"
+    )
     dataset_protocols: list[dict[str, Any]] = []
     warnings: list[str] = []
     blockers: list[str] = []
@@ -387,6 +393,21 @@ def resolve_benchmark_protocol(
             or row.get("materialized")
             or row.get("dataset_cache_verified")
             or row.get("benchmark_harness_ready")
+            # A capability-bound row that pins the exact revision AND the
+            # sub-task config is already unambiguously resolvable, which is
+            # what "materialized" was asking for. BIG-Bench is registered as
+            # requires_harness because its tasks need per-task extraction --
+            # and `config` IS that extraction, declared and revision-pinned,
+            # with the field mapping carried in execution_requirements and
+            # checked by capability preflight before the plan is granted.
+            #
+            # agenda 14 lost 14 of 14 runs here on 2026-08-20 -- every M3
+            # candidate, none reaching compute -- while the identical
+            # experiment ran by hand from the same pinned revision and
+            # produced results. The flag the check wanted was never set by
+            # anything: none of the four names above is written anywhere in
+            # the tree for a v1 plan.
+            or (capability_bound and _text(row.get("revision")) and _text(row.get("config")))
         )
         if requires_harness and not harness_ready:
             blockers.append(
