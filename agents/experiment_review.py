@@ -110,6 +110,40 @@ def review_experiment_candidate(
     blockers: list[str] = []
     warnings: list[str] = []
 
+    # Two evidence standards live in this system and, until 2026-08-20, the
+    # older one blocked the newer one from ever executing.
+    #
+    # This gate is paper-grade benchmark design: literature-sourced evidence
+    # per dataset, a rationale for the benchmark set, and at least two
+    # baselines (minimum_baselines has a hard floor of 2).
+    #
+    # A meta-harness v1 experiment cannot satisfy the last one even in
+    # principle: GenericTransformersRunner declares a single
+    # BASELINE_METHOD = "unmodified_input_baseline", so a v1 plan that listed
+    # two baselines would be describing arms the runner will never execute.
+    # The requirement is not strict-but-achievable, it is contradictory.
+    #
+    # Measured: 38 of 143 failed runs died here -- the single largest failure
+    # category -- and agenda 14 lost 13 of 13, never reaching compute once.
+    #
+    # v1 does not lower the bar, it moves it. What the contract cannot check
+    # before execution is checked afterwards, and harder: both arms recomputed
+    # from raw_predictions.jsonl and refused on mismatch, a cross-vendor
+    # evaluator that may dissent, a disjoint holdout, and a significance-gated
+    # verdict. What THIS gate protects -- whether the topic is grounded in
+    # literature -- belongs at topic selection, not in front of execution.
+    #
+    # So for a v1 contract these become warnings: recorded, visible, and not a
+    # deadlock. Every other plan keeps the gate exactly as it was.
+    requirements = (
+        plan.get("execution_requirements")
+        if isinstance(plan.get("execution_requirements"), dict)
+        else {}
+    )
+    capability_bound = (
+        str(requirements.get("schema_version") or "") == "experiment_requirements_v1"
+    )
+
     baselines = _baseline_names(plan)
     datasets = _dataset_names(plan)
     real_datasets = [name for name in datasets if not _looks_synthetic(name)]
@@ -142,7 +176,7 @@ def review_experiment_candidate(
         design_blockers = plan.get("benchmark_design_blockers") if isinstance(plan.get("benchmark_design_blockers"), list) else []
         if not design_blockers and isinstance(benchmark_design.get("blockers"), list):
             design_blockers = benchmark_design.get("blockers")
-        if harness_recovery_probe:
+        if harness_recovery_probe or capability_bound:
             warnings.append(
                 "Executable benchmark probe is allowed for autonomous falsification; "
                 "formal domain-benchmark evidence remains deferred and manuscript-blocked."
@@ -161,15 +195,20 @@ def review_experiment_candidate(
         except (TypeError, ValueError):
             minimum_benchmark_count = 1
         candidate_benchmarks = benchmark_design.get("candidate_benchmarks") if isinstance(benchmark_design.get("candidate_benchmarks"), list) else []
+        # Same rule as the deferred branch above, applied consistently: for a
+        # capability-bound contract these are recorded, not enforced. Exempting
+        # only one branch would move the deadlock rather than remove it -- a v1
+        # plan whose design status later resolves would hit the identical wall.
+        design_gate = warnings if capability_bound else blockers
         if not benchmark_evidence:
-            blockers.append("Benchmark design gate: missing per-dataset literature/official benchmark evidence sources.")
+            design_gate.append("Benchmark design gate: missing per-dataset literature/official benchmark evidence sources.")
         if len(candidate_benchmarks) < minimum_benchmark_count:
-            blockers.append(
+            design_gate.append(
                 f"Benchmark design gate: only {len(candidate_benchmarks)} benchmark(s) selected; "
                 f"the design contract requires at least {minimum_benchmark_count}."
             )
         if not _non_empty_text(benchmark_design.get("benchmark_set_rationale")):
-            blockers.append("Benchmark design gate: missing rationale for dataset count and benchmark coverage axes.")
+            design_gate.append("Benchmark design gate: missing rationale for dataset count and benchmark coverage axes.")
     benchmark_protocol = (
         publication_contract.get("benchmark_protocol")
         if isinstance(publication_contract.get("benchmark_protocol"), dict)
@@ -199,13 +238,27 @@ def review_experiment_candidate(
         "minimum_required_for_paper": minimum_baselines,
         "source": "benchmark_protocol",
     }
-    if len(baselines) < 2:
-        blockers.append("Experimental plan lacks at least two explicit baselines.")
-    elif len(baselines) < minimum_baselines:
-        blockers.append(
-            f"Experimental plan has only {len(baselines)} baseline(s); "
+    if len(baselines) < minimum_baselines:
+        shortfall = (
+            f"Experimental plan has {len(baselines)} baseline(s); "
             f"the benchmark protocol requires {minimum_baselines}."
         )
+        if capability_bound:
+            # The runner executes one baseline arm by construction. Demanding
+            # two here would only be satisfiable by naming an arm that never
+            # runs, so the honest record is a warning, not a refusal.
+            warnings.append(
+                shortfall
+                + " The capability-bound runner executes exactly one baseline"
+                " arm, so this is recorded and not enforced; the paired"
+                " comparison is verified from raw predictions after execution."
+            )
+        else:
+            blockers.append(
+                "Experimental plan lacks at least two explicit baselines."
+                if len(baselines) < 2
+                else shortfall
+            )
 
     scale_target = (
         plan.get("compute_budget", {}).get("total_gpu_hours")
