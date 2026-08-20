@@ -28,7 +28,7 @@ from typing import Any, Mapping
 
 from db import database as db
 from meta_harness.evidence_state import EvidenceTransitionContext
-from meta_harness.failure_policy import is_transport_class_failure
+from meta_harness.failure_policy import measured_nothing
 from meta_harness.repository import MetaHarnessRepository
 from meta_harness.runner_contract import (
     extract_p_value,
@@ -316,7 +316,7 @@ MAX_HOLDOUT_ATTEMPTS = 3
 # the science retry cap stays 3, but infrastructure may fail more often than
 # that without condemning the run.
 MAX_TRANSPORT_RETRIES = 5
-_transport_class_failure = is_transport_class_failure
+_transport_class_failure = measured_nothing
 
 
 def _raw_input_hashes(path: Path) -> set[str]:

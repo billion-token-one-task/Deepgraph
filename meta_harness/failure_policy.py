@@ -16,6 +16,36 @@ TRANSPORT_CLASS_MARKERS = (
 )
 
 
+# A lane that lacks a declared dependency cannot run this work at all. That is
+# a property of the LANE, not of the experiment: request 97 was refused on
+# colab-pro-2 for a package that had been pre-provisioned on aws-g5-1, where
+# the six requests either side of it all succeeded (2026-08-20). Charging it
+# to the science budget punishes a candidate for where it happened to land.
+LANE_MISMATCH_MARKERS = (
+    "dependency_install_blocked",
+    "experiment_exit_78",
+)
+
+
+def is_lane_mismatch_failure(reason: object) -> bool:
+    """True when the lane could not host the work, whatever the work was."""
+    text = str(reason or "").strip().lower()
+    if not text:
+        return False
+    return any(marker in text for marker in LANE_MISMATCH_MARKERS)
+
+
+def measured_nothing(reason: object) -> bool:
+    """True when a failure evaluated no examples, so it judges no science.
+
+    Transport deaths and lane mismatches are different causes with the same
+    evidential content: nothing was measured, so nothing was learned about the
+    hypothesis. Both must be kept out of the science retry budget, and both
+    still terminate through their own bounded infrastructure budgets.
+    """
+    return is_transport_class_failure(reason) or is_lane_mismatch_failure(reason)
+
+
 def is_transport_class_failure(reason: object) -> bool:
     """True when a flight died before it could measure anything.
 

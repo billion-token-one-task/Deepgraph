@@ -49,7 +49,7 @@ from db.insight_outcomes import (  # noqa: E402
     OUTCOME_PROPOSAL_UNREALIZED,
     set_outcome,
 )
-from meta_harness.failure_policy import is_transport_class_failure  # noqa: E402
+from meta_harness.failure_policy import measured_nothing  # noqa: E402
 from meta_harness.frontier_authority import FrontierAuthorityRepository  # noqa: E402
 from meta_harness.frontier_bootstrap import run_bootstrap_evaluation  # noqa: E402
 from meta_harness.job_states import RECYCLABLE  # noqa: E402
@@ -1557,7 +1557,7 @@ def retry_infra_failed_pilots(agenda_id: int, state: dict, journal: Journal, arg
         ):
             if str(req.get("status")) == "succeeded":
                 measured_n += 1
-            elif not is_transport_class_failure(req.get("failure_reason")):
+            elif not measured_nothing(req.get("failure_reason")):
                 measured_n += 1
         if measured_n >= MAX_PILOT_GRANTS_PER_IDEA:
             journal.log("pilot_infra_retry_exhausted", agenda_id=agenda_id,
