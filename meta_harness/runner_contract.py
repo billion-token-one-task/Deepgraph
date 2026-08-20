@@ -324,10 +324,43 @@ def _normalize_text(value: Any) -> str:
     return " ".join(str(value or "").strip().lower().split())
 
 
+# A generation that keeps going past its own answer must be read at the
+# answer, not at the end. Few-shot prompting makes the model continue the
+# pattern -- it answers correctly, then invents the next question and answers
+# that too. Measured 2026-08-20: 70% of an 8-shot arm's outputs carried a
+# fabricated continuation, and taking the last number scored the arm 0.210
+# where reading its own answer scored 0.510. Thirty points, and the loss is
+# ONE-SIDED: the baseline never continues (0% across all fourteen adjudicated
+# runs), so only candidates are penalised, and only those whose prompt style
+# invites continuation.
+_ANSWER_MARKER = "####"
+_CONTINUATION_MARKERS = ("\nquestion:", "\nproblem:", "\nq:")
+
+
+def _first_answer_segment(text: str) -> str:
+    """The part of a generation that answers the question asked."""
+    lowered = text.lower()
+    cut = len(text)
+    for marker in _CONTINUATION_MARKERS:
+        found = lowered.find(marker)
+        if found != -1:
+            cut = min(cut, found)
+    return text[:cut]
+
+
 def _numeric(value: Any) -> float | None:
     import re
 
-    matches = re.findall(r"[-+]?\d+(?:\.\d+)?", str(value or "").replace(",", ""))
+    text = str(value or "").replace(",", "")
+    # GSM8K-style answers state themselves: the first #### is this question's
+    # answer, and anything after it belongs to a continuation.
+    marked = re.search(r"####\s*([-+]?\d+(?:\.\d+)?)", text)
+    if marked:
+        try:
+            return float(marked.group(1))
+        except ValueError:
+            return None
+    matches = re.findall(r"[-+]?\d+(?:\.\d+)?", _first_answer_segment(text))
     if not matches:
         return None
     try:
