@@ -1230,6 +1230,49 @@ def advance_agenda(agenda_id: int, state: dict, journal: Journal, args) -> None:
             break
 
 
+def _pilot_arm_that_measured_nothing(run_id: int) -> str:
+    """Name the pilot arm that generated nothing, or "" if both produced text.
+
+    The evidence audit already refuses a run whose arm is (near-)entirely
+    empty, but it only gets to look after the full benchmark has been paid
+    for. The pilot writes the same artifacts and shows the same thing: runs
+    235, 236 and 238 each bought a complete benchmark on a candidate whose
+    pilot was already 200/200 empty.
+
+    Read-only and non-fatal by construction. An unreadable or absent pilot
+    artifact returns "" -- the full benchmark then proceeds exactly as it did
+    before, and the audit remains the gate that actually refuses. This check
+    only ever saves money; it must never be the reason a good run stops.
+    """
+    import json as _json
+
+    from meta_harness.evidence_audit import MAX_BLANK_PREDICTION_RATE
+
+    try:
+        row = db.fetchone("SELECT workdir FROM experiment_runs WHERE id=?", (run_id,))
+        path = Path(str(dict(row or {}).get("workdir") or "")) / "results" / "raw_predictions.jsonl"
+        if not path.exists():
+            return ""
+        by_method: dict[str, list[str]] = {}
+        with path.open(encoding="utf-8") as handle:
+            for line in handle:
+                if not line.strip():
+                    continue
+                record = _json.loads(line)
+                by_method.setdefault(str(record.get("method")), []).append(
+                    str(record.get("prediction") or "").strip()
+                )
+        for method, predictions in by_method.items():
+            if not predictions:
+                continue
+            blank = sum(1 for text in predictions if not text)
+            if blank / len(predictions) >= MAX_BLANK_PREDICTION_RATE:
+                return f"{method} {blank}/{len(predictions)} empty"
+    except Exception:
+        return ""
+    return ""
+
+
 def advance_to_full_benchmark(agenda_id: int, state: dict, journal: Journal, args) -> None:
     """Fund the locked full benchmark for pilots that measured something real.
 
@@ -1267,6 +1310,17 @@ def advance_to_full_benchmark(agenda_id: int, state: dict, journal: Journal, arg
     ):
         idea_id = int(row["idea_id"])
         run_id = int(row["experiment_run_id"])
+        blank_arm = _pilot_arm_that_measured_nothing(run_id)
+        if blank_arm:
+            # The pilot already answered the question the full benchmark would
+            # have asked, and it cost 200 examples instead of the full n. Runs
+            # 235, 236 and 238 each paid for a complete benchmark before the
+            # audit refused them for exactly this, on candidates whose pilot
+            # arm was already 200/200 empty (2026-08-20).
+            journal.log("full_benchmark_grant_refused", agenda_id=agenda_id,
+                        idea_id=idea_id, experiment_run_id=run_id,
+                        reason=f"pilot arm measured nothing: {blank_arm}")
+            continue
         prior_grants = db.fetchone(
             "SELECT COUNT(*) AS n FROM resource_grants"
             " WHERE agenda_id=? AND idea_id=? AND stage='full_benchmark'",
