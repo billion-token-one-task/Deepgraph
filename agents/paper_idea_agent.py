@@ -1162,10 +1162,46 @@ def _proposal_candidate_and_grant(
                 raise RuntimeError("proposal candidate identity race")
             db.commit()
             if str(holder.get("outcome") or "pending") != "pending":
+                # Retire the spent holder instead of only reporting it. It sits
+                # at proposal_pending with a terminal outcome, so it owns the
+                # (agenda, problem) key without being usable, and the problem
+                # can never seed another candidate for as long as it holds it.
+                # Nothing performed this transition: the terminal outcome was
+                # written and no one read it. Idea 110 sterilised problem 9 for
+                # a full day that way, while the portfolio kept re-funding it,
+                # and a funded proposal preempts discovery -- so one dead
+                # candidate starved every other agenda's rotation. It cost five
+                # manual grant expiries in nine hours (2026-08-19/20).
+                #
+                # The run and its evidence are untouched; only the pre-idea
+                # placeholder is archived, which frees the key and stops the
+                # job from holding a discovery preemption slot.
+                spent_id = int(holder["id"])
+                try:
+                    db.execute(
+                        "UPDATE deep_insights SET status='archived'"
+                        " WHERE id=? AND status='proposal_pending'",
+                        (spent_id,),
+                    )
+                    db.execute(
+                        "UPDATE auto_research_jobs"
+                        " SET status='failed', stage='proposal_unrealized',"
+                        "     last_note=?, updated_at=CURRENT_TIMESTAMP"
+                        " WHERE deep_insight_id=? AND status='deferred'",
+                        (
+                            f"retired: spent proposal candidate holding research "
+                            f"problem {problem_id} (outcome={holder.get('outcome')})",
+                            spent_id,
+                        ),
+                    )
+                    db.commit()
+                except Exception:
+                    db.rollback()
                 raise ProposalProblemUnavailable(
-                    f"research problem {problem_id} is held by spent proposal "
-                    f"candidate {int(holder['id'])} "
-                    f"(outcome={holder.get('outcome')})"
+                    f"research problem {problem_id} was held by spent proposal "
+                    f"candidate {spent_id} "
+                    f"(outcome={holder.get('outcome')}); retired, "
+                    f"the problem is free for the next pass"
                 )
             candidate_id = int(holder["id"])
     grant = db.fetchone(
