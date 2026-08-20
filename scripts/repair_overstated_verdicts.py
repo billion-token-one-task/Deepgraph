@@ -17,6 +17,13 @@ The system caught this itself: the cross-vendor evaluator refused to concur
 on run 189 (0.685 -> 0.63, p = 0.220), saying a non-significant result cannot
 be classified as refuted. That dissent is what surfaced the defect.
 
+The verdict is stored in TWO places -- experiment_runs.hypothesis_verdict and
+scientific_decision_records.verdict -- and the first repair pass corrected
+only the first. The dashboard reads the second, so it went on reporting runs
+164 and 180 as refuted after they had been corrected to inconclusive
+everywhere else. Both stores are repaired together here; correcting one copy
+of a duplicated fact is how the drift starts again.
+
 Read-only by default. Pass --apply to write.
 """
 
@@ -67,6 +74,42 @@ def main() -> int:
             }
         )
 
+    # Second store, same fact. Restricted to runs that actually walked the
+    # ladder: those are the ones the dashboard counts and the only ones whose
+    # verdicts this script has any standing to rewrite. Legacy records carry a
+    # different vocabulary entirely -- run 35 holds 'confirmed', which the
+    # column's own CHECK constraint no longer permits -- and mass-rewriting
+    # them would be inventing history, not repairing it.
+    for row in db.fetchall(
+        """
+        SELECT sdr.experiment_run_id AS rid, sdr.verdict AS sv,
+               er.hypothesis_verdict AS ev
+        FROM scientific_decision_records sdr
+        JOIN experiment_runs er ON er.id = sdr.experiment_run_id
+        WHERE sdr.verdict IS DISTINCT FROM er.hypothesis_verdict
+          AND er.hypothesis_verdict IN ('supported', 'refuted', 'inconclusive')
+          AND EXISTS (
+              SELECT 1 FROM evidence_state_transitions est
+              WHERE est.experiment_run_id = sdr.experiment_run_id
+                AND est.actor = 'evidence_audit_v1'
+                AND est.to_state = 'scientifically_decided'
+          )
+        ORDER BY sdr.experiment_run_id
+        """
+    ):
+        if any(c["run_id"] == int(row["rid"]) for c in changes):
+            continue
+        changes.append(
+            {
+                "run_id": int(row["rid"]),
+                "recorded": str(row["sv"]),
+                "correct": str(row["ev"]),
+                "baseline": None,
+                "candidate": None,
+                "p_value": "decision record disagrees with the run",
+            }
+        )
+
     if not changes:
         print("every recorded verdict already matches its own p-value")
         return 0
@@ -88,8 +131,14 @@ def main() -> int:
             "UPDATE experiment_runs SET hypothesis_verdict=? WHERE id=?",
             (change["correct"], change["run_id"]),
         )
+        # The same fact lives in the decision record the dashboard reads.
+        db.execute(
+            "UPDATE scientific_decision_records SET verdict=?"
+            " WHERE experiment_run_id=? AND verdict<>?",
+            (change["correct"], change["run_id"], change["correct"]),
+        )
     db.commit()
-    print(f"corrected {len(changes)} verdict(s)")
+    print(f"corrected {len(changes)} verdict(s) in both stores")
 
     for change in changes:
         now = db.fetchone(
