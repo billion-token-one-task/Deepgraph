@@ -146,6 +146,71 @@ def active_agenda_ids() -> list[int]:
 # genuine realization (which needs one) without starving the others.
 MAX_DISCOVERY_PREEMPT_STREAK = 2
 
+def _reconcile_gpu_reservation_drift(agenda_ids, journal) -> None:
+    """Re-derive research_agendas.gpu_hours_reserved from the ledger.
+
+    The ledger is the record; the agenda column is a running cache of it, and
+    the cache keeps drifting negative. A negative reservation fails
+    ResearchAgenda.validate(), and a failed validate means the agenda cannot
+    select ANY work -- so a bookkeeping error becomes a total stop for that
+    agenda. Agenda 10 was blocked twice this way (-1.64 on 2026-08-19, -0.69
+    on 2026-08-20), the second time while the M2 window was three runs from
+    finishing and all three GPU lanes sat idle.
+
+    Four over-releasing paths were fixed at the source; the recurrence proves
+    at least one more exists. Until it is found, reconcile from the record
+    every pass -- and log every correction, so the underlying defect stays
+    visible instead of being silently papered over.
+    """
+    for agenda_id in agenda_ids:
+        try:
+            expected = float(
+                (
+                    db.fetchone(
+                        """
+                        SELECT COALESCE(SUM(GREATEST(
+                            COALESCE(gpu_hours_reserved, 0)
+                            - COALESCE(gpu_hours_used, 0), 0)), 0) AS v
+                        FROM agenda_resource_ledger
+                        WHERE agenda_id=? AND status='reserved'
+                        """,
+                        (int(agenda_id),),
+                    )
+                    or {}
+                ).get("v")
+                or 0.0
+            )
+            row = db.fetchone(
+                "SELECT gpu_hours_reserved FROM research_agendas WHERE id=?",
+                (int(agenda_id),),
+            )
+            if not row:
+                continue
+            stored = float(row.get("gpu_hours_reserved") or 0.0)
+            if abs(stored - expected) <= 1e-9:
+                continue
+            db.execute(
+                "UPDATE research_agendas SET gpu_hours_reserved=?,"
+                " updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (expected, int(agenda_id)),
+            )
+            db.commit()
+            journal.log(
+                "gpu_reservation_drift_reconciled",
+                agenda_id=int(agenda_id),
+                stored=stored,
+                ledger=expected,
+                drift=stored - expected,
+            )
+        except Exception as exc:
+            db.rollback()
+            journal.log(
+                "gpu_reservation_reconcile_failed",
+                agenda_id=int(agenda_id),
+                reason=f"{type(exc).__name__}: {exc}",
+            )
+
+
 def _next_discovery_agenda(agenda_ids: list[int], state: dict) -> int | None:
     """Choose one agenda per pass, rotating across the active ordered set.
 
@@ -1785,6 +1850,9 @@ def main() -> int:
         _capture_spend_baseline(args.agenda) if args.spend_limit > 0 else None
     )
     journal.log("pass_start", agendas=args.agenda, backend=db.describe_backend())
+    # Before anything reads an agenda: a drifted reservation makes validate()
+    # refuse the row, and the agenda then selects nothing at all.
+    _reconcile_gpu_reservation_drift(args.agenda, journal)
 
     try:
         repo = MetaHarnessRepository()
