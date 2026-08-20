@@ -168,8 +168,33 @@ def _compute_stats_snapshot() -> dict:
             "taxonomy_nodes_total": int(_optional_scalar(
                 "SELECT COUNT(*) AS c FROM taxonomy_nodes"
             )),
+            # The card this feeds is labelled "passed the full evidence
+            # ladder (sanity, benchmark, audit)". scientific_decision_records
+            # is a status table any code path can write, and it still holds 34
+            # rows stamped before the audit executor existed -- it reported 47
+            # findings when 13 had actually been adjudicated (2026-08-20).
+            # The ladder records what the label promises, so read that.
             "scientific_decisions_total": int(_optional_scalar(
-                "SELECT COUNT(*) AS c FROM scientific_decision_records"
+                """
+                SELECT COUNT(DISTINCT experiment_run_id) AS c
+                FROM evidence_state_transitions
+                WHERE actor='evidence_audit_v1'
+                  AND to_state='scientifically_decided'
+                """
+            )),
+            # Kept alongside it, never as the headline: the difference between
+            # the two is the legacy backlog, and hiding it would only make the
+            # next person rediscover the same gap.
+            "legacy_decision_rows": int(_optional_scalar(
+                """
+                SELECT COUNT(*) AS c FROM scientific_decision_records sdr
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM evidence_state_transitions est
+                    WHERE est.experiment_run_id = sdr.experiment_run_id
+                      AND est.actor='evidence_audit_v1'
+                      AND est.to_state='scientifically_decided'
+                )
+                """
             )),
             "agenda_tokens_total": int(_optional_scalar(
                 "SELECT COALESCE(SUM(tokens),0) AS c FROM agenda_token_ledger"
@@ -191,7 +216,16 @@ def _compute_stats_snapshot() -> dict:
     )
     for verdict in ("supported", "refuted", "inconclusive"):
         stats[f"decisions_{verdict}"] = int(_optional_scalar(
-            "SELECT COUNT(*) AS c FROM scientific_decision_records WHERE verdict=?",
+            """
+            SELECT COUNT(*) AS c FROM scientific_decision_records sdr
+            WHERE sdr.verdict=?
+              AND EXISTS (
+                  SELECT 1 FROM evidence_state_transitions est
+                  WHERE est.experiment_run_id = sdr.experiment_run_id
+                    AND est.actor='evidence_audit_v1'
+                    AND est.to_state='scientifically_decided'
+              )
+            """,
             (verdict,),
         ))
     stats["estimated_fields"] = estimated_fields
