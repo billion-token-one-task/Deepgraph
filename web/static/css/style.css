@@ -2774,6 +2774,16 @@ header#topBar {
     color: var(--accent);
     font-size: 0.68rem;
 }
+/* Deliberately muted, not alarming: these rows are real history, they just
+   carry no audited evidence. The accent belongs to findings that earned it. */
+.decision-unaudited-flag {
+    padding: 1px 6px;
+    border: 1px dashed var(--text-dim);
+    border-radius: 3px;
+    color: var(--text-dim);
+    font-size: 0.68rem;
+    cursor: help;
+}
 .decision-checks { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 6px; }
 .decision-check {
     padding: 1px 6px;

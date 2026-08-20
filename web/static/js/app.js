@@ -2314,6 +2314,7 @@ async function loadDecisions() {
                     <span class="decision-verdict ${cls}">${esc(String(d.verdict || '?'))}</span>
                     <span class="decision-title">${esc(trunc(d.insight_title || `#${d.id}`, 110))}</span>
                     ${paper.available ? `<span class="decision-paper-flag">${esc(t('decisions.hasPaper'))}</span>` : ''}
+                    ${d.walked_ladder ? '' : `<span class="decision-unaudited-flag" title="${esc(t('decisions.unauditedHint'))}">${esc(t('decisions.unaudited'))}</span>`}
                 </summary>
                 <div class="decision-meta">
                     agenda #${esc(String(d.agenda_id))}

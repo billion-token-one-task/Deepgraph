@@ -2610,6 +2610,12 @@ def api_scientific_decisions():
     sql = """
         SELECT sdr.id, sdr.agenda_id, sdr.experiment_run_id, sdr.verdict,
                sdr.verdict_hash, sdr.evidence_decision_json, sdr.created_at,
+               EXISTS (
+                 SELECT 1 FROM evidence_state_transitions est
+                 WHERE est.experiment_run_id = sdr.experiment_run_id
+                   AND est.actor = 'evidence_audit_v1'
+                   AND est.to_state = 'scientifically_decided'
+               ) AS walked_ladder,
                ear.evaluator_ref, ear.holdout_ref, ear.raw_artifacts_hash,
                ear.claim_ledger_hash,
                er.hypothesis_verdict, er.baseline_metric_name,
@@ -2635,18 +2641,44 @@ def api_scientific_decisions():
         for row in rows:
             row["decision_detail"] = _decision_detail(row.pop("evidence_decision_json", None))
             row["manuscript"] = _decision_manuscript(row.get("deep_insight_id"), row.get("agenda_id"))
+        # Split the counter by whether the row actually climbed the ladder.
+        # 34 of the 54 decision records were stamped scientifically_decided
+        # without an evidence_audit_v1 transition ever happening, and every one
+        # of them is `inconclusive`. Counting them together reported 42
+        # inconclusive findings where 8 had been adjudicated -- the headline
+        # said five times what the evidence supported, and no field on the row
+        # let a reader tell the two apart. /api/stats was corrected on
+        # 2026-08-20; this endpoint, which is what the list actually renders,
+        # was missed in that pass.
         by_verdict: dict[str, int] = {}
+        legacy_by_verdict: dict[str, int] = {}
+        clause, clause_params = _agenda_sql_filter(scope)
         for row in db.fetchall(
-            "SELECT verdict, COUNT(*) AS c FROM scientific_decision_records"
-            " WHERE 1=1" + _agenda_sql_filter(scope)[0] + " GROUP BY verdict",
-            tuple(_agenda_sql_filter(scope)[1]),
+            """
+            SELECT verdict,
+                   EXISTS (
+                     SELECT 1 FROM evidence_state_transitions est
+                     WHERE est.experiment_run_id
+                           = scientific_decision_records.experiment_run_id
+                       AND est.actor = 'evidence_audit_v1'
+                       AND est.to_state = 'scientifically_decided'
+                   ) AS walked_ladder,
+                   COUNT(*) AS c
+            FROM scientific_decision_records
+            WHERE 1=1""" + clause + " GROUP BY verdict, walked_ladder",
+            tuple(clause_params),
         ):
-            by_verdict[str(row["verdict"])] = int(row["c"])
+            target = by_verdict if row["walked_ladder"] else legacy_by_verdict
+            target[str(row["verdict"])] = int(row["c"])
         return jsonify(
             {
                 "decisions": rows,
                 "counts_by_verdict": by_verdict,
                 "total": sum(by_verdict.values()),
+                # Never folded into the headline: these rows carry a verdict
+                # but no audited evidence behind it.
+                "legacy_counts_by_verdict": legacy_by_verdict,
+                "legacy_total": sum(legacy_by_verdict.values()),
                 "agenda_scope": "all" if scope == ALL_AGENDAS else int(scope),
             }
         )
