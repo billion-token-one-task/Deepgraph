@@ -215,11 +215,19 @@ if requirements_file.exists():
     # a requirements.txt, so refusing on the file's presence rejected runtimes
     # that already satisfied every line of it. Verify instead, and keep the
     # refusal for anything genuinely missing -- the remote still never installs.
+    import importlib.metadata
     import importlib.util
 
-    _DISTRIBUTION_MODULES = {{"accelerate": "accelerate", "bitsandbytes": "bitsandbytes",
-                              "datasets": "datasets", "torch": "torch",
-                              "transformers": "transformers"}}
+    # Ask the installer what is installed, rather than guessing an import
+    # name from a distribution name. A hand-maintained map of the two is
+    # always one package behind: it held five entries, and POT -- whose
+    # module is "ot" -- was reported missing on 2026-08-20 immediately after
+    # it had been installed successfully, costing idea 157 three runs
+    # (193/194/196). Pillow/PIL, scikit-learn/sklearn and opencv-python/cv2
+    # are the same shape. importlib.metadata normalises case and separators,
+    # so "POT", "pot" and "p-o-t" all resolve to the same distribution.
+    # find_spec stays as the fallback for a module present without
+    # distribution metadata (a vendored or stdlib-adjacent import).
     missing = []
     for line in requirements_file.read_text(encoding="utf-8").splitlines():
         name = line.strip()
@@ -230,8 +238,12 @@ if requirements_file.exists():
         name = name.strip()
         if not name:
             continue
-        module = _DISTRIBUTION_MODULES.get(name, name.replace("-", "_"))
-        if importlib.util.find_spec(module) is None:
+        try:
+            importlib.metadata.distribution(name)
+            continue
+        except Exception:
+            pass
+        if importlib.util.find_spec(name.replace("-", "_")) is None:
             missing.append(name)
     if missing:
         print(

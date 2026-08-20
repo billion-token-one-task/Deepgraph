@@ -64,3 +64,44 @@ class FailedRunReportsItsOwnExitTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DependencyPresenceTests(unittest.TestCase):
+    """Ask the installer what is installed; do not guess an import name.
+
+    The remote preflight mapped distribution names to import names with a
+    hand-maintained dict of five entries, falling back to
+    name.replace("-", "_"). POT installs the module "ot", so it was reported
+    missing on 2026-08-20 IMMEDIATELY AFTER being installed successfully --
+    idea 157 lost runs 193, 194 and 196 to it. Pillow/PIL,
+    scikit-learn/sklearn and opencv-python/cv2 are the same shape, so the
+    map was always going to be one package behind.
+
+    Verified against the live A10G runtime when this shipped: POT, pot,
+    scipy, networkx and scikit-learn all resolve through
+    importlib.metadata, while a genuinely absent distribution still reports
+    missing.
+    """
+
+    def _script(self):
+        import inspect
+
+        from meta_harness.backends import colab_cli
+
+        return inspect.getsource(colab_cli)
+
+    def test_the_hand_maintained_name_map_is_gone(self):
+        self.assertNotIn("_DISTRIBUTION_MODULES", self._script())
+
+    def test_presence_is_decided_by_distribution_metadata(self):
+        script = self._script()
+        self.assertIn("importlib.metadata.distribution(name)", script)
+
+    def test_find_spec_survives_as_the_fallback(self):
+        # a module present without distribution metadata must still count
+        script = self._script()
+        self.assertIn("importlib.util.find_spec", script)
+
+    def test_the_refusal_itself_is_unchanged(self):
+        # the remote must still never install at runtime
+        self.assertIn("dependency_install_blocked", self._script())
