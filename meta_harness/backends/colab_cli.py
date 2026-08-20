@@ -399,7 +399,7 @@ class ColabAccountPool:
         self,
         requested_hours: float,
         stage: str | None,
-        prefer_dedicated: bool = False,
+        require_dedicated: bool = False,
     ) -> list[ColabAccount]:
         """Lanes that could take this work right now. Caller holds the lock."""
         now = time.monotonic()
@@ -418,14 +418,21 @@ class ColabAccountPool:
         # audit holdout is an hour of work whose loss costs a whole run,
         # so those stages take a dedicated host whenever one is free and
         # fall back to a notebook lane only when none is.
-        if prefer_dedicated or stage in _LONG_RUNNING_STAGES:
-            dedicated = [
-                account
-                for account in eligible
-                if getattr(account, "transport", "colab") == "ssh"
-            ]
-            if dedicated:
-                eligible = dedicated
+        dedicated = [
+            account
+            for account in eligible
+            if getattr(account, "transport", "colab") == "ssh"
+        ]
+        if require_dedicated:
+            # A hard requirement, not a preference. Falling back to a lane
+            # that provably cannot host the work trades a wait for a certain
+            # failure: idea 175 drew colab-pro-2 and then colab-pro for a
+            # package only the dedicated host carries, and lost a run each
+            # time (2026-08-20). Waiting costs minutes; the fallback costs a
+            # run and a grant.
+            return dedicated
+        if stage in _LONG_RUNNING_STAGES and dedicated:
+            eligible = dedicated
         return eligible
 
     def has_capacity(
@@ -446,11 +453,11 @@ class ColabAccountPool:
         requested_hours: float,
         *,
         stage: str | None = None,
-        prefer_dedicated: bool = False,
+        require_dedicated: bool = False,
     ) -> ColabAccount:
         with self._lock:
             now = time.monotonic()
-            eligible = self._eligible_locked(requested_hours, stage, prefer_dedicated)
+            eligible = self._eligible_locked(requested_hours, stage, require_dedicated)
             if not eligible:
                 # A cooling account is capacity that exists but is unusable
                 # right now; say so distinctly from a genuinely full pool.
@@ -743,10 +750,21 @@ class ColabCLIExecutor:
             label="Colab artifact_output_dir",
         )
         output_dir.mkdir(parents=True, exist_ok=True)
+        needs_runtime = _requires_provisioned_runtime(code_dir)
         account = self.accounts.acquire(
             requested_hours,
             stage=request.stage,
-            prefer_dedicated=_requires_provisioned_runtime(code_dir),
+            require_dedicated=needs_runtime,
+        )
+        # Routing has been hard to reason about after the fact -- a request
+        # that should have taken the dedicated lane took a notebook one and
+        # the reason was not recoverable from any record. Say the decision
+        # out loud so the next surprise is one log line away.
+        print(
+            f"[COLAB] route request={request.idempotency_key} "
+            f"stage={request.stage} needs_runtime={needs_runtime} "
+            f"-> {account.account_ref}",
+            flush=True,
         )
         started = False
         start = time.monotonic()

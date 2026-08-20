@@ -410,20 +410,65 @@ def test_a_missing_requirements_file_does_not_force_a_lane(tmp_path):
     assert _requires_provisioned_runtime(tmp_path) is False
 
 
-def test_the_submit_path_passes_the_preference(tmp_path):
+def test_the_submit_path_passes_the_requirement(tmp_path):
     import inspect
 
     from meta_harness.backends import colab_cli
 
     source = inspect.getsource(colab_cli.ColabCLIExecutor.run_request)
-    assert "prefer_dedicated=_requires_provisioned_runtime(code_dir)" in source
+    assert "require_dedicated=needs_runtime" in source
+    # and says which lane it chose, so a surprise is one log line away
+    assert "[COLAB] route request=" in source
 
 
-def test_long_stages_keep_their_own_preference(tmp_path):
-    # the dependency rule adds to the stage rule, it must not replace it
+def test_a_hard_requirement_never_falls_back(tmp_path):
+    """Waiting costs minutes; the fallback costs a run and a grant."""
+    from unittest import mock
+
+    from meta_harness.backends import colab_cli
+    from meta_harness.compute import ColabAccount
+
+    accounts = [
+        ColabAccount(
+            account_ref="colab-pro",
+            credential_ref="env:A",
+            isolated_home="/h/a",
+            oauth_store="/h/a/t.json",
+            session_namespace="a",
+            quota_gpu_hours=8,
+        ),
+        ColabAccount(
+            account_ref="aws-g5-1",
+            credential_ref="env:B",
+            isolated_home="/h/b",
+            oauth_store="/h/b/k.pem",
+            session_namespace="b",
+            quota_gpu_hours=24,
+            transport="ssh",
+            ssh_target="user@host.example",
+            ssh_key_path="/h/b/k.pem",
+        ),
+    ]
+    pool = colab_cli.ColabAccountPool(accounts)
+    with mock.patch.object(colab_cli, "durable_provision_cooldown", return_value=False):
+        # dedicated free -> it is chosen
+        assert [a.account_ref for a in pool._eligible_locked(1.0, "pilot", True)] == [
+            "aws-g5-1"
+        ]
+        # dedicated busy -> NOTHING is eligible, rather than a doomed notebook lane
+        pool._active["aws-g5-1"] = 1
+        assert pool._eligible_locked(1.0, "pilot", True) == []
+        # without the requirement the notebook lane is still usable
+        assert [a.account_ref for a in pool._eligible_locked(1.0, "pilot", False)] == [
+            "colab-pro"
+        ]
+
+
+def test_long_stages_still_only_prefer(tmp_path):
+    # a T4 CAN run a long stage, just less reliably -- that stays a preference
     import inspect
 
     from meta_harness.backends import colab_cli
 
     source = inspect.getsource(colab_cli.ColabAccountPool._eligible_locked)
-    assert "prefer_dedicated or stage in _LONG_RUNNING_STAGES" in source
+    assert "if stage in _LONG_RUNNING_STAGES and dedicated:" in source
