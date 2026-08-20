@@ -243,3 +243,27 @@ def test_a_cached_judgement_is_bound_to_the_ledger_it_judged():
 
     review = inspect.getsource(evidence_audit.independent_evaluator_review)
     assert '"ledger_hash": _sha256_text(ledger_text)' in review
+
+
+def test_the_evaluator_budget_clears_the_measured_cap_hit():
+    """Every audit call settled at exactly its reserved cap.
+
+    4919, 4914 and 4909 tokens reserved and used on 2026-08-20 -- usage
+    landing exactly on the ceiling is what truncation looks like from
+    outside. The JSON was cut mid-object, the judgement would not parse, and
+    the retry was refused with provider_usage_exceeded_reserved_cap. The
+    evaluator reasons before it answers and that reasoning is output tokens,
+    so the ceiling, not the reasoning, is what gives way.
+    """
+    from meta_harness.evidence_audit import AUDIT_EVALUATOR_MAX_TOKENS
+
+    assert AUDIT_EVALUATOR_MAX_TOKENS >= 4 * 4096
+
+
+def test_a_cap_hit_says_so_instead_of_returned_no_judgement():
+    import inspect
+
+    from meta_harness import evidence_audit
+
+    source = inspect.getsource(evidence_audit.independent_evaluator_review)
+    assert "hit the token ceiling" in source

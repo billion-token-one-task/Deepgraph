@@ -160,6 +160,14 @@ def build_claim_ledger(results_dir: Path) -> tuple[Path, str]:
 
 
 MAX_EVALUATOR_ATTEMPTS = 3
+# The evaluator reasons before it answers, and at reasoning_effort=high that
+# reasoning is output tokens. At 4096 every audit call settled at EXACTLY its
+# reserved cap -- 4919, 4914, 4909 on 2026-08-20 -- which is what hitting the
+# ceiling looks like from the outside: the JSON was cut off mid-object, the
+# judgement would not parse, and the next attempt was refused with
+# provider_usage_exceeded_reserved_cap. The same cap-hit shape retired the
+# tier-2 debate role's 4096 on 2026-08-17 (scaffold register #6).
+AUDIT_EVALUATOR_MAX_TOKENS = 16384
 
 
 def _evaluator_attempt(resource_grant_id: int) -> int:
@@ -237,7 +245,7 @@ def independent_evaluator_review(
             f"{_sha256_text(ledger_text)[:16]}:{attempt}"
         ),
         prompt_version=configured_role_prompt_version("evaluator"),
-        max_tokens=4096,
+        max_tokens=AUDIT_EVALUATOR_MAX_TOKENS,
     )
     parsed, _how = parse_llm_json_text(raw)
     if not isinstance(parsed, dict) or "concur" not in parsed:
@@ -249,7 +257,13 @@ def independent_evaluator_review(
             )
         except Exception:
             pass
-        raise EvidenceAuditError("evaluator returned no judgement")
+        hit_cap = _tokens is not None and int(_tokens) >= AUDIT_EVALUATOR_MAX_TOKENS
+        raise EvidenceAuditError(
+            "evaluator response hit the token ceiling before finishing its "
+            f"judgement ({_tokens} tokens)"
+            if hit_cap
+            else "evaluator returned no judgement"
+        )
     return {
         "judgement": parsed,
         "evaluator_ref": f"{route.get('provider')}:{route.get('model')}",
