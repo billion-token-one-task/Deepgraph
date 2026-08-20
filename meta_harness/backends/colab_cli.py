@@ -435,6 +435,18 @@ class ColabAccountPool:
             eligible = dedicated
         return eligible
 
+    def has_dedicated_capacity(self, requested_hours: float = 0.0) -> bool:
+        """Is a provisioned (ssh) lane free right now?
+
+        Asked before claiming, so work that can only run on a dedicated lane
+        is not claimed while none is free. Claiming first and discovering it
+        afterwards spun request 101 once every five seconds -- 43 claim,
+        fail and requeue cycles in under four minutes, against a full
+        benchmark that had another half hour to run (2026-08-20).
+        """
+        with self._lock:
+            return bool(self._eligible_locked(requested_hours, None, True))
+
     def has_capacity(
         self, requested_hours: float = 0.0, *, stage: str | None = None
     ) -> bool:

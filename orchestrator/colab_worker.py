@@ -398,6 +398,35 @@ def run_one() -> dict:
             "status": "no_capacity",
             "reconciled_succeeded_runs": reconciled_successes,
         }
+    # Work declaring a dependency only a provisioned lane carries can run
+    # nowhere else. Claiming it while no such lane is free means claiming,
+    # failing and requeueing every poll: request 101 did that 43 times in
+    # under four minutes while a full benchmark held the lane. Look before
+    # claiming instead.
+    if pool is not None and not pool.has_dedicated_capacity():
+        try:
+            from meta_harness.backends.colab_cli import (
+                _requires_provisioned_runtime,
+            )
+
+            head = db.fetchone(
+                """
+                SELECT code_dir FROM colab_work_requests_v1
+                WHERE status='queued'
+                ORDER BY created_at, id
+                LIMIT 1
+                """
+            )
+            if head and _requires_provisioned_runtime(Path(str(head["code_dir"]))):
+                return {
+                    "status": "waiting_for_dedicated_lane",
+                    "reconciled_succeeded_runs": reconciled_successes,
+                }
+        except Exception as exc:
+            print(
+                f"[COLAB] dedicated-lane peek failed: {type(exc).__name__}: {exc}",
+                flush=True,
+            )
     row = repository.claim_next(worker_id=_worker_id())
     if not row:
         return {"status": "idle", "reconciled_succeeded_runs": reconciled_successes}

@@ -472,3 +472,59 @@ def test_long_stages_still_only_prefer(tmp_path):
 
     source = inspect.getsource(colab_cli.ColabAccountPool._eligible_locked)
     assert "if stage in _LONG_RUNNING_STAGES and dedicated:" in source
+
+
+def test_dedicated_capacity_is_asked_before_claiming(tmp_path):
+    """Look before claiming, or the poll loop becomes a spin loop.
+
+    Request 101 required a provisioned lane while a full benchmark held the
+    only one. Claiming first meant claim, fail, requeue every five seconds --
+    43 cycles in under four minutes, with half an hour of benchmark still to
+    run (2026-08-20).
+    """
+    import inspect
+
+    from orchestrator import colab_worker
+
+    source = inspect.getsource(colab_worker.run_one)
+    assert "has_dedicated_capacity()" in source
+    assert "waiting_for_dedicated_lane" in source
+    # the peek must never take the worker down with it
+    window = source.split("has_dedicated_capacity()")[1][:900]
+    assert "except Exception as exc:" in window
+
+
+def test_dedicated_capacity_reflects_the_lane_state(tmp_path):
+    from unittest import mock
+
+    from meta_harness.backends import colab_cli
+    from meta_harness.compute import ColabAccount
+
+    accounts = [
+        ColabAccount(
+            account_ref="colab-pro",
+            credential_ref="env:A",
+            isolated_home="/h/a",
+            oauth_store="/h/a/t.json",
+            session_namespace="a",
+            quota_gpu_hours=8,
+        ),
+        ColabAccount(
+            account_ref="aws-g5-1",
+            credential_ref="env:B",
+            isolated_home="/h/b",
+            oauth_store="/h/b/k.pem",
+            session_namespace="b",
+            quota_gpu_hours=24,
+            transport="ssh",
+            ssh_target="user@host.example",
+            ssh_key_path="/h/b/k.pem",
+        ),
+    ]
+    pool = colab_cli.ColabAccountPool(accounts)
+    with mock.patch.object(colab_cli, "durable_provision_cooldown", return_value=False):
+        assert pool.has_dedicated_capacity() is True
+        pool._active["aws-g5-1"] = 1
+        assert pool.has_dedicated_capacity() is False
+        # the notebook lane is still free, so general capacity remains
+        assert pool.has_capacity() is True
