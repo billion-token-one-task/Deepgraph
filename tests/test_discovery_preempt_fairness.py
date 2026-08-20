@@ -84,3 +84,65 @@ class DiscoveryPreemptFairnessTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DiscoverySupplyTests(unittest.TestCase):
+    """Candidate supply, not GPU, was throttling the system.
+
+    Measured 2026-08-20: mean GPU parallelism 0.38 against three lanes, all
+    three idle with candidates queued behind them, and 99.87% of the token
+    budget unspent. One discovery slot per pass meant each agenda waited
+    ring-length turns -- about ninety minutes across nine agendas -- for a
+    chance to invent anything.
+
+    The ring also had to become stable. The rotation cursor is an INDEX into
+    it, and ordering by updated_at made that index mean something different
+    every pass: the busiest agenda is the most recently updated, so agenda 10
+    sat permanently last while being the only one producing measurable runs.
+    """
+
+    def test_the_ring_order_is_stable(self):
+        import inspect
+
+        import scripts.auto_advance as aa
+
+        source = inspect.getsource(aa.active_agenda_ids)
+        self.assertIn("ORDER BY id ASC", source)
+        self.assertNotIn("ORDER BY updated_at", source)
+
+    def test_several_agendas_get_a_slot_each_pass(self):
+        from scripts.auto_advance import DISCOVERY_AGENDAS_PER_PASS
+
+        self.assertGreater(DISCOVERY_AGENDAS_PER_PASS, 1)
+
+    def test_the_pass_loops_over_slots(self):
+        import inspect
+
+        import scripts.auto_advance as aa
+
+        source = inspect.getsource(aa.main)
+        self.assertIn("for _slot in range(DISCOVERY_AGENDAS_PER_PASS):", source)
+        # an exhausted ring stops the loop rather than spinning
+        self.assertIn("if discovery_agenda_id is None:", source)
+
+    def test_every_agenda_is_reached_within_one_ring(self):
+        # with a stable ring and nothing funded, rotation must visit them all
+        state = {}
+        agendas = [1, 2, 3, 4, 5, 6, 7, 10, 11]
+        with mock.patch.object(auto_advance, "_rows", return_value=[]):
+            seen = {
+                auto_advance._next_discovery_agenda(agendas, state)
+                for _ in range(len(agendas))
+            }
+        self.assertEqual(seen, set(agendas))
+
+    def test_one_slot_per_agenda_per_pass(self):
+        # a short ring hands back the same agenda repeatedly; running
+        # discovery on it twice in a pass pays the LLM cost for nothing
+        import inspect
+
+        import scripts.auto_advance as aa
+
+        source = inspect.getsource(aa.main)
+        self.assertIn("discovered_this_pass", source)
+        self.assertIn("if discovery_agenda_id in discovered_this_pass:", source)

@@ -134,7 +134,13 @@ def active_agenda_ids() -> list[int]:
             SELECT id FROM research_agendas
             WHERE is_active=1 AND status='active'
               AND token_budget > token_spent + token_reserved
-            ORDER BY updated_at ASC, id ASC
+            -- Stable order. The rotation cursor below is an INDEX into this
+            -- list, so ordering by updated_at made the index mean something
+            -- different every pass and rotation became close to random: the
+            -- busiest agenda is also the most recently updated, so agenda 10
+            -- sat permanently at the end of the ring while it was the only
+            -- one producing measurable runs (2026-08-20).
+            ORDER BY id ASC
             """
         )
     ]
@@ -144,6 +150,12 @@ def active_agenda_ids() -> list[int]:
 # rotation gets a turn. Agenda 11 held the pin indefinitely on 2026-08-19
 # because its candidate could never realize; two passes is enough for a
 # genuine realization (which needs one) without starving the others.
+# How many agendas get a discovery slot in one pass. At 1, each agenda waited
+# ring-length turns -- about ninety minutes with nine agendas -- and candidate
+# supply throttled the entire system while the GPU lanes idled and 99.87% of
+# the token budget went unspent (2026-08-20).
+DISCOVERY_AGENDAS_PER_PASS = 3
+
 MAX_DISCOVERY_PREEMPT_STREAK = 2
 
 def _reconcile_gpu_reservation_drift(agenda_ids, journal) -> None:
@@ -1862,8 +1874,26 @@ def main() -> int:
         reconciled = repo.reconcile_expired_grants()
         if reconciled:
             journal.log("reconciled_expired_grants", count=reconciled)
-        discovery_agenda_id = _next_discovery_agenda(args.agenda, state)
-        if discovery_agenda_id is not None:
+        # One agenda per pass meant each waited ring-length turns for a
+        # discovery slot -- nine agendas at ten minutes a pass is an hour and
+        # a half between turns, and candidate supply was the binding
+        # constraint on the whole system while three GPU lanes sat idle and
+        # the token budget was 99.87% unspent. Feeding several agendas per
+        # pass multiplies supply at a cost the budget cannot notice.
+        #
+        # This changes how many candidates are generated, never how a forged
+        # run is measured, so it does not disturb the M2 yield denominator.
+        discovered_this_pass: set[int] = set()
+        for _slot in range(DISCOVERY_AGENDAS_PER_PASS):
+            discovery_agenda_id = _next_discovery_agenda(args.agenda, state)
+            if discovery_agenda_id is None:
+                break
+            # A short ring hands back the same agenda on the next call, and
+            # running discovery on it twice in one pass buys nothing while
+            # paying the LLM cost again. One slot per agenda per pass.
+            if discovery_agenda_id in discovered_this_pass:
+                break
+            discovered_this_pass.add(discovery_agenda_id)
             try:
                 from orchestrator.discovery_scheduler import run_tier2_discovery
 
