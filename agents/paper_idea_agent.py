@@ -984,9 +984,69 @@ execution_requirements MUST stay strictly inside one line above: its task
 protocol, model task, dataset field roles and metric. A metric or protocol
 outside this envelope is not creativity, it is an unexecutable plan; the
 preflight gate will refuse it and the idea stalls.
+
+## The runners EVALUATE ONLY -- they never train
+No runner has a training stage: there is no Trainer, no optimizer and no
+backward pass anywhere in meta_harness/runners. Whatever weights you name are
+loaded and measured exactly as published.
+
+The declared model must therefore ALREADY carry the head for the task you
+declare. For task_protocol sequence_classification that means an
+already-fine-tuned classifier checkpoint, NOT a base encoder: roberta-base,
+bert-base-uncased and distilbert-base-uncased publish a fill-mask head, so
+preflight reads their task as fill-mask and refuses the plan as
+model_task_mismatch. Loading one of them for classification would attach a
+randomly initialised head and measure noise.
+
+This is the single largest cause of stalled ideas: thirteen of the nineteen
+refusals between 2026-08-17 and 2026-08-20 were model_task_mismatch, every one
+of them a base encoder declared for a classification protocol, and each retry
+re-declared the same pairing. Name a checkpoint whose published task IS the
+task you declare, or choose a protocol its published head already serves.
 """
         except Exception:
             compute_constraint = ""
+
+        # A redesign that is not told how the last one died repeats it. Ideas
+        # 136, 144, 150 and 159 each declared the same unexecutable pairing
+        # twice; the reason codes were recorded on the retired candidate and
+        # in its outcome, and then read by nobody who could act on them. The
+        # retirement path returns the problem to the pool -- this returns what
+        # the pool needs to do better than last time.
+        try:
+            prior = db.fetchall(
+                """
+                SELECT DISTINCT p.reason_codes_json
+                FROM candidate_preflight_results_v1 p
+                JOIN deep_insights d ON d.id = p.idea_id
+                WHERE p.status <> 'passed'
+                  AND d.research_problem_id = ?
+                ORDER BY p.reason_codes_json
+                LIMIT 5
+                """,
+                (problem.get("id") or problem.get("research_problem_id") or 0,),
+            )
+            codes: list[str] = []
+            for row in prior or []:
+                raw = dict(row).get("reason_codes_json")
+                if isinstance(raw, str):
+                    try:
+                        raw = json.loads(raw or "[]")
+                    except json.JSONDecodeError:
+                        raw = []
+                for code in raw or []:
+                    if str(code) not in codes:
+                        codes.append(str(code))
+            if codes:
+                compute_constraint += f"""
+## Earlier plans for THIS problem were refused for these reasons
+{", ".join(codes)}
+Each of those was a plan that could not run, not a plan that ran and failed.
+Do not re-declare the pairing that produced them; if you cannot avoid a
+refusal reason, change the protocol or the dataset rather than restating it.
+"""
+        except Exception:
+            pass
 
     return f"""# PROPOSED RESEARCH
 
