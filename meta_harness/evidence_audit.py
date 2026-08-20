@@ -81,6 +81,20 @@ def _verify_arms(final: Mapping[str, Any], rows: list[dict]) -> dict[str, float]
         method_rows = [r for r in rows if str(r.get("method")) == method]
         if not method_rows:
             raise EvidenceAuditError(f"no raw rows for method {method}")
+        blank = sum(
+            1 for row in method_rows if not str(row.get("prediction") or "").strip()
+        )
+        if blank / len(method_rows) >= MAX_BLANK_PREDICTION_RATE:
+            # An arm that generated nothing did not measure the intervention,
+            # and scoring it produces a verdict about an experiment that never
+            # ran. run 235 walked the whole ladder to `refuted` at p=0.000999
+            # on a candidate whose 200 predictions were all empty -- the
+            # recomputation was honest (empty scores 0.0) and the conclusion
+            # was still fiction.
+            raise EvidenceAuditError(
+                f"{method} produced {blank}/{len(method_rows)} empty predictions; "
+                "this arm measured nothing and cannot carry a verdict"
+            )
         value = recompute_metric(method_rows, metric)
         reported = float(final.get(reported_key))
         if abs(value - reported) > _VERIFY_TOLERANCE:
@@ -311,6 +325,14 @@ def _run_paths(run: Mapping[str, Any]) -> tuple[Path, Path, Path]:
     holdout = workdir / "results_holdout"
     return workdir, results, holdout
 
+
+# Registered in docs/internal/V1_SCAFFOLD_REGISTER.md (#30).
+# Measured 2026-08-20 across every run that had walked the ladder: 50 arms over
+# 25 runs, every one of them at EXACTLY 0.0% empty predictions, against run
+# 235's candidate at 100%. The observed distribution is bimodal with nothing in
+# between, which is the argument for the midpoint -- it is maximally far from
+# both modes, so the precise value carries no weight.
+MAX_BLANK_PREDICTION_RATE = 0.5
 
 MAX_HOLDOUT_ATTEMPTS = 3
 # A transport death measured nothing, so it buys a separate, larger budget:
