@@ -1354,7 +1354,11 @@ def advance_evidence_audit(agenda_id: int, state: dict, journal: Journal, args) 
     never had an executor before 2026-08-18; meta_harness/evidence_audit.py
     is that executor and this step is its driver.
     """
-    from meta_harness.evidence_audit import EvidenceAuditError, run_evidence_audit_phase
+    from meta_harness.evidence_audit import (
+        EvidenceAuditError,
+        EvidenceAuditPermanentError,
+        run_evidence_audit_phase,
+    )
 
     repo = MetaHarnessRepository()
     for row in _rows(
@@ -1479,6 +1483,27 @@ def advance_evidence_audit(agenda_id: int, state: dict, journal: Journal, args) 
                 run_id=run_id,
                 resource_grant_id=grant_id,
             )
+        except EvidenceAuditPermanentError as exc:
+            # The artifacts are what the run produced; retrying reads the same
+            # bytes and reaches the same conclusion. Terminate the run and give
+            # the slot back, or the agenda deadlocks behind work that can never
+            # finish -- agenda 14 sat at its cap of 4 with grant 287 held by a
+            # run whose candidate arm was 200/200 empty (2026-08-20).
+            db.rollback()
+            db.execute(
+                "UPDATE experiment_runs SET status='failed', error_message=?"
+                " WHERE id=? AND agenda_id=?",
+                (f"evidence audit refused: {exc}"[:500], run_id, agenda_id),
+            )
+            db.commit()
+            from meta_harness.evidence_audit import _settle_completed_grants
+
+            _settle_completed_grants(
+                {"agenda_id": agenda_id, "deep_insight_id": idea_id, "id": run_id}
+            )
+            journal.log("evidence_audit_unmeasurable", agenda_id=agenda_id,
+                        idea_id=idea_id, run_id=run_id, reason=str(exc))
+            continue
         except EvidenceAuditError as exc:
             db.rollback()
             journal.log("evidence_audit_blocked", agenda_id=agenda_id,

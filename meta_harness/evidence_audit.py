@@ -54,6 +54,23 @@ class EvidenceAuditError(RuntimeError):
     pass
 
 
+class EvidenceAuditPermanentError(EvidenceAuditError):
+    """The artifacts cannot yield a verdict, and re-reading them will not help.
+
+    Most audit failures are worth retrying: a lost evaluator answer, a holdout
+    that died in transport, a provider that refused. Re-running reads new
+    facts. This one does not -- the predictions on disk are what the run
+    produced, so every retry reaches the same conclusion at the same cost.
+
+    Left as a retry, it strands the run: agenda 14 hit its concurrency cap on
+    2026-08-20 with grant 287 held by run 236, whose candidate arm was 200/200
+    empty. The audit refused it correctly on every pass and the slot never came
+    back. Before the empty-arm check existed the run would have settled on a
+    fabricated verdict, which is how a stranded state hides behind a wrong
+    answer.
+    """
+
+
 def _sha256_text(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
@@ -91,7 +108,7 @@ def _verify_arms(final: Mapping[str, Any], rows: list[dict]) -> dict[str, float]
             # on a candidate whose 200 predictions were all empty -- the
             # recomputation was honest (empty scores 0.0) and the conclusion
             # was still fiction.
-            raise EvidenceAuditError(
+            raise EvidenceAuditPermanentError(
                 f"{method} produced {blank}/{len(method_rows)} empty predictions; "
                 "this arm measured nothing and cannot carry a verdict"
             )
