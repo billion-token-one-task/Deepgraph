@@ -1884,15 +1884,21 @@ def main() -> int:
         # This changes how many candidates are generated, never how a forged
         # run is measured, so it does not disturb the M2 yield denominator.
         discovered_this_pass: set[int] = set()
-        for _slot in range(DISCOVERY_AGENDAS_PER_PASS):
+        # Ask for more picks than slots: a pinned agenda is handed back until
+        # its preemption streak is spent, and the first version treated that
+        # repeat as "ring exhausted" and stopped the whole loop -- so passes
+        # filled two slots instead of three and agenda 10 kept waiting. A
+        # repeat means "skip this one", not "stop".
+        for _attempt in range(DISCOVERY_AGENDAS_PER_PASS * 3):
+            if len(discovered_this_pass) >= DISCOVERY_AGENDAS_PER_PASS:
+                break
             discovery_agenda_id = _next_discovery_agenda(args.agenda, state)
             if discovery_agenda_id is None:
                 break
-            # A short ring hands back the same agenda on the next call, and
-            # running discovery on it twice in one pass buys nothing while
-            # paying the LLM cost again. One slot per agenda per pass.
+            # Running discovery twice on one agenda in a pass buys nothing and
+            # pays the LLM cost again. One slot per agenda per pass.
             if discovery_agenda_id in discovered_this_pass:
-                break
+                continue
             discovered_this_pass.add(discovery_agenda_id)
             try:
                 from orchestrator.discovery_scheduler import run_tier2_discovery

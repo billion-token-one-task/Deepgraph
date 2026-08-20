@@ -121,7 +121,7 @@ class DiscoverySupplyTests(unittest.TestCase):
         import scripts.auto_advance as aa
 
         source = inspect.getsource(aa.main)
-        self.assertIn("for _slot in range(DISCOVERY_AGENDAS_PER_PASS):", source)
+        self.assertIn("for _attempt in range(DISCOVERY_AGENDAS_PER_PASS * 3):", source)
         # an exhausted ring stops the loop rather than spinning
         self.assertIn("if discovery_agenda_id is None:", source)
 
@@ -146,3 +146,8 @@ class DiscoverySupplyTests(unittest.TestCase):
         source = inspect.getsource(aa.main)
         self.assertIn("discovered_this_pass", source)
         self.assertIn("if discovery_agenda_id in discovered_this_pass:", source)
+        # a repeat means skip, not stop: a pinned agenda is handed back until
+        # its streak is spent, and treating that as "ring exhausted" filled
+        # two slots instead of three
+        after = source.split("if discovery_agenda_id in discovered_this_pass:")[1][:60]
+        self.assertIn("continue", after)
