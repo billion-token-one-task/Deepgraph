@@ -1492,6 +1492,56 @@ def advance_evidence_audit(agenda_id: int, state: dict, journal: Journal, args) 
             continue
         journal.log("evidence_audit_phase", agenda_id=agenda_id, idea_id=idea_id,
                     run_id=run_id, disposition=disposition)
+        _drive_manuscript_gate(agenda_id, run_id, journal)
+
+
+def _drive_manuscript_gate(agenda_id: int, run_id: int, journal: Journal) -> None:
+    """Last ladder rung: ask the reviewer whether a supported run may publish.
+
+    Runs inside the audit driver rather than as its own step, on the run's
+    existing audit grant. A separate manuscript grant would take a second
+    concurrency slot at the agenda cap and would be a fresh source of the
+    superseded-shell-grant hazard that still has no settling path.
+
+    Non-supported runs cost one indexed query and return immediately, which is
+    every run so far. Nothing here can advance a run except an explicit
+    concurrence against a complete ledger; every other path leaves it at
+    scientifically_decided, which is where it already is.
+    """
+    import os
+
+    from meta_harness.manuscript_gate import (
+        MANUSCRIPT_REVIEWER_SECRET_ENV,
+        run_manuscript_gate,
+    )
+
+    run = db.fetchone(
+        "SELECT id, agenda_id, deep_insight_id, resource_grant_id, workdir,"
+        "       scientific_evidence_state"
+        "  FROM experiment_runs WHERE id=?",
+        (run_id,),
+    )
+    if not run or str(dict(run).get("scientific_evidence_state") or "") != (
+        "scientifically_decided"
+    ):
+        return
+    secret = os.getenv(MANUSCRIPT_REVIEWER_SECRET_ENV, "")
+    if not secret:
+        # Fail closed and say so: without the signing secret no approval can be
+        # minted, and silence here would look identical to "no run qualified".
+        journal.log("manuscript_gate_secret_missing", agenda_id=agenda_id,
+                    run_id=run_id, env_name=MANUSCRIPT_REVIEWER_SECRET_ENV)
+        return
+    try:
+        status = run_manuscript_gate(dict(run), secret=secret)
+    except Exception as exc:
+        db.rollback()
+        journal.log("manuscript_gate_failed", agenda_id=agenda_id, run_id=run_id,
+                    reason=f"{type(exc).__name__}: {exc}")
+        return
+    if status != "not_supported":
+        journal.log("manuscript_gate", agenda_id=agenda_id, run_id=run_id,
+                    status=status)
 
 
 MAX_PILOT_GRANTS_PER_IDEA = 3

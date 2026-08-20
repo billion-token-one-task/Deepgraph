@@ -203,6 +203,27 @@ model_ref = "env:DEEPGRAPH_LLM_REVIEWER_MODEL"
 model_family_ref = "env:DEEPGRAPH_LLM_REVIEWER_FAMILY"
 prompt_version = "reviewer_v1"
 
+# Second reviewer route: AVAILABILITY, not independence. The primary reviewer
+# and the evidence evaluator are the same provider, so a novita outage would
+# otherwise stall both the evidence audit and the manuscript gate at once --
+# a single point of failure across two consecutive rungs of the ladder.
+#
+# It is deliberately NOT a third-vendor independence play. That argument was a
+# priori; the case for keeping deepseek as primary is empirical -- it refused to
+# concur on run 189 and exposed a global verdict bug, which no new vendor has a
+# record of doing here. Routes are a list, so swapping in a third vendor later
+# is a config change with no code change.
+#
+# Deployment note: these three env names are provisional. When the system is
+# formally deployed, fold DEEPGRAPH_LLM_REVIEWER_FALLBACK* into the same
+# environment manifest as the other provider credentials rather than leaving
+# them appended to .env by hand.
+[[llm_routes.reviewer]]
+provider_ref = "env:DEEPGRAPH_LLM_REVIEWER_FALLBACK"
+model_ref = "env:DEEPGRAPH_LLM_REVIEWER_FALLBACK_MODEL"
+model_family_ref = "env:DEEPGRAPH_LLM_REVIEWER_FALLBACK_FAMILY"
+prompt_version = "reviewer_v1"
+
 [compute_backends]
 enabled = ["cpu"]
 job_store = "postgresql"
