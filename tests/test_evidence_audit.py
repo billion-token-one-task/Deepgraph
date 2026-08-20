@@ -179,3 +179,44 @@ def test_transport_failures_do_not_spend_the_science_retry_budget():
     # a real measurement failure still counts against the cap
     for reason in ("experiment_exit_2", "required_artifacts_missing", "", None):
         assert _transport_class_failure(reason) is False
+
+
+def test_a_lost_evaluator_answer_does_not_strand_the_run():
+    """A settled reservation whose answer never parsed must not be terminal.
+
+    Run 191's audit called the evaluator, settled 4913 tokens, then raised
+    "evaluator returned no judgement" before anything was written. Every
+    retry was refused with "idempotency key already exists with status
+    settled", so the run could never reach the ladder (2026-08-20). The key
+    now carries the attempt number, and the raw response is kept so the next
+    attempt is diagnosable rather than a second blind call.
+    """
+    import inspect
+
+    from meta_harness import evidence_audit
+
+    source = inspect.getsource(evidence_audit.independent_evaluator_review)
+    assert "{attempt}" in source
+    assert "audit_evaluator_unparsed_" in source
+    assert "MAX_EVALUATOR_ATTEMPTS" in source
+
+
+def test_the_evaluator_retry_is_bounded():
+    from meta_harness.evidence_audit import MAX_EVALUATOR_ATTEMPTS
+
+    # paying again is honest, paying forever is not
+    assert 1 < MAX_EVALUATOR_ATTEMPTS <= 5
+
+
+def test_evaluator_attempt_counts_what_the_grant_already_paid_for():
+    from unittest import mock
+
+    from meta_harness import evidence_audit
+
+    with mock.patch.object(evidence_audit.db, "fetchone", return_value={"n": 2}):
+        assert evidence_audit._evaluator_attempt(135) == 2
+    # an unreadable ledger must not block the first call
+    with mock.patch.object(
+        evidence_audit.db, "fetchone", side_effect=RuntimeError("no db")
+    ):
+        assert evidence_audit._evaluator_attempt(135) == 0

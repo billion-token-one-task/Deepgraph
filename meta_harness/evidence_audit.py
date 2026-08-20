@@ -159,6 +159,24 @@ def build_claim_ledger(results_dir: Path) -> tuple[Path, str]:
     return path, _sha256_text(payload)
 
 
+MAX_EVALUATOR_ATTEMPTS = 3
+
+
+def _evaluator_attempt(resource_grant_id: int) -> int:
+    """How many evaluator calls this grant has already paid for."""
+    try:
+        row = db.fetchone(
+            """
+            SELECT COUNT(*) AS n FROM resource_grant_usage_reservations
+            WHERE resource_grant_id=? AND operation='evidence_audit_review'
+            """,
+            (int(resource_grant_id),),
+        )
+    except Exception:
+        return 0
+    return int((row or {}).get("n") or 0)
+
+
 def independent_evaluator_review(
     *,
     agenda_id: int,
@@ -195,6 +213,9 @@ def independent_evaluator_review(
         '"verdict": "supported"|"refuted"|"inconclusive", '
         '"reasons": ["..."]}'
     )
+    attempt = _evaluator_attempt(resource_grant_id)
+    if attempt >= MAX_EVALUATOR_ATTEMPTS:
+        raise EvidenceAuditError("evaluator attempts exhausted")
     raw, _tokens, route = call_llm_for_role(
         "Audit scientific evidence. Judge only from the numbers provided.",
         prompt,
@@ -204,12 +225,30 @@ def independent_evaluator_review(
         stage="evidence_audit",
         resource_grant_id=resource_grant_id,
         operation="evidence_audit_review",
-        idempotency_key=f"evidence-audit:{agenda_id}:{idea_id}:{_sha256_text(ledger_text)[:16]}",
+        # The key carries the attempt number. A response that settles its
+        # reservation and then fails to parse used to strand the run for
+        # good: run 191 spent 4913 tokens, raised "evaluator returned no
+        # judgement" before anything was written, and every retry was then
+        # refused with "idempotency key already exists with status settled"
+        # (2026-08-20). Paying again is the honest cost of having lost the
+        # first answer, and MAX_EVALUATOR_ATTEMPTS bounds it.
+        idempotency_key=(
+            f"evidence-audit:{agenda_id}:{idea_id}:"
+            f"{_sha256_text(ledger_text)[:16]}:{attempt}"
+        ),
         prompt_version=configured_role_prompt_version("evaluator"),
         max_tokens=4096,
     )
     parsed, _how = parse_llm_json_text(raw)
     if not isinstance(parsed, dict) or "concur" not in parsed:
+        # Keep what was paid for, so the next attempt is diagnosable rather
+        # than a second blind call into the same failure.
+        try:
+            (ledger_path.parent / f"audit_evaluator_unparsed_{attempt}.txt").write_text(
+                str(raw), encoding="utf-8"
+            )
+        except Exception:
+            pass
         raise EvidenceAuditError("evaluator returned no judgement")
     return {
         "judgement": parsed,
