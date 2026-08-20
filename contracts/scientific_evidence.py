@@ -100,10 +100,17 @@ def decide_evidence(payload: EvidenceDecisionInput) -> EvidenceDecision:
     if payload.p_value is None:
         blockers.append("p_value_missing")
 
-    significant = (
-        payload.p_value is not None
-        and float(payload.p_value) < float(payload.alpha)
-        and payload.verdict == "supported"
+    # "significant" is a statement about the statistics and nothing else. It
+    # used to carry `and verdict == "supported"`, which made the blocker lie:
+    # run 207 measured 0.816 -> 0.156 at p=0.000999 and was recorded
+    # not_significant -- calling the most decisive result in the run set a null
+    # one. Gating is unchanged, because confirmation_allowed already requires
+    # positive_allowed (verdict == "supported") alongside this flag; the verdict
+    # clause here was redundant for the decision and wrong for the record.
+    # A negative result that clears alpha is evidence, and an infeasibility
+    # dossier built on these rows has to be able to say so.
+    significant = payload.p_value is not None and float(payload.p_value) < float(
+        payload.alpha
     )
     if payload.p_value is not None and not significant:
         blockers.append("not_significant")
