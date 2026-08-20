@@ -531,6 +531,21 @@ class GenericTransformersRunner(ResearchRunner):
         candidate = float(self.metrics[self.candidate_method])
         direction = self.requirements.metric.direction
         negative = candidate <= baseline if direction == "higher" else candidate >= baseline
+        # A verdict is a scientific claim, and "refuted" needs the same
+        # evidential standard as "supported". Deriving it from the SIGN alone
+        # called run 164 (delta -0.03, p=0.506) and run 180 (delta -0.06,
+        # p=0.071) refuted -- two of the eight audited ladders overstated
+        # their result, and the cross-vendor evaluator correctly dissented on
+        # run 189 (p=0.220) for exactly this reason. Failing to show an
+        # improvement is not the same as showing harm.
+        _p = self.significance.get("paired_permutation_p")
+        _significant = _p is not None and float(_p) < 0.05
+        if not _significant:
+            hypothesis_verdict = "inconclusive"
+        elif negative:
+            hypothesis_verdict = "refuted"
+        else:
+            hypothesis_verdict = "supported"
         artifacts = {
             "final_results": {"path": "final_results.json"},
             "raw_predictions": {"path": raw_path.name},
@@ -564,6 +579,10 @@ class GenericTransformersRunner(ResearchRunner):
             "baseline_metric_value": baseline,
             "best_metric_value": candidate,
             "statistical_tests": dict(self.significance),
+            # The one authoritative verdict. Consumers must read this rather
+            # than re-deriving from scientific_negative_result, which records
+            # only the direction of the difference.
+            "hypothesis_verdict": hypothesis_verdict,
             "per_method": {
                 self.BASELINE_METHOD: {
                     self.requirements.metric.name: baseline,

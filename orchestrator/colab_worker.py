@@ -161,7 +161,22 @@ def _record_terminal_run_success(row: dict, observed) -> None:
         if verification.baseline_value != 0
         else None
     )
-    verdict = "refuted" if payload.get("scientific_negative_result") is True else "inconclusive"
+    # Read the runner's authoritative verdict; fall back to the significance
+    # rule only for artifacts written before it existed. Deriving "refuted"
+    # from the direction alone overstated runs 164 (p=0.506) and 180
+    # (p=0.071): failing to show an improvement is not showing harm.
+    verdict = str(payload.get("hypothesis_verdict") or "").strip()
+    if verdict not in {"supported", "refuted", "inconclusive"}:
+        _tests = payload.get("statistical_tests") or {}
+        _p = _tests.get("paired_permutation_p") if isinstance(_tests, dict) else None
+        if _p is None or float(_p) >= 0.05:
+            verdict = "inconclusive"
+        else:
+            verdict = (
+                "refuted"
+                if payload.get("scientific_negative_result") is True
+                else "supported"
+            )
     db.execute(
         """
         UPDATE experiment_runs

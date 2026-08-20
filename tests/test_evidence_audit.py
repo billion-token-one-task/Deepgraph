@@ -76,6 +76,9 @@ def test_verify_arms_refuses_mismatch():
 
 
 def test_build_claim_ledger_writes_verdict_and_hash(tmp_path):
+    # A large delta at p=0.506 is still inconclusive: "refuted" carries the
+    # same evidential burden as "supported", and deriving it from the sign
+    # alone overstated runs 164 and 180 (2026-08-20).
     (tmp_path / "final_results.json").write_text(
         json.dumps(_final(base=0.7, cand=0.4))
     )
@@ -85,9 +88,21 @@ def test_build_claim_ledger_writes_verdict_and_hash(tmp_path):
     path, digest = build_claim_ledger(tmp_path)
     ledger = json.loads(path.read_text())
     claim = ledger["claims"][0]
-    assert claim["verdict"] == "refuted"
+    assert claim["verdict"] == "inconclusive"
     assert claim["delta"] == pytest.approx(-0.3)
     assert len(digest) == 64
+
+
+def test_build_claim_ledger_records_refuted_when_the_harm_is_significant(tmp_path):
+    (tmp_path / "final_results.json").write_text(
+        json.dumps(_final(base=0.7, cand=0.4, p=0.001))
+    )
+    (tmp_path / "raw_predictions.jsonl").write_text(
+        "\n".join(json.dumps(r) for r in _rows(7, 4))
+    )
+    path, _digest = build_claim_ledger(tmp_path)
+    claim = json.loads(path.read_text())["claims"][0]
+    assert claim["verdict"] == "refuted"
 
 
 def test_holdout_consistency_by_verdict():

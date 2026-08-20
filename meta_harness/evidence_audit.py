@@ -92,15 +92,31 @@ def _verify_arms(final: Mapping[str, Any], rows: list[dict]) -> dict[str, float]
     }
 
 
+def significance_aware_verdict(final: Mapping[str, Any]) -> str:
+    """The run's verdict, honouring its own p-value.
+
+    "refuted" is a scientific claim and carries the same evidential burden as
+    "supported". Derived from the direction alone it overstated runs 164
+    (delta -0.03, p=0.506) and 180 (delta -0.06, p=0.071); the cross-vendor
+    evaluator dissented on run 189 (p=0.220) for exactly this reason, which
+    is the check working as designed.
+    """
+    recorded = str(final.get("hypothesis_verdict") or "").strip()
+    if recorded in {"supported", "refuted", "inconclusive"}:
+        return recorded
+    p_value = extract_p_value(dict(final))
+    if p_value is None or float(p_value) >= 0.05:
+        return "inconclusive"
+    return "refuted" if final.get("scientific_negative_result") else "supported"
+
+
 def build_claim_ledger(results_dir: Path) -> tuple[Path, str]:
     """Derive the claim ledger from verified artifacts and persist it."""
     loaded = _load_results(results_dir)
     final, rows = loaded["final"], loaded["rows"]
     verified = _verify_arms(final, rows)
     delta = verified["candidate"] - verified["baseline"]
-    verdict = str(final.get("hypothesis_verdict") or (
-        "refuted" if final.get("scientific_negative_result") else "inconclusive"
-    ))
+    verdict = significance_aware_verdict(final)
     direction = str(final.get("metric_direction") or "higher")
     ledger = {
         "schema_version": "claim_ledger_v1",
@@ -487,9 +503,14 @@ def run_evidence_audit_phase(
     holdout_final = json.loads(holdout_final_path.read_text())
     # The verdict lives on the run row (written at outcome time), not in
     # final_results.json; the artifact only carries scientific_negative_result.
-    verdict = str(
-        run.get("hypothesis_verdict")
-        or ("refuted" if final.get("scientific_negative_result") else "inconclusive")
+    # The run row's verdict is authoritative when it is a real verdict; a row
+    # written before the significance rule existed falls through to the same
+    # rule the ledger uses, so the two can never disagree.
+    recorded = str(run.get("hypothesis_verdict") or "").strip()
+    verdict = (
+        recorded
+        if recorded in {"supported", "refuted", "inconclusive"}
+        else significance_aware_verdict(final)
     )
     holdout_passed = holdout_consistent(verdict, final, holdout_final)
     holdout_hash = _sha256_text(holdout_final_path.read_text())
