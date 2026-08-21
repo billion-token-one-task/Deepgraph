@@ -131,13 +131,28 @@ Intro text.
 \end{document}
 """
     audit = audit_visual_layout(main_tex=tex, figure_assets=[], page_count=1)
+    # A missing required figure cannot be fixed by rewriting prose, so none of
+    # the auditor's own issues here are authorable. The prose issue below is
+    # what the split is being measured against: it must survive as authorable
+    # while the figure blockers stay on the generation stage.
+    prose_issue = {
+        "severity": "medium",
+        "standard": "Plain final reviewer",
+        "issue": "The introduction does not state the contribution.",
+        "fix": "Rewrite the introduction to name the contribution explicitly.",
+    }
     quality_report = {
         "writing_guideline_audit": {"decision": "manuscript_blocked"},
-        "issues": audit["issues"],
+        "issues": [*audit["issues"], prose_issue],
     }
     feedback = _build_manuscript_revision_feedback(quality_report, attempt=1)
-    assert feedback["authorable_issue_count"] >= 1
+    assert feedback["authorable_issue_count"] == 1
+    assert feedback["authorable_issues"][0]["standard"] == "Plain final reviewer"
     assert feedback["stage_blocker_count"] >= 2
+    assert all(
+        "concept figures" in issue["standard"]
+        for issue in feedback["stage_blockers"]
+    )
     fixes = " ".join(issue.get("fix", "") for issue in audit["issues"])
     assert "optional concept figures" not in fixes.lower()
     assert "mandatory" in fixes.lower()

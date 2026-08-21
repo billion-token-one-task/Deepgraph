@@ -6,17 +6,42 @@ from datetime import timedelta
 from orchestrator import auto_research, discovery_scheduler
 
 
+class _StubComputeJob:
+    """Stand-in for the ComputeJob meta_compute_runtime returns.
+
+    The GPU and CPU dispatch paths stopped calling gpu_scheduler.queue_run and
+    now submit through meta_compute_runtime, which reads resource_grants -- a
+    table the PostgreSQL-only V1 migration owns. Grant enforcement on that path
+    is covered on a real PostgreSQL process by
+    tests/integration/test_attempt_gpu_usage_postgres.py; these cases are about
+    which job state the scheduler writes, so the submission is stubbed.
+    """
+
+    def __init__(self, backend_job_id: str = "stub-compute-1"):
+        self.backend_job_id = backend_job_id
+
+
 class AutoResearchLoopTests(unittest.TestCase):
-    def test_run_once_keeps_backlog_progressing_even_with_events(self):
+    def test_run_once_runs_the_cycle_and_ignores_legacy_pipeline_events(self):
+        """The legacy event queue carries no agenda_id, so v1 does not read it.
+
+        This case used to assert that a backlog cycle still ran while events
+        were being consumed. The consumption half is gone: an event without a
+        mandatory scope cannot be acted on, so _run_once reports zero events
+        and never calls the consumer. The backlog half is what remains true.
+        """
         with (
             mock.patch.object(auto_research.db, "init_db"),
-            mock.patch.object(auto_research, "consume_pipeline_events_once", return_value={"events": 7}),
+            mock.patch.object(
+                auto_research, "consume_pipeline_events_once", return_value={"events": 7}
+            ) as consume,
             mock.patch.object(auto_research, "run_cycle", return_value={"status": "processed"}),
             mock.patch.object(auto_research, "_active_job_count", return_value=1),
         ):
             stats = auto_research._run_once()
 
-        self.assertEqual(stats["events"], 7)
+        consume.assert_not_called()
+        self.assertEqual(stats["events"], 0)
         self.assertEqual(stats["cycle_status"], "processed")
         self.assertEqual(stats["active_jobs"], 1)
 
@@ -127,6 +152,9 @@ class AutoResearchSchedulingTests(unittest.TestCase):
         rows = [
             {
                 "id": 41,
+                # benchmark_harness_jobs is agenda-scoped; the writer keys its
+                # UPDATE on (id, agenda_id), so an unscoped row is not a row.
+                "agenda_id": 3,
                 "deep_insight_id": 29,
                 "status": "harness_required",
                 "benchmark_name": "Unresolved Benchmark",
@@ -225,6 +253,8 @@ class AutoResearchSchedulingTests(unittest.TestCase):
         }
         row = {
             "id": 41,
+            # benchmark_harness_jobs is agenda-scoped; see the note above.
+            "agenda_id": 3,
             "deep_insight_id": 29,
             "status": auto_research.BENCHMARK_HARNESS_DESIGN_REPAIR_QUEUED_STATUS,
             "benchmark_name": "Unresolved Benchmark",
@@ -362,6 +392,8 @@ class AutoResearchSchedulingTests(unittest.TestCase):
         rows = [
             {
                 "id": 5,
+                # benchmark_harness_jobs is agenda-scoped; see the note above.
+                "agenda_id": 3,
                 "deep_insight_id": 7,
                 "auto_status": "completed",
                 "auto_stage": "closed_loop_complete",
@@ -1004,9 +1036,11 @@ class AutoResearchSchedulingTests(unittest.TestCase):
         self.assertEqual(stats["recovered_orphan_review"], 2)
 
     def test_process_candidate_requeues_cpu_when_execution_lane_busy(self):
-        candidate = {"id": 71, "tier": 2, "novelty_status": "novel"}
+        # deep_insights and experiment_runs are agenda-scoped; see the note above.
+        candidate = {"id": 71, "agenda_id": 3, "tier": 2, "novelty_status": "novel"}
         existing_run = {
             "id": 8,
+            "agenda_id": 3,
             "status": "pending",
             "proxy_config": '{"formal_experiment": true, "smoke_test_only": false}',
             "resource_class": "cpu",
@@ -1023,6 +1057,11 @@ class AutoResearchSchedulingTests(unittest.TestCase):
             mock.patch.object(auto_research, "_active_execution_run_id", return_value=99),
             mock.patch.object(auto_research, "_upsert_job", side_effect=_capture_upsert),
             mock.patch.object(auto_research, "run_validation_loop") as validation,
+            mock.patch.object(
+                auto_research.meta_compute_runtime,
+                "submit_experiment_run",
+                return_value=_StubComputeJob("stub-compute-busy-lane"),
+            ),
         ):
             auto_research._process_candidate(candidate)
 
@@ -1031,7 +1070,9 @@ class AutoResearchSchedulingTests(unittest.TestCase):
         self.assertEqual(upserts[-1][1]["stage"], "cpu_execution_wait")
 
     def test_process_candidate_runs_cpu_validation_for_smoke_only_forge(self):
-        candidate = {"id": 21, "tier": 2, "novelty_status": "novel"}
+        # deep_insights is agenda-scoped: _process_candidate writes
+        # experiment_runs keyed on (id, agenda_id).
+        candidate = {"id": 21, "agenda_id": 3, "tier": 2, "novelty_status": "novel"}
         upserts = []
 
         def _capture_upsert(insight_id, **fields):
@@ -1040,7 +1081,13 @@ class AutoResearchSchedulingTests(unittest.TestCase):
         with (
             mock.patch.object(auto_research, "assess_experiment_route", return_value=("cpu", "ready")),
             mock.patch.object(auto_research, "evosci_available", return_value=False),
-            mock.patch.object(auto_research.db, "fetchone", side_effect=[None, {"id": 5, "status": "scaffolding", "proxy_config": '{"formal_experiment": false, "smoke_test_only": true}'}]),
+            mock.patch.object(auto_research.db, "fetchone", side_effect=[
+                None,
+                {"id": 5, "agenda_id": 3, "status": "scaffolding", "proxy_config": '{"formal_experiment": false, "smoke_test_only": true}'},
+                # the post-CPU re-read the validation lane performs before it
+                # decides whether the run may proceed to a submission bundle
+                {"status": "completed", "error_message": None},
+            ]),
             mock.patch.object(auto_research, "forge_experiment", return_value={"run_id": 5, "smoke_test_only": True, "formal_experiment": False, "judgement": {"summary": "smoke only"}}),
             mock.patch.object(auto_research, "_upsert_job", side_effect=_capture_upsert),
             mock.patch.object(auto_research, "log_event"),
@@ -1049,6 +1096,20 @@ class AutoResearchSchedulingTests(unittest.TestCase):
             mock.patch.object(auto_research, "run_validation_loop", return_value={"verdict": "inconclusive"}),
             mock.patch.object(auto_research, "process_completed_run"),
             mock.patch.object(auto_research, "generate_submission_bundle", return_value={"bundle_ids": [99], "error": "fail"}),
+            mock.patch.object(
+                auto_research.meta_compute_runtime,
+                "submit_experiment_run",
+                return_value=_StubComputeJob("stub-compute-cpu"),
+            ),
+            mock.patch.object(auto_research.meta_compute_runtime, "mark_cpu_running"),
+            mock.patch.object(
+                auto_research.meta_compute_runtime,
+                "settle_cpu_run",
+                # The CPU lane refuses to continue unless the durable compute
+                # job settled; anything else is a fail-closed stop, so the
+                # scheduling path under test only exists after a settlement.
+                return_value="succeeded",
+            ),
         ):
             auto_research._process_candidate(candidate)
 
@@ -1173,6 +1234,9 @@ class AutoResearchSchedulingTests(unittest.TestCase):
         rows = [
             {
                 "id": 7,
+                # auto_research_jobs is agenda-scoped, and the recovery UPDATE
+                # keys on (id, agenda_id).
+                "agenda_id": 3,
                 "deep_insight_id": 4,
                 "experiment_run_id": 335,
                 "last_error": "Only manuscript polish blockers remain after benchmark evidence passed.",
@@ -1184,12 +1248,40 @@ class AutoResearchSchedulingTests(unittest.TestCase):
             mock.patch.object(auto_research.db, "execute") as execute,
             mock.patch.object(auto_research.db, "commit") as commit,
             mock.patch.object(auto_research, "log_event"),
+            # Releasing a confirmed run from the soft gate is still a positive
+            # decision, so it needs the evidence audit's authorization. The
+            # case below covers a row that does not have it.
+            mock.patch.object(auto_research, "positive_decision_authorized", return_value=True),
         ):
             recovered = auto_research.recover_soft_benchmark_completion_jobs()
 
         self.assertEqual(recovered, 1)
         self.assertIn("manuscript_retry_after_soft_benchmark_gate", execute.call_args.args[0])
         commit.assert_called_once()
+
+    def test_recover_soft_benchmark_completion_jobs_skips_unauthorized_rows(self):
+        """The soft gate is a release valve, not a bypass of the ladder."""
+        rows = [
+            {
+                "id": 7,
+                "agenda_id": 3,
+                "deep_insight_id": 4,
+                "experiment_run_id": 335,
+                "last_error": "Only manuscript polish blockers remain after benchmark evidence passed.",
+            }
+        ]
+
+        with (
+            mock.patch.object(auto_research.db, "fetchall", return_value=rows),
+            mock.patch.object(auto_research.db, "execute") as execute,
+            mock.patch.object(auto_research.db, "commit"),
+            mock.patch.object(auto_research, "log_event"),
+            mock.patch.object(auto_research, "positive_decision_authorized", return_value=False),
+        ):
+            recovered = auto_research.recover_soft_benchmark_completion_jobs()
+
+        self.assertEqual(recovered, 0)
+        execute.assert_not_called()
 
     def test_recover_soft_benchmark_completion_jobs_keeps_full_benchmark_gaps(self):
         rows = [
@@ -1269,6 +1361,9 @@ class AutoResearchSchedulingTests(unittest.TestCase):
 
     def test_invalid_manuscript_retry_marks_blocked_manuscript_stale(self):
         with (
+            # manuscript_runs is agenda-scoped, and the writer refuses to run
+            # without a scope, so the insight lookup has to answer with one.
+            mock.patch.object(auto_research.db, "fetchone", return_value={"agenda_id": 3}),
             mock.patch.object(auto_research.db, "execute") as execute,
             mock.patch.object(auto_research, "_submission_grade_run_for_insight", return_value=None),
             mock.patch.object(auto_research, "_upsert_job") as upsert,
@@ -1279,7 +1374,8 @@ class AutoResearchSchedulingTests(unittest.TestCase):
         sql, params = execute.call_args.args
         self.assertIn("UPDATE manuscript_runs", sql)
         self.assertIn("status='stale'", sql)
-        self.assertEqual(params, (335,))
+        self.assertIn("agenda_id=?", sql)
+        self.assertEqual(params, (335, 3))
         upsert.assert_called_once()
         self.assertEqual(upsert.call_args.kwargs["status"], "completed")
         self.assertEqual(upsert.call_args.kwargs["stage"], "closed_loop_complete")
@@ -1287,6 +1383,8 @@ class AutoResearchSchedulingTests(unittest.TestCase):
     def test_invalid_manuscript_retry_switches_to_submission_grade_replacement(self):
         replacement = {"id": 10, "resource_class": "gpu_small"}
         with (
+            # manuscript_runs is agenda-scoped; see the note above.
+            mock.patch.object(auto_research.db, "fetchone", return_value={"agenda_id": 3}),
             mock.patch.object(auto_research.db, "execute") as execute,
             mock.patch.object(auto_research, "_submission_grade_run_for_insight", return_value=replacement) as find_replacement,
             mock.patch.object(auto_research, "_upsert_job") as upsert,
@@ -1296,7 +1394,7 @@ class AutoResearchSchedulingTests(unittest.TestCase):
 
         sql, params = execute.call_args.args
         self.assertIn("UPDATE manuscript_runs", sql)
-        self.assertEqual(params, (335,))
+        self.assertEqual(params, (335, 3))
         find_replacement.assert_called_once_with(4, exclude_run_id=335)
         upsert.assert_called_once()
         self.assertEqual(upsert.call_args.kwargs["status"], "queued")
@@ -1330,12 +1428,14 @@ class AutoResearchSchedulingTests(unittest.TestCase):
     def test_process_candidate_writes_bundle_for_completed_confirmed_run(self):
         candidate = {
             "id": 26,
+            "agenda_id": 3,
             "tier": 2,
             "novelty_status": "novel",
             "canonical_run_id": 12,
         }
         existing_run = {
             "id": 12,
+            "agenda_id": 3,
             "status": "completed",
             "hypothesis_verdict": "confirmed",
             "effect_pct": 8.5,
@@ -1355,6 +1455,11 @@ class AutoResearchSchedulingTests(unittest.TestCase):
             mock.patch.object(auto_research, "generate_submission_bundle", return_value={"bundle_ids": [44]}),
             mock.patch.object(auto_research, "schedule_benchmark_completion", return_value=False),
             mock.patch.object(auto_research, "_upsert_job", side_effect=_capture_upsert),
+            # A run that reports support does not get to write a bundle on its
+            # own say-so: the evidence audit has to have authorized the
+            # positive decision first. The companion case below covers what
+            # happens when it has not.
+            mock.patch.object(auto_research, "positive_decision_authorized", return_value=True),
         ):
             auto_research._process_candidate(candidate)
 
@@ -1362,6 +1467,45 @@ class AutoResearchSchedulingTests(unittest.TestCase):
         self.assertEqual(upserts[-1][1]["status"], "bundle_ready")
         self.assertEqual(upserts[-1][1]["stage"], "writing_submission")
         self.assertEqual(upserts[-1][1]["artifact_bundle_id"], 44)
+
+    def test_unauthorized_confirmed_run_waits_for_the_evidence_audit(self):
+        """The bundle path above only opens after an independent decision."""
+        candidate = {
+            "id": 26,
+            "agenda_id": 3,
+            "tier": 2,
+            "novelty_status": "novel",
+            "canonical_run_id": 12,
+        }
+        existing_run = {
+            "id": 12,
+            "agenda_id": 3,
+            "status": "completed",
+            "hypothesis_verdict": "confirmed",
+            "effect_pct": 8.5,
+            "proxy_config": '{"formal_experiment": true, "smoke_test_only": false}',
+            "resource_class": "gpu_large",
+        }
+        upserts = []
+
+        def _capture_upsert(insight_id, **fields):
+            upserts.append((insight_id, fields))
+
+        with (
+            mock.patch.object(auto_research, "assess_experiment_route", return_value=("gpu_large", "ready")),
+            mock.patch.object(auto_research, "evosci_available", return_value=False),
+            mock.patch.object(auto_research, "_existing_run_for_candidate", return_value=existing_run),
+            mock.patch.object(auto_research, "_auto_job_stage", return_value="manuscript_retry"),
+            mock.patch.object(auto_research, "generate_submission_bundle") as bundle,
+            mock.patch.object(auto_research, "schedule_benchmark_completion", return_value=False),
+            mock.patch.object(auto_research, "_upsert_job", side_effect=_capture_upsert),
+            mock.patch.object(auto_research, "positive_decision_authorized", return_value=False),
+        ):
+            auto_research._process_candidate(candidate)
+
+        bundle.assert_not_called()
+        self.assertEqual(upserts[-1][1]["status"], "review_pending")
+        self.assertEqual(upserts[-1][1]["stage"], "scientific_decision_required")
 
     def test_review_retry_reforges_failed_latest_run(self):
         insight = {"id": 24, "auto_stage": "review_retry"}
@@ -1453,14 +1597,17 @@ class AutoResearchSchedulingTests(unittest.TestCase):
 
 
     def test_process_candidate_does_not_relaunch_optional_research_stage(self):
+        # deep_insights and experiment_runs are agenda-scoped; see the note above.
         candidate = {
             "id": 41,
+            "agenda_id": 3,
             "tier": 1,
             "novelty_status": "verifying",
             "auto_stage": "research_unavailable",
         }
         existing_run = {
             "id": 319,
+            "agenda_id": 3,
             "status": "testing",
             "workdir": "/tmp/run_319",
             "proxy_config": "{\"formal_experiment\": true, \"smoke_test_only\": false}",
@@ -1483,7 +1630,11 @@ class AutoResearchSchedulingTests(unittest.TestCase):
             mock.patch.object(auto_research, "_run_is_formal", return_value=True),
             mock.patch.object(auto_research, "_upsert_job", side_effect=_capture_upsert),
             mock.patch.object(auto_research.gpu_scheduler, "start"),
-            mock.patch.object(auto_research.gpu_scheduler, "queue_run", return_value=123),
+            mock.patch.object(
+                auto_research.meta_compute_runtime,
+                "submit_experiment_run",
+                return_value=_StubComputeJob("stub-compute-3"),
+            ),
             mock.patch.object(auto_research, "log_event"),
         ):
             auto_research._process_candidate(candidate)
@@ -1494,7 +1645,8 @@ class AutoResearchSchedulingTests(unittest.TestCase):
 
 
     def test_process_candidate_tier2_continues_to_experiment_while_research_starts(self):
-        candidate = {"id": 31, "tier": 2, "novelty_status": "novel"}
+        # deep_insights is agenda-scoped; see the note above.
+        candidate = {"id": 31, "agenda_id": 3, "tier": 2, "novelty_status": "novel"}
         upserts = []
 
         def _capture_upsert(insight_id, **fields):
@@ -1508,7 +1660,11 @@ class AutoResearchSchedulingTests(unittest.TestCase):
             mock.patch.object(auto_research, "forge_experiment", return_value={"run_id": 5, "smoke_test_only": False, "formal_experiment": True}),
             mock.patch.object(auto_research, "_upsert_job", side_effect=_capture_upsert),
             mock.patch.object(auto_research.gpu_scheduler, "start"),
-            mock.patch.object(auto_research.gpu_scheduler, "queue_run", return_value=99),
+            mock.patch.object(
+                auto_research.meta_compute_runtime,
+                "submit_experiment_run",
+                return_value=_StubComputeJob(),
+            ),
             mock.patch.object(auto_research, "log_event"),
             mock.patch.object(auto_research.db, "execute"),
             mock.patch.object(auto_research.db, "commit"),
@@ -1520,7 +1676,8 @@ class AutoResearchSchedulingTests(unittest.TestCase):
         self.assertEqual(upserts[-1][1]["experiment_run_id"], 5)
 
     def test_process_candidate_tier1_continues_to_experiment_while_research_starts(self):
-        candidate = {"id": 41, "tier": 1, "novelty_status": "novel", "predictions": '["p1"]'}
+        # deep_insights is agenda-scoped; see the note above.
+        candidate = {"id": 41, "agenda_id": 3, "tier": 1, "novelty_status": "novel", "predictions": '["p1"]'}
         upserts = []
 
         def _capture_upsert(insight_id, **fields):
@@ -1534,7 +1691,11 @@ class AutoResearchSchedulingTests(unittest.TestCase):
             mock.patch.object(auto_research, "forge_experiment", return_value={"run_id": 6, "smoke_test_only": False, "formal_experiment": True}),
             mock.patch.object(auto_research, "_upsert_job", side_effect=_capture_upsert),
             mock.patch.object(auto_research.gpu_scheduler, "start"),
-            mock.patch.object(auto_research.gpu_scheduler, "queue_run", return_value=100),
+            mock.patch.object(
+                auto_research.meta_compute_runtime,
+                "submit_experiment_run",
+                return_value=_StubComputeJob("stub-compute-2"),
+            ),
             mock.patch.object(auto_research, "log_event"),
             mock.patch.object(auto_research.db, "execute"),
             mock.patch.object(auto_research.db, "commit"),
@@ -1746,44 +1907,42 @@ class ParallelTier2LaunchTests(unittest.TestCase):
         discovery_scheduler._tier2_thread = self.old_thread
         discovery_scheduler._last_parallel_tier2_at = self.old_last
 
-    def test_launches_parallel_tier2_when_backlog_empty(self):
-        fake_thread = mock.Mock()
-        fake_thread.is_alive.return_value = False
+    def test_unscoped_parallel_tier2_launch_is_refused(self):
+        """The unscoped launcher is disabled, not merely idle.
 
+        Discovery became agenda-scoped in meta-harness-v1: run_full_discovery
+        carries the scope, and both the legacy trigger and the thread body it
+        used to start now refuse with agenda_id_required. These cases used to
+        assert the backlog heuristics that decided whether to start that
+        thread; there is no longer a state in which it starts.
+        """
+        for backlog, minimum in ((0, 3), (3, 3), (1, 4)):
+            with (
+                mock.patch.object(discovery_scheduler, "_warm_tier2_backlog", return_value=backlog),
+                mock.patch.object(discovery_scheduler, "DISCOVERY_MIN_TIER2_BACKLOG", minimum),
+                mock.patch.object(discovery_scheduler.threading, "Thread") as thread,
+            ):
+                discovery_scheduler._tier2_thread = None
+                discovery_scheduler._last_parallel_tier2_at = 0.0
+                result = discovery_scheduler._maybe_launch_parallel_tier2_discovery("test")
+
+            self.assertEqual(result["status"], "blocked", (backlog, minimum))
+            self.assertEqual(result["reason"], "agenda_id_required")
+            thread.assert_not_called()
+
+    def test_parallel_tier2_thread_body_starts_no_discovery(self):
         with (
-            mock.patch.object(discovery_scheduler, "_warm_tier2_backlog", return_value=0),
-            mock.patch.object(discovery_scheduler, "DISCOVERY_MIN_TIER2_BACKLOG", 3),
-            mock.patch.object(discovery_scheduler, "_reasoned_paper_count", return_value=128),
-            mock.patch.object(discovery_scheduler, "log_event"),
-            mock.patch.object(discovery_scheduler.threading, "Thread", return_value=fake_thread),
-        ):
-            discovery_scheduler._tier2_thread = None
-            discovery_scheduler._last_parallel_tier2_at = 0.0
-            result = discovery_scheduler._maybe_launch_parallel_tier2_discovery("test")
-
-        fake_thread.start.assert_called_once()
-        self.assertEqual(result["status"], "started")
-
-    def test_skips_parallel_tier2_when_warm_backlog_meets_target(self):
-        with (
-            mock.patch.object(discovery_scheduler, "_warm_tier2_backlog", return_value=3),
-            mock.patch.object(discovery_scheduler, "DISCOVERY_MIN_TIER2_BACKLOG", 3),
-        ):
-            result = discovery_scheduler._maybe_launch_parallel_tier2_discovery("test")
-
-        self.assertEqual(result["status"], "backlog_ready")
-
-    def test_run_parallel_tier2_discovery_fills_backlog_deficit(self):
-        with (
-            mock.patch.object(discovery_scheduler, "_warm_tier2_backlog", return_value=1),
-            mock.patch.object(discovery_scheduler, "DISCOVERY_MIN_TIER2_BACKLOG", 4),
-            mock.patch.object(discovery_scheduler, "harvest_signals"),
-            mock.patch.object(discovery_scheduler, "run_tier2_discovery", return_value=[{"id": 1}, {"id": 2}, {"id": 3}]) as run_tier2,
-            mock.patch.object(discovery_scheduler, "log_event"),
+            mock.patch.object(discovery_scheduler, "harvest_signals") as harvest,
+            mock.patch.object(discovery_scheduler, "run_tier2_discovery") as run_tier2,
+            mock.patch.object(discovery_scheduler, "log_event") as log_event,
         ):
             discovery_scheduler._run_parallel_tier2_discovery()
 
-        run_tier2.assert_called_once_with(max_problems=3, max_papers=discovery_scheduler.DISCOVERY_TIER2_PAPERS)
+        harvest.assert_not_called()
+        run_tier2.assert_not_called()
+        self.assertEqual(
+            log_event.call_args.args[1]["reason"], "agenda_id_required"
+        )
 
 
 if __name__ == "__main__":

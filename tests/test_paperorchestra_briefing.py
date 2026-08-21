@@ -101,14 +101,28 @@ class PaperOrchestraBriefingTests(unittest.TestCase):
         self.assertIn("intro_related_work_plan", outline)
         self.assertIn("plotting_plan", outline)
         self.assertIn("section_plan", outline)
+        # agents/paperorchestra/figure_standard.py fixes the standard pack;
+        # every spec in it carries its own "skip when no verified artifact
+        # exists" objective, so the plan lists the pack and the generation
+        # stage decides what actually has data behind it.
         self.assertEqual(
             [fig["figure_id"] for fig in outline["plotting_plan"]],
-            ["fig_main_results", "fig_ablation_results", "fig_hyperparameter_sweep"],
+            [
+                "fig_main_results",
+                "fig_ablation_results",
+                "fig_hyperparameter_sweep",
+                "fig_dataset_breakdown",
+            ],
         )
         self.assertTrue(all(fig["role"] == "experiment_figure_pack" for fig in outline["plotting_plan"]))
         self.assertEqual(
             [fig["chart_type"] for fig in outline["plotting_plan"]],
-            ["main_results_bar", "ablation_bar", "hyperparameter_sweep"],
+            [
+                "main_results_bar",
+                "ablation_bar",
+                "hyperparameter_sweep",
+                "dataset_breakdown",
+            ],
         )
         self.assertTrue(any("multi-agent" in q for q in outline["intro_related_work_plan"]["introduction_strategy"]["search_directions"]))
 

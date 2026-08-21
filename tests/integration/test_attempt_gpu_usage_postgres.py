@@ -258,13 +258,19 @@ class IsolatedAttemptGPUUsageTests(unittest.TestCase):
                 f"compute:{self.namespace}",
             ),
         )
+        # The run above is refuted, and orchestrator/auto_research.py parks a
+        # refuted completed run at ('completed', 'closed_loop_complete').
+        # ('review_pending', 'scientific_decision_required') -- what this
+        # fixture used until 2026-08-21 -- means the opposite: execution is
+        # done and the evidence audit has not ruled yet. The finalizer stopped
+        # settling that pair in 4c76719 precisely so a settlement cannot close
+        # a job before the scientific decision it depends on exists.
         self.db.execute(
             """
             INSERT INTO auto_research_jobs
                 (agenda_id, deep_insight_id, resource_grant_id,
                  experiment_run_id, status, stage)
-            VALUES (?, ?, ?, ?, 'review_pending',
-                    'scientific_decision_required')
+            VALUES (?, ?, ?, ?, 'completed', 'closed_loop_complete')
             """,
             (self.agenda_id, self.idea_id, self.grant_id, run_id),
         )

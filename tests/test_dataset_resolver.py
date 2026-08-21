@@ -173,8 +173,18 @@ class DatasetResolverTests(unittest.TestCase):
                 "cpu",
             )
 
-        self.assertTrue(plan["generated_runner_supported"])
+        # The point of this case is the ordering: an unknown dataset name is
+        # resolved to a real HuggingFace id first, and only then recorded as
+        # needing a dedicated harness. It is not resolved away or dropped.
+        # generated_runner_supported is false because an unrecognised dataset
+        # defaults to requiring its own harness, which is the fail-closed side.
         self.assertEqual(plan["benchmark_targets"][0]["hf_dataset"], "example/spider-text-to-sql")
+        self.assertFalse(plan["generated_runner_supported"])
+        self.assertEqual(plan["deferred_benchmark_targets"], ["CustomQA"])
+        self.assertIn(
+            "requiring a dedicated domain benchmark harness",
+            plan["benchmark_recipe_blockers"][0]["reason"],
+        )
 
     @requires_nonprod_plugins
     def test_run_script_resolves_before_execution_blocker(self):

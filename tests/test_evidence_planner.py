@@ -1,3 +1,4 @@
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -6,6 +7,50 @@ from unittest import mock
 from agents.evidence_planner import build_evidence_plan
 from agents.paperorchestra import figure_orchestra
 from agents.paperorchestra.figure_orchestra import run_figure_orchestra
+
+
+# agents/paperorchestra/figure_orchestra.py became a blocked boundary in the
+# meta-harness-v1 candidate (c25e63c): image generation and PaperBanana are
+# outside the first closed loop, and the generative implementation these cases
+# were written against now lives in the demoted plugins.examples.cggr example.
+# The boundary itself is asserted by
+# FigureOrchestraBoundaryTests.test_figure_orchestra_reports_blocked below;
+# these cases describe figure-selection behaviour that production no longer has.
+GENERATIVE_FIGURES = os.getenv(
+    "DEEPGRAPH_ENABLE_NONPROD_EXAMPLE_PLUGINS", ""
+).strip().lower() in {"1", "true", "yes"}
+
+
+def _demoted_figure_orchestra():
+    """The generative implementation, or None when it cannot run here.
+
+    The opt-in alone is not enough: the demoted module needs the plotting
+    stack, which a production host does not install. Both conditions are part
+    of the skip so the reason never promises a run that cannot happen.
+    """
+    if not GENERATIVE_FIGURES:
+        return None
+    try:
+        from plugins.examples.cggr import figure_orchestra as demoted
+    except Exception:
+        return None
+    return demoted
+
+
+DEMOTED_FIGURES = _demoted_figure_orchestra()
+requires_generative_figures = unittest.skipUnless(
+    DEMOTED_FIGURES is not None,
+    "figure generation was demoted to plugins.examples.cggr in "
+    "meta-harness-v1; set DEEPGRAPH_ENABLE_NONPROD_EXAMPLE_PLUGINS=1 and "
+    "install the plotting stack to run",
+)
+
+if DEMOTED_FIGURES is not None:
+    # The gated cases below describe the demoted implementation, so they run
+    # against it. FigureOrchestraBoundaryTests imports the production module
+    # by hand and is unaffected.
+    figure_orchestra = DEMOTED_FIGURES
+    run_figure_orchestra = DEMOTED_FIGURES.run_figure_orchestra
 
 
 class EvidencePlannerTests(unittest.TestCase):
@@ -77,6 +122,7 @@ class EvidencePlannerTests(unittest.TestCase):
             )
             self.assertEqual(manifest["assets"], [])
 
+    @requires_generative_figures
     def test_motivation_overview_diagram_uses_banana_by_default(self):
         outline = {
             "plotting_plan": [
@@ -106,6 +152,7 @@ class EvidencePlannerTests(unittest.TestCase):
             self.assertEqual(asset["notes"], "paperbanana_ok")
             self.assertTrue(Path(asset["path"]).exists())
 
+    @requires_generative_figures
     def test_paperbanana_timeout_is_configurable_for_slow_image_generation(self):
         fig = {
             "figure_id": "fig_motivation_overview",
@@ -136,6 +183,7 @@ class EvidencePlannerTests(unittest.TestCase):
         self.assertEqual(asset["notes"], "paperbanana_ok")
         self.assertEqual(run.call_args.kwargs["timeout"], 777)
 
+    @requires_generative_figures
     def test_motivation_overview_diagram_cannot_opt_out_to_native(self):
         outline = {
             "plotting_plan": [
@@ -167,6 +215,7 @@ class EvidencePlannerTests(unittest.TestCase):
             self.assertEqual(asset["notes"], "paperbanana_ok")
             self.assertTrue(Path(asset["path"]).exists())
 
+    @requires_generative_figures
     def test_motivation_overview_diagram_blocks_without_banana(self):
         outline = {
             "plotting_plan": [
@@ -196,6 +245,7 @@ class EvidencePlannerTests(unittest.TestCase):
             self.assertIn("Gemini/PaperBanana", asset["blocker"])
             self.assertTrue(manifest["blockers"])
 
+    @requires_generative_figures
     def test_non_backend_benchmark_uses_only_main_results_plot(self):
         outline = {
             "plotting_plan": [
@@ -234,6 +284,7 @@ class EvidencePlannerTests(unittest.TestCase):
             self.assertTrue(Path(asset["path"]).exists())
             self.assertTrue(Path(asset["pdf_path"]).exists())
 
+    @requires_generative_figures
     def test_main_results_stays_standard_bar_when_token_cost_exists(self):
         state = {
             "title": "Training-free selector",
@@ -264,6 +315,7 @@ class EvidencePlannerTests(unittest.TestCase):
             self.assertEqual(asset.get("aspect_ratio"), "4:3")
             self.assertEqual(asset["notes"], "native_main_results_bar")
 
+    @requires_generative_figures
     def test_backend_matrix_uses_three_standard_backend_figures(self):
         matrix = {
             "Direct": {
@@ -318,3 +370,34 @@ class EvidencePlannerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FigureOrchestraBoundaryTests(unittest.TestCase):
+    """The V1 boundary must keep reporting blocked, not manufacture assets."""
+
+    def test_figure_orchestra_reports_blocked(self):
+        from agents.paperorchestra.figure_orchestra import run_figure_orchestra
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            manifest = run_figure_orchestra(
+                outline={"plotting_plan": [{"figure_id": "fig_main_results", "plot_type": "plot"}]},
+                state={"title": "Anything"},
+                iterations=[],
+                figures_dir=Path(tmpdir),
+                baseline=None,
+                metric_name="accuracy",
+                paperbanana_cmd=None,
+            )
+
+        self.assertEqual(manifest["status"], "blocked")
+        self.assertEqual(manifest["assets"], [])
+        self.assertEqual(manifest["generated_count"], 0)
+        self.assertTrue(manifest["blockers"])
+
+    def test_native_and_external_rendering_stay_refused(self):
+        from agents.paperorchestra import figure_orchestra as boundary
+
+        with self.assertRaises(boundary.FigureGenerationBlocked):
+            boundary.render_native_figure({}, Path("."))
+        with self.assertRaises(boundary.FigureGenerationBlocked):
+            boundary._run_external_diagram({})

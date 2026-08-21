@@ -7,10 +7,12 @@ from unittest import mock
 
 from db import database
 from orchestrator import gpu_scheduler
+from tests.meta_harness_schema import require_meta_harness_schema
 
 
 class GpuSchedulerTimeoutPolicyTests(unittest.TestCase):
     def test_queue_run_preserves_zero_timeout_as_uncapped(self):
+        require_meta_harness_schema(self, "experiment_runs", "agenda_id")
         with (
             mock.patch.object(gpu_scheduler.db, "init_db"),
             mock.patch.object(gpu_scheduler, "_effective_vram_required_gb", return_value=(24, None)),
@@ -21,6 +23,7 @@ class GpuSchedulerTimeoutPolicyTests(unittest.TestCase):
             gpu_scheduler.queue_run(
                 insight_id=1,
                 run_id=2,
+                resource_grant_id=1,
                 resource_class="gpu_large",
                 timeout_s=0,
             )
@@ -103,6 +106,7 @@ class GpuSchedulerTests(unittest.TestCase):
         self.tmpdir.cleanup()
 
     def test_queue_run_creates_gpu_job(self):
+        require_meta_harness_schema(self, "experiment_runs", "agenda_id")
         workers = gpu_scheduler.register_default_workers()
         job_id = gpu_scheduler.queue_run(
             insight_id=1,
@@ -118,6 +122,7 @@ class GpuSchedulerTests(unittest.TestCase):
         self.assertEqual(job["resource_class"], "gpu_small")
 
     def test_queue_run_downshifts_gpu_large_vram_to_schedulable_worker(self):
+        require_meta_harness_schema(self, "experiment_runs", "agenda_id")
         gpu_scheduler.GPU_VISIBLE_DEVICES = ["0"]
         inventory = {"0": {"gpu_model": "NVIDIA GeForce RTX 3090", "total_mem_gb": 24.0}}
 
@@ -126,6 +131,7 @@ class GpuSchedulerTests(unittest.TestCase):
             job_id = gpu_scheduler.queue_run(
                 insight_id=1,
                 run_id=1,
+                resource_grant_id=1,
                 resource_class="gpu_large",
                 priority=2,
                 vram_required_gb=40,
@@ -185,6 +191,7 @@ class GpuSchedulerTests(unittest.TestCase):
         )
 
     def test_next_job_blocks_legacy_gsm8k_manifest_for_formal_run(self):
+        require_meta_harness_schema(self, "experiment_runs", "agenda_id")
         self._write_legacy_gsm8k_manifest()
         database.execute(
             """
@@ -221,6 +228,7 @@ class GpuSchedulerTests(unittest.TestCase):
         self.assertIn("legacy benchmark manifest uses GSM8K", queued["error_message"])
 
     def test_next_job_blocks_legacy_gsm8k_manifest_for_agent_workflow_run(self):
+        require_meta_harness_schema(self, "experiment_runs", "agenda_id")
         self._write_legacy_gsm8k_manifest()
         database.execute(
             """
@@ -244,6 +252,7 @@ class GpuSchedulerTests(unittest.TestCase):
         job_id = gpu_scheduler.queue_run(
             insight_id=1,
             run_id=1,
+            resource_grant_id=1,
             resource_class="gpu_small",
             priority=1,
             vram_required_gb=16,
@@ -257,6 +266,7 @@ class GpuSchedulerTests(unittest.TestCase):
         self.assertIn("agent_workflow_optimization", queued["error_message"])
 
     def test_next_job_blocks_legacy_gsm8k_manifest_for_physical_spatial_run(self):
+        require_meta_harness_schema(self, "experiment_runs", "agenda_id")
         self._write_legacy_gsm8k_manifest()
         database.execute(
             """
@@ -280,6 +290,7 @@ class GpuSchedulerTests(unittest.TestCase):
         job_id = gpu_scheduler.queue_run(
             insight_id=1,
             run_id=1,
+            resource_grant_id=1,
             resource_class="gpu_small",
             priority=1,
             vram_required_gb=16,
@@ -293,6 +304,7 @@ class GpuSchedulerTests(unittest.TestCase):
         self.assertIn("physical_spatial_reasoning", queued["error_message"])
 
     def test_next_job_blocks_legacy_mbpp_manifest_for_molecular_equivariant_run(self):
+        require_meta_harness_schema(self, "experiment_runs", "agenda_id")
         self._write_legacy_mbpp_manifest()
         database.execute(
             """
@@ -316,6 +328,7 @@ class GpuSchedulerTests(unittest.TestCase):
         job_id = gpu_scheduler.queue_run(
             insight_id=1,
             run_id=1,
+            resource_grant_id=1,
             resource_class="gpu_small",
             priority=1,
             vram_required_gb=16,
@@ -330,6 +343,7 @@ class GpuSchedulerTests(unittest.TestCase):
         self.assertIn("molecular_equivariant_dynamics", queued["error_message"])
 
     def test_next_job_allows_legacy_mbpp_manifest_for_formal_code_run(self):
+        require_meta_harness_schema(self, "experiment_runs", "agenda_id")
         self._write_legacy_mbpp_manifest()
         database.execute(
             """
@@ -352,6 +366,7 @@ class GpuSchedulerTests(unittest.TestCase):
         job_id = gpu_scheduler.queue_run(
             insight_id=1,
             run_id=1,
+            resource_grant_id=1,
             resource_class="gpu_small",
             priority=1,
             vram_required_gb=16,
@@ -363,6 +378,7 @@ class GpuSchedulerTests(unittest.TestCase):
         self.assertEqual(job["id"], job_id)
 
     def test_next_job_allows_legacy_gsm8k_manifest_for_math_prm_run(self):
+        require_meta_harness_schema(self, "experiment_runs", "agenda_id")
         self._write_legacy_gsm8k_manifest()
         database.execute(
             """
@@ -385,6 +401,7 @@ class GpuSchedulerTests(unittest.TestCase):
         job_id = gpu_scheduler.queue_run(
             insight_id=1,
             run_id=1,
+            resource_grant_id=1,
             resource_class="gpu_small",
             priority=1,
             vram_required_gb=16,
@@ -396,6 +413,7 @@ class GpuSchedulerTests(unittest.TestCase):
         self.assertEqual(job["id"], job_id)
 
     def test_next_job_fails_recipe_blocked_run_without_launching(self):
+        require_meta_harness_schema(self, "experiment_runs", "agenda_id")
         database.execute(
             """
             UPDATE experiment_runs
@@ -413,6 +431,7 @@ class GpuSchedulerTests(unittest.TestCase):
         job_id = gpu_scheduler.queue_run(
             insight_id=1,
             run_id=1,
+            resource_grant_id=1,
             resource_class="gpu_small",
             priority=1,
             vram_required_gb=16,
@@ -429,6 +448,7 @@ class GpuSchedulerTests(unittest.TestCase):
         self.assertEqual(auto_job["stage"], "gpu_blocked")
 
     def test_next_job_refuses_adapter_repairing_run_without_launching(self):
+        require_meta_harness_schema(self, "experiment_runs", "agenda_id")
         database.execute(
             "UPDATE experiment_runs SET status='adapter_repairing', phase='adapter_repairing' WHERE id=1"
         )
@@ -470,11 +490,13 @@ class GpuSchedulerTests(unittest.TestCase):
         active.assert_not_called()
 
     def test_recover_stale_local_running_job_requeues_after_restart(self):
+        require_meta_harness_schema(self, "experiment_runs", "agenda_id")
         workers = gpu_scheduler.register_default_workers()
         worker = workers[0]
         job_id = gpu_scheduler.queue_run(
             insight_id=1,
             run_id=1,
+            resource_grant_id=1,
             resource_class="gpu_small",
             priority=1,
             vram_required_gb=16,
@@ -508,11 +530,13 @@ class GpuSchedulerTests(unittest.TestCase):
         self.assertIsNone(auto_job["assigned_worker"])
 
     def test_recover_skips_active_local_job_without_gpu_process(self):
+        require_meta_harness_schema(self, "experiment_runs", "agenda_id")
         workers = gpu_scheduler.register_default_workers()
         worker = workers[0]
         job_id = gpu_scheduler.queue_run(
             insight_id=1,
             run_id=1,
+            resource_grant_id=1,
             resource_class="gpu_small",
             priority=1,
             vram_required_gb=16,
@@ -549,11 +573,13 @@ class GpuSchedulerTests(unittest.TestCase):
         self.assertEqual(auto_job["status"], "running_gpu")
 
     def test_recover_completed_experiment_with_open_manuscript_requeues(self):
+        require_meta_harness_schema(self, "experiment_runs", "agenda_id")
         workers = gpu_scheduler.register_default_workers()
         worker = workers[0]
         job_id = gpu_scheduler.queue_run(
             insight_id=1,
             run_id=1,
+            resource_grant_id=1,
             resource_class="gpu_small",
             priority=1,
             vram_required_gb=16,
@@ -603,6 +629,7 @@ class GpuSchedulerTests(unittest.TestCase):
         self.assertIsNone(auto_job["assigned_worker"])
 
     def test_periodic_recovery_runs_after_poll_interval(self):
+        require_meta_harness_schema(self, "experiment_runs", "agenda_id")
         gpu_scheduler.GPU_STALE_RECOVERY_POLL_SECONDS = 30
         gpu_scheduler._last_recovery_check = 10.0
 
@@ -629,6 +656,7 @@ class GpuSchedulerTests(unittest.TestCase):
         recover_workers.assert_called_once()
 
     def test_ssh_recovery_skips_job_active_in_this_process(self):
+        require_meta_harness_schema(self, "experiment_runs", "agenda_id")
         database.execute(
             """
             INSERT INTO gpu_workers (id, hostname, gpu_index, gpu_model, total_mem_gb, status, metadata)
@@ -639,6 +667,7 @@ class GpuSchedulerTests(unittest.TestCase):
         job_id = gpu_scheduler.queue_run(
             insight_id=1,
             run_id=1,
+            resource_grant_id=1,
             resource_class="gpu_large",
             priority=1,
             vram_required_gb=40,
@@ -740,11 +769,13 @@ class GpuSchedulerTests(unittest.TestCase):
         self.assertEqual(idle["status"], "idle")
 
     def test_run_job_bundle_failure_does_not_overwrite_completed_experiment(self):
+        require_meta_harness_schema(self, "experiment_runs", "agenda_id")
         workers = gpu_scheduler.register_default_workers()
         worker = workers[0]
         job_id = gpu_scheduler.queue_run(
             insight_id=1,
             run_id=1,
+            resource_grant_id=1,
             resource_class="gpu_small",
             priority=1,
             vram_required_gb=16,
@@ -799,6 +830,7 @@ class GpuSchedulerTests(unittest.TestCase):
 
 
     def test_run_job_blocks_manuscript_until_benchmark_manifest_is_complete(self):
+        require_meta_harness_schema(self, "experiment_runs", "agenda_id")
         workers = gpu_scheduler.register_default_workers()
         worker = workers[0]
         workdir = Path(self.tmpdir.name) / "run1"
@@ -816,6 +848,7 @@ class GpuSchedulerTests(unittest.TestCase):
         job_id = gpu_scheduler.queue_run(
             insight_id=1,
             run_id=1,
+            resource_grant_id=1,
             resource_class="gpu_small",
             priority=1,
             vram_required_gb=16,
@@ -861,11 +894,13 @@ class GpuSchedulerTests(unittest.TestCase):
         self.assertIn("required baselines missing", auto_job["last_error"])
 
     def test_run_job_handles_none_validation_result(self):
+        require_meta_harness_schema(self, "experiment_runs", "agenda_id")
         workers = gpu_scheduler.register_default_workers()
         worker = workers[0]
         job_id = gpu_scheduler.queue_run(
             insight_id=1,
             run_id=1,
+            resource_grant_id=1,
             resource_class="gpu_small",
             priority=1,
             vram_required_gb=16,
@@ -899,11 +934,13 @@ class GpuSchedulerTests(unittest.TestCase):
         self.assertIn("validation execution failed", auto_job["last_error"])
 
     def test_run_job_uses_full_benchmark_completion_stage(self):
+        require_meta_harness_schema(self, "experiment_runs", "agenda_id")
         workers = gpu_scheduler.register_default_workers()
         worker = workers[0]
         job_id = gpu_scheduler.queue_run(
             insight_id=1,
             run_id=1,
+            resource_grant_id=1,
             resource_class="gpu_large",
             priority=3,
             vram_required_gb=40,

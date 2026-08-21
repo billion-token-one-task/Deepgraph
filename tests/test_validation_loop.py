@@ -146,12 +146,19 @@ class ValidationLoopGitFallbackTests(unittest.TestCase):
             (workdir / "code").mkdir()
             run = {
                 "id": 7,
+                # experiment_runs is agenda-scoped, and the loop refuses to
+                # start without an active pilot/validation grant, so reaching
+                # the non-formal check at all now requires both.
+                "agenda_id": 3,
+                "resource_grant_id": 12,
                 "deep_insight_id": 3,
                 "workdir": str(workdir),
                 "proxy_config": '{"formal_experiment": false, "smoke_test_only": true}',
             }
+            grant = {"id": 12}
             insight = {
                 "id": 3,
+                "agenda_id": 3,
                 "tier": 2,
                 "title": "Smoke",
                 "proposed_method": '{"name": "M", "definition": "f(x)"}',
@@ -159,7 +166,7 @@ class ValidationLoopGitFallbackTests(unittest.TestCase):
             }
 
             with (
-                mock.patch.object(validation_loop.db, "fetchone", side_effect=[run, insight]),
+                mock.patch.object(validation_loop.db, "fetchone", side_effect=[run, grant, insight]),
                 mock.patch.object(validation_loop, "ALLOW_SMOKE_EXPERIMENT_VALIDATION", False),
                 mock.patch.object(validation_loop.db, "execute") as execute,
                 mock.patch.object(validation_loop.db, "commit"),
@@ -170,7 +177,38 @@ class ValidationLoopGitFallbackTests(unittest.TestCase):
         self.assertEqual(result["reason"], "non_formal_experiment")
         execute.assert_called()
 
-    def test_determine_final_verdict_marks_reproduction_only_runs(self):
+    def test_run_validation_loop_refuses_a_run_with_no_active_grant(self):
+        """The grant gate must keep refusing; the case above only passes it."""
+        run = {
+            "id": 7,
+            "agenda_id": 3,
+            "resource_grant_id": 12,
+            "deep_insight_id": 3,
+            "workdir": "/nonexistent",
+            "proxy_config": '{"formal_experiment": true, "smoke_test_only": false}',
+        }
+
+        with (
+            mock.patch.object(validation_loop.db, "fetchone", side_effect=[run, None]),
+            mock.patch.object(validation_loop.db, "execute") as execute,
+            mock.patch.object(validation_loop.db, "commit"),
+        ):
+            result = validation_loop.run_validation_loop(7)
+
+        self.assertEqual(result["verdict"], "blocked")
+        self.assertIn("ResourceGrant", result["reason"])
+        execute.assert_not_called()
+
+    def test_determine_final_verdict_does_not_dress_reproduction_as_a_result(self):
+        """A run that only reproduces the baseline carries no verdict.
+
+        "reproduced" left the scientific vocabulary with meta-harness-v1:
+        contracts/scientific_evidence.py admits supported, refuted,
+        inconclusive and invalid only, and _determine_final_verdict's own
+        docstring says a reproduction-only run is an execution checkpoint
+        rather than confirmation. Zero effect and an unspent refutation budget
+        is exactly that checkpoint.
+        """
         verdict = validation_loop._determine_final_verdict(
             baseline=1.0,
             best_value=1.0,
@@ -181,7 +219,7 @@ class ValidationLoopGitFallbackTests(unittest.TestCase):
             refute_min=30,
         )
 
-        self.assertEqual(verdict, "reproduced")
+        self.assertEqual(verdict, "inconclusive")
 
     def test_determine_final_verdict_requires_real_improvement_for_confirmation(self):
         verdict = validation_loop._determine_final_verdict(

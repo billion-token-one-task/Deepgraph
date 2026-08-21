@@ -204,6 +204,12 @@ def _contract_plan(source_run: Path) -> tuple[dict[str, Any], dict[str, Any], di
             "max_eval_examples": 128,
             "metrics": {"primary": "cost_adjusted_accuracy"},
             "top_venue_baseline_shard": True,
+            # agents/experiment_forge.py renders the CGGR/VOC runner only for
+            # an explicitly named audited plugin and refuses every other
+            # method with a recipe blocker. This example is that plugin, and
+            # it has to say so: without the claim it asks the forge for a
+            # runner and receives the blocker meant for unknown methods.
+            "runner_plugin": "example.cggr",
         }
     )
     plan = _align_claim_scope(plan)

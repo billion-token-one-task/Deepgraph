@@ -19,6 +19,7 @@ from db import database
 # tests with it. Gate the two tests that need it behind the same opt-in the
 # runtime uses for that plugin.
 from plugins.examples.cggr.full_pipeline import _postwriting_api_manifest_is_reusable
+from tests.meta_harness_schema import require_meta_harness_schema
 
 NONPROD_PLUGINS = os.getenv(
     "DEEPGRAPH_ENABLE_NONPROD_EXAMPLE_PLUGINS", ""
@@ -545,6 +546,7 @@ Candidate & 0.61 & 1.5 \\
 
     @mock.patch("agents.paper_orchestra_pipeline._run_full_pipeline")
     def test_generate_submission_bundle_creates_verified_bundle_files_and_db_rows(self, run_full):
+        require_meta_harness_schema(self, "experiment_runs", "agenda_id")
         run_full.side_effect = self._stub_orchestra
         result = generate_submission_bundle(1, bundle_formats=["conference"])
         self.assertIn("manuscript_run_id", result)
@@ -579,6 +581,7 @@ Candidate & 0.61 & 1.5 \\
         self.assertTrue((self.workspace_root / "idea_1" / "paper" / "current" / "main.tex").exists())
 
     def test_generate_submission_bundle_blocks_non_formal_run(self):
+        require_meta_harness_schema(self, "experiment_runs", "agenda_id")
         database.execute(
             "UPDATE experiment_runs SET proxy_config=? WHERE id=1",
             (json.dumps({"formal_experiment": False, "smoke_test_only": True}),),
@@ -600,6 +603,7 @@ Candidate & 0.61 & 1.5 \\
         self.assertTrue((current_root / "DO_NOT_SUBMIT.md").exists())
 
     def test_generate_submission_bundle_blocks_benchmark_plan_without_artifact_manifest(self):
+        require_meta_harness_schema(self, "experiment_runs", "agenda_id")
         database.execute(
             "UPDATE experiment_runs SET success_criteria=? WHERE id=1",
             (
@@ -635,6 +639,7 @@ Candidate & 0.61 & 1.5 \\
 
     @mock.patch("agents.paper_orchestra_pipeline._run_full_pipeline")
     def test_generate_submission_bundle_blocks_placeholder_figure_assets(self, run_full):
+        require_meta_harness_schema(self, "experiment_runs", "agenda_id")
         def _stub_with_placeholder(state, literature_block, paper_ids, iterations, *, figures_dir, baseline, metric_name):
             out = self._stub_orchestra(
                 state,
@@ -670,11 +675,15 @@ Candidate & 0.61 & 1.5 \\
             figures_dir,
             paperbanana_cmd="",
         )
+        # The stage is a blocked boundary in meta-harness-v1: it reports the
+        # block and never manufactures an artifact, so there is no manifest to
+        # find and no "required" flag to read.
         self.assertEqual(result["stage"], "postwriting_api_figures")
-        self.assertTrue(result["required"])
+        self.assertEqual(result["status"], "blocked")
         self.assertEqual(result["generated_count"], 0)
+        self.assertEqual(result["assets"], [])
         self.assertTrue(result["blockers"])
-        self.assertTrue((figures_dir / "postwriting_api_figure_manifest.json").exists())
+        self.assertFalse((figures_dir / "postwriting_api_figure_manifest.json").exists())
 
     @requires_nonprod_plugins
     def test_failed_postwriting_api_figure_manifest_is_not_reused(self):
@@ -751,9 +760,21 @@ Candidate & 0.61 & 1.5 \\
         self.assertEqual(result["value"], ("ok", 3))
 
     def test_manuscript_llm_timeout_wrapper_supports_worker_threads(self):
+        # The wrapper routes through call_llm_for_role, not the unscoped
+        # call_llm it used before agenda-scoped role routing existed, and it
+        # returns the route it took alongside the text and token count.
         from agents import paper_orchestra_pipeline as pipeline
 
         result = {}
+        route_kwargs = {
+            "agenda_id": 3,
+            "idea_id": 1,
+            "role": "proposer",
+            "stage": "manuscript",
+            "resource_grant_id": 0,
+            "operation": "manuscript_quality_revision",
+            "idempotency_key": "manuscript-revision:3:1:1:0",
+        }
 
         def _target():
             try:
@@ -763,20 +784,25 @@ Candidate & 0.61 & 1.5 \\
                     temperature=0.0,
                     max_tokens=32,
                     timeout_seconds=1,
+                    route_kwargs=route_kwargs,
                 )
             except Exception as exc:  # pragma: no cover - asserted below
                 result["error"] = exc
 
-        with mock.patch.object(pipeline, "call_llm", return_value=("ok", 3)):
+        with mock.patch.object(
+            pipeline, "call_llm_for_role", return_value=("ok", 3, {"role": "proposer"})
+        ) as routed:
             thread = threading.Thread(target=_target)
             thread.start()
             thread.join(timeout=5)
 
         self.assertFalse(thread.is_alive())
         self.assertNotIn("error", result)
-        self.assertEqual(result["value"], ("ok", 3))
+        self.assertEqual(result["value"], ("ok", 3, {"role": "proposer"}))
+        self.assertEqual(routed.call_args.kwargs["agenda_id"], 3)
 
     def test_manuscript_revision_llm_branch_is_reachable_for_authorable_issues(self):
+        require_meta_harness_schema(self, "experiment_runs", "agenda_id")
         from agents import paper_orchestra_pipeline as pipeline
 
         main_tex = r"\documentclass{article}\begin{document}\section{Introduction}Old text.\end{document}"

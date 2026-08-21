@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -7,6 +8,22 @@ from unittest import mock
 
 from agents import experiment_forge
 from agents.experiment_review import review_experiment_candidate
+from tests.meta_harness_schema import require_meta_harness_schema
+
+
+# _real_llm_benchmark_train_py renders a runner only for an explicitly audited
+# runner_plugin; the CGGR/VOC template these cases describe lives in the
+# demoted plugins.examples.cggr example. That a method without such a plugin is
+# refused instead is asserted by
+# test_generated_runner_refuses_cross_domain_gsm8k_fallback, which runs always.
+NONPROD_RUNNER_PLUGIN = os.getenv(
+    "DEEPGRAPH_ENABLE_NONPROD_EXAMPLE_PLUGINS", ""
+).strip().lower() in {"1", "true", "yes"}
+requires_nonprod_runner_plugin = unittest.skipUnless(
+    NONPROD_RUNNER_PLUGIN,
+    "covers the demoted plugins.examples.cggr benchmark runner template; set "
+    "DEEPGRAPH_ENABLE_NONPROD_EXAMPLE_PLUGINS=1 to run",
+)
 
 
 class GenerateScaffoldTests(unittest.TestCase):
@@ -244,6 +261,7 @@ class GenerateScaffoldTests(unittest.TestCase):
         commit.assert_called_once_with()
 
     def test_resource_granted_forge_llm_uses_scoped_role_route(self):
+        require_meta_harness_schema(self, "resource_grant_usage_reservations", None)
         scope = {
             "agenda_id": 11,
             "idea_id": 22,
@@ -1112,8 +1130,18 @@ class GenerateScaffoldTests(unittest.TestCase):
             },
         )
 
+        # The refusal moved upstream and got stronger: rather than generating a
+        # runner that declines a cross-domain fallback at run time, a method
+        # with no audited runner_plugin gets no runner at all. Mapping an
+        # unknown method onto a topic runner would invalidate the benchmark
+        # contract, so the scaffold emits a recipe blocker that exits non-zero.
         self.assertNotIn("materialize GSM8K fallback", train_py)
-        self.assertIn("refusing cross-domain GSM8K fallback", train_py)
+        self.assertNotIn("load_dataset", train_py)
+        self.assertIn("BENCHMARK_STAGE: recipe_blocked", train_py)
+        self.assertIn(
+            "no explicit audited runner_plugin for the proposed method", train_py
+        )
+        self.assertIn("sys.exit(2)", train_py)
 
     def test_restricted_benchmark_targets_add_executable_probe_and_defer_formal_targets(self):
         llm_contract = {
@@ -1214,6 +1242,10 @@ class GenerateScaffoldTests(unittest.TestCase):
         self.assertEqual(plan["benchmark_execution"]["deferred_target_count"], 1)
 
     def test_generate_scaffold_accepts_evidence_plan(self):
+        # The forge now spends through a scoped grant: it takes an llm_scope
+        # and routes via call_llm_json_for_role, and the attempt key it derives
+        # is reserved in resource_grant_usage_reservations.
+        require_meta_harness_schema(self, "resource_grant_usage_reservations", None)
         insight = {
             "proposed_method": {
                 "name": "CGGR",
@@ -1245,8 +1277,9 @@ class GenerateScaffoldTests(unittest.TestCase):
             workdir = Path(tmpdir)
             captured = {}
 
-            def _fake_call_llm_json(system: str, prompt: str):
+            def _fake_role_call(system: str, prompt: str, **kwargs):
                 captured["prompt"] = prompt
+                captured["route_kwargs"] = kwargs
                 return (
                     {
                         "program_md": "# program",
@@ -1254,13 +1287,24 @@ class GenerateScaffoldTests(unittest.TestCase):
                         "success_criteria": {"metric_name": "accuracy"},
                     },
                     17,
+                    {"provider": "test-provider", "model": "test-model"},
                 )
 
             with mock.patch.object(
-                experiment_forge, "call_llm_json", side_effect=_fake_call_llm_json
+                experiment_forge,
+                "call_llm_json_for_role",
+                side_effect=_fake_role_call,
             ):
                 scaffold = experiment_forge.generate_scaffold(
-                    insight, codebase, workdir
+                    insight,
+                    codebase,
+                    workdir,
+                    llm_scope={
+                        "agenda_id": 1,
+                        "idea_id": 2,
+                        "resource_grant_id": 3,
+                        "stage": "pilot",
+                    },
                 )
 
         self.assertEqual(scaffold["tokens"], 17)
@@ -1277,7 +1321,9 @@ class GenerateScaffoldTests(unittest.TestCase):
         self.assertIn("full_benchmark_stage", scaffold["benchmark_manifest"])
         self.assertIn("required_ablations", scaffold["success_criteria"])
 
+    @requires_nonprod_runner_plugin
     def test_generate_scaffold_injects_real_benchmark_runner_for_gpu_route(self):
+        require_meta_harness_schema(self, "resource_grant_usage_reservations", None)
         insight = {
             "resource_class": "gpu_large",
             "proposed_method": {
@@ -1290,6 +1336,7 @@ class GenerateScaffoldTests(unittest.TestCase):
                 "datasets": ["StrategyQA"],
                 "metrics": {"primary": "gpu_score"},
                 "compute_budget": {"total_gpu_hours": 50},
+                "runner_plugin": "example.cggr",
             },
         }
         codebase = {
@@ -1302,7 +1349,7 @@ class GenerateScaffoldTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             workdir = Path(tmpdir)
 
-            def _fake_call_llm_json(system: str, prompt: str):
+            def _fake_role_call(system: str, prompt: str, **kwargs):
                 return (
                     {
                         "program_md": "# program",
@@ -1311,13 +1358,24 @@ class GenerateScaffoldTests(unittest.TestCase):
                         "train_py": "import numpy as np\nprint('gpu_score: 0.1')\n",
                     },
                     17,
+                    {"provider": "test-provider", "model": "test-model"},
                 )
 
             with mock.patch.object(
-                experiment_forge, "call_llm_json", side_effect=_fake_call_llm_json
+                experiment_forge,
+                "call_llm_json_for_role",
+                side_effect=_fake_role_call,
             ):
                 scaffold = experiment_forge.generate_scaffold(
-                    insight, codebase, workdir
+                    insight,
+                    codebase,
+                    workdir,
+                    llm_scope={
+                        "agenda_id": 1,
+                        "idea_id": 2,
+                        "resource_grant_id": 3,
+                        "stage": "pilot",
+                    },
                 )
 
             train_py = (workdir / "code" / "train.py").read_text(encoding="utf-8")
@@ -1338,6 +1396,7 @@ class GenerateScaffoldTests(unittest.TestCase):
         self.assertFalse(scaffold["benchmark_manifest"]["sanity_only"])
 
     def test_generic_method_without_runner_plugin_gets_blocker(self):
+        require_meta_harness_schema(self, "resource_grant_usage_reservations", None)
         insight = {
             "resource_class": "gpu_large",
             "proposed_method": {
@@ -1618,6 +1677,10 @@ class GenerateScaffoldTests(unittest.TestCase):
         ):
             experiment_forge._checkpoint_run_state(
                 42,
+                # experiment_runs is agenda-scoped: the checkpoint keys its
+                # UPDATE on (id, agenda_id) and the scope is required, not
+                # optional, so an unscoped checkpoint cannot be written.
+                agenda_id=3,
                 phase="review_decision_ready",
                 workdir="/tmp/run_42",
                 codebase={"url": "https://github.com/example/project", "name": "project"},
@@ -1627,12 +1690,14 @@ class GenerateScaffoldTests(unittest.TestCase):
 
         sql, params = execute.call_args.args
         self.assertIn("phase=?", sql)
-        self.assertEqual(params[-1], 42)
+        self.assertIn("agenda_id=?", sql)
+        self.assertEqual(params[-2:], (42, 3))
         self.assertIn("review_decision_ready", params)
         self.assertIn("/tmp/run_42", params)
         self.assertTrue(any("formal_experiment" in str(value) for value in params))
         commit.assert_called_once()
 
+    @requires_nonprod_runner_plugin
     def test_fallback_scaffold_produces_real_benchmark_train_py(self):
         scaffold = experiment_forge._fallback_scaffold(
             {"name": "CGGR", "definition": "Adaptive reasoning gate."},
@@ -1648,6 +1713,9 @@ class GenerateScaffoldTests(unittest.TestCase):
                     }
                 ],
                 "metrics": {"primary": "cost_adjusted_utility"},
+                # The template below is the example.cggr runner; a plan that
+                # does not name an audited plugin gets a recipe blocker.
+                "runner_plugin": "example.cggr",
             },
             {"url": "scratch", "name": "minimal"},
         )

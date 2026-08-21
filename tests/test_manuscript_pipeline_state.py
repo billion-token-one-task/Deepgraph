@@ -21,6 +21,8 @@ class ManuscriptPipelineStateTests(unittest.TestCase):
         }
         insight = {
             "id": 13,
+            # deep_insights is agenda-scoped; the title writer refuses an unscoped row.
+            "agenda_id": 3,
             "title": "Counterfactual Gain Gated Reasoning",
             "proposed_method": json.dumps({"name": "CGGR", "one_line": "Route extra reasoning by estimated gain."}),
             "experimental_plan": json.dumps({"datasets": ["MuSiQue-Ans"], "baselines": ["direct"]}),
@@ -81,6 +83,8 @@ class ManuscriptPipelineStateTests(unittest.TestCase):
             }
             insight = {
                 "id": 13,
+                # deep_insights is agenda-scoped; the title writer refuses an unscoped row.
+                "agenda_id": 3,
                 "title": "Counterfactual Gain Gated Reasoning",
                 "proposed_method": json.dumps({"name": "CGGR", "one_line": "Route extra reasoning by estimated gain."}),
                 "experimental_plan": json.dumps({"datasets": ["MuSiQue-Ans"], "baselines": ["direct"]}),

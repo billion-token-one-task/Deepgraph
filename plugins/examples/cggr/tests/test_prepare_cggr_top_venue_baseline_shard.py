@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -9,6 +10,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from prepare_cggr_top_venue_baseline_shard import TOP_VENUE_METHODS, prepare
 
 
+# The shard template is rendered by the example.cggr runner, which
+# agents/experiment_forge.py keeps disabled unless the operator opts in. With
+# the opt-in absent the forge returns a recipe blocker instead of a runner --
+# which is the point of the demotion, not a failure of this script.
+NONPROD_PLUGINS = os.getenv(
+    "DEEPGRAPH_ENABLE_NONPROD_EXAMPLE_PLUGINS", ""
+).strip().lower() in {"1", "true", "yes"}
+
+
+@unittest.skipUnless(
+    NONPROD_PLUGINS,
+    "renders the demoted example.cggr runner; set "
+    "DEEPGRAPH_ENABLE_NONPROD_EXAMPLE_PLUGINS=1 to run",
+)
 class PrepareCggrTopVenueBaselineShardTests(unittest.TestCase):
     def _write_source_run(self, root: Path) -> Path:
         source = root / "run_45"

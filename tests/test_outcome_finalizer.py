@@ -70,6 +70,11 @@ class OutcomeFinalizerTests(unittest.TestCase):
             mock.patch.object(outcome_finalizer, "_recover_terminal_usage", return_value={}),
             mock.patch.object(outcome_finalizer, "_candidate_rows", return_value=[self._row()]),
             mock.patch.object(outcome_finalizer, "MetaHarnessRepository", return_value=repository),
+            # The reconciliation prologue reads outcome_records, which SQLite
+            # does not have; letting it raise would add a rollback that has
+            # nothing to do with the deferral this case measures.
+            mock.patch.object(outcome_finalizer.db, "execute"),
+            mock.patch.object(outcome_finalizer.db, "commit"),
             mock.patch.object(outcome_finalizer.db, "rollback") as rollback,
             mock.patch.object(outcome_finalizer, "_mark_closed") as mark_closed,
         ):

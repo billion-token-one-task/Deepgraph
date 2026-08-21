@@ -5,6 +5,7 @@ from pathlib import Path
 
 from db import database
 from orchestrator import manuscript_watchdog
+from tests.meta_harness_schema import require_meta_harness_schema
 
 
 class ManuscriptWatchdogTests(unittest.TestCase):
@@ -65,6 +66,7 @@ class ManuscriptWatchdogTests(unittest.TestCase):
         self.tmpdir.cleanup()
 
     def test_audit_marks_article_placeholder_bundle_stale(self):
+        require_meta_harness_schema(self, "submission_bundles", "agenda_id")
         bundle = self.tmpdir_path / "bundle"
         bundle.mkdir()
         (bundle / "main.tex").write_text(
@@ -385,6 +387,7 @@ class ManuscriptWatchdogTests(unittest.TestCase):
 
 
     def test_reconcile_downgrades_existing_stale_manuscript_auto_job(self):
+        require_meta_harness_schema(self, "auto_research_jobs", "agenda_id")
         database.execute("UPDATE manuscript_runs SET status='stale' WHERE id=1")
         database.commit()
 

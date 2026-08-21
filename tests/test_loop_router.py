@@ -114,6 +114,10 @@ def test_harness_task_records_loop_router_for_dataset_blocker():
 def test_unrecovered_harness_job_writes_loop_state():
     row = {
         "id": 7,
+        # benchmark_harness_jobs is agenda-scoped: the UPDATE this exercises
+        # keys on (id, agenda_id), so a row without a scope is not a row the
+        # writer can accept.
+        "agenda_id": 3,
         "deep_insight_id": 91,
         "benchmark_name": "BIRD",
         "last_error": "metadata probe failed: dataset birdsql/bird does not exist",

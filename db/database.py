@@ -272,25 +272,64 @@ def _sqlite_with_lock_retry(operation):
             delay = min(delay * 1.5, 2.0)
 
 
+def _schema_statements(sql_text: str) -> list[str]:
+    """Split a schema file into statements, keeping commented-header ones.
+
+    Splitting on ";" leaves each statement carrying whatever comment lines
+    preceded it, so a "starts with --" filter drops the statement as well as
+    its header. That silently discarded 19 of the 151 statements in
+    schema_postgres.sql -- papers, deep_insights, experiment_runs,
+    auto_research_jobs, manuscript_runs and the additive ALTER TABLE repairs
+    among them. Production never noticed because those tables predate this
+    function; a fresh database could not be created at all, and an additive
+    column added under a section header would never be applied on startup.
+    """
+    statements = []
+    for chunk in sql_text.split(";"):
+        lines = chunk.splitlines()
+        start = 0
+        while start < len(lines) and (
+            not lines[start].strip() or lines[start].lstrip().startswith("--")
+        ):
+            start += 1
+        statement = "\n".join(lines[start:]).strip()
+        if statement:
+            statements.append(statement)
+    return statements
+
+
 def _apply_postgres_schema_file() -> None:
     schema_path = Path(__file__).with_name("schema_postgres.sql")
     if not schema_path.is_file():
         raise FileNotFoundError(schema_path)
     sql_text = schema_path.read_text(encoding="utf-8")
-    statements = [s.strip() for s in sql_text.split(";") if s.strip() and not s.strip().startswith("--")]
+    statements = _schema_statements(sql_text)
     conn = get_conn()
     with conn.cursor() as cur:
         # Startup should not block indefinitely on existing hot tables when the
         # schema is already mostly present. Best-effort index creation is enough.
         cur.execute("SET lock_timeout = '5s'")
         cur.execute("SET statement_timeout = '60s'")
-        for stmt in statements:
-            cur.execute("SAVEPOINT schema_stmt")
-            try:
-                cur.execute(stmt)
-                cur.execute("RELEASE SAVEPOINT schema_stmt")
-            except Exception as e:
-                msg = str(e).lower()
+        # The file is not in dependency order: an index on a column can precede
+        # the ALTER TABLE that adds it. While every statement was being dropped
+        # along with its comment header that never showed, because the pair
+        # disappeared together. Retry the ones that failed on a missing object
+        # while any progress is still being made, the way db/pg_init.py does;
+        # a pass that fixes nothing re-raises instead of skipping silently.
+        pending = list(statements)
+        while pending:
+            deferred: list[tuple[str, Exception]] = []
+            progressed = 0
+            for stmt in pending:
+                cur.execute("SAVEPOINT schema_stmt")
+                try:
+                    cur.execute(stmt)
+                    cur.execute("RELEASE SAVEPOINT schema_stmt")
+                    progressed += 1
+                    continue
+                except Exception as e:
+                    error = e
+                msg = str(error).lower()
                 normalized = " ".join(stmt.lower().split())
                 best_effort_stmt = (
                     normalized.startswith("create index if not exists")
@@ -304,6 +343,8 @@ def _apply_postgres_schema_file() -> None:
                         )
                     )
                 )
+                cur.execute("ROLLBACK TO SAVEPOINT schema_stmt")
+                cur.execute("RELEASE SAVEPOINT schema_stmt")
                 if (
                     "already exists" in msg
                     or "duplicate" in msg
@@ -312,14 +353,19 @@ def _apply_postgres_schema_file() -> None:
                     or ("canceling statement due to lock timeout" in msg and best_effort_stmt)
                     or ("deadlock detected" in msg and best_effort_stmt)
                 ):
-                    cur.execute("ROLLBACK TO SAVEPOINT schema_stmt")
-                    cur.execute("RELEASE SAVEPOINT schema_stmt")
+                    progressed += 1
                     if ("lock timeout" in msg or "deadlock detected" in msg) and best_effort_stmt:
                         print(f"[DB] Skipping locked startup schema statement: {stmt[:120]}", flush=True)
                     continue
-                cur.execute("ROLLBACK TO SAVEPOINT schema_stmt")
-                cur.execute("RELEASE SAVEPOINT schema_stmt")
+                if "does not exist" in msg:
+                    deferred.append((stmt, error))
+                    continue
                 raise
+            if not deferred:
+                break
+            if not progressed:
+                raise deferred[0][1]
+            pending = [stmt for stmt, _ in deferred]
     conn.commit()
 
 

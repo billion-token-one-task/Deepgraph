@@ -77,6 +77,10 @@ class ScientificReviewGateTests(unittest.TestCase):
                     "subset_analysis": {"severe_disagreement": {"accuracy_gain": 0.08}},
                     "quality_cost_frontier": {"pareto_methods": ["Confidence Routing", "DPC"]},
                     "live_sanity_check": {"datasets": ["GSM8K"], "num_examples": 100},
+                    # An incomplete full benchmark is a high issue on its own,
+                    # which would reject regardless of the analysis artifacts
+                    # this case is about. See the companion test below.
+                    "full_benchmark_completed": True,
                 },
             },
         }
@@ -90,7 +94,49 @@ class ScientificReviewGateTests(unittest.TestCase):
         self.assertFalse(review["missing_analyses"]["live_sanity_check"])
         self.assertNotEqual(review["target_assessments"]["iclr_main"]["verdict"], "reject")
 
-    def test_positive_sota_margin_downgrades_significance_and_tiny_gap(self):
+    def test_analysis_artifacts_do_not_excuse_an_incomplete_full_benchmark(self):
+        """Rich analyses must not buy a pass on the completed-benchmark gate."""
+        state = {
+            "method_name": "Diversity-Preserving Consensus",
+            "result_packet": {
+                "evidence_tier": "audited_live_benchmark",
+                "benchmark_summary": {
+                    "primary_metric": "accuracy",
+                    "candidate_method": "Diversity-Preserving Consensus (ours)",
+                    "num_seeds": 8,
+                    "datasets": [{"name": "GSM8K", "num_test": 300}],
+                    "per_method": {
+                        "Self-Consistency": {"accuracy": 0.81, "avg_new_tokens": 210.0},
+                        "Confidence Routing": {"accuracy": 0.82, "avg_new_tokens": 100.0},
+                        "Best-of-N Selector": {"accuracy": 0.83, "avg_new_tokens": 160.0},
+                        "Debate Vote": {"accuracy": 0.84, "avg_new_tokens": 260.0},
+                        "Adaptive Early Routing": {"accuracy": 0.80, "avg_new_tokens": 120.0},
+                        "Diversity-Preserving Consensus (ours)": {"accuracy": 0.87, "avg_new_tokens": 180.0},
+                    },
+                    "bootstrap_ci": {"p_value": 0.01},
+                    "pairwise_tests": {
+                        "DPC_vs_Confidence_Routing": {"p_value": 0.02, "accuracy_gain": 0.05},
+                    },
+                    "subset_analysis": {"severe_disagreement": {"accuracy_gain": 0.08}},
+                    "quality_cost_frontier": {"pareto_methods": ["Confidence Routing", "DPC"]},
+                    "live_sanity_check": {"datasets": ["GSM8K"], "num_examples": 100},
+                    "full_benchmark_completed": False,
+                },
+            },
+        }
+
+        review = _scientific_review_gate("DPC preserves dissent.", state)
+
+        self.assertTrue(
+            any(
+                issue["severity"] == "high" and "Full benchmark is incomplete" in issue["issue"]
+                for issue in review["issues"]
+            ),
+            review["issues"],
+        )
+        self.assertEqual(review["target_assessments"]["iclr_main"]["verdict"], "reject")
+
+    def test_positive_sota_margin_does_not_buy_off_the_significance_issue(self):
         state = {
             "method_name": "Certified Residual Policy Packets",
             "result_packet": {
@@ -113,13 +159,32 @@ class ScientificReviewGateTests(unittest.TestCase):
 
         review = _scientific_review_gate(tex, state)
 
+        # Being numerically ahead of the strongest baseline used to downgrade
+        # the significance issue. The pre-V1 pipeline went further and rewrote
+        # "not statistically significant" out of the prose for exactly this
+        # run (p=0.0625, gain 0.000006). meta-harness-v1 removed both: a margin
+        # six millionths wide at p>0.05 is reported as what it is.
         self.assertTrue(review["candidate_beats_strongest"])
         self.assertAlmostEqual(review["strongest_practical_baseline"]["metric_gap"], 0.000006)
         issue_text = "\n".join(issue["issue"] for issue in review["issues"])
-        self.assertNotIn("Core empirical result is not statistically significant", issue_text)
-        self.assertFalse(any(issue["severity"] == "high" and "p=" in issue["issue"] for issue in review["issues"]))
-        self.assertFalse(any(issue["severity"] == "medium" and "small" in issue["issue"].lower() for issue in review["issues"]))
-        self.assertFalse(any(issue["severity"] == "high" and "route/gate" in issue["issue"].lower() for issue in review["issues"]))
+        self.assertIn("Core empirical result is not statistically significant", issue_text)
+        self.assertTrue(
+            any(
+                issue["severity"] == "high" and "p=0.0625" in issue["issue"]
+                for issue in review["issues"]
+            ),
+            review["issues"],
+        )
+        # The mechanism being inactive stays a low issue rather than a high one
+        # when the candidate still holds the best metric: a near-zero trigger
+        # rate makes the claim conservative, it does not make it false.
+        self.assertFalse(
+            any(
+                issue["severity"] == "high" and "route/gate" in issue["issue"].lower()
+                for issue in review["issues"]
+            ),
+            review["issues"],
+        )
 
 
 if __name__ == "__main__":

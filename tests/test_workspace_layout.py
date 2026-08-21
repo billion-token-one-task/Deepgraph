@@ -6,6 +6,7 @@ from unittest import mock
 
 from agents import workspace_layout
 from db import database
+from tests.meta_harness_schema import require_meta_harness_schema
 
 
 def _load_backfill_module():
@@ -51,6 +52,7 @@ class WorkspaceLayoutTests(unittest.TestCase):
         self.tmpdir.cleanup()
 
     def test_get_idea_workspace_persists_roots_and_promotes_canonical_run(self):
+        require_meta_harness_schema(self, "deep_insights", "agenda_id")
         database.execute("INSERT INTO deep_insights (id, tier, title) VALUES (1, 2, 'Idea Workspace')")
         database.execute("INSERT INTO experiment_runs (id, deep_insight_id, status) VALUES (5, 1, 'testing')")
         database.commit()
@@ -67,6 +69,7 @@ class WorkspaceLayoutTests(unittest.TestCase):
         self.assertTrue((Path(layout["plan_root"]) / "latest_status.json").exists())
 
     def test_promote_canonical_run_falls_back_to_marker_when_current_dir_locked(self):
+        require_meta_harness_schema(self, "deep_insights", "agenda_id")
         database.execute("INSERT INTO deep_insights (id, tier, title) VALUES (1, 2, 'Idea Workspace')")
         database.execute("INSERT INTO experiment_runs (id, deep_insight_id, status) VALUES (5, 1, 'testing')")
         database.commit()
@@ -80,6 +83,7 @@ class WorkspaceLayoutTests(unittest.TestCase):
         self.assertEqual(marker.read_text(encoding="utf-8"), str(layout["run_root"]))
 
     def test_backfill_script_maps_legacy_run_and_manuscript_dirs(self):
+        require_meta_harness_schema(self, "deep_insights", "agenda_id")
         legacy_run = Path(self.tmpdir.name) / "legacy_run"
         (legacy_run / "code").mkdir(parents=True, exist_ok=True)
         (legacy_run / "code" / "train.py").write_text("print('legacy')", encoding="utf-8")

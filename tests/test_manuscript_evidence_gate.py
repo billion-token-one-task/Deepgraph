@@ -1,7 +1,7 @@
 from agents.paper_orchestra_pipeline import _submission_blockers_from_state
 
 
-def _draft_ready_state(**packet_overrides):
+def _draft_ready_state(*, scientific_evidence_state="manuscript_allowed", **packet_overrides):
     packet = {
         "formal_experiment": True,
         "smoke_test_only": False,
@@ -34,15 +34,35 @@ def _draft_ready_state(**packet_overrides):
         },
     }
     packet.update(packet_overrides)
-    return {
+    state = {
         "formal_experiment": True,
         "smoke_test_only": False,
+        # The evidence ladder gates the manuscript: nothing may be written
+        # until an independent scientific decision has put the run in
+        # manuscript_allowed. A draft-ready state is a state that already
+        # cleared that gate; the soft full-benchmark gaps below are what this
+        # module is actually about.
+        "scientific_evidence_state": "manuscript_allowed",
         "result_packet": packet,
     }
+    state["scientific_evidence_state"] = scientific_evidence_state
+    return state
 
 
 def test_submission_blockers_allow_draft_with_soft_full_benchmark_gaps():
     assert _submission_blockers_from_state(_draft_ready_state()) == []
+
+
+def test_submission_blockers_still_block_before_the_evidence_ladder_allows_it():
+    """The soft-gap allowance must not become an exemption from the ladder."""
+    for state_value in (None, "planned", "scientifically_decided", "supported"):
+        blockers = _submission_blockers_from_state(
+            _draft_ready_state(scientific_evidence_state=state_value)
+        )
+        assert "scientific_evidence_state is not manuscript_allowed." in blockers, (
+            state_value,
+            blockers,
+        )
 
 
 def test_submission_blockers_still_block_smoke_probe():
