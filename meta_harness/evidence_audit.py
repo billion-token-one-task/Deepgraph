@@ -776,8 +776,58 @@ def run_evidence_audit_phase(
             actor=AUDIT_ACTOR,
         )
         log(f"[AUDIT] run {run_id} scientifically_decided verdict={verdict}")
+    # The manuscript gate runs HERE, between the decision and the settlement,
+    # and not in the advance driver where it was first wired.
+    #
+    # That driver selects a scientifically_decided run only while an active
+    # full_benchmark or evidence_audit grant still exists -- and the very next
+    # line settles that grant. run 246 earned the repository's first supported
+    # verdict on 2026-08-21 and could never have reached manuscript_allowed:
+    # by the time the gate was asked about it, the run no longer matched the
+    # query that would have asked.
+    #
+    # The gate also needs the grant to fund its reviewer call, so before
+    # settlement is the only place both conditions hold at once.
+    _run_manuscript_gate_if_supported(run, verdict, log=log)
     _settle_completed_grants(run, log=log)
     return "decided"
+
+
+def _run_manuscript_gate_if_supported(
+    run: Mapping[str, Any], verdict: str, *, log=print
+) -> None:
+    """Ask the manuscript gate about a supported run. Never fatal.
+
+    A refusal, an unreachable reviewer or a missing signing secret leaves the
+    run at scientifically_decided, which is where it already is. The audit's
+    own result must not depend on this.
+    """
+    if verdict != "supported":
+        return
+    import os
+
+    from meta_harness.manuscript_gate import (
+        MANUSCRIPT_REVIEWER_SECRET_ENV,
+        run_manuscript_gate,
+    )
+
+    secret = os.getenv(MANUSCRIPT_REVIEWER_SECRET_ENV, "")
+    if not secret:
+        log(
+            "[MANUSCRIPT] signing secret is absent "
+            f"({MANUSCRIPT_REVIEWER_SECRET_ENV}); run stays at "
+            "scientifically_decided"
+        )
+        return
+    try:
+        status = run_manuscript_gate(dict(run), secret=secret, log=log)
+        log(f"[MANUSCRIPT] run {run.get('id')} gate -> {status}")
+    except Exception as exc:
+        db.rollback()
+        log(
+            f"[MANUSCRIPT] run {run.get('id')} gate failed, staying at "
+            f"scientifically_decided: {type(exc).__name__}: {exc}"
+        )
 
 
 def holdout_consistent(
