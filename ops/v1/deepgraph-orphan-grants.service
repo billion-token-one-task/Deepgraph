@@ -10,6 +10,11 @@ User=billion-token
 # way deepgraph-auto-advance.service is; the WorkingDirectory is also where
 # .env is read from, so moving it silently removes DEEPGRAPH_DATABASE_URL.
 WorkingDirectory=/home/billion-token/Deepgraph
+# Explicit because config.py loads .env relative to the working directory, so
+# pointing WorkingDirectory at a release directory silently removes
+# DEEPGRAPH_DATABASE_URL -- the same trap deepgraph-auto-advance hit.
+EnvironmentFile=/home/billion-token/Deepgraph/.env
+EnvironmentFile=-/etc/deepgraph/runtime.env
 ExecStart=/home/billion-token/Deepgraph/.venv/bin/python scripts/repair_orphaned_grants.py --apply
 # Reads grant/run state and calls the guarded lifecycle API. It cannot spend:
 # revocation refunds an unused grant, expiry releases the unspent remainder of
