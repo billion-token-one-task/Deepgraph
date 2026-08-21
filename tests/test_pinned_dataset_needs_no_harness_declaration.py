@@ -29,12 +29,19 @@ import unittest
 
 from agents.benchmark_protocol import resolve_benchmark_protocol
 
+# requires_harness is declared explicitly on the row. It used to arrive on its
+# own, because every unregistered dataset resolved to CIFAR-10 and inherited
+# CIFAR's protocol -- these tests were passing on the strength of that defect
+# (fixed 2026-08-21, see test_an_empty_alias_matches_nothing.py). BIG-Bench
+# object_counting does not require a harness at all; what these tests are for
+# is the exemption logic, so the row states the condition it means to exercise.
 _ROW = {
     "name": "tasksource/bigbench:object_counting@210c156",
     "hf_dataset": "tasksource/bigbench",
     "config": "object_counting",
     "split": "train",
     "revision": "210c156767d2f4f05d2f4fd0bb275017a67040fd",
+    "requires_harness": True,
 }
 _V1 = {"schema_version": "experiment_requirements_v1"}
 

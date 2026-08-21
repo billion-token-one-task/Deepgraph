@@ -282,11 +282,42 @@ KNOWN_BENCHMARK_PROTOCOLS: dict[str, dict[str, Any]] = {
 
 
 def _known_protocol_for(name: str) -> dict[str, Any] | None:
+    """Match a dataset name to a registered benchmark protocol, or nothing.
+
+    The match is by substring in both directions, and five registered protocols
+    carry an empty `hf_dataset`. `"" in anything` is True, so every one of those
+    empty strings matched every name ever asked about, and the first such
+    protocol in registry order answered for all of them:
+
+        BIG-Bench object_counting   -> CIFAR-10
+        tasksource/bigbench         -> CIFAR-10
+        my_totally_made_up_dataset  -> CIFAR-10
+        xyzzy                       -> CIFAR-10
+
+    This was not a near-miss between two object-recognition tasks. Every
+    unregistered dataset in the system was being labelled CIFAR-10, and
+    inheriting its protocol with it: requires_harness (which blocked execution
+    until floors106), minimum_repeats 3, primary_metric accuracy, and
+    cs.toronto.edu as the official source URL.
+
+    Found in idea 201's benchmark_harness_task.json on 2026-08-21, where an
+    object-counting experiment was recorded as CIFAR-10 with CIFAR's citation.
+    The execution contract was unaffected -- run 240 really did run
+    Qwen2.5-1.5B on tasksource/bigbench at the pinned revision -- so what this
+    corrupted was the record, which is the part a manuscript would quote.
+    """
     canon = _canonical(name)
+    if not canon:
+        return None
     for protocol in KNOWN_BENCHMARK_PROTOCOLS.values():
         aliases = [protocol["canonical_name"], protocol.get("hf_dataset"), *(protocol.get("aliases") or [])]
-        if any(canon == _canonical(alias) or canon in _canonical(alias) or _canonical(alias) in canon for alias in aliases):
-            return dict(protocol)
+        for alias in aliases:
+            alias_canon = _canonical(alias)
+            if not alias_canon:
+                # An unset field is not an alias that matches everything.
+                continue
+            if canon == alias_canon or canon in alias_canon or alias_canon in canon:
+                return dict(protocol)
     return None
 
 
