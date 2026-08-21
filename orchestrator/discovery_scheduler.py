@@ -13,15 +13,9 @@ from datetime import datetime
 
 from agents.llm_client import is_llm_auth_error, is_llm_provider_unavailable_error
 from config import (
-    DISCOVERY_AUTO_TRIGGER_PAPERS,
-    DISCOVERY_MIN_TIER2_BACKLOG,
-    DISCOVERY_BULK_TIER1_CANDIDATES,
-    DISCOVERY_BULK_TIER1_OVERLAPS,
-    DISCOVERY_BULK_TIER1_PATTERNS,
     DISCOVERY_BULK_TIER2_LIMIT_NODES,
     DISCOVERY_BULK_TIER2_PLATEAUS,
     DISCOVERY_BULK_TIER2_PROBLEMS,
-    DISCOVERY_TIER1_CANDIDATES,
     DISCOVERY_TIER2_PAPERS,
     DISCOVERY_TIER2_PROBLEMS,
     PIPELINE_EVENT_POLL_SECONDS,
@@ -316,115 +310,6 @@ def _eligible_tier2_backlog() -> int:
     return int(row["c"]) if row else 0
 
 
-def _warm_tier2_backlog() -> int:
-    if db.table_exists("research_problems"):
-        row = db.fetchone(
-            """
-            SELECT COUNT(DISTINCT COALESCE(di.research_problem_id, di.id)) AS c
-            FROM deep_insights di
-            LEFT JOIN auto_research_jobs arj ON arj.deep_insight_id = di.id
-            WHERE di.tier = 2
-              AND COALESCE(di.status, 'candidate') NOT IN ('exists')
-              AND COALESCE(di.outcome, 'pending') NOT IN ('cleaned', 'archived')
-              AND COALESCE(di.novelty_status, '') NOT IN ('cleaned_similar_duplicate', 'exists')
-              AND COALESCE(di.submission_status, 'not_started') NOT IN ('stale')
-              AND (
-                arj.status IS NULL
-                OR arj.status IN (
-                    'queued',
-                    'eligible',
-                    'failed',
-                    'queued_cpu',
-                    'queued_gpu',
-                    'verifying',
-                    'researching',
-                    'review_pending',
-                    'running_experiment',
-                    'running_cpu',
-                    'running_gpu'
-                )
-                OR (
-                    arj.status='blocked'
-                    AND (
-                        arj.cpu_eligible=1
-                        OR arj.stage IN ('verification_input_missing', 'research_input_missing')
-                    )
-                )
-              )
-            """
-        )
-        return int(row["c"]) if row else 0
-    row = db.fetchone(
-        """
-        SELECT COUNT(*) AS c
-        FROM deep_insights di
-        LEFT JOIN auto_research_jobs arj ON arj.deep_insight_id = di.id
-        WHERE di.tier = 2
-          AND COALESCE(di.status, 'candidate') NOT IN ('exists')
-          AND COALESCE(di.outcome, 'pending') NOT IN ('cleaned', 'archived')
-          AND COALESCE(di.novelty_status, '') NOT IN ('cleaned_similar_duplicate', 'exists')
-          AND COALESCE(di.submission_status, 'not_started') NOT IN ('stale')
-          AND (
-            arj.status IS NULL
-            OR arj.status IN (
-                'queued',
-                'eligible',
-                'failed',
-                'queued_cpu',
-                'queued_gpu',
-                'verifying',
-                'researching',
-                'review_pending',
-                'running_experiment',
-                'running_cpu',
-                'running_gpu'
-            )
-            OR (
-                arj.status='blocked'
-                AND (
-                    arj.cpu_eligible=1
-                    OR arj.stage IN ('verification_input_missing', 'research_input_missing')
-                )
-            )
-          )
-        """
-    )
-    return int(row["c"]) if row else 0
-
-
-def _reasoned_paper_count() -> int:
-    row = db.fetchone("SELECT COUNT(*) AS c FROM papers WHERE status='reasoned'")
-    return int(row["c"]) if row else 0
-
-
-def _milestone_for_count(reasoned_count: int) -> int:
-    interval = max(0, int(DISCOVERY_AUTO_TRIGGER_PAPERS or 0))
-    if interval <= 0:
-        return 0
-    return (max(0, reasoned_count) // interval) * interval
-
-
-def _milestone_done(milestone: int) -> bool:
-    row = db.fetchone(
-        "SELECT id FROM pipeline_events WHERE dedupe_key=? LIMIT 1",
-        (f"idea_screening_done:{milestone}",),
-    )
-    return bool(row)
-
-
-def _run_milestone_idea_screening(milestone: int, reasoned_count: int, trigger: str) -> None:
-    log_event(
-        "discovery",
-        {
-            "step": "idea_screening_blocked",
-            "milestone": milestone,
-            "reasoned_count": reasoned_count,
-            "trigger": trigger,
-            "reason": "agenda_id_required",
-        },
-    )
-
-
 def maybe_launch_milestone_idea_screening(trigger: str = "manual") -> dict:
     """Legacy unscoped trigger is disabled; scoped callers use run_full_discovery."""
     return {
@@ -432,13 +317,6 @@ def maybe_launch_milestone_idea_screening(trigger: str = "manual") -> dict:
         "reason": "agenda_id_required",
         "trigger": trigger,
     }
-
-
-def _run_parallel_tier2_discovery() -> None:
-    log_event(
-        "discovery",
-        {"step": "parallel_tier2_blocked", "reason": "agenda_id_required"},
-    )
 
 
 def _maybe_launch_parallel_tier2_discovery(trigger: str) -> dict:

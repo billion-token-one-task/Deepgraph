@@ -1304,19 +1304,39 @@ class MetaHarnessRepository:
             raise
 
     def expire_grant_now(self, grant_id: int, *, agenda_id: int, reason: str) -> bool:
-        """Operator action: end an active proposal grant's TTL immediately.
+        """Operator action: end an active grant's TTL immediately.
 
         Identical semantics to natural expiry -- the remaining reservation is
         released, settled spend stays settled, and the candidate parks at
         resource_grant_expired for the standard requeue. Exists because an
         attempts- or cap-exhausted proposal grant otherwise pins its candidate
         and the agenda's concurrency slot for the rest of a 4-hour TTL
-        (grants 62/67/68, 2026-08-17). Deliberately narrow: proposal and
-        evidence_audit stages only -- both are token/holdout stages whose
-        exhausted grants pin their candidate (grant 108's hours were burned
-        by a parasitic experiment-lane launch, 2026-08-19, and the audit
-        could not fund its holdout); pilot and benchmark stages settle
-        through the outcome finalizer.
+        (grants 62/67/68, 2026-08-17). It was proposal and evidence_audit only
+        -- both are token/holdout stages whose exhausted grants pin their
+        candidate (grant 108's hours were burned by a parasitic
+        experiment-lane launch, 2026-08-19, and the audit could not fund its
+        holdout) -- because pilot and benchmark stages settle through the
+        outcome finalizer.
+
+        An execution-stage grant that never got a run has no such settlement.
+        The finalizer settles AGAINST a run; revoke_grant refuses a grant that
+        already metered usage, and refusing is right, because withdrawal would
+        erase the record of a spend that happened. So a pilot grant whose forge
+        died before creating the run sat active for the rest of a 24-hour TTL:
+        seven of them on 2026-08-21, holding up to 13.5 hours of an agenda's
+        concurrency slot each for work that had already failed.
+
+        Expiry is the honest answer, because it is what the forge crash was:
+        operational failure, not a result. No OutcomeRecord is written -- there
+        is no run, no arm and no measurement to record one from, and a
+        non-result in the scientific record is the failure mode this system
+        keeps paying for. The settled spend stays settled; only the unspent
+        remainder and the slot come back.
+
+        The widening is conditional, not a stage list: an execution-stage grant
+        qualifies only while NOTHING is attached to it. Any experiment run at
+        all, or a compute job or Colab request that is not in a terminal state,
+        and the grant is still live work and is refused.
         """
         if not str(reason or "").strip():
             raise MetaHarnessPersistenceError("a reason is required to end a TTL early")
@@ -1327,7 +1347,27 @@ class MetaHarnessRepository:
                 SET expires_at=CURRENT_TIMESTAMP,
                     grant_reason=grant_reason || ?
                 WHERE id=? AND agenda_id=? AND status='active'
-                  AND stage IN ('proposal', 'evidence_audit')
+                  AND (
+                        stage IN ('proposal', 'evidence_audit')
+                        OR (
+                            NOT EXISTS (
+                                SELECT 1 FROM experiment_runs er
+                                WHERE er.resource_grant_id=resource_grants.id
+                            )
+                            AND NOT EXISTS (
+                                SELECT 1 FROM compute_jobs_v1 cj
+                                WHERE cj.resource_grant_id=resource_grants.id
+                                  AND cj.status NOT IN (
+                                      'succeeded', 'failed', 'cancelled', 'timed_out'
+                                  )
+                            )
+                            AND NOT EXISTS (
+                                SELECT 1 FROM colab_work_requests_v1 cwr
+                                WHERE cwr.resource_grant_id=resource_grants.id
+                                  AND cwr.status IN ('admitting', 'queued', 'running')
+                            )
+                        )
+                  )
                 """,
                 (f";operator_expired:{reason[:200]}", int(grant_id), int(agenda_id)),
             )

@@ -74,7 +74,6 @@ from orchestrator.benchmark_completion import (
 )
 from orchestrator import gpu_scheduler
 from orchestrator import meta_compute_runtime
-from orchestrator import manuscript_watchdog
 from orchestrator.pipeline import log_event
 
 _worker_thread: threading.Thread | None = None
@@ -4829,51 +4828,6 @@ def _process_candidate(insight: dict) -> None:
             last_error=None if "error" not in bundle else str(bundle.get("error")),
         )
     log_event("auto_research", {"step": "experiment_completed", "insight_id": insight_id, "run_id": existing_run["id"], "verdict": result.get("verdict")})
-
-
-def consume_pipeline_events_once(limit: int = 50) -> dict:
-    db.init_db()
-    events = db.fetch_pipeline_events(
-        AUTO_RESEARCH_CONSUMER,
-        limit=limit,
-        event_types=[
-            "deep_insight_created",
-            "experiment_run_completed",
-            "submission_bundle_ready",
-            "gpu_job_completed",
-            "gpu_job_failed",
-            "benchmark_completion_required",
-        ],
-    )
-    if not events:
-        return {"events": 0}
-
-    processed = 0
-    last_event_id = 0
-    for event in events:
-        last_event_id = int(event["id"])
-        payload = db._load_json(event.get("payload"), {})
-        event_type = event.get("event_type")
-        if event_type == "deep_insight_created":
-            insight_id = payload.get("insight_id")
-            insight = db.fetchone("SELECT * FROM deep_insights WHERE id=?", (insight_id,))
-            if insight and _insight_is_archived_or_cleaned(insight):
-                processed += 1
-                continue
-            if insight:
-                _upsert_job(
-                    int(insight_id),
-                    status="queued",
-                    stage="idea_ready",
-                    last_error=None,
-                    last_note="Queued by deep_insight_created event for multi-queue scheduling.",
-                )
-                processed += 1
-        else:
-            _refresh_running_jobs()
-            processed += 1
-    db.ack_pipeline_events(AUTO_RESEARCH_CONSUMER, last_event_id)
-    return {"events": len(events), "processed": processed}
 
 
 def run_cycle() -> dict:

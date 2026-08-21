@@ -1,0 +1,14 @@
+[Unit]
+Description=Look for orphaned DeepGraph resource grants every 30 minutes
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=30min
+# The script's own threshold is what decides whether a grant is orphaned: p90
+# attachment latency for pilot grants that did get a run is 73 minutes, and it
+# refuses to touch anything younger than 120. A shorter tick only finds the
+# same grants sooner; it cannot make it act earlier.
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

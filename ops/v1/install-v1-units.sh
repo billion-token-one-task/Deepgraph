@@ -15,11 +15,16 @@ install -m 0644 "$UNIT_SRC/deepgraph-render-report.service" /etc/systemd/system/
 install -m 0644 "$UNIT_SRC/deepgraph-render-report.timer" /etc/systemd/system/
 install -m 0644 "$UNIT_SRC/deepgraph-auto-advance.service" /etc/systemd/system/
 install -m 0644 "$UNIT_SRC/deepgraph-auto-advance.timer" /etc/systemd/system/
+install -m 0644 "$UNIT_SRC/deepgraph-orphan-grants.service" /etc/systemd/system/
+install -m 0644 "$UNIT_SRC/deepgraph-orphan-grants.timer" /etc/systemd/system/
 
 systemctl daemon-reload
 systemctl enable --now deepgraph-observe@10.service deepgraph-observe@11.service
 systemctl enable --now deepgraph-render-report.timer
 systemctl enable --now deepgraph-auto-advance.timer
+# Releasing a slot never spends, so this one runs whether or not the advancer
+# is paused -- an orphan found while the chain is stopped is still an orphan.
+systemctl enable --now deepgraph-orphan-grants.timer
 
-systemctl --no-pager --plain list-timers | grep -E 'deepgraph-(render|auto)' || true
+systemctl --no-pager --plain list-timers | grep -E 'deepgraph-(render|auto|orphan)' || true
 echo "V1 units installed."

@@ -27,20 +27,20 @@ class AutoResearchLoopTests(unittest.TestCase):
 
         This case used to assert that a backlog cycle still ran while events
         were being consumed. The consumption half is gone: an event without a
-        mandatory scope cannot be acted on, so _run_once reports zero events
-        and never calls the consumer. The backlog half is what remains true.
+        mandatory scope cannot be acted on, so _run_once reports zero events,
+        and auto_research's own event consumer -- which nothing had called
+        since -- has been deleted. The backlog half is what remains true.
         """
         with (
             mock.patch.object(auto_research.db, "init_db"),
-            mock.patch.object(
-                auto_research, "consume_pipeline_events_once", return_value={"events": 7}
-            ) as consume,
             mock.patch.object(auto_research, "run_cycle", return_value={"status": "processed"}),
             mock.patch.object(auto_research, "_active_job_count", return_value=1),
         ):
             stats = auto_research._run_once()
 
-        consume.assert_not_called()
+        # The consumer this loop used to call is gone from the module, not
+        # merely unreferenced.
+        self.assertFalse(hasattr(auto_research, "consume_pipeline_events_once"))
         self.assertEqual(stats["events"], 0)
         self.assertEqual(stats["cycle_status"], "processed")
         self.assertEqual(stats["active_jobs"], 1)
@@ -1911,38 +1911,26 @@ class ParallelTier2LaunchTests(unittest.TestCase):
         """The unscoped launcher is disabled, not merely idle.
 
         Discovery became agenda-scoped in meta-harness-v1: run_full_discovery
-        carries the scope, and both the legacy trigger and the thread body it
-        used to start now refuse with agenda_id_required. These cases used to
-        assert the backlog heuristics that decided whether to start that
-        thread; there is no longer a state in which it starts.
+        carries the scope, and the legacy trigger refuses with
+        agenda_id_required whatever the backlog looks like. These cases used to
+        assert the backlog heuristics that decided whether to start a tier-2
+        thread; there is no longer a state in which one starts, and the
+        heuristics themselves have been removed.
         """
-        for backlog, minimum in ((0, 3), (3, 3), (1, 4)):
-            with (
-                mock.patch.object(discovery_scheduler, "_warm_tier2_backlog", return_value=backlog),
-                mock.patch.object(discovery_scheduler, "DISCOVERY_MIN_TIER2_BACKLOG", minimum),
-                mock.patch.object(discovery_scheduler.threading, "Thread") as thread,
-            ):
-                discovery_scheduler._tier2_thread = None
-                discovery_scheduler._last_parallel_tier2_at = 0.0
-                result = discovery_scheduler._maybe_launch_parallel_tier2_discovery("test")
+        with mock.patch.object(discovery_scheduler.threading, "Thread") as thread:
+            discovery_scheduler._tier2_thread = None
+            discovery_scheduler._last_parallel_tier2_at = 0.0
+            result = discovery_scheduler._maybe_launch_parallel_tier2_discovery("test")
 
-            self.assertEqual(result["status"], "blocked", (backlog, minimum))
-            self.assertEqual(result["reason"], "agenda_id_required")
-            thread.assert_not_called()
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["reason"], "agenda_id_required")
+        thread.assert_not_called()
 
-    def test_parallel_tier2_thread_body_starts_no_discovery(self):
-        with (
-            mock.patch.object(discovery_scheduler, "harvest_signals") as harvest,
-            mock.patch.object(discovery_scheduler, "run_tier2_discovery") as run_tier2,
-            mock.patch.object(discovery_scheduler, "log_event") as log_event,
-        ):
-            discovery_scheduler._run_parallel_tier2_discovery()
+    def test_unscoped_milestone_screening_is_refused(self):
+        result = discovery_scheduler.maybe_launch_milestone_idea_screening("test")
 
-        harvest.assert_not_called()
-        run_tier2.assert_not_called()
-        self.assertEqual(
-            log_event.call_args.args[1]["reason"], "agenda_id_required"
-        )
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["reason"], "agenda_id_required")
 
 
 if __name__ == "__main__":

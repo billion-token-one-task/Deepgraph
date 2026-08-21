@@ -16,14 +16,22 @@ Measured 2026-08-20 23:5x UTC:
 Nine orphans across four agendas, the oldest 931 minutes -- more than fifteen
 hours of a slot held for work that had already failed.
 
-This is not a new mechanism. `MetaHaronessRepository.revoke_grant` already
+This is not a new mechanism. `MetaHarnessRepository.revoke_grant` already
 withdraws an unused grant and refunds it, and refuses outright if the grant has
 metered any usage. What was missing was a caller: nothing looks for orphans, so
 nothing ever revokes one.
 
-That refusal is also why this is safe to be wrong about. If a grant judged
-orphaned had in fact done work, revoke_grant declines and the script reports it
--- the safety is in the API, not in this script's judgement.
+Most orphans are refused by that rule, because the forge spends tokens before
+it builds the run: six of the ten found on 2026-08-21 had metered 40000 tokens
+each and no run. Those go to `expire_grant_now`, which ends the TTL the way it
+would have ended by itself hours later -- the settled spend stays settled, only
+the unspent remainder and the concurrency slot come back, and no OutcomeRecord
+is written, because there was no run to record an outcome from.
+
+Both refusals are also why this is safe to be wrong about. If a grant judged
+orphaned had in fact done work, revoke_grant declines; if live work is attached
+to it, expire_grant_now declines. The safety is in the API, not in this
+script's judgement.
 
 Read-only unless --apply. Run it and read the table before you pass --apply.
 
@@ -123,20 +131,48 @@ def main() -> int:
         return 0
 
     repo = MetaHarnessRepository()
-    revoked = refused = 0
+    revoked = expired = refused = 0
     for row in revocable:
+        reason = (
+            f"orphaned: no run ever attached, idea {row['idea_id']} has no "
+            f"live run, age {float(row['age_minutes']):.0f}min"
+        )
         try:
             ok = repo.revoke_grant(
-                int(row["id"]),
-                agenda_id=int(row["agenda_id"]),
-                reason=(
-                    f"orphaned: no run ever attached, idea {row['idea_id']} has no "
-                    f"live run, age {float(row['age_minutes']):.0f}min"
-                ),
+                int(row["id"]), agenda_id=int(row["agenda_id"]), reason=reason
             )
         except Exception as exc:
-            print(f"  grant {row['id']}: refused by revoke_grant: {exc}")
-            refused += 1
+            # Withdrawal is refused for a grant that already metered usage,
+            # and refusing is right: revocation refunds, and a spend that
+            # happened must not be refunded away. Expiry is the honest path
+            # for those -- the settled spend stays settled and only the
+            # unspent remainder and the slot come back. Anything else is a
+            # refusal this script must not argue with.
+            if "already metered usage" not in str(exc):
+                print(f"  grant {row['id']}: refused by revoke_grant: {exc}")
+                refused += 1
+                continue
+            try:
+                ended = repo.expire_grant_now(
+                    int(row["id"]),
+                    agenda_id=int(row["agenda_id"]),
+                    reason=reason,
+                )
+            except Exception as expiry_exc:
+                print(f"  grant {row['id']}: refused by expire_grant_now: {expiry_exc}")
+                refused += 1
+                continue
+            if ended:
+                expired += 1
+                print(
+                    f"  grant {row['id']}: spend kept, TTL ended, slot returned"
+                )
+            else:
+                refused += 1
+                print(
+                    f"  grant {row['id']}: expire_grant_now declined "
+                    "(live work is attached after all)"
+                )
             continue
         if ok:
             revoked += 1
@@ -144,7 +180,7 @@ def main() -> int:
         else:
             refused += 1
             print(f"  grant {row['id']}: revoke_grant declined")
-    print(f"\nrevoked {revoked}, declined {refused}")
+    print(f"\nrevoked {revoked}, expired {expired}, declined {refused}")
     return 0
 
 

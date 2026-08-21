@@ -1,0 +1,19 @@
+[Unit]
+Description=Release DeepGraph resource grants issued for a run that never came
+Documentation=file:/home/billion-token/Deepgraph/scripts/repair_orphaned_grants.py
+After=network-online.target postgresql.service
+
+[Service]
+Type=oneshot
+User=billion-token
+# Rewritten to the active release directory by the deploy procedure, the same
+# way deepgraph-auto-advance.service is; the WorkingDirectory is also where
+# .env is read from, so moving it silently removes DEEPGRAPH_DATABASE_URL.
+WorkingDirectory=/home/billion-token/Deepgraph
+ExecStart=/home/billion-token/Deepgraph/.venv/bin/python scripts/repair_orphaned_grants.py --apply
+# Reads grant/run state and calls the guarded lifecycle API. It cannot spend:
+# revocation refunds an unused grant, expiry releases the unspent remainder of
+# a grant whose forge died before it built a run, and both refuse outright if
+# anything is still attached.
+MemoryMax=512M
+TimeoutStartSec=300
