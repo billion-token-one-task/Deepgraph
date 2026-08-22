@@ -42,6 +42,16 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import sys
+from pathlib import Path
+
+# Executing ``python /immutable/release/scripts/repair_orphaned_grants.py``
+# puts only the scripts directory on sys.path. systemd intentionally invokes
+# this file by absolute release path, so import the repository beside it rather
+# than accidentally depending on a caller's cwd or PYTHONPATH.
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+if str(REPOSITORY_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from db import database as db
 from meta_harness.repository import MetaHarnessRepository

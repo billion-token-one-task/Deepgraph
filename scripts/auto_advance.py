@@ -1426,7 +1426,9 @@ def advance_evidence_audit(agenda_id: int, state: dict, journal: Journal, args) 
           AND (
             er.scientific_evidence_state IN ('full_benchmark_complete', 'evidence_audited')
             OR (
-              er.scientific_evidence_state = 'scientifically_decided'
+              er.scientific_evidence_state IN (
+                'scientifically_decided', 'manuscript_allowed'
+              )
               AND EXISTS (
                 SELECT 1 FROM resource_grants g
                 WHERE g.agenda_id=er.agenda_id AND g.idea_id=er.deep_insight_id
@@ -1442,7 +1444,9 @@ def advance_evidence_audit(agenda_id: int, state: dict, journal: Journal, args) 
         idea_id = int(row["idea_id"])
         run_id = int(row["run_id"])
         grant_id = int(row["resource_grant_id"] or 0)
-        already_decided = str(row.get("evidence_state") or "") == "scientifically_decided"
+        already_decided = str(row.get("evidence_state") or "") in {
+            "scientifically_decided", "manuscript_allowed"
+        }
         if not already_decided and (
             str(row.get("grant_stage") or "") != "evidence_audit"
             or str(row.get("grant_status") or "") != "active"
@@ -1571,7 +1575,6 @@ def advance_evidence_audit(agenda_id: int, state: dict, journal: Journal, args) 
             continue
         journal.log("evidence_audit_phase", agenda_id=agenda_id, idea_id=idea_id,
                     run_id=run_id, disposition=disposition)
-        _drive_manuscript_gate(agenda_id, run_id, journal)
 
 
 def _drive_manuscript_gate(agenda_id: int, run_id: int, journal: Journal) -> None:

@@ -61,6 +61,7 @@ class OrphanedGrantExpiryTests(unittest.TestCase):
 
     def setUp(self):
         self.namespace = f"grant_expiry_{uuid.uuid4().hex}"
+        self.grant_sequence = 0
         self.repo = self.Repository()
         with self.db.get_conn().cursor() as cur:
             cur.execute(
@@ -124,16 +125,31 @@ class OrphanedGrantExpiryTests(unittest.TestCase):
                 self.db.rollback()
         self.db.commit()
 
-    def _grant(self, stage: str, *, metered_tokens: int = 0) -> int:
+    def _grant(
+        self,
+        stage: str,
+        *,
+        metered_tokens: int = 0,
+        gpu_hours_reserved: float = 0.0,
+        gpu_hours_used: float = 0.0,
+    ) -> int:
+        self.grant_sequence += 1
+        suffix = f"{stage}:{self.grant_sequence}"
         with self.db.get_conn().cursor() as cur:
             cur.execute(
                 """
                 INSERT INTO agenda_resource_ledger
-                    (agenda_id, operation, idempotency_key, token_reserved, status)
-                VALUES (%s, 'resource_grant', %s, 40000, 'reserved')
+                    (agenda_id, operation, idempotency_key, token_reserved,
+                     gpu_hours_reserved, gpu_hours_used, status)
+                VALUES (%s, 'resource_grant', %s, 40000, %s, %s, 'reserved')
                 RETURNING id
                 """,
-                (self.agenda_id, f"ledger:{self.namespace}:{stage}"),
+                (
+                    self.agenda_id,
+                    f"ledger:{self.namespace}:{suffix}",
+                    gpu_hours_reserved,
+                    gpu_hours_used,
+                ),
             )
             reservation_id = int(cur.fetchone()["id"])
             cur.execute(
@@ -143,7 +159,7 @@ class OrphanedGrantExpiryTests(unittest.TestCase):
                      max_gpu_hours, backend_allowlist_json,
                      artifact_requirements_json, expires_at, grant_reason,
                      reservation_id, status, idempotency_key)
-                VALUES (%s, %s, %s, %s, 40000, 0, '["cpu"]', '["raw_metrics"]',
+                VALUES (%s, %s, %s, %s, 40000, %s, '["cpu"]', '["raw_metrics"]',
                         CURRENT_TIMESTAMP + INTERVAL '24 hours',
                         'isolated test', %s, 'active', %s)
                 RETURNING id
@@ -153,11 +169,26 @@ class OrphanedGrantExpiryTests(unittest.TestCase):
                     self.idea_id,
                     self.decision_id,
                     stage,
+                    gpu_hours_reserved,
                     reservation_id,
-                    f"grant:{self.namespace}:{stage}",
+                    f"grant:{self.namespace}:{suffix}",
                 ),
             )
             grant_id = int(cur.fetchone()["id"])
+            cur.execute(
+                """
+                UPDATE research_agendas
+                SET token_reserved=token_reserved+40000,
+                    gpu_hours_reserved=gpu_hours_reserved+%s,
+                    gpu_hours_spent=gpu_hours_spent+%s
+                WHERE id=%s
+                """,
+                (
+                    max(0.0, gpu_hours_reserved - gpu_hours_used),
+                    gpu_hours_used,
+                    self.agenda_id,
+                ),
+            )
             if metered_tokens:
                 cur.execute(
                     """
@@ -171,7 +202,7 @@ class OrphanedGrantExpiryTests(unittest.TestCase):
                     (
                         self.agenda_id,
                         grant_id,
-                        f"attempt:{self.namespace}:{stage}",
+                        f"attempt:{self.namespace}:{suffix}",
                         metered_tokens,
                         metered_tokens,
                     ),
@@ -229,6 +260,177 @@ class OrphanedGrantExpiryTests(unittest.TestCase):
         )
         self.db.commit()
         self.assertEqual(int(dict(outcomes)["n"]), 0)
+
+    def test_expiry_settles_child_tokens_and_releases_only_unused_balance(self):
+        grant_id = self._grant("pilot", metered_tokens=12500)
+
+        self.repo.expire_grant_now(
+            grant_id, agenda_id=self.agenda_id, reason="orphaned pilot"
+        )
+
+        agenda = self.db.fetchone(
+            "SELECT token_reserved, token_spent FROM research_agendas WHERE id=?",
+            (self.agenda_id,),
+        )
+        ledger = self.db.fetchone(
+            """
+            SELECT token_reserved, tokens_used, status, release_reason
+            FROM agenda_resource_ledger
+            WHERE id=(SELECT reservation_id FROM resource_grants WHERE id=?)
+            """,
+            (grant_id,),
+        )
+        self.db.commit()
+
+        self.assertEqual(int(agenda["token_reserved"]), 0)
+        self.assertEqual(int(agenda["token_spent"]), 12500)
+        self.assertEqual(int(ledger["token_reserved"]), 40000)
+        self.assertEqual(int(ledger["tokens_used"]), 12500)
+        self.assertEqual(ledger["status"], "settled")
+        self.assertEqual(ledger["release_reason"], "grant_expired")
+
+    def test_three_metered_expiries_then_unused_revoke_clamp_agenda14_drift(self):
+        expired_ids = [
+            self._grant(
+                "pilot",
+                metered_tokens=30000,
+                gpu_hours_reserved=4.0,
+                gpu_hours_used=0.0,
+            )
+            for _ in range(3)
+        ]
+        unused_id = self._grant(
+            "pilot",
+            gpu_hours_reserved=4.0,
+            gpu_hours_used=0.0,
+        )
+        self.db.execute(
+            """
+            UPDATE resource_grants
+            SET expires_at=CURRENT_TIMESTAMP - INTERVAL '1 minute'
+            WHERE id = ANY(?)
+            """,
+            (expired_ids,),
+        )
+        # Reproduce agenda 14: metered grants 262/266/271 expire first and
+        # release 12 hours.  Unused grant 299 still claims four, while the
+        # surviving agenda aggregate contains only 3.4813 of them.
+        self.db.execute(
+            "UPDATE research_agendas SET gpu_hours_reserved=? WHERE id=?",
+            (15.4813097814, self.agenda_id),
+        )
+        self.db.commit()
+
+        self.assertEqual(
+            self.repo.reconcile_expired_grants(agenda_id=self.agenda_id), 3
+        )
+        self.assertEqual(
+            self.repo.reconcile_expired_grants(agenda_id=self.agenda_id), 0
+        )
+        self.assertTrue(
+            self.repo.revoke_grant(
+                unused_id,
+                agenda_id=self.agenda_id,
+                reason="agenda14 closed with stale aggregate",
+            )
+        )
+
+        agenda = self.db.fetchone(
+            """
+            SELECT token_reserved, token_spent,
+                   gpu_hours_reserved, gpu_hours_spent
+            FROM research_agendas WHERE id=?
+            """,
+            (self.agenda_id,),
+        )
+        ledgers = self.db.fetchall(
+            """
+            SELECT tokens_used, gpu_hours_reserved, gpu_hours_used,
+                   status, release_reason
+            FROM agenda_resource_ledger
+            WHERE id IN (
+                SELECT reservation_id FROM resource_grants WHERE id = ANY(?)
+            )
+            ORDER BY id
+            """,
+            (expired_ids + [unused_id],),
+        )
+        grants = self.db.fetchall(
+            "SELECT status FROM resource_grants WHERE id = ANY(?) ORDER BY id",
+            (expired_ids + [unused_id],),
+        )
+        self.db.commit()
+
+        self.assertEqual(int(agenda["token_reserved"]), 0)
+        self.assertEqual(int(agenda["token_spent"]), 90000)
+        self.assertAlmostEqual(float(agenda["gpu_hours_reserved"]), 0.0, places=9)
+        self.assertAlmostEqual(float(agenda["gpu_hours_spent"]), 0.0, places=9)
+        self.assertEqual(
+            [int(row["tokens_used"] or 0) for row in ledgers],
+            [30000, 30000, 30000, 0],
+        )
+        # Preserve the ledger's measured truth. The aggregate shortfall is
+        # disclosed, not hidden by inventing 0.5187 used GPU-hours.
+        self.assertEqual([float(row["gpu_hours_used"]) for row in ledgers], [0.0] * 4)
+        self.assertEqual(
+            [row["status"] for row in ledgers],
+            ["settled", "settled", "settled", "released"],
+        )
+        self.assertEqual(
+            [row["status"] for row in grants],
+            ["expired", "expired", "expired", "revoked"],
+        )
+        drift_reasons = [
+            str(row["release_reason"])
+            for row in ledgers
+            if "agenda_gpu_reservation_shortfall_hours="
+            in str(row["release_reason"])
+        ]
+        self.assertEqual(len(drift_reasons), 1)
+        self.assertIn("grant_revoked:agenda14", drift_reasons[0])
+        self.assertIn("0.5186902186", drift_reasons[0])
+
+    def test_reconcile_clamps_and_discloses_token_reservation_drift(self):
+        grant_id = self._grant("pilot", metered_tokens=30000)
+        self.db.execute(
+            """
+            UPDATE resource_grants
+            SET expires_at=CURRENT_TIMESTAMP - INTERVAL '1 minute'
+            WHERE id=?
+            """,
+            (grant_id,),
+        )
+        self.db.execute(
+            "UPDATE research_agendas SET token_reserved=25000 WHERE id=?",
+            (self.agenda_id,),
+        )
+        self.db.commit()
+
+        self.assertEqual(
+            self.repo.reconcile_expired_grants(agenda_id=self.agenda_id), 1
+        )
+
+        agenda = self.db.fetchone(
+            "SELECT token_reserved, token_spent FROM research_agendas WHERE id=?",
+            (self.agenda_id,),
+        )
+        ledger = self.db.fetchone(
+            """
+            SELECT tokens_used, release_reason
+            FROM agenda_resource_ledger
+            WHERE id=(SELECT reservation_id FROM resource_grants WHERE id=?)
+            """,
+            (grant_id,),
+        )
+        self.db.commit()
+
+        self.assertEqual(int(agenda["token_reserved"]), 0)
+        self.assertEqual(int(agenda["token_spent"]), 30000)
+        self.assertEqual(int(ledger["tokens_used"]), 30000)
+        self.assertIn(
+            "agenda_token_reservation_shortfall=15000",
+            str(ledger["release_reason"]),
+        )
 
     # --- and the cases it must still refuse ------------------------------
 

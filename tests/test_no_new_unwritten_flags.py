@@ -63,7 +63,7 @@ _ACCOUNTED = {
     # --- environment and SQL aliases ---
     "TEMP": "environment variable",
     "DEEPGRAPH_DATABASE_URL": "environment variable",
-    "grant_stage": "SQL column alias (rg.stage AS grant_stage)",
+    "grant_live": "SQL boolean alias (expires_at > CURRENT_TIMESTAMP)",
     "auto_experiment_run_id": "SQL column alias",
     "patch_agenda_id": "SQL column alias",
     "max_vram_gb": "preflight environment probe payload",

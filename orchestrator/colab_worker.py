@@ -74,6 +74,239 @@ def _record_terminal_run_failure(row: dict, result, observed) -> None:
     db.commit()
 
 
+def _artifact_path_component(value: str) -> str:
+    """Return a readable, collision-resistant directory component."""
+
+    cleaned = "".join(
+        character if character.isalnum() or character in {"-", "_", "."} else "_"
+        for character in str(value)
+    ).strip("._")
+    digest = hashlib.sha256(str(value).encode("utf-8")).hexdigest()[:12]
+    return f"{(cleaned or 'artifact')[:48]}-{digest}"
+
+
+def _artifact_snapshot_path(
+    *,
+    workdir: Path,
+    artifact_stage: str,
+    artifact_type: str,
+    source_path: Path,
+    content_sha256: str,
+) -> Path:
+    return (
+        workdir.resolve()
+        / ".artifact-history-v1"
+        / _artifact_path_component(artifact_stage)
+        / _artifact_path_component(artifact_type)
+        / content_sha256
+        / source_path.name
+    )
+
+
+def _immutable_artifact_snapshot(
+    *,
+    workdir: Path,
+    artifact_stage: str,
+    artifact_type: str,
+    source_path: Path,
+    content: bytes,
+    content_sha256: str,
+) -> Path:
+    """Persist one content-addressed artifact without ever replacing bytes."""
+
+    snapshot = _artifact_snapshot_path(
+        workdir=workdir,
+        artifact_stage=artifact_stage,
+        artifact_type=artifact_type,
+        source_path=source_path,
+        content_sha256=content_sha256,
+    )
+    snapshot.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with snapshot.open("xb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        snapshot.chmod(0o444)
+    except FileExistsError:
+        pass
+    if snapshot.is_symlink() or not snapshot.is_file():
+        raise ComputeBackendError(f"artifact_snapshot_invalid:{artifact_type}")
+    snapshot_hash = hashlib.sha256(snapshot.read_bytes()).hexdigest()
+    if snapshot_hash != content_sha256:
+        raise ComputeBackendError(f"artifact_snapshot_hash_mismatch:{artifact_type}")
+    return snapshot.resolve()
+
+
+def _register_artifact_version(
+    *,
+    run: dict,
+    resource_grant_id: int,
+    artifact_stage: str,
+    artifact_type: str,
+    source_path: Path,
+    content: bytes,
+    content_sha256: str,
+    metric_key: str | None,
+    metric_value: float | None,
+    legacy_unresolved: list[dict] | None = None,
+) -> int:
+    """Append an immutable stage version, idempotently for identical bytes."""
+
+    stage = str(artifact_stage or "").strip().lower()
+    if not stage:
+        raise ComputeBackendError("artifact_stage_missing")
+    actual_hash = hashlib.sha256(content).hexdigest()
+    if actual_hash != content_sha256:
+        raise ComputeBackendError(f"artifact_hash_mismatch:{artifact_type}")
+    snapshot = _immutable_artifact_snapshot(
+        workdir=Path(str(run.get("workdir") or "")),
+        artifact_stage=stage,
+        artifact_type=artifact_type,
+        source_path=source_path,
+        content=content,
+        content_sha256=content_sha256,
+    )
+    existing = db.fetchone(
+        """
+        SELECT id, path FROM experiment_artifacts
+        WHERE agenda_id=? AND run_id=? AND artifact_type=?
+          AND artifact_stage=? AND content_sha256=?
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (
+            int(run["agenda_id"]),
+            int(run["id"]),
+            artifact_type,
+            stage,
+            content_sha256,
+        ),
+    )
+    if existing:
+        recorded_path = Path(str(existing.get("path") or ""))
+        if recorded_path.resolve() != snapshot:
+            raise ComputeBackendError(f"artifact_snapshot_path_mismatch:{artifact_type}")
+        return int(existing["id"])
+
+    previous = db.fetchone(
+        """
+        SELECT id, COALESCE(artifact_version, 1) AS artifact_version
+        FROM experiment_artifacts
+        WHERE agenda_id=? AND run_id=? AND artifact_type=?
+        ORDER BY COALESCE(artifact_version, 1) DESC, id DESC
+        LIMIT 1
+        """,
+        (int(run["agenda_id"]), int(run["id"]), artifact_type),
+    )
+    artifact_version = int((previous or {}).get("artifact_version") or 0) + 1
+    metadata = {
+        "artifact_stage": stage,
+        "artifact_version": artifact_version,
+        "contract_type": "RunnerArtifact",
+        "immutable_snapshot": True,
+        "resource_grant_id": int(resource_grant_id),
+        "sha256": content_sha256,
+        "source_path": str(source_path),
+        "supersedes_artifact_id": int(previous["id"]) if previous else None,
+        "verified_by": "colab_terminal_handoff_v1",
+    }
+    if legacy_unresolved:
+        metadata["legacy_unresolved"] = list(legacy_unresolved)
+    db.execute(
+        """
+        INSERT INTO experiment_artifacts
+            (agenda_id, run_id, artifact_type, path, artifact_stage,
+             artifact_version, content_sha256, metric_key, metric_value, metadata)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT DO NOTHING
+        """,
+        (
+            int(run["agenda_id"]),
+            int(run["id"]),
+            artifact_type,
+            str(snapshot),
+            stage,
+            artifact_version,
+            content_sha256,
+            metric_key,
+            metric_value,
+            json.dumps(metadata, sort_keys=True),
+        ),
+    )
+    inserted = db.fetchone(
+        """
+        SELECT id FROM experiment_artifacts
+        WHERE agenda_id=? AND run_id=? AND artifact_type=?
+          AND artifact_stage=? AND content_sha256=?
+        ORDER BY id DESC
+        LIMIT 1
+        """,
+        (
+            int(run["agenda_id"]),
+            int(run["id"]),
+            artifact_type,
+            stage,
+            content_sha256,
+        ),
+    )
+    if not inserted:
+        raise ComputeBackendError(f"artifact_registration_failed:{artifact_type}")
+    return int(inserted["id"])
+
+
+def _request_artifact_output_dir(run: dict, request: dict) -> Path:
+    """Resolve the durable request's output directory inside its run workdir."""
+
+    raw_workdir = str(run.get("workdir") or "").strip()
+    raw_output = str(request.get("artifact_output_dir") or "").strip()
+    if not raw_workdir or not raw_output:
+        raise ComputeBackendError("artifact_output_dir_missing")
+    output = Path(raw_output)
+    if not output.is_absolute():
+        raise ComputeBackendError("artifact_output_dir_not_absolute")
+    workdir = Path(raw_workdir).resolve()
+    output = output.resolve()
+    if output == workdir or workdir not in output.parents:
+        raise ComputeBackendError("artifact_output_dir_outside_run_workdir")
+    return output
+
+
+def _verified_request_artifacts(run: dict, request: dict):
+    """Read and verify the artifacts named by one durable Colab request."""
+
+    results_dir = _request_artifact_output_dir(run, request)
+    final_path = results_dir / "final_results.json"
+    payload = validate_final_results(
+        json.loads(final_path.read_text(encoding="utf-8"))
+    )
+    verification = verify_metric_from_artifacts(final_path)
+    artifacts: list[dict] = []
+    for artifact_type, reference in payload["artifacts"].items():
+        relative_path = str((reference or {}).get("path") or "")
+        artifact_path = (results_dir / relative_path).resolve()
+        if (
+            not relative_path
+            or (artifact_path != results_dir and results_dir not in artifact_path.parents)
+            or not artifact_path.is_file()
+        ):
+            raise ComputeBackendError(f"artifact_contract_violation:{artifact_type}")
+        expected_hash = str(payload["artifact_hashes"].get(artifact_type) or "")
+        content = artifact_path.read_bytes()
+        actual_hash = hashlib.sha256(content).hexdigest()
+        if expected_hash and actual_hash != expected_hash:
+            raise ComputeBackendError(f"artifact_hash_mismatch:{artifact_type}")
+        artifacts.append(
+            {
+                "artifact_type": str(artifact_type),
+                "source_path": artifact_path,
+                "content": content,
+                "content_sha256": actual_hash,
+            }
+        )
+    return payload, verification, artifacts
+
+
 def _record_terminal_run_success(row: dict, observed) -> None:
     """Promote a verified Colab result into the owning run's durable evidence.
 
@@ -99,58 +332,34 @@ def _record_terminal_run_success(row: dict, observed) -> None:
         row["resource_grant_id"]
     ):
         return
-    results_dir = Path(str(run.get("workdir") or "")) / "results"
-    final_path = results_dir / "final_results.json"
-    payload = validate_final_results(
-        json.loads(final_path.read_text(encoding="utf-8"))
+    grant_row = db.fetchone(
+        "SELECT stage, preflight_result_id FROM resource_grants WHERE id=?",
+        (int(row["resource_grant_id"]),),
     )
-    verification = verify_metric_from_artifacts(final_path)
-    for artifact_type, reference in payload["artifacts"].items():
-        relative_path = str((reference or {}).get("path") or "")
-        artifact_path = (results_dir / relative_path).resolve()
-        if (
-            not relative_path
-            or (artifact_path != results_dir and results_dir not in artifact_path.parents)
-            or not artifact_path.is_file()
-        ):
-            raise ComputeBackendError(f"artifact_contract_violation:{artifact_type}")
-        expected_hash = str(payload["artifact_hashes"].get(artifact_type) or "")
-        actual_hash = hashlib.sha256(artifact_path.read_bytes()).hexdigest()
-        if expected_hash and actual_hash != expected_hash:
-            raise ComputeBackendError(f"artifact_hash_mismatch:{artifact_type}")
-        existing = db.fetchone(
-            """
-            SELECT id FROM experiment_artifacts
-            WHERE agenda_id=? AND run_id=? AND artifact_type=? AND path=?
-            LIMIT 1
-            """,
-            (int(run["agenda_id"]), int(run["id"]), artifact_type, str(artifact_path)),
+    artifact_stage = str((grant_row or {}).get("stage") or "").strip().lower()
+    if not artifact_stage:
+        raise ComputeBackendError("artifact_stage_missing")
+    request_stage = str(row.get("stage") or "").strip().lower()
+    if request_stage and request_stage != artifact_stage:
+        raise ComputeBackendError("artifact_stage_grant_mismatch")
+    payload, verification, artifacts = _verified_request_artifacts(dict(run), row)
+    for artifact in artifacts:
+        artifact_type = str(artifact["artifact_type"])
+        _register_artifact_version(
+            run=dict(run),
+            resource_grant_id=int(row["resource_grant_id"]),
+            artifact_stage=artifact_stage,
+            artifact_type=artifact_type,
+            source_path=Path(artifact["source_path"]),
+            content=artifact["content"],
+            content_sha256=str(artifact["content_sha256"]),
+            metric_key=verification.metric_name,
+            metric_value=(
+                verification.candidate_value
+                if artifact_type == "final_results"
+                else None
+            ),
         )
-        if not existing:
-            db.execute(
-                """
-                INSERT INTO experiment_artifacts
-                    (agenda_id, run_id, artifact_type, path, metric_key,
-                     metric_value, metadata)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    int(run["agenda_id"]),
-                    int(run["id"]),
-                    artifact_type,
-                    str(artifact_path),
-                    verification.metric_name,
-                    verification.candidate_value if artifact_type == "final_results" else None,
-                    json.dumps(
-                        {
-                            "contract_type": "RunnerArtifact",
-                            "sha256": expected_hash or actual_hash,
-                            "verified_by": "colab_terminal_handoff_v1",
-                        },
-                        sort_keys=True,
-                    ),
-                ),
-            )
     effect = (
         verification.candidate_value - verification.baseline_value
         if verification.direction == "higher"
@@ -177,28 +386,33 @@ def _record_terminal_run_success(row: dict, observed) -> None:
                 if payload.get("scientific_negative_result") is True
                 else "supported"
             )
-    db.execute(
-        """
-        UPDATE experiment_runs
-        SET status='completed', phase='colab_result_verified',
-            baseline_metric_name=?, baseline_metric_value=?, best_metric_value=?,
-            effect_size=?, effect_pct=?, hypothesis_verdict=?, error_message=NULL,
-            completed_at=COALESCE(completed_at, CURRENT_TIMESTAMP)
-        WHERE id=? AND agenda_id=? AND deep_insight_id=?
-          AND status NOT IN ('failed', 'cancelled', 'superseded', 'archived')
-        """,
-        (
-            verification.metric_name,
-            verification.baseline_value,
-            verification.candidate_value,
-            effect,
-            effect_pct,
-            verdict,
-            int(run["id"]),
-            int(run["agenda_id"]),
-            int(run["deep_insight_id"]),
-        ),
-    )
+    # Holdout evidence is a second measurement, not a replacement for the
+    # run's primary full-benchmark metrics. Before output-dir provenance was
+    # honored this branch re-read results/ and happened to write the same
+    # values back; reading results_holdout must not change that business fact.
+    if artifact_stage != "evidence_audit":
+        db.execute(
+            """
+            UPDATE experiment_runs
+            SET status='completed', phase='colab_result_verified',
+                baseline_metric_name=?, baseline_metric_value=?, best_metric_value=?,
+                effect_size=?, effect_pct=?, hypothesis_verdict=?, error_message=NULL,
+                completed_at=COALESCE(completed_at, CURRENT_TIMESTAMP)
+            WHERE id=? AND agenda_id=? AND deep_insight_id=?
+              AND status NOT IN ('failed', 'cancelled', 'superseded', 'archived')
+            """,
+            (
+                verification.metric_name,
+                verification.baseline_value,
+                verification.candidate_value,
+                effect,
+                effect_pct,
+                verdict,
+                int(run["id"]),
+                int(run["agenda_id"]),
+                int(run["deep_insight_id"]),
+            ),
+        )
     db.commit()
 
     # This is an acceptance-sized pilot, so it may only advance one evidence
@@ -233,10 +447,6 @@ def _record_terminal_run_success(row: dict, observed) -> None:
         # history had passed sanity_passed. The contract hash is the
         # requirements hash the preflight locked, which is what the run's
         # bundle was materialized from.
-        grant_row = db.fetchone(
-            "SELECT stage, preflight_result_id FROM resource_grants WHERE id=?",
-            (int(row["resource_grant_id"]),),
-        )
         if grant_row and str(dict(grant_row).get("stage") or "") == "full_benchmark":
             from orchestrator.bounded_execution import raw_artifacts_hash
 
@@ -279,7 +489,7 @@ def _reconcile_succeeded_runs() -> int:
     rows = db.fetchall(
         """
         SELECT cwr.experiment_run_id, cwr.agenda_id, cwr.idea_id,
-               cwr.resource_grant_id
+               cwr.resource_grant_id, cwr.stage, cwr.artifact_output_dir
         FROM colab_work_requests_v1 AS cwr
         JOIN compute_jobs_v1 AS cj ON cj.id=cwr.compute_job_id
         JOIN experiment_runs AS er ON er.id=cwr.experiment_run_id
@@ -322,7 +532,7 @@ def recover_succeeded_run(*, experiment_run_id: int, resource_grant_id: int) -> 
     row = db.fetchone(
         """
         SELECT cwr.experiment_run_id, cwr.agenda_id, cwr.idea_id,
-               cwr.resource_grant_id
+               cwr.resource_grant_id, cwr.stage, cwr.artifact_output_dir
         FROM colab_work_requests_v1 AS cwr
         JOIN compute_jobs_v1 AS cj ON cj.id=cwr.compute_job_id
         WHERE cwr.experiment_run_id=? AND cwr.resource_grant_id=?

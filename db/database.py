@@ -1005,6 +1005,17 @@ def init_db():
     # Upgrade legacy SQLite harvest tables before schema_v2 creates indexes on
     # new problem-first columns such as content_hash.
     _ensure_problem_first_schema()
+    # Existing SQLite databases need the additive artifact columns before
+    # schema_v2 creates indexes that reference them. Fresh databases create
+    # the columns directly from schema_v2 below.
+    _ensure_columns(
+        "experiment_artifacts",
+        {
+            "artifact_stage": "TEXT",
+            "artifact_version": "INTEGER NOT NULL DEFAULT 1",
+            "content_sha256": "TEXT",
+        },
+    )
     schema_v2_path = Path(__file__).parent / "schema_v2.sql"
     if schema_v2_path.exists():
         conn.executescript(schema_v2_path.read_text(encoding="utf-8"))

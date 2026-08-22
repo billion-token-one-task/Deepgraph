@@ -812,6 +812,9 @@ CREATE TABLE IF NOT EXISTS experiment_artifacts (
     run_id INTEGER NOT NULL REFERENCES experiment_runs(id),
     artifact_type TEXT NOT NULL,            -- log|metric|plot|bundle|source_data
     path TEXT NOT NULL,
+    artifact_stage TEXT,
+    artifact_version INTEGER NOT NULL DEFAULT 1,
+    content_sha256 TEXT,
     metric_key TEXT,
     metric_value DOUBLE PRECISION,
     metadata TEXT,
@@ -862,6 +865,11 @@ CREATE INDEX IF NOT EXISTS idx_claim_method_gaps_hash ON claim_method_gaps(conte
 CREATE INDEX IF NOT EXISTS idx_gpu_workers_status ON gpu_workers(status);
 CREATE INDEX IF NOT EXISTS idx_gpu_jobs_status ON gpu_jobs(status);
 CREATE INDEX IF NOT EXISTS idx_experiment_artifacts_run ON experiment_artifacts(run_id);
+CREATE INDEX IF NOT EXISTS idx_experiment_artifacts_stage
+    ON experiment_artifacts(run_id, artifact_type, artifact_stage, artifact_version);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_experiment_artifacts_stage_content
+    ON experiment_artifacts(run_id, artifact_type, artifact_stage, content_sha256)
+    WHERE artifact_stage IS NOT NULL AND content_sha256 IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_manuscript_runs_experiment ON manuscript_runs(experiment_run_id);
 CREATE INDEX IF NOT EXISTS idx_submission_bundles_run ON submission_bundles(manuscript_run_id);
 -- Insight feedback loop: provenance, outcomes, event log, signal harvester telemetry

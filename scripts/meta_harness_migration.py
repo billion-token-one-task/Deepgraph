@@ -28,6 +28,8 @@ MIGRATION_KEYS = (
     "0004_runner_capability_preflight",
     "0005_failure_fingerprint_policy",
     "0006_candidate_stage_gate_history",
+    "0007_artifact_stage_versions",
+    "0008_manuscript_gate_records",
 )
 MIGRATION_KEY = MIGRATION_KEYS[0]
 MIGRATION = MIGRATIONS_DIR / f"{MIGRATION_KEY}.sql"

@@ -19,7 +19,7 @@ import json
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from unittest.mock import ANY, patch
 
 from meta_harness.manuscript_gate import (
     MANUSCRIPT_PURPOSE,
@@ -123,7 +123,14 @@ class PromptTests(unittest.TestCase):
 class _GateHarness:
     """Minimal stand-ins for the four things the gate touches."""
 
-    def __init__(self, workdir, *, verdict="supported", verdict_hash=_HASH):
+    def __init__(
+        self,
+        workdir,
+        *,
+        verdict="supported",
+        verdict_hash=_HASH,
+        grant_stage="evidence_audit",
+    ):
         self.workdir = workdir
         self.decision = {
             "verdict": verdict,
@@ -132,13 +139,33 @@ class _GateHarness:
         }
         self.attempts = 0
         self.advanced = []
+        self.terminal = None
+        self.records = []
+        self.completed = []
+        self.grant_stage = grant_stage
+        self.state = "scientifically_decided"
+        self.commits = 0
+        self.rollbacks = 0
 
     def fetchone(self, sql, params=None):
         if "scientific_decision_records" in sql:
             return dict(self.decision)
-        if "COUNT(*)" in sql:
-            return {"n": self.attempts}
+        if "FROM experiment_runs" in sql:
+            return {
+                "resource_grant_id": 900,
+                "scientific_evidence_state": self.state,
+            }
+        if "FROM resource_grants" in sql:
+            return {"stage": self.grant_stage}
+        if "FROM resource_grant_usage_reservations" in sql:
+            return {"id": 901, "status": "settled"}
         return None
+
+    def commit(self):
+        self.commits += 1
+
+    def rollback(self):
+        self.rollbacks += 1
 
     def run_row(self):
         return {
@@ -147,15 +174,51 @@ class _GateHarness:
             "deep_insight_id": 42,
             "resource_grant_id": 900,
             "workdir": str(self.workdir),
+            "scientific_evidence_state": "scientifically_decided",
         }
 
     def repository(self):
         harness = self
 
         class _Repo:
+            def begin_manuscript_gate_attempt(self, **kwargs):
+                if harness.attempts >= MAX_MANUSCRIPT_REVIEW_ATTEMPTS:
+                    raise ManuscriptGateError("manuscript review attempts exhausted")
+                harness.attempts += 1
+                # The real repository commits this append before provider work.
+                harness.commit()
+                return {
+                    "id": harness.attempts,
+                    "attempt_number": harness.attempts,
+                    "idempotency_key": (
+                        f"manuscript-gate:10:run207:{_HASH}:a{harness.attempts}"
+                    ),
+                    "grant_stage": harness.grant_stage,
+                }
+
+            def count_manuscript_gate_attempts(self, **kwargs):
+                return harness.attempts
+
+            def load_manuscript_gate_record(self, **kwargs):
+                return harness.terminal
+
+            def record_manuscript_gate_result(self, **kwargs):
+                harness.records.append(kwargs)
+                harness.terminal = {
+                    "id": 1,
+                    "disposition": kwargs["disposition"],
+                    "resource_grant_id": 900,
+                }
+                return 1
+
             def advance_experiment_state(self, **kwargs):
                 harness.advanced.append(kwargs)
+                harness.state = "manuscript_allowed"
                 return "manuscript_allowed"
+
+            def complete_manuscript_grant(self, **kwargs):
+                harness.completed.append(kwargs)
+                return 10
 
         return _Repo
 
@@ -169,13 +232,22 @@ class GateTests(unittest.TestCase):
         results.mkdir()
         (results / "claim_ledger.json").write_text(json.dumps({"metric": "acc"}))
 
-    def _run(self, harness, llm):
+    def _run(self, harness, llm, *, secret=_SECRET):
         with patch("meta_harness.manuscript_gate.db.fetchone", harness.fetchone), patch(
+            "meta_harness.manuscript_gate.db.commit", harness.commit
+        ), patch(
+            "meta_harness.manuscript_gate.db.rollback", harness.rollback
+        ), patch(
             "meta_harness.manuscript_gate.call_llm_for_role", llm
+        ), patch(
+            "meta_harness.manuscript_gate.configured_role_prompt_version",
+            return_value="reviewer_v1",
         ), patch(
             "meta_harness.manuscript_gate.MetaHarnessRepository", harness.repository()
         ):
-            return run_manuscript_gate(harness.run_row(), secret=_SECRET, log=lambda *a: None)
+            return run_manuscript_gate(
+                harness.run_row(), secret=secret, log=lambda *a: None
+            )
 
     @staticmethod
     def _answer(concur):
@@ -195,17 +267,58 @@ class GateTests(unittest.TestCase):
         # trail has to name the AI rather than an operator.
         self.assertEqual(call["actor"], MANUSCRIPT_REVIEWER_ID)
         self.assertEqual(call["context"].verdict, "supported")
+        self.assertTrue(call["context"].resource_grant_valid)
+        self.assertEqual(call["context"].resource_grant_id, 900)
+        self.assertTrue(call["context"].execution_succeeded)
         self.assertEqual(
             call["context"].reviewer_approval["purpose"], MANUSCRIPT_PURPOSE
         )
         # public_record() carries signature_hash, not signature; sending that
         # would verify as an incomplete envelope.
         self.assertIn("signature", call["context"].reviewer_approval)
+        self.assertFalse(call["commit"])
+        self.assertFalse(harness.records[0]["commit"])
+        self.assertEqual(harness.commits, 2)
+
+    def test_request_uses_the_actual_grant_stage(self):
+        harness = _GateHarness(self.workdir, grant_stage="manuscript")
+        # A prior released reservation may have no route observation.  The
+        # allocator must still move on instead of reusing its occupied key.
+        harness.attempts = 1
+        captured = {}
+
+        def answer(*args, **kwargs):
+            captured.update(kwargs)
+            return self._answer(False)(*args, **kwargs)
+
+        self.assertEqual(self._run(harness, answer), "refused")
+        self.assertEqual(captured["stage"], "manuscript")
+        self.assertIn(":run207:", captured["idempotency_key"])
+        self.assertTrue(captured["idempotency_key"].endswith(":a2"))
+        self.assertEqual(captured["prompt_version"], "reviewer_v1")
+        self.assertEqual(harness.records[0]["prompt_ref"], "reviewer_v1")
+        self.assertEqual(len(harness.completed), 1)
+        self.assertFalse(harness.completed[0]["commit"])
+
+    def test_cached_approval_resumes_without_another_llm_call(self):
+        harness = _GateHarness(self.workdir)
+        harness.terminal = {
+            "id": 1,
+            "disposition": "approved",
+            "resource_grant_id": 900,
+        }
+
+        def boom(*args, **kwargs):
+            raise AssertionError("cached terminal result must not call the reviewer")
+
+        self.assertEqual(self._run(harness, boom), "manuscript_allowed")
+        self.assertEqual(len(harness.advanced), 1)
 
     def test_refusal_leaves_the_run_where_it_was(self):
         harness = _GateHarness(self.workdir)
         self.assertEqual(self._run(harness, self._answer(False)), "refused")
         self.assertEqual(harness.advanced, [])
+        self.assertFalse(harness.records[0]["commit"])
 
     def test_a_non_supported_run_is_never_reviewed(self):
         for verdict in ("refuted", "inconclusive"):
@@ -236,13 +349,34 @@ class GateTests(unittest.TestCase):
     def test_exhausted_attempts_do_not_advance(self):
         harness = _GateHarness(self.workdir)
         harness.attempts = MAX_MANUSCRIPT_REVIEW_ATTEMPTS
-        self.assertEqual(self._run(harness, self._answer(True)), "review_failed")
+        self.assertEqual(self._run(harness, self._answer(True)), "technical_failed")
         self.assertEqual(harness.advanced, [])
+
+    def test_two_pre_reservation_failures_are_terminal_and_settle(self):
+        harness = _GateHarness(self.workdir, grant_stage="manuscript")
+
+        def boom(*args, **kwargs):
+            raise AssertionError("missing signing secret must fail before provider")
+
+        self.assertEqual(
+            self._run(harness, boom, secret=""),
+            "review_failed",
+        )
+        self.assertIsNone(harness.terminal)
+        self.assertEqual(
+            self._run(harness, boom, secret=""),
+            "technical_failed",
+        )
+        self.assertEqual(harness.attempts, 2)
+        self.assertEqual(harness.records[0]["disposition"], "technical_failed")
+        self.assertNotIn("grant_usage_reservation_id", harness.records[0])
+        self.assertEqual(len(harness.completed), 1)
 
     def test_a_missing_ledger_does_not_advance(self):
         (self.workdir / "results" / "claim_ledger.json").unlink()
         harness = _GateHarness(self.workdir)
-        self.assertEqual(self._run(harness, self._answer(True)), "no_ledger")
+        self.assertEqual(self._run(harness, self._answer(True)), "review_failed")
+        self.assertEqual(harness.attempts, 1)
         self.assertEqual(harness.advanced, [])
 
     def test_a_missing_verdict_hash_does_not_advance(self):
@@ -261,19 +395,51 @@ class GateTests(unittest.TestCase):
 
 
 class AttemptBoundTests(unittest.TestCase):
-    def test_the_error_names_the_exhausted_budget(self):
+    def test_success_without_settled_usage_is_rejected(self):
         from meta_harness.manuscript_gate import review_manuscript_readiness
 
         with patch(
-            "meta_harness.manuscript_gate._review_attempts",
-            lambda _grant: MAX_MANUSCRIPT_REVIEW_ATTEMPTS,
-        ):
+            "meta_harness.manuscript_gate.call_llm_for_role",
+            return_value=(
+                '{"concur": true}',
+                10,
+                {"provider": "p", "model": "m"},
+            ),
+        ), patch("meta_harness.manuscript_gate.db.fetchone", return_value=None):
             with self.assertRaises(ManuscriptGateError) as caught:
                 review_manuscript_readiness(
                     agenda_id=10, idea_id=42, resource_grant_id=900,
+                    grant_stage="manuscript", attempt_key="attempt:a1",
+                    prompt_ref="reviewer_v1",
                     decision={}, ledger={}, holdout=None, verdict_hash=_HASH,
                 )
-        self.assertIn("attempts exhausted", str(caught.exception))
+        self.assertIn("usage was not settled", str(caught.exception))
+
+
+class EvidenceAuditCrashRecoveryTests(unittest.TestCase):
+    def test_manuscript_allowed_run_idempotently_settles_audit_grant(self):
+        from meta_harness import evidence_audit
+
+        run = {
+            "id": 207,
+            "agenda_id": 10,
+            "deep_insight_id": 42,
+            "resource_grant_id": 900,
+            "scientific_evidence_state": "manuscript_allowed",
+        }
+        with patch.object(evidence_audit.db, "fetchone", return_value=run), patch.object(
+            evidence_audit, "_settle_completed_grants"
+        ) as settle:
+            status = evidence_audit.run_evidence_audit_phase(
+                agenda_id=10,
+                idea_id=42,
+                run_id=207,
+                resource_grant_id=900,
+                log=lambda *args: None,
+            )
+
+        self.assertEqual(status, "decided")
+        settle.assert_called_once_with(run, log=ANY)
 
 
 if __name__ == "__main__":

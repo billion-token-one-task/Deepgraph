@@ -548,7 +548,32 @@ def run_evidence_audit_phase(
     if not run:
         raise EvidenceAuditError("missing run")
     state = str(run.get("scientific_evidence_state") or "")
+    if state == "manuscript_allowed":
+        # Crash recovery: approval and its audit record are atomic, while the
+        # evidence-audit OutcomeRecord is deliberately settled by the outer
+        # stage closer.  A crash between those commits must not strand the
+        # active audit grant merely because the run has advanced one rung.
+        _settle_completed_grants(run, log=log)
+        return "decided"
     if state == "scientifically_decided":
+        decision = db.fetchone(
+            """
+            SELECT verdict FROM scientific_decision_records
+            WHERE agenda_id=? AND experiment_run_id=?
+            ORDER BY id DESC LIMIT 1
+            """,
+            (agenda_id, run_id),
+        )
+        verdict = str(dict(decision or {}).get("verdict") or "")
+        gate_status = _run_manuscript_gate_if_supported(
+            run, verdict, log=log
+        )
+        if verdict == "supported" and gate_status not in {
+            "manuscript_allowed",
+            "refused",
+            "technical_failed",
+        }:
+            return f"manuscript_pending:{gate_status}"
         _settle_completed_grants(run, log=log)
         return "decided"
     if state not in {"full_benchmark_complete", "evidence_audited"}:
@@ -788,14 +813,22 @@ def run_evidence_audit_phase(
     #
     # The gate also needs the grant to fund its reviewer call, so before
     # settlement is the only place both conditions hold at once.
-    _run_manuscript_gate_if_supported(run, verdict, log=log)
+    run = dict(run)
+    run["scientific_evidence_state"] = "scientifically_decided"
+    gate_status = _run_manuscript_gate_if_supported(run, verdict, log=log)
+    if verdict == "supported" and gate_status not in {
+        "manuscript_allowed",
+        "refused",
+        "technical_failed",
+    }:
+        return f"manuscript_pending:{gate_status}"
     _settle_completed_grants(run, log=log)
     return "decided"
 
 
 def _run_manuscript_gate_if_supported(
     run: Mapping[str, Any], verdict: str, *, log=print
-) -> None:
+) -> str:
     """Ask the manuscript gate about a supported run. Never fatal.
 
     A refusal, an unreachable reviewer or a missing signing secret leaves the
@@ -803,7 +836,7 @@ def _run_manuscript_gate_if_supported(
     own result must not depend on this.
     """
     if verdict != "supported":
-        return
+        return "not_supported"
     import os
 
     from meta_harness.manuscript_gate import (
@@ -812,22 +845,17 @@ def _run_manuscript_gate_if_supported(
     )
 
     secret = os.getenv(MANUSCRIPT_REVIEWER_SECRET_ENV, "")
-    if not secret:
-        log(
-            "[MANUSCRIPT] signing secret is absent "
-            f"({MANUSCRIPT_REVIEWER_SECRET_ENV}); run stays at "
-            "scientifically_decided"
-        )
-        return
     try:
         status = run_manuscript_gate(dict(run), secret=secret, log=log)
         log(f"[MANUSCRIPT] run {run.get('id')} gate -> {status}")
+        return status
     except Exception as exc:
         db.rollback()
         log(
             f"[MANUSCRIPT] run {run.get('id')} gate failed, staying at "
             f"scientifically_decided: {type(exc).__name__}: {exc}"
         )
+        return "review_failed"
 
 
 def holdout_consistent(

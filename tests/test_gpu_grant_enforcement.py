@@ -232,7 +232,6 @@ class GrantRevocationTests(unittest.TestCase):
 
     def test_revoking_an_unused_grant_refunds_the_reservation(self):
         rows = [
-            {"count": 0},
             {
                 "id": 2,
                 "agenda_id": 11,
@@ -241,30 +240,54 @@ class GrantRevocationTests(unittest.TestCase):
                 "gpu_hours_reserved": 4.0,
                 "reservation_status": "reserved",
             },
+            {"token_reserved": 900, "gpu_hours_reserved": 3.5},
         ]
         with mock.patch(
             "meta_harness.repository.db.fetchone", side_effect=rows
+        ), mock.patch(
+            "meta_harness.repository.db.fetchall", return_value=[]
         ), mock.patch("meta_harness.repository.db.execute") as execute, mock.patch(
             "meta_harness.repository.db.commit"
-        ), mock.patch("meta_harness.repository.db.rollback"):
+        ), mock.patch("meta_harness.repository.db.rollback"), mock.patch(
+            "meta_harness.repository.db._use_pg", return_value=False
+        ):
             revoked = MetaHarnessRepository().revoke_grant(
                 2, agenda_id=11, reason="backend cannot be scheduled"
             )
 
         self.assertTrue(revoked)
         statements = " ".join(str(call.args[0]) for call in execute.call_args_list)
-        self.assertIn("token_reserved=token_reserved-?", statements)
-        self.assertIn("gpu_hours_reserved=gpu_hours_reserved-?", statements)
+        self.assertIn("SET token_reserved=?, gpu_hours_reserved=?", statements)
         self.assertIn("status='released'", statements)
         self.assertIn("status='revoked'", statements)
+        ledger_update = next(
+            call
+            for call in execute.call_args_list
+            if "UPDATE agenda_resource_ledger" in str(call.args[0])
+        )
+        self.assertIn("agenda_token_reservation_shortfall=100", ledger_update.args[1][0])
+        self.assertIn(
+            "agenda_gpu_reservation_shortfall_hours=0.5",
+            ledger_update.args[1][0],
+        )
         # Withdrawal is not completion.
         self.assertIn("resource_grant_revoked", statements)
         self.assertNotIn("outcome_records", statements)
 
     def test_a_grant_that_metered_usage_cannot_be_revoked(self):
+        row = {
+            "id": 2,
+            "agenda_id": 11,
+            "reservation_id": 7,
+            "reservation_status": "reserved",
+        }
         with mock.patch(
-            "meta_harness.repository.db.fetchone", return_value={"count": 1}
-        ), mock.patch("meta_harness.repository.db.rollback"):
+            "meta_harness.repository.db.fetchone", return_value=row
+        ), mock.patch(
+            "meta_harness.repository.db.fetchall", return_value=[{"status": "settled"}]
+        ), mock.patch("meta_harness.repository.db.rollback"), mock.patch(
+            "meta_harness.repository.db._use_pg", return_value=False
+        ):
             with self.assertRaisesRegex(
                 MetaHarnessPersistenceError, "already metered usage"
             ):

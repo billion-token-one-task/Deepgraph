@@ -492,6 +492,7 @@ class MetaHarnessRepository:
                 "validation",
                 "full_benchmark",
                 "evidence_audit",
+                "manuscript",
             }:
                 raise MetaHarnessPersistenceError(
                     "grant stage cannot be attached to an existing run"
@@ -525,6 +526,7 @@ class MetaHarnessRepository:
         target: str,
         context: EvidenceTransitionContext,
         actor: str,
+        commit: bool = True,
     ) -> str:
         """Advance exactly one state and append an immutable audit transition."""
         if not actor.strip():
@@ -783,7 +785,8 @@ class MetaHarnessRepository:
                         _dump(evidence_decision_payload),
                     ),
                 )
-            db.commit()
+            if commit:
+                db.commit()
             return next_state
         except Exception:
             db.rollback()
@@ -1179,6 +1182,918 @@ class MetaHarnessRepository:
             db.rollback()
             raise
 
+    def issue_historical_manuscript_grant(
+        self,
+        *,
+        agenda_id: int,
+        experiment_run_id: int,
+        expected_verdict_hash: str,
+        token_cap: int,
+        expires_at: str,
+    ) -> int:
+        """Issue one explicit manuscript-only grant on a closed agenda.
+
+        Normal grant admission deliberately requires an active agenda.  This
+        narrower operator API exists only for a run that reached a supported
+        scientific decision before the manuscript gate had a working executor.
+        It never reopens or edits the consumed audit grant; it reserves a new,
+        token-only authority and binds it to that exact run atomically.
+        """
+
+        agenda_id = int(agenda_id)
+        experiment_run_id = int(experiment_run_id)
+        token_cap = int(token_cap)
+        verdict_hash = _canonical_hash(expected_verdict_hash)
+        if min(agenda_id, experiment_run_id, token_cap) <= 0:
+            raise MetaHarnessPersistenceError(
+                "historical manuscript grant scope and token cap must be positive"
+            )
+        if len(verdict_hash) != 64 or any(
+            character not in "0123456789abcdef" for character in verdict_hash
+        ):
+            raise MetaHarnessPersistenceError(
+                "historical manuscript grant requires a SHA-256 verdict hash"
+            )
+        key_prefix = (
+            f"manuscript-recovery:v1:run{experiment_run_id}:{verdict_hash}"
+        )
+        try:
+            lock = " FOR UPDATE" if db._use_pg() else ""  # noqa: SLF001
+            agenda = db.fetchone(
+                f"SELECT * FROM research_agendas WHERE id=?{lock}",
+                (agenda_id,),
+            )
+            if (
+                not agenda
+                or str(agenda.get("status") or "") != "closed"
+                or int(agenda.get("is_active") or 0) != 0
+            ):
+                raise MetaHarnessPersistenceError(
+                    "historical manuscript recovery requires a closed inactive agenda"
+                )
+            run = db.fetchone(
+                f"""
+                SELECT er.id, er.agenda_id, er.deep_insight_id,
+                       er.resource_grant_id, er.status,
+                       er.scientific_evidence_state,
+                       rg.stage AS current_grant_stage,
+                       rg.status AS current_grant_status,
+                       rg.decision_packet_id,
+                       arl.status AS current_ledger_status
+                FROM experiment_runs er
+                JOIN resource_grants rg ON rg.id=er.resource_grant_id
+                JOIN agenda_resource_ledger arl ON arl.id=rg.reservation_id
+                WHERE er.id=?{lock}
+                """,
+                (experiment_run_id,),
+            )
+            if (
+                not run
+                or int(run.get("agenda_id") or 0) != agenda_id
+                or int(run.get("deep_insight_id") or 0) <= 0
+                or str(run.get("status") or "") != "completed"
+            ):
+                raise MetaHarnessPersistenceError(
+                    "historical manuscript recovery run scope is invalid"
+                )
+            idea_id = int(run["deep_insight_id"])
+            decision = db.fetchone(
+                f"""
+                SELECT verdict, verdict_hash
+                FROM scientific_decision_records
+                WHERE agenda_id=? AND experiment_run_id=?
+                ORDER BY id DESC LIMIT 1{lock}
+                """,
+                (agenda_id, experiment_run_id),
+            )
+            if (
+                not decision
+                or str(decision.get("verdict") or "") != "supported"
+                or _canonical_hash(str(decision.get("verdict_hash") or ""))
+                != verdict_hash
+            ):
+                raise MetaHarnessPersistenceError(
+                    "historical manuscript recovery requires the supported verdict"
+                )
+
+            recoveries = db.fetchall(
+                f"""
+                SELECT rg.*, arl.status AS recovery_ledger_status,
+                       (rg.expires_at > CURRENT_TIMESTAMP) AS grant_live
+                FROM resource_grants rg
+                JOIN agenda_resource_ledger arl ON arl.id=rg.reservation_id
+                WHERE rg.agenda_id=? AND rg.idempotency_key LIKE ?
+                ORDER BY rg.id{lock}
+                """,
+                (agenda_id, f"{key_prefix}:g%"),
+            )
+            latest = recoveries[-1] if recoveries else None
+            generation = 1
+            if latest:
+                exact = (
+                    int(latest.get("idea_id") or 0) == idea_id
+                    and int(latest.get("decision_packet_id") or 0)
+                    == int(run.get("decision_packet_id") or 0)
+                    and str(latest.get("stage") or "") == "manuscript"
+                    and int(latest.get("token_cap") or 0) == token_cap
+                    and float(latest.get("max_gpu_hours") or 0.0) == 0.0
+                    and _load_list(latest.get("backend_allowlist_json")) == ["llm"]
+                    and _load_list(latest.get("artifact_requirements_json"))
+                    == ["manuscript_gate_record"]
+                    and int(run.get("resource_grant_id") or 0)
+                    == int(latest["id"])
+                )
+                if not exact:
+                    raise MetaHarnessPersistenceError(
+                        "historical manuscript grant idempotency conflict"
+                    )
+                if str(latest.get("status") or "") == "active" and bool(
+                    latest.get("grant_live")
+                ):
+                    db.commit()
+                    return int(latest["id"])
+                if str(latest.get("status") or "") == "active":
+                    raise MetaHarnessPersistenceError(
+                        "expired historical manuscript grant must be reconciled first"
+                    )
+                if (
+                    str(latest.get("status") or "") != "expired"
+                    or str(latest.get("recovery_ledger_status") or "")
+                    not in {"released", "settled"}
+                ):
+                    raise MetaHarnessPersistenceError(
+                        "historical manuscript grant generation is not replaceable"
+                    )
+                open_usage = db.fetchone(
+                    """
+                    SELECT COUNT(*) AS count
+                    FROM resource_grant_usage_reservations
+                    WHERE resource_grant_id=? AND status='reserved'
+                    """,
+                    (int(latest["id"]),),
+                )
+                if int((open_usage or {}).get("count") or 0):
+                    raise MetaHarnessPersistenceError(
+                        "reconciled manuscript grant still has open usage"
+                    )
+                try:
+                    generation = int(
+                        str(latest.get("idempotency_key") or "").rsplit(":g", 1)[1]
+                    ) + 1
+                except (IndexError, ValueError) as exc:
+                    raise MetaHarnessPersistenceError(
+                        "historical manuscript grant generation key is invalid"
+                    ) from exc
+
+            idempotency_key = f"{key_prefix}:g{generation}"
+
+            if str(run.get("scientific_evidence_state") or "") != (
+                "scientifically_decided"
+            ):
+                raise MetaHarnessPersistenceError(
+                    "historical manuscript recovery run is not awaiting review"
+                )
+            first_generation_ready = (
+                generation == 1
+                and str(run.get("current_grant_stage") or "") == "evidence_audit"
+                and str(run.get("current_grant_status") or "") == "consumed"
+                and str(run.get("current_ledger_status") or "") == "settled"
+            )
+            next_generation_ready = (
+                generation > 1
+                and latest is not None
+                and int(run.get("resource_grant_id") or 0) == int(latest["id"])
+                and str(run.get("current_grant_stage") or "") == "manuscript"
+                and str(run.get("current_grant_status") or "") == "expired"
+                and str(run.get("current_ledger_status") or "")
+                in {"released", "settled"}
+            )
+            if not (first_generation_ready or next_generation_ready):
+                raise MetaHarnessPersistenceError(
+                    "historical manuscript recovery predecessor is not settled"
+                )
+            packet = db.fetchone(
+                """
+                SELECT agenda_id, idea_id, decision
+                FROM idea_decision_packets WHERE id=?
+                """,
+                (int(run.get("decision_packet_id") or 0),),
+            )
+            if (
+                not packet
+                or int(packet.get("agenda_id") or 0) != agenda_id
+                or int(packet.get("idea_id") or 0) != idea_id
+                or str(packet.get("decision") or "") not in {"promote", "revisit"}
+            ):
+                raise MetaHarnessPersistenceError(
+                    "historical manuscript recovery decision scope is invalid"
+                )
+            subject = scientific_manuscript_subject(
+                agenda_id=agenda_id,
+                experiment_run_id=experiment_run_id,
+                verdict_hash=verdict_hash,
+            )
+            terminal = db.fetchone(
+                """
+                SELECT id FROM manuscript_gate_records_v1
+                WHERE agenda_id=? AND experiment_run_id=? AND verdict_hash=?
+                """,
+                (agenda_id, experiment_run_id, verdict_hash),
+            )
+            approval = db.fetchone(
+                """
+                SELECT id FROM reviewer_approval_records
+                WHERE purpose='scientific_manuscript' AND subject=?
+                """,
+                (subject,),
+            )
+            if terminal or approval:
+                raise MetaHarnessPersistenceError(
+                    "historical manuscript recovery already has a terminal decision"
+                )
+            active_manuscript = db.fetchone(
+                """
+                SELECT id FROM resource_grants
+                WHERE agenda_id=? AND idea_id=? AND stage='manuscript'
+                  AND status='active' AND expires_at > CURRENT_TIMESTAMP
+                ORDER BY id DESC LIMIT 1
+                """,
+                (agenda_id, idea_id),
+            )
+            if active_manuscript:
+                raise MetaHarnessPersistenceError(
+                    "another active manuscript grant already covers this idea"
+                )
+            active_grants = db.fetchone(
+                """
+                SELECT COUNT(*) AS count FROM resource_grants
+                WHERE agenda_id=? AND status='active'
+                  AND expires_at > CURRENT_TIMESTAMP
+                """,
+                (agenda_id,),
+            )
+            if int((active_grants or {}).get("count") or 0) >= int(
+                agenda.get("max_concurrency") or 1
+            ):
+                raise MetaHarnessPersistenceError(
+                    "agenda max_concurrency would be exceeded"
+                )
+            token_budget = int(agenda.get("token_budget") or 0)
+            token_total = (
+                int(agenda.get("token_spent") or 0)
+                + int(agenda.get("token_reserved") or 0)
+                + token_cap
+            )
+            if token_budget <= 0 or token_total > token_budget:
+                raise MetaHarnessPersistenceError("agenda token hard cap exceeded")
+            agenda_backends = set(
+                _load_list(agenda.get("backend_allowlist_json"))
+            )
+            if "llm" not in agenda_backends:
+                raise MetaHarnessPersistenceError(
+                    "historical manuscript recovery exceeds agenda backends"
+                )
+            grant = ResourceGrant(
+                agenda_id=agenda_id,
+                idea_id=idea_id,
+                decision_packet_id=int(run["decision_packet_id"]),
+                stage="manuscript",
+                token_cap=token_cap,
+                gpu_class="none",
+                max_gpu_hours=0.0,
+                backend_allowlist=["llm"],
+                artifact_requirements=["manuscript_gate_record"],
+                expires_at=expires_at,
+                grant_reason=(
+                    "historical_manuscript_recovery:"
+                    f"run={experiment_run_id}:verdict={verdict_hash}:"
+                    f"prior_grant={int(run.get('resource_grant_id') or 0)}"
+                ),
+                idempotency_key=idempotency_key,
+            )
+            grant.validate()
+            _require_short_ttl(grant)
+            reservation_id = db.insert_returning_id(
+                """
+                INSERT INTO agenda_resource_ledger
+                    (agenda_id, operation, idempotency_key, token_reserved,
+                     gpu_hours_reserved, status)
+                VALUES (?, 'resource_grant', ?, ?, 0, 'reserved')
+                RETURNING id
+                """,
+                (agenda_id, f"grant:{idempotency_key}", token_cap),
+            )
+            cursor = db.execute(
+                """
+                UPDATE research_agendas
+                SET token_reserved=token_reserved+?, updated_at=CURRENT_TIMESTAMP
+                WHERE id=?
+                """,
+                (token_cap, agenda_id),
+            )
+            _expect_one(cursor, operation="reserve_historical_manuscript_budget")
+            grant_id = db.insert_returning_id(
+                """
+                INSERT INTO resource_grants
+                    (agenda_id, idea_id, decision_packet_id, stage, token_cap,
+                     gpu_class, max_gpu_hours, backend_allowlist_json,
+                     artifact_requirements_json, expires_at, grant_reason,
+                     reservation_id, status, idempotency_key,
+                     preflight_result_id)
+                VALUES (?, ?, ?, 'manuscript', ?, 'none', 0, ?, ?, ?, ?, ?,
+                        'active', ?, NULL)
+                RETURNING id
+                """,
+                (
+                    agenda_id,
+                    idea_id,
+                    int(run["decision_packet_id"]),
+                    token_cap,
+                    _dump(["llm"]),
+                    _dump(["manuscript_gate_record"]),
+                    expires_at,
+                    grant.grant_reason,
+                    reservation_id,
+                    idempotency_key,
+                ),
+            )
+            cursor = db.execute(
+                """
+                UPDATE experiment_runs SET resource_grant_id=?
+                WHERE id=? AND agenda_id=? AND deep_insight_id=?
+                  AND resource_grant_id=?
+                  AND scientific_evidence_state='scientifically_decided'
+                """,
+                (
+                    grant_id,
+                    experiment_run_id,
+                    agenda_id,
+                    idea_id,
+                    int(run.get("resource_grant_id") or 0),
+                ),
+            )
+            _expect_one(cursor, operation="attach_historical_manuscript_grant")
+            db.commit()
+            return int(grant_id)
+        except Exception:
+            db.rollback()
+            raise
+
+    def begin_manuscript_gate_attempt(
+        self,
+        *,
+        agenda_id: int,
+        idea_id: int,
+        experiment_run_id: int,
+        resource_grant_id: int,
+        verdict_hash: str,
+        prompt_ref: str,
+        max_attempts: int = 2,
+    ) -> dict[str, Any]:
+        """Append and commit one logical attempt before any provider work."""
+
+        agenda_id = int(agenda_id)
+        idea_id = int(idea_id)
+        experiment_run_id = int(experiment_run_id)
+        resource_grant_id = int(resource_grant_id)
+        verdict_hash = _canonical_hash(verdict_hash)
+        prompt_ref = str(prompt_ref or "").strip()
+        if max_attempts != 2:
+            raise MetaHarnessPersistenceError(
+                "manuscript attempt ceiling is fixed at two"
+            )
+        if (
+            min(agenda_id, idea_id, experiment_run_id, resource_grant_id) <= 0
+            or not prompt_ref
+            or len(verdict_hash) != 64
+            or any(character not in "0123456789abcdef" for character in verdict_hash)
+        ):
+            raise MetaHarnessPersistenceError(
+                "manuscript attempt scope is incomplete"
+            )
+        try:
+            lock = " FOR UPDATE" if db._use_pg() else ""  # noqa: SLF001
+            run = db.fetchone(
+                f"""
+                SELECT agenda_id, deep_insight_id, resource_grant_id,
+                       scientific_evidence_state
+                FROM experiment_runs WHERE id=?{lock}
+                """,
+                (experiment_run_id,),
+            )
+            grant = db.fetchone(
+                f"""
+                SELECT agenda_id, idea_id, stage, status, expires_at,
+                       (expires_at > CURRENT_TIMESTAMP) AS grant_live
+                FROM resource_grants WHERE id=?{lock}
+                """,
+                (resource_grant_id,),
+            )
+            decision = db.fetchone(
+                """
+                SELECT verdict, verdict_hash FROM scientific_decision_records
+                WHERE agenda_id=? AND experiment_run_id=?
+                ORDER BY id DESC LIMIT 1
+                """,
+                (agenda_id, experiment_run_id),
+            )
+            if (
+                not run
+                or not grant
+                or not decision
+                or int(run.get("agenda_id") or 0) != agenda_id
+                or int(run.get("deep_insight_id") or 0) != idea_id
+                or int(run.get("resource_grant_id") or 0) != resource_grant_id
+                or str(run.get("scientific_evidence_state") or "")
+                != "scientifically_decided"
+                or int(grant.get("agenda_id") or 0) != agenda_id
+                or int(grant.get("idea_id") or 0) != idea_id
+                or str(grant.get("stage") or "")
+                not in {"evidence_audit", "manuscript"}
+                or str(grant.get("status") or "") != "active"
+                or not bool(grant.get("grant_live"))
+                or str(decision.get("verdict") or "") != "supported"
+                or _canonical_hash(str(decision.get("verdict_hash") or ""))
+                != verdict_hash
+            ):
+                raise MetaHarnessPersistenceError(
+                    "manuscript attempt is outside active supported scope"
+                )
+            terminal = db.fetchone(
+                """
+                SELECT id FROM manuscript_gate_records_v1
+                WHERE agenda_id=? AND experiment_run_id=? AND verdict_hash=?
+                """,
+                (agenda_id, experiment_run_id, verdict_hash),
+            )
+            if terminal:
+                raise MetaHarnessPersistenceError(
+                    "manuscript verdict already has a terminal record"
+                )
+            count = db.fetchone(
+                """
+                SELECT COUNT(*) AS count FROM manuscript_gate_attempts_v1
+                WHERE resource_grant_id=?
+                """,
+                (resource_grant_id,),
+            )
+            attempt_number = int((count or {}).get("count") or 0) + 1
+            if attempt_number > max_attempts:
+                raise MetaHarnessPersistenceError(
+                    "manuscript review attempts exhausted"
+                )
+            idempotency_key = (
+                f"manuscript-gate:{agenda_id}:run{experiment_run_id}:"
+                f"{verdict_hash}:a{attempt_number}"
+            )
+            attempt_id = db.insert_returning_id(
+                """
+                INSERT INTO manuscript_gate_attempts_v1
+                    (agenda_id, idea_id, experiment_run_id, resource_grant_id,
+                     verdict_hash, attempt_number, idempotency_key, prompt_ref)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                RETURNING id
+                """,
+                (
+                    agenda_id,
+                    idea_id,
+                    experiment_run_id,
+                    resource_grant_id,
+                    verdict_hash,
+                    attempt_number,
+                    idempotency_key,
+                    prompt_ref,
+                ),
+            )
+            # This commit is deliberate: the attempt must survive failures in
+            # provider configuration and reservation that happen afterwards.
+            db.commit()
+            return {
+                "id": int(attempt_id),
+                "attempt_number": attempt_number,
+                "idempotency_key": idempotency_key,
+                "grant_stage": str(grant.get("stage") or ""),
+            }
+        except Exception:
+            db.rollback()
+            raise
+
+    def count_manuscript_gate_attempts(self, *, resource_grant_id: int) -> int:
+        row = db.fetchone(
+            """
+            SELECT COUNT(*) AS count FROM manuscript_gate_attempts_v1
+            WHERE resource_grant_id=?
+            """,
+            (int(resource_grant_id),),
+        )
+        return int((row or {}).get("count") or 0)
+
+    def load_manuscript_gate_record(
+        self,
+        *,
+        agenda_id: int,
+        experiment_run_id: int,
+        verdict_hash: str,
+    ) -> dict[str, Any] | None:
+        row = db.fetchone(
+            """
+            SELECT * FROM manuscript_gate_records_v1
+            WHERE agenda_id=? AND experiment_run_id=? AND verdict_hash=?
+            """,
+            (
+                int(agenda_id),
+                int(experiment_run_id),
+                _canonical_hash(verdict_hash),
+            ),
+        )
+        return dict(row) if row else None
+
+    def record_manuscript_gate_result(
+        self,
+        *,
+        agenda_id: int,
+        idea_id: int,
+        experiment_run_id: int,
+        resource_grant_id: int,
+        verdict_hash: str,
+        disposition: str,
+        prompt_ref: str,
+        judgement: dict[str, Any] | None = None,
+        grant_usage_reservation_id: int | None = None,
+        reviewer_ref: str | None = None,
+        reviewer_response_hash: str | None = None,
+        failure_reason: str | None = None,
+        commit: bool = True,
+    ) -> int:
+        """Append one immutable terminal reviewer decision for a verdict."""
+
+        agenda_id = int(agenda_id)
+        idea_id = int(idea_id)
+        experiment_run_id = int(experiment_run_id)
+        resource_grant_id = int(resource_grant_id)
+        verdict_hash = _canonical_hash(verdict_hash)
+        disposition = str(disposition or "").strip()
+        prompt_ref = str(prompt_ref or "").strip()
+        payload = dict(judgement or {})
+        if disposition not in {"approved", "refused", "technical_failed"}:
+            raise MetaHarnessPersistenceError(
+                "invalid manuscript gate disposition"
+            )
+        if not prompt_ref or len(verdict_hash) != 64 or any(
+            character not in "0123456789abcdef" for character in verdict_hash
+        ):
+            raise MetaHarnessPersistenceError(
+                "manuscript gate record provenance is incomplete"
+            )
+        if disposition in {"approved", "refused"}:
+            expected = disposition == "approved"
+            if payload.get("concur") is not expected:
+                raise MetaHarnessPersistenceError(
+                    "manuscript gate judgement contradicts disposition"
+                )
+            response_hash = _canonical_hash(reviewer_response_hash or "")
+            if (
+                not grant_usage_reservation_id
+                or not str(reviewer_ref or "").strip()
+                or len(response_hash) != 64
+                or any(
+                    character not in "0123456789abcdef"
+                    for character in response_hash
+                )
+            ):
+                raise MetaHarnessPersistenceError(
+                    "manuscript reviewer result provenance is incomplete"
+                )
+            reviewer_response_hash = response_hash
+        elif not str(failure_reason or "").strip():
+            raise MetaHarnessPersistenceError(
+                "terminal manuscript technical failure requires a reason"
+            )
+        try:
+            lock = " FOR UPDATE" if db._use_pg() else ""  # noqa: SLF001
+            run = db.fetchone(
+                f"""
+                SELECT agenda_id, deep_insight_id, resource_grant_id,
+                       scientific_evidence_state
+                FROM experiment_runs WHERE id=?{lock}
+                """,
+                (experiment_run_id,),
+            )
+            grant = db.fetchone(
+                f"""
+                SELECT agenda_id, idea_id, stage, status
+                FROM resource_grants WHERE id=?{lock}
+                """,
+                (resource_grant_id,),
+            )
+            decision = db.fetchone(
+                """
+                SELECT verdict, verdict_hash FROM scientific_decision_records
+                WHERE agenda_id=? AND experiment_run_id=?
+                ORDER BY id DESC LIMIT 1
+                """,
+                (agenda_id, experiment_run_id),
+            )
+            if (
+                not run
+                or not grant
+                or not decision
+                or int(run.get("agenda_id") or 0) != agenda_id
+                or int(run.get("deep_insight_id") or 0) != idea_id
+                or int(run.get("resource_grant_id") or 0) != resource_grant_id
+                or str(run.get("scientific_evidence_state") or "")
+                not in {"scientifically_decided", "manuscript_allowed"}
+                or int(grant.get("agenda_id") or 0) != agenda_id
+                or int(grant.get("idea_id") or 0) != idea_id
+                or str(grant.get("stage") or "")
+                not in {"evidence_audit", "manuscript"}
+                or str(grant.get("status") or "") not in {"active", "consumed"}
+                or str(decision.get("verdict") or "") != "supported"
+                or _canonical_hash(str(decision.get("verdict_hash") or ""))
+                != verdict_hash
+            ):
+                raise MetaHarnessPersistenceError(
+                    "manuscript gate result scope is invalid"
+                )
+            if disposition in {"approved", "refused"}:
+                observation = db.fetchone(
+                    """
+                    SELECT rgu.id, rgu.status, lro.provider, lro.model,
+                           lro.prompt_version, lro.status AS observation_status
+                    FROM resource_grant_usage_reservations rgu
+                    JOIN llm_route_observations lro
+                      ON lro.grant_usage_reservation_id=rgu.id
+                    JOIN manuscript_gate_attempts_v1 mga
+                      ON mga.resource_grant_id=rgu.resource_grant_id
+                     AND mga.idempotency_key=rgu.idempotency_key
+                    WHERE rgu.id=? AND rgu.resource_grant_id=?
+                      AND rgu.agenda_id=? AND lro.role='reviewer'
+                      AND rgu.operation='manuscript_gate_review'
+                      AND lro.status='succeeded'
+                    ORDER BY lro.id DESC LIMIT 1
+                    """,
+                    (
+                        int(grant_usage_reservation_id or 0),
+                        resource_grant_id,
+                        agenda_id,
+                    ),
+                )
+                expected_ref = (
+                    f"{observation.get('provider')}:{observation.get('model')}"
+                    if observation
+                    else ""
+                )
+                if (
+                    not observation
+                    or str(observation.get("status") or "") != "settled"
+                    or str(observation.get("prompt_version") or "") != prompt_ref
+                    or expected_ref != str(reviewer_ref or "")
+                ):
+                    raise MetaHarnessPersistenceError(
+                        "manuscript gate result lacks settled reviewer usage"
+                    )
+            else:
+                attempts = db.fetchone(
+                    """
+                    SELECT COUNT(*) AS count
+                    FROM manuscript_gate_attempts_v1
+                    WHERE resource_grant_id=? AND agenda_id=?
+                    """,
+                    (resource_grant_id, agenda_id),
+                )
+                if int((attempts or {}).get("count") or 0) < 2:
+                    raise MetaHarnessPersistenceError(
+                        "terminal manuscript failure requires two recorded attempts"
+                    )
+            existing = db.fetchone(
+                f"""
+                SELECT * FROM manuscript_gate_records_v1
+                WHERE agenda_id=? AND experiment_run_id=? AND verdict_hash=?{lock}
+                """,
+                (agenda_id, experiment_run_id, verdict_hash),
+            )
+            canonical_payload = _dump(payload)
+            if existing:
+                same = (
+                    int(existing.get("idea_id") or 0) == idea_id
+                    and int(existing.get("resource_grant_id") or 0)
+                    == resource_grant_id
+                    and str(existing.get("disposition") or "") == disposition
+                    and str(existing.get("prompt_ref") or "") == prompt_ref
+                    and _load_mapping(existing.get("judgement_json")) == payload
+                    and int(existing.get("grant_usage_reservation_id") or 0)
+                    == int(grant_usage_reservation_id or 0)
+                    and str(existing.get("reviewer_ref") or "")
+                    == str(reviewer_ref or "")
+                    and str(existing.get("reviewer_response_hash") or "")
+                    == str(reviewer_response_hash or "")
+                    and str(existing.get("failure_reason") or "")
+                    == str(failure_reason or "")
+                )
+                if not same:
+                    raise MetaHarnessPersistenceError(
+                        "manuscript gate terminal record conflict"
+                    )
+                if commit:
+                    db.commit()
+                return int(existing["id"])
+            record_id = db.insert_returning_id(
+                """
+                INSERT INTO manuscript_gate_records_v1
+                    (agenda_id, idea_id, experiment_run_id, resource_grant_id,
+                     verdict_hash, disposition, prompt_ref, judgement_json,
+                     grant_usage_reservation_id, reviewer_ref,
+                     reviewer_response_hash, failure_reason)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                RETURNING id
+                """,
+                (
+                    agenda_id,
+                    idea_id,
+                    experiment_run_id,
+                    resource_grant_id,
+                    verdict_hash,
+                    disposition,
+                    prompt_ref,
+                    canonical_payload,
+                    grant_usage_reservation_id,
+                    reviewer_ref,
+                    reviewer_response_hash,
+                    failure_reason,
+                ),
+            )
+            if commit:
+                db.commit()
+            return int(record_id)
+        except Exception:
+            db.rollback()
+            raise
+
+    def complete_manuscript_grant(
+        self,
+        *,
+        agenda_id: int,
+        experiment_run_id: int,
+        resource_grant_id: int,
+        commit: bool = True,
+    ) -> int:
+        """Settle a terminal token-only manuscript grant without an outcome."""
+
+        agenda_id = int(agenda_id)
+        experiment_run_id = int(experiment_run_id)
+        resource_grant_id = int(resource_grant_id)
+        try:
+            lock = " FOR UPDATE" if db._use_pg() else ""  # noqa: SLF001
+            run = db.fetchone(
+                f"""
+                SELECT agenda_id, deep_insight_id, resource_grant_id,
+                       scientific_evidence_state
+                FROM experiment_runs WHERE id=?{lock}
+                """,
+                (experiment_run_id,),
+            )
+            grant = db.fetchone(
+                f"SELECT * FROM resource_grants WHERE id=?{lock}",
+                (resource_grant_id,),
+            )
+            terminal = db.fetchone(
+                f"""
+                SELECT disposition FROM manuscript_gate_records_v1
+                WHERE agenda_id=? AND experiment_run_id=?
+                  AND resource_grant_id=?{lock}
+                """,
+                (agenda_id, experiment_run_id, resource_grant_id),
+            )
+            if (
+                not run
+                or not grant
+                or not terminal
+                or int(run.get("agenda_id") or 0) != agenda_id
+                or int(run.get("resource_grant_id") or 0) != resource_grant_id
+                or int(grant.get("agenda_id") or 0) != agenda_id
+                or int(grant.get("idea_id") or 0)
+                != int(run.get("deep_insight_id") or 0)
+                or str(grant.get("stage") or "") != "manuscript"
+                or float(grant.get("max_gpu_hours") or 0.0) != 0.0
+            ):
+                raise MetaHarnessPersistenceError(
+                    "manuscript grant settlement scope is invalid"
+                )
+            disposition = str(terminal.get("disposition") or "")
+            state = str(run.get("scientific_evidence_state") or "")
+            if (
+                disposition == "approved" and state != "manuscript_allowed"
+            ) or (
+                disposition in {"refused", "technical_failed"}
+                and state != "scientifically_decided"
+            ):
+                raise MetaHarnessPersistenceError(
+                    "manuscript grant terminal state is incomplete"
+                )
+            usage = db.fetchone(
+                """
+                SELECT
+                    COALESCE(SUM(CASE WHEN status='settled'
+                                      THEN tokens_used ELSE 0 END), 0)
+                        AS tokens_used,
+                    COALESCE(SUM(CASE WHEN status='reserved' THEN 1 ELSE 0 END), 0)
+                        AS open_reservations
+                FROM resource_grant_usage_reservations
+                WHERE resource_grant_id=? AND agenda_id=?
+                """,
+                (resource_grant_id, agenda_id),
+            ) or {}
+            if int(usage.get("open_reservations") or 0):
+                raise MetaHarnessPersistenceError(
+                    "manuscript grant has open LLM reservations"
+                )
+            actual_tokens = int(usage.get("tokens_used") or 0)
+            if actual_tokens > int(grant.get("token_cap") or 0):
+                raise MetaHarnessPersistenceError(
+                    "manuscript usage exceeds ResourceGrant"
+                )
+            gpu_usage = db.fetchone(
+                """
+                SELECT COUNT(*) AS count
+                FROM experiment_attempt_gpu_reservations_v1
+                WHERE resource_grant_id=?
+                """,
+                (resource_grant_id,),
+            )
+            if int((gpu_usage or {}).get("count") or 0):
+                raise MetaHarnessPersistenceError(
+                    "manuscript grant unexpectedly has GPU usage"
+                )
+            ledger = db.fetchone(
+                f"SELECT * FROM agenda_resource_ledger WHERE id=?{lock}",
+                (int(grant.get("reservation_id") or 0),),
+            )
+            if not ledger:
+                raise MetaHarnessPersistenceError(
+                    "manuscript grant reservation was not found"
+                )
+            if str(grant.get("status") or "") == "consumed":
+                if (
+                    str(ledger.get("status") or "") != "settled"
+                    or int(ledger.get("tokens_used") or 0) != actual_tokens
+                    or float(ledger.get("gpu_hours_used") or 0.0) != 0.0
+                ):
+                    raise MetaHarnessPersistenceError(
+                        "consumed manuscript grant ledger is inconsistent"
+                    )
+                if commit:
+                    db.commit()
+                return actual_tokens
+            if str(grant.get("status") or "") != "active" or str(
+                ledger.get("status") or ""
+            ) != "reserved":
+                raise MetaHarnessPersistenceError(
+                    "manuscript grant reservation is not settleable"
+                )
+            agenda = db.fetchone(
+                f"SELECT token_reserved FROM research_agendas WHERE id=?{lock}",
+                (agenda_id,),
+            )
+            reserved = int(ledger.get("token_reserved") or 0)
+            if not agenda or int(agenda.get("token_reserved") or 0) < reserved:
+                raise MetaHarnessPersistenceError(
+                    "agenda manuscript reservation accounting is inconsistent"
+                )
+            cursor = db.execute(
+                """
+                UPDATE research_agendas
+                SET token_reserved=token_reserved-?, token_spent=token_spent+?,
+                    updated_at=CURRENT_TIMESTAMP
+                WHERE id=?
+                """,
+                (reserved, actual_tokens, agenda_id),
+            )
+            _expect_one(cursor, operation="settle_manuscript_agenda")
+            cursor = db.execute(
+                """
+                UPDATE agenda_resource_ledger
+                SET tokens_used=?, gpu_hours_used=0, status='settled',
+                    settled_at=CURRENT_TIMESTAMP
+                WHERE id=? AND status='reserved'
+                """,
+                (actual_tokens, int(grant["reservation_id"])),
+            )
+            _expect_one(cursor, operation="settle_manuscript_ledger")
+            cursor = db.execute(
+                """
+                UPDATE resource_grants SET status='consumed'
+                WHERE id=? AND agenda_id=? AND status='active'
+                """,
+                (resource_grant_id, agenda_id),
+            )
+            _expect_one(cursor, operation="consume_manuscript_grant")
+            if commit:
+                db.commit()
+            return actual_tokens
+        except Exception:
+            db.rollback()
+            raise
+
     def mark_retrospectively_decided(
         self,
         *,
@@ -1215,20 +2130,9 @@ class MetaHarnessRepository:
         if not str(reason or "").strip():
             raise MetaHarnessPersistenceError("a revocation reason is required")
         try:
-            used = db.fetchone(
-                """
-                SELECT COUNT(*) AS count
-                FROM resource_grant_usage_reservations
-                WHERE resource_grant_id=? AND agenda_id=? AND status='settled'
-                """,
-                (int(grant_id), int(agenda_id)),
-            )
-            if int((used or {}).get("count") or 0) > 0:
-                raise MetaHarnessPersistenceError(
-                    "grant already metered usage; it cannot be revoked as unused"
-                )
+            lock = " FOR UPDATE" if db._use_pg() else ""  # noqa: SLF001
             row = db.fetchone(
-                """
+                f"""
                 SELECT rg.id, rg.agenda_id, rg.reservation_id,
                        arl.token_reserved, arl.gpu_hours_reserved,
                        arl.gpu_hours_used,
@@ -1236,44 +2140,92 @@ class MetaHarnessRepository:
                 FROM resource_grants rg
                 JOIN agenda_resource_ledger arl ON arl.id=rg.reservation_id
                 WHERE rg.id=? AND rg.agenda_id=? AND rg.status='active'
+                {lock}
                 """,
                 (int(grant_id), int(agenda_id)),
             )
             if not row:
                 db.commit()
                 return False
+            usage_rows = db.fetchall(
+                f"""
+                SELECT status FROM resource_grant_usage_reservations
+                WHERE resource_grant_id=? AND agenda_id=?{lock}
+                """,
+                (int(grant_id), int(agenda_id)),
+            )
+            if any(usage.get("status") == "settled" for usage in usage_rows):
+                raise MetaHarnessPersistenceError(
+                    "grant already metered usage; it cannot be revoked as unused"
+                )
+            release_reason = f"grant_revoked:{str(reason).strip()}"
             if row.get("reservation_status") == "reserved":
-                    # Attempt-level settlement already released the hours it
-                    # actually burned (attempt_gpu_usage.settle_attempt) while
-                    # leaving this ledger row 'reserved'. Releasing the full cap
-                    # here releases those hours a second time: agendas 7 and 10
-                    # drifted to -1.64 and -4.61 reserved hours by 2026-08-19,
-                    # and a negative reservation fails the agenda contract, so
-                    # agenda 7 could not select any work at all. Release only
-                    # what is still outstanding.
-                db.execute(
+                # Lock and clamp the agenda aggregate. Historical reconciliation
+                # can leave it below the sum of ledger remainders; revoking the
+                # next unused grant must disclose that shortfall, not drive the
+                # aggregate negative or invent usage to conceal it.
+                agenda = db.fetchone(
+                    f"""
+                    SELECT token_reserved, gpu_hours_reserved
+                    FROM research_agendas WHERE id=?{lock}
+                    """,
+                    (int(agenda_id),),
+                )
+                if not agenda:
+                    raise MetaHarnessPersistenceError(
+                        "revoked grant agenda was not found"
+                    )
+                agenda_token_reserved = max(
+                    0, int(agenda.get("token_reserved") or 0)
+                )
+                token_reserved = max(0, int(row.get("token_reserved") or 0))
+                token_release = min(token_reserved, agenda_token_reserved)
+                token_shortfall = token_reserved - token_release
+                agenda_gpu_reserved = max(
+                    0.0, float(agenda.get("gpu_hours_reserved") or 0.0)
+                )
+                gpu_outstanding = _outstanding_gpu_hours(row)
+                gpu_release = min(gpu_outstanding, agenda_gpu_reserved)
+                gpu_shortfall = max(0.0, gpu_outstanding - gpu_release)
+                shortfalls = ""
+                if token_shortfall:
+                    shortfalls += (
+                        ":agenda_token_reservation_shortfall="
+                        f"{token_shortfall}"
+                    )
+                if gpu_shortfall > 1e-9:
+                    shortfalls += (
+                        ":agenda_gpu_reservation_shortfall_hours="
+                        f"{gpu_shortfall:.12g}"
+                    )
+                release_reason = (
+                    release_reason[: max(0, 200 - len(shortfalls))]
+                    + shortfalls
+                )
+                cursor = db.execute(
                     """
                     UPDATE research_agendas
-                    SET token_reserved=token_reserved-?,
-                        gpu_hours_reserved=gpu_hours_reserved-?,
+                    SET token_reserved=?, gpu_hours_reserved=?,
                         updated_at=CURRENT_TIMESTAMP
                     WHERE id=?
                     """,
                     (
-                        int(row.get("token_reserved") or 0),
-                        _outstanding_gpu_hours(row),
+                        agenda_token_reserved - token_release,
+                        agenda_gpu_reserved - gpu_release,
                         int(agenda_id),
                     ),
                 )
-                db.execute(
+                _expect_one(cursor, operation="release_revoked_grant_budget")
+                cursor = db.execute(
                     """
                     UPDATE agenda_resource_ledger
                     SET status='released', release_reason=?,
                         settled_at=CURRENT_TIMESTAMP
                     WHERE id=? AND status='reserved'
                     """,
-                    (f"grant_revoked:{reason}"[:200], int(row["reservation_id"])),
+                    (release_reason, int(row["reservation_id"])),
                 )
+                _expect_one(cursor, operation="release_revoked_grant_ledger")
             db.execute(
                 """
                 UPDATE resource_grant_usage_reservations
@@ -1281,7 +2233,7 @@ class MetaHarnessRepository:
                     settled_at=CURRENT_TIMESTAMP
                 WHERE resource_grant_id=? AND agenda_id=? AND status='reserved'
                 """,
-                (f"grant_revoked:{reason}"[:200], int(grant_id), int(agenda_id)),
+                (release_reason, int(grant_id), int(agenda_id)),
             )
             db.execute(
                 "UPDATE resource_grants SET status='revoked' WHERE id=? AND agenda_id=? AND status='active'",
@@ -1405,7 +2357,8 @@ class MetaHarnessRepository:
                 FROM resource_grants rg
                 JOIN agenda_resource_ledger arl ON arl.id=rg.reservation_id
                 WHERE rg.status='active'
-                  AND rg.expires_at <= CURRENT_TIMESTAMP{scope}{lock}
+                  AND rg.expires_at <= CURRENT_TIMESTAMP{scope}
+                ORDER BY rg.agenda_id, rg.id{lock}
                 """,
                 params,
             )
@@ -1413,29 +2366,110 @@ class MetaHarnessRepository:
             for row in rows:
                 grant_id = int(row["id"])
                 if row.get("reservation_status") == "reserved":
-                    # Same partial-release invariant as revocation above.
+                    # Lock child reservations before reading their settled
+                    # usage. A concurrent LLM settlement locks the same row;
+                    # whichever transaction wins is therefore reflected once
+                    # in the top-level grant ledger, never lost after expiry.
+                    usage_rows = db.fetchall(
+                        f"""
+                        SELECT status, tokens_used
+                        FROM resource_grant_usage_reservations
+                        WHERE resource_grant_id=? AND agenda_id=?{lock}
+                        """,
+                        (grant_id, int(row["agenda_id"])),
+                    )
+                    tokens_used = sum(
+                        int(usage.get("tokens_used") or 0)
+                        for usage in usage_rows
+                        if usage.get("status") == "settled"
+                    )
+                    token_reserved = int(row.get("token_reserved") or 0)
+                    if tokens_used > token_reserved:
+                        raise MetaHarnessPersistenceError(
+                            "settled child token usage exceeds grant reservation"
+                        )
+
+                    # Attempt-level GPU settlement has already moved used
+                    # hours from agenda reserved -> spent and recorded them on
+                    # this ledger. Only the outstanding remainder belongs here.
+                    # A historical double-release can leave the agenda's
+                    # aggregate below the sum of ledger remainders. Lock and
+                    # clamp that aggregate instead of making it negative or
+                    # fabricating gpu_hours_used to hide the discrepancy.
+                    agenda = db.fetchone(
+                        f"""
+                        SELECT token_reserved, gpu_hours_reserved
+                        FROM research_agendas
+                        WHERE id=?{lock}
+                        """,
+                        (int(row["agenda_id"]),),
+                    )
+                    if not agenda:
+                        raise MetaHarnessPersistenceError(
+                            "expired grant agenda was not found"
+                        )
+                    agenda_token_reserved = max(
+                        0, int(agenda.get("token_reserved") or 0)
+                    )
+                    token_release = min(token_reserved, agenda_token_reserved)
+                    token_shortfall = max(0, token_reserved - token_release)
+                    gpu_outstanding = _outstanding_gpu_hours(row)
+                    agenda_gpu_reserved = max(
+                        0.0, float(agenda.get("gpu_hours_reserved") or 0.0)
+                    )
+                    gpu_release = min(gpu_outstanding, agenda_gpu_reserved)
+                    gpu_shortfall = max(0.0, gpu_outstanding - gpu_release)
+                    release_reason = "grant_expired"
+                    if token_shortfall:
+                        release_reason += (
+                            ":agenda_token_reservation_shortfall="
+                            f"{token_shortfall}"
+                        )
+                    if gpu_shortfall > 1e-9:
+                        release_reason += (
+                            ":agenda_gpu_reservation_shortfall_hours="
+                            f"{gpu_shortfall:.12g}"
+                        )
+
+                    # The whole grant cap leaves reserved: actual child usage
+                    # becomes spent and only cap-minus-usage is returned to the
+                    # agenda. This is the top-level settlement child rows were
+                    # waiting for; the child rows themselves remain settled.
                     db.execute(
                         """
                         UPDATE research_agendas
-                        SET token_reserved=token_reserved-?,
-                            gpu_hours_reserved=gpu_hours_reserved-?,
+                        SET token_reserved=?,
+                            token_spent=token_spent+?,
+                            gpu_hours_reserved=?,
                             updated_at=CURRENT_TIMESTAMP
                         WHERE id=?
                         """,
                         (
-                            int(row.get("token_reserved") or 0),
-                            _outstanding_gpu_hours(row),
+                            agenda_token_reserved - token_release,
+                            tokens_used,
+                            agenda_gpu_reserved - gpu_release,
                             int(row["agenda_id"]),
                         ),
+                    )
+                    ledger_status = (
+                        "settled"
+                        if tokens_used > 0
+                        or float(row.get("gpu_hours_used") or 0.0) > 0
+                        else "released"
                     )
                     db.execute(
                         """
                         UPDATE agenda_resource_ledger
-                        SET status='released', release_reason='grant_expired',
+                        SET tokens_used=?, status=?, release_reason=?,
                             settled_at=CURRENT_TIMESTAMP
                         WHERE id=? AND status='reserved'
                         """,
-                        (int(row["reservation_id"]),),
+                        (
+                            tokens_used,
+                            ledger_status,
+                            release_reason,
+                            int(row["reservation_id"]),
+                        ),
                     )
                 db.execute(
                     """

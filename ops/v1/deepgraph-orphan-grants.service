@@ -1,21 +1,18 @@
 [Unit]
 Description=Release DeepGraph resource grants issued for a run that never came
-Documentation=file:/home/billion-token/Deepgraph/scripts/repair_orphaned_grants.py
-After=network-online.target postgresql.service
+After=network-online.target deepgraph-postgres.service
+Wants=network-online.target deepgraph-postgres.service
 
 [Service]
 Type=oneshot
 User=billion-token
-# Rewritten to the active release directory by the deploy procedure, the same
-# way deepgraph-auto-advance.service is; the WorkingDirectory is also where
-# .env is read from, so moving it silently removes DEEPGRAPH_DATABASE_URL.
-WorkingDirectory=/home/billion-token/Deepgraph
-# Explicit because config.py loads .env relative to the working directory, so
-# pointing WorkingDirectory at a release directory silently removes
-# DEEPGRAPH_DATABASE_URL -- the same trap deepgraph-auto-advance hit.
+# Runtime configuration remains operator-managed; source code must come from
+# the exact immutable release already activated for deepgraph-web. Do not pick
+# the lexically newest release: a built release is not necessarily deployed.
 EnvironmentFile=/home/billion-token/Deepgraph/.env
 EnvironmentFile=-/etc/deepgraph/runtime.env
-ExecStart=/home/billion-token/Deepgraph/.venv/bin/python scripts/repair_orphaned_grants.py --apply
+Environment=PYTHONDONTWRITEBYTECODE=1
+ExecStart=/bin/bash -c 'set -euo pipefail; release_dir="$$(/usr/bin/systemctl show --property=WorkingDirectory --value deepgraph-web.service)"; case "$$release_dir" in /home/billion-token/releases/deepgraph-v1-*) ;; *) echo "refusing non-release DeepGraph code path: $$release_dir" >&2; exit 64 ;; esac; test -r "$$release_dir/.release-commit"; cd "$$release_dir"; exec /home/billion-token/Deepgraph/.venv/bin/python "$$release_dir/scripts/repair_orphaned_grants.py" --apply'
 # Reads grant/run state and calls the guarded lifecycle API. It cannot spend:
 # revocation refunds an unused grant, expiry releases the unspent remainder of
 # a grant whose forge died before it built a run, and both refuse outright if
