@@ -119,6 +119,10 @@ Runbooks for recovery baselines, canaries, and rollback are in
 [internal/runbooks/](internal/runbooks/RECOVERY_2026-08-03.md) and
 [internal/](internal/ROLLBACK_RUNBOOK.md).
 
+The reviewed public dashboard release, its data guarantees, immutable-release
+procedure, and China-facing Nginx profile are recorded in
+[internal/frontend/PUBLIC_FRONTEND_RELEASE_20260823.md](internal/frontend/PUBLIC_FRONTEND_RELEASE_20260823.md).
+
 ## Configuration reference
 
 Defaults live in `deepgraph.toml`; environment variables and `.env` override

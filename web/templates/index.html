@@ -11,7 +11,7 @@
          render-blocking and unreachable/slow from some networks. -->
     <script defer src="/static/vendor/d3/d3.v7.min.js"></script>
     <script defer src="/static/vendor/marked/marked.min.js"></script>
-    <script defer src="/static/js/i18n.js?v=20260817-public1"></script>
+    <script defer src="/static/js/i18n.js?v=20260823-public1"></script>
     <script>
         window.MathJax = {
             tex: {
@@ -33,7 +33,7 @@
         };
     </script>
     <script defer src="/static/vendor/mathjax/tex-svg.js"></script>
-    <link rel="stylesheet" href="/static/css/style.css?v=20260803-merge1">
+    <link rel="stylesheet" href="/static/css/style.css?v=20260823-public1">
 </head>
 <body data-root-node="{{ root_node_id }}" data-profile="{{ profile }}">
 
@@ -47,25 +47,23 @@
             <span class="live-badge" id="liveBadge" data-i18n="app.live.idle">IDLE</span>
         </div>
         <div class="topbar-stats" id="topbarStats">
-            <div class="topbar-stat">
-                <span class="topbar-stat-val" id="hdrPapers">0</span>
-                <span class="topbar-stat-lbl" data-i18n="topbar.papers">Reasoned Papers</span>
+            <div class="topbar-stat" title="Papers that completed DeepGraph's full processing pipeline">
+                <span class="topbar-stat-val" id="statPapers">0</span>
+                <span class="topbar-stat-lbl"><span data-i18n="topbar.papers">Papers analyzed</span> <button class="metric-help topbar-help" type="button" data-tip-key="tip.papersAnalyzed" aria-label="Papers analyzed definition">?</button></span>
+            </div>
+            <div class="topbar-stat" title="Candidate research ideas and hypotheses recorded by DeepGraph">
+                <span class="topbar-stat-val" id="statDeepDiscoveries">0</span>
+                <span class="topbar-stat-lbl"><span data-i18n="topbar.ideas">Research ideas / hypotheses</span> <button class="metric-help topbar-help" type="button" data-tip-key="tip.researchIdeasHypotheses" aria-label="Research ideas and hypotheses definition">?</button></span>
             </div>
             <div class="topbar-stat">
-                <span class="topbar-stat-val" id="hdrResults">0</span>
-                <span class="topbar-stat-lbl" data-i18n="topbar.results">Results</span>
+                <span class="topbar-stat-val" id="statExperiments">0</span>
+                <span class="topbar-stat-lbl"><span data-i18n="topbar.insights">Experiment runs</span> <button class="metric-help topbar-help" type="button" data-tip-key="tip.experimentRuns" aria-label="Experiment runs definition">?</button></span>
             </div>
-            <div class="topbar-stat">
-                <span class="topbar-stat-val" id="hdrInsights">0</span>
-                <span class="topbar-stat-lbl" data-i18n="topbar.insights">Insights</span>
-            </div>
-            <div class="topbar-stat" title="LLM tokens spent reading and reasoning over source papers">
-                <span class="topbar-stat-val" id="hdrTokens">0</span>
-                <span class="topbar-stat-lbl" data-i18n="topbar.tokens">Analysis Tokens</span>
+            <div class="topbar-stat topbar-stat-action">
+                <button type="button" id="statDecidedOpen" class="topbar-stat-button"><span class="topbar-stat-val" id="statDecided">0</span><span class="topbar-stat-lbl"><span data-i18n="topbar.results">Evidence verdicts</span> <span class="topbar-help-static" aria-hidden="true">?</span></span></button>
             </div>
         </div>
         <div class="topbar-right">
-            <select id="agendaSelect" class="agenda-select" title="Research agenda scope" style="display:none;"></select>
             <div class="lang-switch">
                 <button type="button" class="lang-btn" data-lang="en" data-i18n="lang.en">EN</button>
                 <button type="button" class="lang-btn" data-lang="zh" data-i18n="lang.zh">ZH</button>
@@ -82,40 +80,43 @@
     <div class="app-shell">
 
         <!-- Sidebar -->
-        <nav class="sidebar" id="sidebar">
+        <nav class="sidebar" id="sidebar" aria-label="DeepGraph">
             <div class="nav-items">
                 <button class="nav-item active" data-tab="overview">
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><rect x="2" y="2" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5"/><rect x="11" y="2" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5"/><rect x="2" y="11" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5"/><rect x="11" y="11" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5"/></svg>
-                    <span data-i18n="nav.research">Research</span>
+                    <span data-i18n="nav.research">Overview</span>
                 </button>
-                <button class="nav-item" data-tab="explore">
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="7.5" stroke="currentColor" stroke-width="1.5"/><circle cx="10" cy="10" r="3" stroke="currentColor" stroke-width="1.5"/><path d="M10 2.5V5M10 15v2.5M2.5 10H5M15 10h2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-                    <span data-i18n="nav.map">Research Map</span>
+                <button class="nav-item" data-tab="discoveries">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M10 1L12.5 6.5 18.5 7.5 14 11.5 15 17.5 10 14.5 5 17.5 6 11.5 1.5 7.5 7.5 6.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+                    <span data-i18n="nav.ideas">Research ideas</span>
+                </button>
+                <button class="nav-item" data-tab="experiments">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M4 10h3l2-5 3 10 2-5h2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><circle cx="10" cy="10" r="8" stroke="currentColor" stroke-width="1.5"/></svg>
+                    <span data-i18n="nav.process">Experiments &amp; process</span>
                 </button>
                 <button class="nav-item" data-tab="evidence">
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="6" cy="5" r="1" fill="currentColor"/><circle cx="10" cy="10" r="1" fill="currentColor"/><circle cx="14" cy="15" r="1" fill="currentColor"/></svg>
-                    <span data-i18n="nav.evidence">Evidence</span>
+                    <span data-i18n="nav.evidence">Evidence &amp; decisions</span>
                 </button>
                 <button class="nav-item" data-tab="papers">
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M4 3h8l4 4v10a1 1 0 01-1 1H4a1 1 0 01-1-1V4a1 1 0 011-1z" stroke="currentColor" stroke-width="1.5"/><path d="M12 3v4h4" stroke="currentColor" stroke-width="1.5"/><path d="M6 10h8M6 13h5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
                     <span data-i18n="nav.manuscripts">Manuscripts</span>
                 </button>
-                <button class="nav-item" data-tab="discoveries">
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M10 1L12.5 6.5 18.5 7.5 14 11.5 15 17.5 10 14.5 5 17.5 6 11.5 1.5 7.5 7.5 6.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
-                    <span data-i18n="nav.ideas">Ideas</span>
+                <button class="nav-item" data-tab="explore">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="7.5" stroke="currentColor" stroke-width="1.5"/><circle cx="10" cy="10" r="3" stroke="currentColor" stroke-width="1.5"/><path d="M10 2.5V5M10 15v2.5M2.5 10H5M15 10h2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                    <span data-i18n="nav.map">Research areas</span>
                 </button>
-                <button class="nav-item" data-tab="experiments">
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M4 10h3l2-5 3 10 2-5h2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><circle cx="10" cy="10" r="8" stroke="currentColor" stroke-width="1.5"/></svg>
-                    <span data-i18n="nav.process">Process</span>
+                <button class="nav-item" data-tab="office" type="button">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M3 16V7l7-4 7 4v9H3Z" stroke="currentColor" stroke-width="1.5"/><path d="M6 16v-5h3v5M12 9h2M12 12h2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                    <span data-i18n="nav.activity">Activity</span>
                 </button>
-                <details class="advanced-nav">
-                    <summary data-i18n="nav.more">More</summary>
-                    <button class="advanced-nav-item" data-tab="office" type="button" data-i18n="nav.activity">Activity</button>
-                    <button class="advanced-nav-item" id="btnProposeDirection" type="button" data-i18n="nav.propose">Propose direction</button>
-                </details>
             </div>
 
             <div class="sidebar-footer">
+                <button class="idea-entry-disabled" type="button" disabled aria-disabled="true">
+                    <span data-i18n="nav.propose">Submit an autonomous research idea</span>
+                    <small data-i18n="nav.comingSoon">Coming soon</small>
+                </button>
                 <div class="pipeline-controls" style="font-size:0.72rem;color:var(--text-dim);line-height:1.5;">
                     <span data-i18n="footer.scoped">Research work runs only through approved agendas and scoped grants.</span>
                 </div>
@@ -128,60 +129,63 @@
             <!-- ── Overview Tab ─────────────────────────────────── -->
             <section class="tab-panel active" id="tab-overview">
                 <div class="tab-scroll">
-                    <!-- Core global metrics: always visible, unambiguous
-                         operational counts only (no scientific claims). -->
-                    <div class="stat-grid core-stat-grid" id="coreStats">
-                        <div class="stat-card" title="Source papers the pipeline has read and reasoned over">
-                            <div class="stat-icon stat-icon-blue">
-                                <svg width="22" height="22" viewBox="0 0 20 20" fill="none"><path d="M4 3h8l4 4v10a1 1 0 01-1 1H4a1 1 0 01-1-1V4a1 1 0 011-1z" stroke="currentColor" stroke-width="1.5"/><path d="M12 3v4h4" stroke="currentColor" stroke-width="1.5"/></svg>
-                            </div>
-                            <div class="stat-number" id="statPapers">0</div>
-                            <div class="stat-label" data-i18n="stat.papersAnalyzed">Source Papers Analyzed</div>
+                    <div class="preview-ribbon"><span data-i18n="preview.readOnly">Live production data · read-only</span><time id="statsGeneratedAt">—</time></div>
+                    <section class="research-hero" aria-labelledby="heroTitle">
+                        <p class="section-kicker" data-i18n="overview.heroEyebrow">DEEPGRAPH · AI RESEARCH HARNESS</p>
+                        <h1 id="heroTitle" data-i18n="overview.heroTitle">A verifiable research harness for long-horizon AI</h1>
+                        <p data-i18n="overview.heroSubtitle">DeepGraph connects experiments, knowledge, and evidence into an auditable, recoverable research loop—and investigates whether verified experience can improve future research.</p>
+                    </section>
+
+                    <div class="overview-proof-grid">
+                    <section class="scientific-credibility-card" id="coreStats" aria-labelledby="credibilityTitle">
+                        <div class="credibility-copy">
+                            <span data-i18n="overview.scientificCredibility">SCIENTIFIC CREDIBILITY</span>
+                            <h2 id="credibilityTitle" data-i18n="overview.credibilityTitle">Every verdict keeps uncertainty visible</h2>
+                            <p data-i18n="overview.credibilityNote">Scientific outcomes are separated from execution volume.</p>
                         </div>
-                        <div class="stat-card" title="Machine-generated paper ideas across all tiers; a count of proposals, not of validated findings">
-                            <div class="stat-icon stat-icon-gold">
-                                <svg width="22" height="22" viewBox="0 0 20 20" fill="none"><path d="M10 1L12.5 6.5 18.5 7.5 14 11.5 15 17.5 10 14.5 5 17.5 6 11.5 1.5 7.5 7.5 6.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
+                        <aside class="outcome-rail">
+                            <div class="credibility-grid">
+                                <div class="credibility-metric supported"><strong id="statSupported">0</strong><span><span data-i18n="verdict.supported">supported</span> <button class="metric-help" type="button" data-tip-key="tip.supported" aria-label="Supported verdict definition">?</button></span></div>
+                                <div class="credibility-metric refuted"><strong id="statRefutedBreakdown">0</strong><span><span data-i18n="verdict.refuted">refuted</span> <button class="metric-help" type="button" data-tip-key="tip.refuted" aria-label="Refuted verdict definition">?</button></span></div>
+                                <div class="credibility-metric inconclusive"><strong id="statInconclusiveBreakdown">0</strong><span><span data-i18n="verdict.inconclusive">inconclusive</span> <button class="metric-help" type="button" data-tip-key="tip.inconclusive" aria-label="Inconclusive verdict definition">?</button></span></div>
                             </div>
-                            <div class="stat-number" id="statDeepDiscoveries">0</div>
-                            <div class="stat-label" data-i18n="stat.paperIdeas">Paper Ideas Generated</div>
-                        </div>
-                        <div class="stat-card" title="Experiment executions started; completion is operational and does not by itself confirm any hypothesis">
-                            <div class="stat-icon stat-icon-green">
-                                <svg width="22" height="22" viewBox="0 0 20 20" fill="none"><path d="M10 2v6M7 5l3 3 3-3M4 10h12v7H4z" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M7 13h6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-                            </div>
-                            <div class="stat-number" id="statExperiments">0</div>
-                            <div class="stat-label" data-i18n="stat.experimentRuns">Experiment Runs</div>
-                            <div class="stat-subtext" id="statExperimentsSub"></div>
-                        </div>
-                        <div class="stat-card" title="Conclusions that passed the full evidence ladder (sanity, benchmark, audit) and received a recorded verdict - supported, refuted, or inconclusive. The only card that counts scientific output; zero means no claim has survived full adjudication yet.">
-                            <div class="stat-icon stat-icon-green">
-                                <svg width="22" height="22" viewBox="0 0 20 20" fill="none"><path d="M10 2l6 2.5v5c0 4-2.7 6.8-6 8.5-3.3-1.7-6-4.5-6-8.5v-5L10 2z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M7 10l2 2 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
-                            </div>
-                            <div class="stat-number" id="statDecided">0</div>
-                            <div class="stat-label" data-i18n="stat.decidedFindings">Decided Findings</div>
-                            <button type="button" id="statDecidedOpen" class="stat-card-link" data-i18n="decisions.title">Adjudicated findings</button>
+                            <span id="statSupportedBreakdown" hidden>0</span>
                             <div class="stat-subtext" id="statDecidedSub"></div>
+                        </aside>
+                    </section>
+                    <section class="research-foundation-card memory-card" aria-labelledby="researchMemoryTitle">
+                        <div><p class="section-kicker" data-i18n="overview.researchMemory">RESEARCH MEMORY</p><h3 id="researchMemoryTitle" data-i18n="overview.researchMemoryTitle">Knowledge retained for future research</h3></div>
+                        <div class="foundation-metrics memory-metrics">
+                            <div><strong id="statGraphEntities">0</strong><span><span data-i18n="stat.knowledgeEntities">Knowledge entities</span> <button class="metric-help" type="button" data-tip-key="tip.knowledgeEntities" aria-label="Knowledge entities definition">?</button></span></div>
+                            <div><strong id="statGraphRelations">0</strong><span><span data-i18n="stat.knowledgeRelations">Knowledge relations</span> <button class="metric-help" type="button" data-tip-key="tip.knowledgeRelations" aria-label="Knowledge relations definition">?</button></span></div>
                         </div>
-                        <div class="stat-card" title="LLM tokens spent reading and reasoning over source papers">
-                            <div class="stat-icon stat-icon-cyan">
-                                <svg width="22" height="22" viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="7.5" stroke="currentColor" stroke-width="1.5"/><path d="M10 5.5v4.5l3 2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
-                            </div>
-                            <div class="stat-number" id="statTokens">0</div>
-                            <div class="stat-label" data-i18n="stat.analysisTokens">Analysis Tokens</div>
-                        </div>
+                    </section>
+                    <section class="research-foundation-card compute-card" aria-labelledby="researchComputeTitle">
+                        <div><p class="section-kicker" data-i18n="overview.researchCompute">RESEARCH COMPUTE</p><h3 id="researchComputeTitle" data-i18n="overview.researchComputeTitle">Work used to process the paper corpus</h3></div>
+                        <div class="foundation-metrics"><div><strong id="statTokens">0</strong><span><span data-i18n="stat.processedTokens">Paper-processing tokens</span> <button class="metric-help" type="button" data-tip-key="tip.analysisTokens" aria-label="Paper-processing tokens definition">?</button></span></div></div>
+                    </section>
                     </div>
 
-                    <div class="card overview-results-card">
+                    <div class="overview-lower">
+                    <section class="system-now-card" aria-labelledby="systemNowTitle">
                         <div class="card-header">
-                            <div>
-                                <h3 data-i18n="overview.outcomes">Research outcomes</h3>
-                                <p class="overview-results-note" data-i18n="overview.outcomesNote">Confirmed findings, open questions, and promising directions appear here first.</p>
+                            <div><p class="section-kicker" data-i18n="overview.now">NOW</p><h3 id="systemNowTitle" data-i18n="overview.systemStatus">Current system status</h3></div>
+                            <button class="btn-link" type="button" id="btnOpenOffice" data-i18n="overview.fullActivity">Open full activity</button>
+                        </div>
+                        <div class="system-status-grid">
+                            <div class="system-status-line data-status"><i></i><div><strong id="dataStatusText" data-i18n="overview.dataConnected">Production data connected</strong><small id="systemHealthText" data-i18n="overview.healthLoading">Checking production data health…</small></div></div>
+                            <div class="system-status-line runtime-status" id="runtimeStatusLine"><i></i><div><strong id="pipelineStatusText" data-i18n="overview.pipelineChecking">Checking research pipeline…</strong><small id="pipelineStatusDetail">—</small></div></div>
+                        </div>
+                        <div id="officeOverviewSlot" class="overview-office-slot">
+                            <div class="card card-compact office-mode-preview" id="officeProcessing" data-office-mode="preview">
+                                <div class="card-header office-card-header">
+                                    <div><h3 data-i18n="office.title">Research Runtime</h3><div class="office-subtitle" data-i18n="office.subtitle">A live view from literature and hypotheses to experiments and evidence-backed decisions.</div></div>
+                                    <span class="badge badge-dim" id="processingCount" data-i18n="office.idle">office idle</span>
+                                </div>
+                                <div class="processing-list" id="processingList"><div class="agent-office-loading"><div class="pixel-loader" aria-hidden="true"><span></span><span></span><span></span></div><span data-i18n="office.mapping">Mapping DeepGraph departments...</span></div></div>
                             </div>
-                            <button class="btn-link" id="btnOpenDiscoveries" data-i18n="overview.browseIdeas">Browse ideas</button>
                         </div>
-                        <div class="recently-grid" id="recentlyGrid">
-                            <p class="empty-msg" data-i18n="overview.noOutcomes">No published research outcomes yet.</p>
-                        </div>
+                    </section>
                     </div>
 
                     <div class="card card-graph-preview" id="overviewMapCard">
@@ -192,6 +196,7 @@
                             </div>
                             <button class="btn-link" id="btnJumpExplore" data-i18n="overview.openMap">Open map</button>
                         </div>
+                        <div class="graph-loading" id="overviewGraphLoading" data-i18n="overview.mapLoading">Loading the research map from the production taxonomy…</div>
                         <svg id="overviewGraphSvg" width="100%" height="330" aria-label="Research map preview"></svg>
                     </div>
 
@@ -200,10 +205,8 @@
                         <p class="overview-details-note" data-i18n="overview.portfolioNote">Aggregate counts and in-progress work are available here when you need context.</p>
                     <!-- Stat cards -->
                     <div class="stat-grid" id="overviewStats">
-                        <div class="stat-card" title="All paper records currently held in the research corpus">
-                            <div class="stat-number" id="statCorpusPapers">0</div>
-                            <div class="stat-label" data-i18n="stat.corpusPapers">Corpus Papers</div>
-                        </div>
+                        <div class="stat-card"><div class="stat-number" id="statCorpusPapers">0</div><div class="stat-label" data-i18n="stat.corpusPapers">Paper corpus records</div></div>
+                        <div class="stat-card"><div class="stat-number" id="statPapersWithText">0</div><div class="stat-label" data-i18n="stat.papersWithText">Papers with full text</div></div>
                         <div class="stat-card" title="Papers admitted to the corpus but not yet through the complete reasoning pipeline">
                             <div class="stat-number" id="statPendingPapers">0</div>
                             <div class="stat-label" data-i18n="stat.pendingPapers">Awaiting Analysis</div>
@@ -240,14 +243,6 @@
                             <div class="stat-number" id="statInsights">0</div>
                             <div class="stat-label" data-i18n="stat.insights">Insights</div>
                         </div>
-                        <div class="stat-card" title="Estimated graph entity count; prefixed with ~ because PostgreSQL catalog estimates are used">
-                            <div class="stat-number" id="statGraphEntities">0</div>
-                            <div class="stat-label" data-i18n="stat.graphEntities">Graph Entities</div>
-                        </div>
-                        <div class="stat-card" title="Estimated graph relation count; prefixed with ~ because PostgreSQL catalog estimates are used">
-                            <div class="stat-number" id="statGraphRelations">0</div>
-                            <div class="stat-label" data-i18n="stat.graphRelations">Graph Relations</div>
-                        </div>
                         <div class="stat-card" title="LLM tokens metered against research agendas (kept separate from analysis tokens; the two ledgers are not summed)">
                             <div class="stat-icon stat-icon-cyan">
                                 <svg width="22" height="22" viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="7.5" stroke="currentColor" stroke-width="1.5"/><path d="M6.5 10h7M10 6.5v7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
@@ -271,21 +266,8 @@
             <!-- ── Agent Office Tab ─────────────────────────────── -->
             <section class="tab-panel" id="tab-office">
                 <div class="tab-scroll office-tab-scroll">
-                    <div class="card card-compact" id="officeProcessing">
-                        <div class="card-header office-card-header">
-                            <div>
-                                <h3 data-i18n="office.title">Agent Office</h3>
-                                <div class="office-subtitle" data-i18n="office.subtitle">Live pixel workspace for DeepGraph departments and sub-agents.</div>
-                            </div>
-                            <span class="badge badge-dim" id="processingCount" data-i18n="office.idle">office idle</span>
-                        </div>
-                        <div class="processing-list" id="processingList">
-                            <div class="agent-office-loading">
-                                <div class="pixel-loader" aria-hidden="true"><span></span><span></span><span></span></div>
-                                <span data-i18n="office.mapping">Mapping DeepGraph departments...</span>
-                            </div>
-                        </div>
-                    </div>
+                    <div class="office-page-intro"><p class="section-kicker" data-i18n="nav.activity">ACTIVITY</p><h2 data-i18n="office.title">Research Runtime</h2><p data-i18n="office.subtitle">A live view from literature and hypotheses to experiments and evidence-backed decisions.</p></div>
+                    <div id="officeFullSlot"></div>
                 </div>
             </section>
 
@@ -297,6 +279,7 @@
                         <div class="card-header">
                             <h3 id="exploreTitle" data-i18n="explore.title">Research Area Explorer</h3>
                         </div>
+                        <div class="graph-loading" id="exploreGraphLoading" data-i18n="explore.loading">Loading this research area and its evidence map…</div>
                         <svg id="exploreGraphSvg" width="100%" height="600"></svg>
                     </div>
                     <div class="card" id="exploreSummaryCard" style="display:none;">
@@ -413,16 +396,24 @@
             <!-- ── Process Tab: timeline, rationale, experiments ── -->
             <section class="tab-panel" id="tab-experiments">
                 <div class="tab-scroll">
+                    <div class="card experiment-outcomes-card">
+                        <div class="card-header">
+                            <div><p class="section-kicker" data-i18n="process.experimentOutcomes">EXPERIMENT OUTCOMES</p><h3 data-i18n="process.experimentOutcomesTitle">How experiment runs ended</h3></div>
+                            <span class="badge badge-dim" data-i18n="process.operationalNotScientific">operational outcomes, not scientific verdicts</span>
+                        </div>
+                        <div class="experiment-status-bar" aria-label="Experiment status breakdown">
+                            <span><b id="statExperimentsCompleted">0</b> <span data-i18n="experiment.completed">completed</span> <button class="metric-help" type="button" data-tip-key="tip.experimentCompleted" aria-label="Completed experiment definition">?</button></span>
+                            <span><b id="statExperimentsFailed">0</b> <span data-i18n="experiment.failed">failed</span> <button class="metric-help" type="button" data-tip-key="tip.experimentFailed" aria-label="Failed experiment definition">?</button></span>
+                            <span><b id="statExperimentsSuperseded">0</b> <span data-i18n="experiment.superseded">superseded</span> <button class="metric-help" type="button" data-tip-key="tip.experimentSuperseded" aria-label="Superseded experiment definition">?</button></span>
+                            <span><b id="statExperimentsCanceled">0</b> <span data-i18n="experiment.canceled">canceled</span> <button class="metric-help" type="button" data-tip-key="tip.experimentCanceled" aria-label="Canceled experiment definition">?</button></span>
+                        </div>
+                    </div>
                     <div class="card">
                         <div class="card-header">
                             <h3 data-i18n="process.timeline">Process Timeline</h3>
-                            <span class="badge badge-dim" id="timelineAgendaBadge" data-i18n="process.noScope">no agenda scope</span>
+                            <div class="timeline-scope-controls"><label for="agendaSelect" data-i18n="process.chooseAgenda">Choose research agenda</label><select id="agendaSelect" class="agenda-select" title="Research agenda scope" style="display:none;"></select><span class="badge badge-dim" id="timelineAgendaBadge" data-i18n="process.noScope">no agenda scope</span></div>
                         </div>
-                        <p class="overview-results-note" style="padding:0 16px;">
-                            Chronological record for the active agenda: signals, candidate decisions,
-                            resource authorizations, jobs, evidence-ladder transitions, and verdicts.
-                            Failures and refused gate transitions are shown alongside successes.
-                        </p>
+                        <p class="overview-results-note" style="padding:0 16px;" data-i18n="process.timelineNote">Chronological record for one agenda: signals, candidate decisions, resource authorizations, jobs, evidence transitions, and verdicts. Failures remain visible beside successes.</p>
                         <div id="processTimeline" class="insights-list">
                             <p class="empty-msg" data-i18n="process.timelineEmpty">No process events recorded yet.</p>
                         </div>
@@ -441,6 +432,7 @@
                             <h3 data-i18n="process.services">Automation Services</h3>
                             <span class="badge badge-dim" data-i18n="process.readOnly">Read-only automatic mode</span>
                         </div>
+                        <p class="service-state-note" data-i18n="process.serviceStateNote">Enabled or ready means the service is available; working means a job is executing now.</p>
                         <div class="service-grid" id="automationServicesGrid"></div>
                         <div class="current-work-grid" id="currentWorkGrid"></div>
                     </div>
@@ -480,6 +472,6 @@
     <!-- Tooltip (shared) -->
     <div class="tooltip" id="tooltip"></div>
 
-    <script src="/static/js/app.js?v=20260817-public1"></script>
+    <script src="/static/js/app.js?v=20260823-public1"></script>
 </body>
 </html>
