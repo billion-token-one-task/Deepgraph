@@ -10,6 +10,346 @@ from meta_harness.frontier_bootstrap import FrontierBootstrapError
 
 
 class AutoAdvanceGuardTests(unittest.TestCase):
+    def test_exact_job_main_skips_every_global_pass_side_effect(self):
+        granted = {
+            "job_id": 110,
+            "resource_grant_id": 501,
+            "grant_status": "active",
+            "grant_live": 1,
+            "grant_stage": "proposal",
+            "job_status": "deferred",
+            "job_stage": "proposal_generation_granted",
+        }
+        with (
+            mock.patch.object(
+                auto_advance.sys,
+                "argv",
+                [
+                    "auto_advance.py",
+                    "--agenda",
+                    "2",
+                    "--job",
+                    "110",
+                    "--task-dir",
+                    "/tmp",
+                    "--state",
+                    "/tmp/bounded-state.json",
+                    "--log",
+                    "/tmp/bounded-log.jsonl",
+                ],
+            ),
+            mock.patch.object(
+                auto_advance,
+                "_load_state",
+                return_value={"spend_baseline": {}, "frontier_packets": {}},
+            ),
+            mock.patch.object(auto_advance, "_save_state"),
+            mock.patch.object(auto_advance.Journal, "log"),
+            mock.patch.object(auto_advance.db, "describe_backend", return_value={}),
+            mock.patch.object(auto_advance.db, "rollback"),
+            mock.patch.object(auto_advance, "_guard_spent_delta", return_value=0),
+            mock.patch.object(auto_advance, "advance_agenda") as advance,
+            mock.patch.object(
+                auto_advance, "_exact_target_grant_state", return_value=granted
+            ),
+            mock.patch.object(
+                auto_advance,
+                "_reconcile_gpu_reservation_drift",
+                side_effect=AssertionError("must skip global drift repair"),
+            ),
+            mock.patch.object(
+                auto_advance,
+                "finalize_terminal_outcomes",
+                side_effect=AssertionError("must skip global outcome finalization"),
+            ),
+            mock.patch.object(
+                auto_advance.MetaHarnessRepository,
+                "reconcile_expired_grants",
+                side_effect=AssertionError("must skip global grant reconciliation"),
+            ),
+        ):
+            self.assertEqual(auto_advance.main(), 0)
+
+        advance.assert_called_once()
+        self.assertEqual(advance.call_args.args[0], 2)
+        self.assertEqual(advance.call_args.kwargs["target_job_id"], 110)
+
+    def test_exact_job_requires_explicit_task_local_state_and_log(self):
+        with (
+            mock.patch.object(
+                auto_advance.sys,
+                "argv",
+                ["auto_advance.py", "--agenda", "2", "--job", "110"],
+            ),
+            self.assertRaises(SystemExit),
+        ):
+            auto_advance.main()
+
+    def test_exact_job_refuses_state_outside_explicit_task_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with (
+                mock.patch.object(
+                    auto_advance.sys,
+                    "argv",
+                    [
+                        "auto_advance.py",
+                        "--agenda",
+                        "2",
+                        "--job",
+                        "110",
+                        "--task-dir",
+                        directory,
+                        "--state",
+                        "/tmp/not-task-local-state.json",
+                        "--log",
+                        str(Path(directory) / "advance.jsonl"),
+                    ],
+                ),
+                self.assertRaises(SystemExit),
+            ):
+                auto_advance.main()
+
+    def test_exact_target_readback_accepts_only_live_proposal_or_pilot_grants(self):
+        proposal = {
+            "resource_grant_id": 501,
+            "grant_status": "active",
+            "grant_live": 1,
+            "grant_stage": "proposal",
+            "job_status": "deferred",
+            "job_stage": "proposal_generation_granted",
+        }
+        self.assertTrue(auto_advance._exact_target_was_granted(proposal))
+        pilot = {
+            **proposal,
+            "grant_stage": "pilot",
+            "job_status": "queued",
+            "job_stage": "portfolio_granted",
+        }
+        self.assertTrue(auto_advance._exact_target_was_granted(pilot))
+        self.assertFalse(
+            auto_advance._exact_target_was_granted(
+                {**pilot, "grant_status": "consumed"}
+            )
+        )
+        self.assertFalse(
+            auto_advance._exact_target_was_granted(
+                {**pilot, "job_stage": "unrelated"}
+            )
+        )
+
+    def test_exact_job_mode_skips_selection_and_targets_its_problem(self):
+        waiting = [
+            {
+                "id": 110,
+                "deep_insight_id": 115,
+                "insight_status": "proposal_pending",
+                "research_problem_id": 9,
+            }
+        ]
+        decision = mock.Mock(
+            idea_id=115,
+            decision="park",
+            reason_codes=["bounded_test"],
+            decision_packet_id=12,
+        )
+        args = mock.Mock(
+            max_new_grants=1,
+            proposal_token_cap=32000,
+            grant_token_cap=40000,
+            spend_limit=0,
+            agenda=[2],
+        )
+        repository = mock.Mock()
+        with (
+            mock.patch.object(
+                auto_advance,
+                "_rows",
+                side_effect=[[], [], waiting],
+            ) as rows,
+            mock.patch.object(
+                auto_advance,
+                "select_next",
+                side_effect=AssertionError("exact mode must not select another job"),
+            ),
+            mock.patch.object(
+                auto_advance,
+                "ensure_frontier_packet",
+                return_value=7,
+            ) as frontier,
+            mock.patch.object(
+                auto_advance, "build_packet", return_value=mock.Mock(idea_id=115)
+            ),
+            mock.patch.object(
+                auto_advance, "decide_portfolio", return_value=[decision]
+            ),
+            mock.patch.object(
+                auto_advance, "MetaHarnessRepository", return_value=repository
+            ),
+        ):
+            auto_advance.advance_agenda(
+                2, {}, mock.Mock(), args, target_job_id=110
+            )
+
+        self.assertIn("arj.id=?", rows.call_args_list[0].args[0])
+        self.assertIn("arj.id=?", rows.call_args_list[1].args[0])
+        self.assertIn("arj.id=?", rows.call_args_list[2].args[0])
+        frontier.assert_called_once()
+        self.assertEqual(frontier.call_args.kwargs["research_problem_id"], 9)
+        repository.save_decision.assert_called_once_with(decision)
+
+    def test_exact_job_refuses_gpu_preflight_before_grant_is_issued(self):
+        waiting = [
+            {
+                "id": 110,
+                "deep_insight_id": 115,
+                "insight_status": "candidate",
+                "research_problem_id": 9,
+            }
+        ]
+        decision = mock.Mock(
+            idea_id=115,
+            decision="promote",
+            reason_codes=["bounded_test"],
+            decision_packet_id=12,
+        )
+        preflight = mock.Mock(
+            passed=True,
+            status="passed",
+            reason_codes=[],
+            adapter_id="adapter-1",
+            selected_backend="ssh_gpu",
+            preflight_result_id=31,
+        )
+        args = mock.Mock(
+            max_new_grants=1,
+            proposal_token_cap=32000,
+            grant_token_cap=40000,
+            grant_gpu_hours=2.0,
+            gpu_class="a100",
+            spend_limit=0,
+            agenda=[2],
+        )
+        repository = mock.Mock()
+        preflight_repository = mock.Mock()
+        preflight_repository.run_candidate.return_value = preflight
+        journal = mock.Mock()
+        with (
+            mock.patch.object(auto_advance, "_rows", side_effect=[[], [], waiting]),
+            mock.patch.object(auto_advance, "ensure_frontier_packet", return_value=7),
+            mock.patch.object(
+                auto_advance, "build_packet", return_value=mock.Mock(idea_id=115)
+            ),
+            mock.patch.object(auto_advance, "decide_portfolio", return_value=[decision]),
+            mock.patch.object(
+                auto_advance, "MetaHarnessRepository", return_value=repository
+            ),
+            mock.patch.object(
+                auto_advance,
+                "CandidatePreflightRepository",
+                return_value=preflight_repository,
+            ),
+            mock.patch.object(
+                auto_advance.db,
+                "fetchone",
+                return_value={"backend_allowlist_json": '["cpu","llm","ssh_gpu"]'},
+            ),
+            mock.patch.object(
+                auto_advance,
+                "issue_resource_grant",
+                side_effect=AssertionError("GPU grant must not be signed"),
+            ),
+        ):
+            auto_advance.advance_agenda(
+                2, {}, journal, args, target_job_id=110
+            )
+
+        repository.issue_grant.assert_not_called()
+        refusal = [
+            call for call in journal.log.call_args_list
+            if call.args and call.args[0] == "exact_target_backend_refused"
+        ]
+        self.assertEqual(len(refusal), 1)
+        self.assertEqual(refusal[0].kwargs["job_id"], 110)
+        self.assertEqual(refusal[0].kwargs["selected_backend"], "ssh_gpu")
+
+    def test_exact_job_refuses_cpu_grant_when_llm_authority_is_unavailable(self):
+        waiting = [
+            {
+                "id": 110,
+                "deep_insight_id": 115,
+                "insight_status": "candidate",
+                "research_problem_id": 9,
+            }
+        ]
+        decision = mock.Mock(
+            idea_id=115,
+            decision="promote",
+            reason_codes=["bounded_test"],
+            decision_packet_id=12,
+        )
+        preflight = mock.Mock(
+            passed=True,
+            status="passed",
+            reason_codes=[],
+            adapter_id="adapter-1",
+            selected_backend="cpu",
+            preflight_result_id=31,
+        )
+        args = mock.Mock(
+            max_new_grants=1,
+            proposal_token_cap=32000,
+            grant_token_cap=40000,
+            grant_gpu_hours=0.0,
+            gpu_class="none",
+            spend_limit=0,
+            agenda=[2],
+        )
+        repository = mock.Mock()
+        preflight_repository = mock.Mock()
+        preflight_repository.run_candidate.return_value = preflight
+        journal = mock.Mock()
+        with (
+            mock.patch.object(auto_advance, "_rows", side_effect=[[], [], waiting]),
+            mock.patch.object(auto_advance, "ensure_frontier_packet", return_value=7),
+            mock.patch.object(
+                auto_advance, "build_packet", return_value=mock.Mock(idea_id=115)
+            ),
+            mock.patch.object(auto_advance, "decide_portfolio", return_value=[decision]),
+            mock.patch.object(
+                auto_advance, "MetaHarnessRepository", return_value=repository
+            ),
+            mock.patch.object(
+                auto_advance,
+                "CandidatePreflightRepository",
+                return_value=preflight_repository,
+            ),
+            mock.patch.object(
+                auto_advance.db,
+                "fetchone",
+                return_value={"backend_allowlist_json": '["cpu"]'},
+            ),
+            mock.patch.object(
+                auto_advance,
+                "issue_resource_grant",
+                side_effect=AssertionError("incomplete authority must not be signed"),
+            ),
+        ):
+            auto_advance.advance_agenda(
+                2, {}, journal, args, target_job_id=110
+            )
+
+        repository.issue_grant.assert_not_called()
+        refusal = [
+            call
+            for call in journal.log.call_args_list
+            if call.args and call.args[0] == "exact_target_backend_refused"
+        ]
+        self.assertEqual(len(refusal), 1)
+        self.assertEqual(
+            refusal[0].kwargs["reason"],
+            "bounded_executor_requires_cpu_and_llm",
+        )
+
     def test_gpu_failure_is_recyclable(self):
         self.assertIn(("failed", "gpu_failed"), auto_advance.DEAD_END)
 

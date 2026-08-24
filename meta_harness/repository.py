@@ -20,6 +20,13 @@ from meta_harness.llm_routing import ProviderRoute, RouteObservation
 from meta_harness.evidence_state import EvidenceTransitionContext, advance
 from meta_harness.frontier import evaluate_frontier
 from meta_harness.failure_policy import classify_failure
+from meta_harness.grant_stages import (
+    INGESTION_GRANT_LANE,
+    INITIAL_RESEARCH_GRANT_LANE,
+    PROPOSAL_GRANT_LANE,
+    ResourceGrantStageError,
+    classify_resource_grant_stage,
+)
 from meta_harness.reviewer_approval import (
     ReviewerApproval,
     ReviewerApprovalVerifier,
@@ -349,6 +356,51 @@ def _canonical_hash(value: str) -> str:
 def _expect_one(cursor: Any, *, operation: str) -> None:
     if int(getattr(cursor, "rowcount", 0) or 0) != 1:
         raise MetaHarnessPersistenceError(f"concurrent persistence race:{operation}")
+
+
+def _normalized_grant_timestamp(value: Any) -> datetime:
+    """Normalize PostgreSQL datetime and SQLite/contract text for replay."""
+
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        parsed = datetime.fromisoformat(str(value or "").replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _grant_replay_matches(existing: dict[str, Any], grant: ResourceGrant) -> bool:
+    """Whether an idempotency hit names the same immutable authority request."""
+
+    try:
+        return (
+            int(existing.get("agenda_id") or 0) == int(grant.agenda_id)
+            and int(existing.get("idea_id") or 0) == int(grant.idea_id)
+            and int(existing.get("decision_packet_id") or 0)
+            == int(grant.decision_packet_id)
+            and str(existing.get("stage") or "") == str(grant.stage)
+            and int(existing.get("token_cap") or 0) == int(grant.token_cap)
+            and str(existing.get("gpu_class") or "") == str(grant.gpu_class or "")
+            and float(existing.get("max_gpu_hours") or 0.0)
+            == float(grant.max_gpu_hours)
+            and sorted(str(value) for value in _load_list(
+                existing.get("backend_allowlist_json")
+            ))
+            == sorted(str(value) for value in grant.backend_allowlist)
+            and sorted(str(value) for value in _load_list(
+                existing.get("artifact_requirements_json")
+            ))
+            == sorted(str(value) for value in grant.artifact_requirements)
+            and _normalized_grant_timestamp(existing.get("expires_at"))
+            == _normalized_grant_timestamp(grant.expires_at)
+            and str(existing.get("grant_reason") or "")
+            == str(grant.grant_reason or "")
+            and int(existing.get("preflight_result_id") or 0)
+            == int(grant.preflight_result_id or 0)
+        )
+    except (TypeError, ValueError):
+        return False
 
 
 def _estimate_payload(packet: IdeaDecisionPacket) -> dict[str, Any]:
@@ -893,16 +945,59 @@ class MetaHarnessRepository:
         packet.decision_packet_id = packet_id
         return packet_id
 
-    def issue_grant(self, grant: ResourceGrant) -> int:
-        """Reserve agenda resources and persist a grant in one transaction."""
+    def issue_grant(
+        self,
+        grant: ResourceGrant,
+        *,
+        target_job_id: int | None = None,
+    ) -> int:
+        """Reserve resources and persist a grant in one transaction.
+
+        ``target_job_id`` is the controlled-recovery form.  It makes the job
+        row part of the authority transaction: a new ledger/grant is committed
+        only if a compare-and-set binds that exact queued job, and an
+        idempotent replay succeeds only when that same job is already bound to
+        the existing grant.  The ordinary autonomous path retains its legacy
+        agenda/idea binding while callers migrate deliberately.
+        """
         grant.validate()
+        if grant.status != "active":
+            raise MetaHarnessPersistenceError(
+                "new ResourceGrant authority must start active"
+            )
+        try:
+            grant_lane = classify_resource_grant_stage(grant.stage)
+        except ResourceGrantStageError as exc:
+            raise MetaHarnessPersistenceError(str(exc)) from exc
+        if target_job_id is not None:
+            if int(target_job_id) <= 0:
+                raise MetaHarnessPersistenceError("target_job_id must be positive")
+            if grant_lane not in {
+                PROPOSAL_GRANT_LANE,
+                INITIAL_RESEARCH_GRANT_LANE,
+            }:
+                raise MetaHarnessPersistenceError(
+                    "exact job binding only supports proposal or pilot grants"
+                )
+        if grant_lane == INGESTION_GRANT_LANE and (
+            set(grant.backend_allowlist) != {"llm"}
+            or grant.max_gpu_hours != 0
+            or grant.gpu_class != "none"
+        ):
+            raise MetaHarnessPersistenceError(
+                "scoped ingestion ResourceGrant must be token-only and LLM-only"
+            )
         try:
             lock = " FOR UPDATE" if db._use_pg() else ""  # noqa: SLF001
             agenda = db.fetchone(
                 f"SELECT * FROM research_agendas WHERE id=?{lock}",
                 (grant.agenda_id,),
             )
-            if not agenda or agenda.get("status") != "active":
+            if (
+                not agenda
+                or agenda.get("status") != "active"
+                or int(agenda.get("is_active", 1) or 0) != 1
+            ):
                 raise MetaHarnessPersistenceError("agenda is not active")
             decision = db.fetchone(
                 """
@@ -921,18 +1016,82 @@ class MetaHarnessRepository:
                 raise MetaHarnessPersistenceError(
                     "ResourceGrant requires a scoped promote/revisit decision"
                 )
+            target_job = None
+            if target_job_id is not None:
+                target_job = db.fetchone(
+                    f"""
+                    SELECT id, agenda_id, deep_insight_id, status, stage,
+                           resource_grant_id
+                    FROM auto_research_jobs
+                    WHERE id=?{lock}
+                    """,
+                    (int(target_job_id),),
+                )
+                if (
+                    not target_job
+                    or int(target_job.get("agenda_id") or 0) != grant.agenda_id
+                    or int(target_job.get("deep_insight_id") or 0) != grant.idea_id
+                ):
+                    raise MetaHarnessPersistenceError(
+                        "target job does not match ResourceGrant agenda/idea scope"
+                    )
             existing = db.fetchone(
-                """
-                SELECT id, reservation_id FROM resource_grants
+                f"""
+                SELECT id, agenda_id, idea_id, decision_packet_id, stage,
+                       token_cap, gpu_class, max_gpu_hours,
+                       backend_allowlist_json, artifact_requirements_json,
+                       expires_at, grant_reason, reservation_id,
+                       preflight_result_id, status,
+                       CASE WHEN expires_at > CURRENT_TIMESTAMP
+                            THEN 1 ELSE 0 END AS grant_live
+                FROM resource_grants
                 WHERE agenda_id=? AND idempotency_key=?
+                {lock}
                 """,
                 (grant.agenda_id, grant.idempotency_key),
             )
             if existing:
+                if not _grant_replay_matches(dict(existing), grant):
+                    raise MetaHarnessPersistenceError(
+                        "ResourceGrant idempotency key conflicts with a different "
+                        "authority request"
+                    )
+                if target_job is not None:
+                    if (
+                        str(existing.get("status") or "") != "active"
+                        or not bool(existing.get("grant_live"))
+                    ):
+                        raise MetaHarnessPersistenceError(
+                            "exact target ResourceGrant replay is not live"
+                        )
+                    expected_status, expected_stage = (
+                        ("deferred", "proposal_generation_granted")
+                        if grant_lane == PROPOSAL_GRANT_LANE
+                        else ("queued", "portfolio_granted")
+                    )
+                    if (
+                        int(target_job.get("resource_grant_id") or 0)
+                        != int(existing["id"])
+                        or str(target_job.get("status") or "") != expected_status
+                        or str(target_job.get("stage") or "") != expected_stage
+                    ):
+                        raise MetaHarnessPersistenceError(
+                            "idempotent ResourceGrant replay is not bound to the "
+                            "exact target job"
+                        )
                 db.commit()
                 grant.grant_id = int(existing["id"])
                 grant.reservation_id = int(existing["reservation_id"])
                 return grant.grant_id
+            if target_job is not None and (
+                str(target_job.get("status") or "") != "queued"
+                or str(target_job.get("stage") or "")
+                != "awaiting_portfolio_decision"
+                or target_job.get("resource_grant_id") is not None
+            ):
+                raise MetaHarnessPersistenceError(
+                    "exact target job is not unbound queued portfolio work"
+                )
             active_grants = db.fetchone(
                 """
                 SELECT COUNT(*) AS count
@@ -1034,29 +1193,71 @@ class MetaHarnessRepository:
                     grant.preflight_result_id,
                 ),
             )
-            if grant.stage == "proposal":
-                db.execute(
-                    """
-                    UPDATE auto_research_jobs
-                    SET resource_grant_id=?, status='deferred',
-                        stage='proposal_generation_granted',
-                        updated_at=CURRENT_TIMESTAMP
-                    WHERE agenda_id=? AND deep_insight_id=?
-                      AND stage='awaiting_portfolio_decision'
-                    """,
-                    (grant_id, grant.agenda_id, grant.idea_id),
-                )
-            else:
-                db.execute(
-                    """
-                    UPDATE auto_research_jobs
-                    SET resource_grant_id=?, status='queued',
-                        stage='portfolio_granted', updated_at=CURRENT_TIMESTAMP
-                    WHERE agenda_id=? AND deep_insight_id=?
-                      AND stage='awaiting_portfolio_decision'
-                    """,
-                    (grant_id, grant.agenda_id, grant.idea_id),
-                )
+            if grant_lane == PROPOSAL_GRANT_LANE:
+                if target_job_id is not None:
+                    cursor = db.execute(
+                        """
+                        UPDATE auto_research_jobs
+                        SET resource_grant_id=?, status='deferred',
+                            stage='proposal_generation_granted',
+                            updated_at=CURRENT_TIMESTAMP
+                        WHERE id=? AND agenda_id=? AND deep_insight_id=?
+                          AND status='queued'
+                          AND stage='awaiting_portfolio_decision'
+                          AND resource_grant_id IS NULL
+                        """,
+                        (
+                            grant_id,
+                            int(target_job_id),
+                            grant.agenda_id,
+                            grant.idea_id,
+                        ),
+                    )
+                    _expect_one(cursor, operation="bind exact proposal job")
+                else:
+                    db.execute(
+                        """
+                        UPDATE auto_research_jobs
+                        SET resource_grant_id=?, status='deferred',
+                            stage='proposal_generation_granted',
+                            updated_at=CURRENT_TIMESTAMP
+                        WHERE agenda_id=? AND deep_insight_id=?
+                          AND stage='awaiting_portfolio_decision'
+                        """,
+                        (grant_id, grant.agenda_id, grant.idea_id),
+                    )
+            elif grant_lane == INITIAL_RESEARCH_GRANT_LANE:
+                if target_job_id is not None:
+                    cursor = db.execute(
+                        """
+                        UPDATE auto_research_jobs
+                        SET resource_grant_id=?, status='queued',
+                            stage='portfolio_granted',
+                            updated_at=CURRENT_TIMESTAMP
+                        WHERE id=? AND agenda_id=? AND deep_insight_id=?
+                          AND status='queued'
+                          AND stage='awaiting_portfolio_decision'
+                          AND resource_grant_id IS NULL
+                        """,
+                        (
+                            grant_id,
+                            int(target_job_id),
+                            grant.agenda_id,
+                            grant.idea_id,
+                        ),
+                    )
+                    _expect_one(cursor, operation="bind exact pilot job")
+                else:
+                    db.execute(
+                        """
+                        UPDATE auto_research_jobs
+                        SET resource_grant_id=?, status='queued',
+                            stage='portfolio_granted', updated_at=CURRENT_TIMESTAMP
+                        WHERE agenda_id=? AND deep_insight_id=?
+                          AND stage='awaiting_portfolio_decision'
+                        """,
+                        (grant_id, grant.agenda_id, grant.idea_id),
+                    )
             db.commit()
             grant.grant_id = grant_id
             grant.reservation_id = reservation_id
@@ -1071,6 +1272,7 @@ class MetaHarnessRepository:
         grant_id: int,
         agenda_id: int,
         idea_id: int,
+        target_job_id: int | None = None,
     ) -> int:
         """Settle a token-only proposal grant and queue the realized candidate.
 
@@ -1081,6 +1283,39 @@ class MetaHarnessRepository:
 
         try:
             lock = " FOR UPDATE" if db._use_pg() else ""  # noqa: SLF001
+            target_job = None
+            if target_job_id is not None:
+                if int(target_job_id) <= 0:
+                    raise MetaHarnessPersistenceError(
+                        "target_job_id must be positive"
+                    )
+                # Use the same agenda -> job -> grant lock order as exact
+                # grant issuance.  Reversing it permits a completion/issuance
+                # deadlock around the agenda reservation row.
+                agenda = db.fetchone(
+                    f"""
+                    SELECT id, token_budget, token_spent, token_reserved
+                    FROM research_agendas WHERE id=?{lock}
+                    """,
+                    (int(agenda_id),),
+                )
+                if not agenda:
+                    raise MetaHarnessPersistenceError(
+                        "proposal completion agenda was not found"
+                    )
+                target_job = db.fetchone(
+                    f"""
+                    SELECT id, agenda_id, deep_insight_id, status, stage,
+                           resource_grant_id
+                    FROM auto_research_jobs
+                    WHERE id=? AND agenda_id=? AND deep_insight_id=?{lock}
+                    """,
+                    (int(target_job_id), int(agenda_id), int(idea_id)),
+                )
+                if not target_job:
+                    raise MetaHarnessPersistenceError(
+                        "exact proposal completion job scope mismatch"
+                    )
             grant = db.fetchone(
                 f"""
                 SELECT * FROM resource_grants
@@ -1108,33 +1343,104 @@ class MetaHarnessRepository:
                     "proposal grant has open LLM reservations"
                 )
             actual_tokens = int(usage.get("tokens_used") or 0)
+            if actual_tokens < 0 or actual_tokens > int(
+                grant.get("token_cap") or 0
+            ):
+                raise MetaHarnessPersistenceError(
+                    "proposal usage exceeds ResourceGrant token cap"
+                )
+            ledger = db.fetchone(
+                f"""
+                SELECT * FROM agenda_resource_ledger
+                WHERE id=? AND agenda_id=?{lock}
+                """,
+                (int(grant["reservation_id"]), int(agenda_id)),
+            )
+            if not ledger:
+                raise MetaHarnessPersistenceError(
+                    "proposal grant reservation was not found"
+                )
             if grant.get("status") == "consumed":
+                if target_job is not None and (
+                    target_job.get("resource_grant_id") is not None
+                    or str(target_job.get("status") or "") != "queued"
+                    or str(target_job.get("stage") or "")
+                    != "awaiting_portfolio_decision"
+                ):
+                    raise MetaHarnessPersistenceError(
+                        "consumed proposal replay is not reflected by the exact job"
+                    )
+                if (
+                    str(ledger.get("status") or "") != "settled"
+                    or int(ledger.get("tokens_used") or 0) != actual_tokens
+                    or abs(float(ledger.get("gpu_hours_used") or 0.0)) > 1e-9
+                ):
+                    raise MetaHarnessPersistenceError(
+                        "consumed proposal replay has inconsistent settlement"
+                    )
                 db.commit()
                 return actual_tokens
             if grant.get("status") != "active":
                 raise MetaHarnessPersistenceError("proposal grant is not active")
-            ledger = db.fetchone(
-                f"SELECT * FROM agenda_resource_ledger WHERE id=?{lock}",
-                (int(grant["reservation_id"]),),
-            )
+            if target_job is not None and (
+                int(target_job.get("resource_grant_id") or 0) != int(grant_id)
+                or str(target_job.get("status") or "") != "deferred"
+                or str(target_job.get("stage") or "")
+                != "proposal_generation_granted"
+            ):
+                raise MetaHarnessPersistenceError(
+                    "exact proposal job is not bound to the active grant"
+                )
             if not ledger or ledger.get("status") != "reserved":
                 raise MetaHarnessPersistenceError(
                     "proposal grant reservation is not settleable"
                 )
-            db.execute(
+            token_reserved = int(ledger.get("token_reserved") or 0)
+            if (
+                token_reserved != int(grant.get("token_cap") or 0)
+                or actual_tokens > token_reserved
+            ):
+                raise MetaHarnessPersistenceError(
+                    "proposal grant and reservation accounting are inconsistent"
+                )
+            if target_job_id is None:
+                agenda = db.fetchone(
+                    f"""
+                    SELECT id, token_budget, token_spent, token_reserved
+                    FROM research_agendas WHERE id=?{lock}
+                    """,
+                    (int(agenda_id),),
+                )
+            if not agenda:
+                raise MetaHarnessPersistenceError(
+                    "proposal completion agenda was not found"
+                )
+            if (
+                int(agenda.get("token_reserved") or 0) < token_reserved
+                or int(agenda.get("token_spent") or 0) + actual_tokens
+                > int(agenda.get("token_budget") or 0)
+            ):
+                raise MetaHarnessPersistenceError(
+                    "proposal agenda accounting cannot settle this grant"
+                )
+            changed = db.execute(
                 """
                 UPDATE research_agendas
                 SET token_reserved=token_reserved-?, token_spent=token_spent+?,
                     updated_at=CURRENT_TIMESTAMP
-                WHERE id=?
+                WHERE id=? AND token_reserved>=?
+                  AND token_spent+? <= token_budget
                 """,
                 (
-                    int(ledger.get("token_reserved") or 0),
+                    token_reserved,
                     actual_tokens,
                     int(agenda_id),
+                    token_reserved,
+                    actual_tokens,
                 ),
             )
-            db.execute(
+            _expect_one(changed, operation="settle proposal agenda budget")
+            changed = db.execute(
                 """
                 UPDATE agenda_resource_ledger
                 SET tokens_used=?, gpu_hours_used=0, status='settled',
@@ -1143,26 +1449,50 @@ class MetaHarnessRepository:
                 """,
                 (actual_tokens, int(grant["reservation_id"])),
             )
-            db.execute(
+            _expect_one(changed, operation="settle proposal grant ledger")
+            changed = db.execute(
                 """
                 UPDATE resource_grants SET status='consumed'
                 WHERE id=? AND agenda_id=? AND status='active'
                 """,
                 (int(grant_id), int(agenda_id)),
             )
-            db.execute(
-                """
-                UPDATE auto_research_jobs
-                SET resource_grant_id=NULL, status='queued',
-                    stage='awaiting_portfolio_decision',
-                    last_error=NULL,
-                    last_note='proposal generation completed; full candidate awaits portfolio',
-                    updated_at=CURRENT_TIMESTAMP
-                WHERE agenda_id=? AND deep_insight_id=?
-                  AND resource_grant_id=?
-                """,
-                (int(agenda_id), int(idea_id), int(grant_id)),
-            )
+            _expect_one(changed, operation="consume proposal grant")
+            if target_job_id is not None:
+                changed = db.execute(
+                    """
+                    UPDATE auto_research_jobs
+                    SET resource_grant_id=NULL, status='queued',
+                        stage='awaiting_portfolio_decision',
+                        last_error=NULL,
+                        last_note='proposal generation completed; full candidate awaits portfolio',
+                        updated_at=CURRENT_TIMESTAMP
+                    WHERE id=? AND agenda_id=? AND deep_insight_id=?
+                      AND resource_grant_id=? AND status='deferred'
+                      AND stage='proposal_generation_granted'
+                    """,
+                    (
+                        int(target_job_id),
+                        int(agenda_id),
+                        int(idea_id),
+                        int(grant_id),
+                    ),
+                )
+                _expect_one(changed, operation="complete exact proposal job")
+            else:
+                db.execute(
+                    """
+                    UPDATE auto_research_jobs
+                    SET resource_grant_id=NULL, status='queued',
+                        stage='awaiting_portfolio_decision',
+                        last_error=NULL,
+                        last_note='proposal generation completed; full candidate awaits portfolio',
+                        updated_at=CURRENT_TIMESTAMP
+                    WHERE agenda_id=? AND deep_insight_id=?
+                      AND resource_grant_id=?
+                    """,
+                    (int(agenda_id), int(idea_id), int(grant_id)),
+                )
             # The proposal-stage prediction only governs the LLM design call.
             # The realized candidate must make a fresh, experiment-specific
             # falsification commitment before a compute portfolio decision.
@@ -2133,7 +2463,7 @@ class MetaHarnessRepository:
             lock = " FOR UPDATE" if db._use_pg() else ""  # noqa: SLF001
             row = db.fetchone(
                 f"""
-                SELECT rg.id, rg.agenda_id, rg.reservation_id,
+                SELECT rg.id, rg.agenda_id, rg.reservation_id, rg.stage,
                        arl.token_reserved, arl.gpu_hours_reserved,
                        arl.gpu_hours_used,
                        arl.status AS reservation_status
@@ -2157,6 +2487,19 @@ class MetaHarnessRepository:
             if any(usage.get("status") == "settled" for usage in usage_rows):
                 raise MetaHarnessPersistenceError(
                     "grant already metered usage; it cannot be revoked as unused"
+                )
+            try:
+                grant_lane = classify_resource_grant_stage(
+                    str(row.get("stage") or "")
+                )
+            except ResourceGrantStageError:
+                grant_lane = None
+            if grant_lane == INGESTION_GRANT_LANE and any(
+                usage.get("status") == "reserved" for usage in usage_rows
+            ):
+                raise MetaHarnessPersistenceError(
+                    "ingestion grant has ambiguous open usage; exact usage "
+                    "disposition is required before revocation"
                 )
             release_reason = f"grant_revoked:{str(reason).strip()}"
             if row.get("reservation_status") == "reserved":
@@ -2293,6 +2636,38 @@ class MetaHarnessRepository:
         if not str(reason or "").strip():
             raise MetaHarnessPersistenceError("a reason is required to end a TTL early")
         try:
+            lock = " FOR UPDATE" if db._use_pg() else ""  # noqa: SLF001
+            grant_row = db.fetchone(
+                f"""
+                SELECT id, stage FROM resource_grants
+                WHERE id=? AND agenda_id=? AND status='active'{lock}
+                """,
+                (int(grant_id), int(agenda_id)),
+            )
+            if not grant_row:
+                db.rollback()
+                return False
+            try:
+                grant_lane = classify_resource_grant_stage(
+                    str(grant_row.get("stage") or "")
+                )
+            except ResourceGrantStageError:
+                grant_lane = None
+            if grant_lane == INGESTION_GRANT_LANE:
+                open_usage = db.fetchone(
+                    f"""
+                    SELECT id FROM resource_grant_usage_reservations
+                    WHERE resource_grant_id=? AND agenda_id=?
+                      AND status='reserved'
+                    ORDER BY id LIMIT 1{lock}
+                    """,
+                    (int(grant_id), int(agenda_id)),
+                )
+                if open_usage:
+                    raise MetaHarnessPersistenceError(
+                        "ingestion grant has ambiguous open usage; exact usage "
+                        "disposition is required before expiry"
+                    )
             cur = db.execute(
                 """
                 UPDATE resource_grants
@@ -2350,7 +2725,7 @@ class MetaHarnessRepository:
             lock = " FOR UPDATE" if db._use_pg() else ""  # noqa: SLF001
             rows = db.fetchall(
                 f"""
-                SELECT rg.id, rg.agenda_id, rg.reservation_id,
+                SELECT rg.id, rg.agenda_id, rg.reservation_id, rg.stage,
                        arl.token_reserved, arl.gpu_hours_reserved,
                        arl.gpu_hours_used,
                        arl.status AS reservation_status
@@ -2365,19 +2740,30 @@ class MetaHarnessRepository:
             reconciled = 0
             for row in rows:
                 grant_id = int(row["id"])
-                if row.get("reservation_status") == "reserved":
-                    # Lock child reservations before reading their settled
-                    # usage. A concurrent LLM settlement locks the same row;
-                    # whichever transaction wins is therefore reflected once
-                    # in the top-level grant ledger, never lost after expiry.
-                    usage_rows = db.fetchall(
-                        f"""
-                        SELECT status, tokens_used
-                        FROM resource_grant_usage_reservations
-                        WHERE resource_grant_id=? AND agenda_id=?{lock}
-                        """,
-                        (grant_id, int(row["agenda_id"])),
+                # Lock child reservations before deciding whether expiry is
+                # safe.  Ingestion provider delivery is ambiguous after a
+                # crash: expiry must not silently turn a possibly billed call
+                # into released usage.  An exact audited disposition is the
+                # only path that may close it.
+                usage_rows = db.fetchall(
+                    f"""
+                    SELECT id, status, tokens_used
+                    FROM resource_grant_usage_reservations
+                    WHERE resource_grant_id=? AND agenda_id=?{lock}
+                    """,
+                    (grant_id, int(row["agenda_id"])),
+                )
+                try:
+                    grant_lane = classify_resource_grant_stage(
+                        str(row.get("stage") or "")
                     )
+                except ResourceGrantStageError:
+                    grant_lane = None
+                if grant_lane == INGESTION_GRANT_LANE and any(
+                    usage.get("status") == "reserved" for usage in usage_rows
+                ):
+                    continue
+                if row.get("reservation_status") == "reserved":
                     tokens_used = sum(
                         int(usage.get("tokens_used") or 0)
                         for usage in usage_rows

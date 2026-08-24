@@ -9,8 +9,8 @@ it" had no executor at all.
 
 This module is that executor, and deliberately nothing more:
 
-* it runs **one** candidate, named explicitly by (agenda, idea, grant) -- there
-  is no discovery query, no backlog, and no loop;
+* it runs **one** candidate, named explicitly by (job, agenda, idea, grant) --
+  there is no discovery query, no backlog, and no loop;
 * it never reads or writes ``DEEPGRAPH_AUTO_RESEARCH_ENABLED`` /
   ``DEEPGRAPH_AUTO_PIPELINE_ENABLED``, so it cannot be a back door into global
   autonomy;
@@ -19,9 +19,9 @@ This module is that executor, and deliberately nothing more:
 * the experiment itself is built and run by the existing reviewed machinery
   (``forge_experiment`` then ``run_validation_loop``). Nothing here duplicates
   run creation, state authority, or budget accounting;
-* every exit settles: an OutcomeRecord on success, a released grant on failure.
-  A path that could strand the agenda's reservation would just be a slower way
-  to wedge the budget.
+* every persisted run is sent through formal OutcomeRecord settlement; an
+  unused grant is formally revoked, and any unresolved metering is exposed as
+  ``pilot_settlement_required`` instead of being mistaken for completion.
 """
 
 from __future__ import annotations
@@ -32,12 +32,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from contracts.meta_harness import ResourceGrant
+from contracts.meta_harness import EVIDENCE_STATES, ResourceGrant
 from db import database as db
 from meta_harness.evidence_state import EvidenceTransitionContext
-from meta_harness.grants import GrantDeniedError, ResourceRequest, authorize
+from meta_harness.grants import ResourceRequest, authorize
 from meta_harness.repository import MetaHarnessRepository
-from orchestrator.pipeline import log_event
 
 
 # A bounded pilot is a CPU/LLM errand. Anything wider needs its own grant and
@@ -48,6 +47,8 @@ GRANTED_STAGE = "portfolio_granted"
 RUNNING_STAGE = "pilot_running"
 DONE_STAGE = "pilot_outcome_recorded"
 FAILED_STAGE = "pilot_failed"
+SETTLEMENT_REQUIRED_STAGE = "pilot_settlement_required"
+WITHDRAWN_JOB_STAGES = frozenset({"resource_grant_revoked", "resource_grant_expired"})
 
 
 class BoundedExecutionError(RuntimeError):
@@ -59,9 +60,10 @@ class BoundedExecutionRequest:
     agenda_id: int
     idea_id: int
     resource_grant_id: int
+    job_id: int = 0
 
     def validate(self) -> None:
-        for name in ("agenda_id", "idea_id", "resource_grant_id"):
+        for name in ("agenda_id", "idea_id", "resource_grant_id", "job_id"):
             if int(getattr(self, name)) <= 0:
                 raise BoundedExecutionError(f"{name} must be positive")
 
@@ -207,8 +209,19 @@ def _authorize_bounded_grant(
             "bounded execution refuses backends outside cpu/llm: "
             + ",".join(sorted(backends - BOUNDED_BACKENDS))
         )
+    if backends != BOUNDED_BACKENDS:
+        raise BoundedExecutionError(
+            "bounded execution grant must authorize exactly cpu/llm"
+        )
     if grant.max_gpu_hours > 0:
         raise BoundedExecutionError("bounded execution refuses a GPU-hour grant")
+    if str(grant.gpu_class or "none").strip().lower() not in {"none", "cpu"}:
+        raise BoundedExecutionError("bounded execution refuses a GPU-class grant")
+    requirements = {value.strip().lower() for value in grant.artifact_requirements}
+    if "final_results" not in requirements:
+        raise BoundedExecutionError(
+            "bounded execution grant must require final_results"
+        )
     # Check every backend the grant actually carries, so an expired or
     # out-of-scope grant is reported with the shared reason codes rather than a
     # bespoke message.
@@ -223,6 +236,54 @@ def _authorize_bounded_grant(
                 resource_grant_id=request.resource_grant_id,
                 token_cap=grant.token_cap,
             ),
+        )
+    return grant, dict(row)
+
+
+def _load_bounded_grant(
+    request: BoundedExecutionRequest,
+) -> tuple[ResourceGrant, dict[str, Any]]:
+    """Scope-check a pilot grant without authorizing new execution.
+
+    A replay after ``record_outcome`` must inspect a consumed grant so it can
+    finish the job transition, but it must never be allowed to execute again.
+    The normal authorization path remains the only path into forge/validation.
+    """
+
+    row = db.fetchone(
+        "SELECT * FROM resource_grants WHERE id=?",
+        (request.resource_grant_id,),
+    )
+    if not row:
+        raise BoundedExecutionError("resource_grant_not_found")
+    grant = _grant_from_row(dict(row))
+    if grant.agenda_id != request.agenda_id or grant.idea_id != request.idea_id:
+        raise BoundedExecutionError("resource_grant_scope_mismatch")
+    if grant.stage != BOUNDED_STAGE:
+        raise BoundedExecutionError(
+            f"bounded execution requires a '{BOUNDED_STAGE}' grant, "
+            f"not '{grant.stage}'"
+        )
+    backends = {value.strip().lower() for value in grant.backend_allowlist}
+    if not backends:
+        raise BoundedExecutionError("grant_backend_allowlist_empty")
+    if not backends.issubset(BOUNDED_BACKENDS):
+        raise BoundedExecutionError(
+            "bounded execution refuses backends outside cpu/llm: "
+            + ",".join(sorted(backends - BOUNDED_BACKENDS))
+        )
+    if backends != BOUNDED_BACKENDS:
+        raise BoundedExecutionError(
+            "bounded execution grant must authorize exactly cpu/llm"
+        )
+    if grant.max_gpu_hours > 0:
+        raise BoundedExecutionError("bounded execution refuses a GPU-hour grant")
+    if str(grant.gpu_class or "none").strip().lower() not in {"none", "cpu"}:
+        raise BoundedExecutionError("bounded execution refuses a GPU-class grant")
+    requirements = {value.strip().lower() for value in grant.artifact_requirements}
+    if "final_results" not in requirements:
+        raise BoundedExecutionError(
+            "bounded execution grant must require final_results"
         )
     return grant, dict(row)
 
@@ -245,35 +306,90 @@ def _run_bound_to_grant(request: BoundedExecutionRequest) -> int:
     return int((row or {}).get("id") or 0)
 
 
-def _claim_job(request: BoundedExecutionRequest) -> dict[str, Any]:
-    """Take the granted job atomically; a second caller must find nothing."""
-    job = db.fetchone(
+def _load_run(request: BoundedExecutionRequest, run_id: int) -> dict[str, Any]:
+    row = db.fetchone(
+        """
+        SELECT id, agenda_id, deep_insight_id, status, resource_grant_id,
+               scientific_evidence_state, resource_class, hypothesis_verdict
+        FROM experiment_runs
+        WHERE id=? AND agenda_id=? AND deep_insight_id=?
+        """,
+        (int(run_id), request.agenda_id, request.idea_id),
+    )
+    if not row or int(row.get("resource_grant_id") or 0) != request.resource_grant_id:
+        raise BoundedExecutionError("run_not_bound_to_grant")
+    return dict(row)
+
+
+def _existing_outcome(
+    request: BoundedExecutionRequest,
+) -> dict[str, Any] | None:
+    row = db.fetchone(
+        """
+        SELECT id, agenda_id, idea_id, resource_grant_id, experiment_run_id,
+               execution_result, verdict, state_decision
+        FROM outcome_records
+        WHERE resource_grant_id=? AND agenda_id=? AND idea_id=?
+        ORDER BY id DESC LIMIT 1
+        """,
+        (request.resource_grant_id, request.agenda_id, request.idea_id),
+    )
+    return dict(row) if row else None
+
+
+def _load_job(request: BoundedExecutionRequest) -> dict[str, Any]:
+    row = db.fetchone(
         """
         SELECT id, agenda_id, deep_insight_id, status, stage, resource_grant_id,
                experiment_run_id
         FROM auto_research_jobs
-        WHERE agenda_id=? AND deep_insight_id=? AND resource_grant_id=?
+        WHERE id=? AND agenda_id=? AND deep_insight_id=? AND resource_grant_id=?
         """,
-        (request.agenda_id, request.idea_id, request.resource_grant_id),
+        (
+            int(request.job_id),
+            request.agenda_id,
+            request.idea_id,
+            request.resource_grant_id,
+        ),
     )
-    if not job:
+    if not row:
         raise BoundedExecutionError("granted_job_not_found")
-    if str(job.get("stage") or "") != GRANTED_STAGE:
+    return dict(row)
+
+
+def _claim_job(request: BoundedExecutionRequest) -> dict[str, Any]:
+    """Claim a new exact job, or recognize its bounded replay states."""
+
+    job = _load_job(request)
+    pair = (str(job.get("status") or ""), str(job.get("stage") or ""))
+    replayable = {
+        ("running_experiment", RUNNING_STAGE),
+        ("blocked", SETTLEMENT_REQUIRED_STAGE),
+        ("failed", FAILED_STAGE),
+        ("completed", DONE_STAGE),
+    } | {("blocked", stage) for stage in WITHDRAWN_JOB_STAGES}
+    if pair in replayable:
+        job["claim_mode"] = "replay"
+        return job
+    if pair != ("queued", GRANTED_STAGE):
         raise BoundedExecutionError(
-            f"job is at stage '{job.get('stage')}', not '{GRANTED_STAGE}'"
+            f"job is at non-replayable state status={pair[0]!r} stage={pair[1]!r}"
         )
     cursor = db.execute(
         """
         UPDATE auto_research_jobs
         SET status='running_experiment', stage=?, last_error=NULL,
             last_note=?, updated_at=CURRENT_TIMESTAMP
-        WHERE id=? AND agenda_id=? AND stage=? AND status='queued'
+        WHERE id=? AND agenda_id=? AND deep_insight_id=?
+          AND resource_grant_id=? AND stage=? AND status='queued'
         """,
         (
             RUNNING_STAGE,
             "bounded pilot claimed by operator-invoked execution path",
             int(job["id"]),
             request.agenda_id,
+            request.idea_id,
+            request.resource_grant_id,
             GRANTED_STAGE,
         ),
     )
@@ -281,45 +397,236 @@ def _claim_job(request: BoundedExecutionRequest) -> dict[str, Any]:
         db.rollback()
         raise BoundedExecutionError("granted_job_already_claimed")
     db.commit()
+    job["claim_mode"] = "claimed"
     return dict(job)
 
 
-def _release_job(
+def _mark_job_failed(
     *,
-    job_id: int,
-    agenda_id: int,
+    request: BoundedExecutionRequest,
     reason: str,
     experiment_run_id: int | None = None,
+    settlement_required: bool = False,
 ) -> None:
-    db.execute(
+    """CAS one exact claimed job into a truthful non-success terminal state."""
+
+    status = "blocked" if settlement_required else "failed"
+    stage = SETTLEMENT_REQUIRED_STAGE if settlement_required else FAILED_STAGE
+    current = _load_job(request)
+    current_pair = (
+        str(current.get("status") or ""),
+        str(current.get("stage") or ""),
+    )
+    target_pair = (status, stage)
+    current_run_id = int(current.get("experiment_run_id") or 0)
+    expected_run_id = int(experiment_run_id or 0)
+    if current_pair == target_pair:
+        if current_run_id not in {0, expected_run_id}:
+            raise BoundedExecutionError("exact job failure replay run mismatch")
+        return
+    if current_pair == ("completed", DONE_STAGE):
+        raise BoundedExecutionError("refusing to downgrade a completed exact job")
+    allowed = {
+        ("running_experiment", RUNNING_STAGE),
+        ("blocked", SETTLEMENT_REQUIRED_STAGE),
+        ("failed", FAILED_STAGE),
+    }
+    if current_pair not in allowed:
+        raise BoundedExecutionError(
+            "exact job cannot enter failure state from "
+            f"status={current_pair[0]!r} stage={current_pair[1]!r}"
+        )
+    cursor = db.execute(
         """
         UPDATE auto_research_jobs
-        SET status='blocked', stage=?, last_error=?, experiment_run_id=?,
+        SET status=?, stage=?, last_error=?, experiment_run_id=?,
             updated_at=CURRENT_TIMESTAMP
-        WHERE id=? AND agenda_id=?
+        WHERE id=? AND agenda_id=? AND deep_insight_id=? AND resource_grant_id=?
+          AND status=? AND stage=?
         """,
-        (FAILED_STAGE, reason[:1000], experiment_run_id, int(job_id), int(agenda_id)),
+        (
+            status,
+            stage,
+            reason[:1000],
+            experiment_run_id,
+            int(request.job_id or 0),
+            request.agenda_id,
+            request.idea_id,
+            request.resource_grant_id,
+            current_pair[0],
+            current_pair[1],
+        ),
     )
+    if int(getattr(cursor, "rowcount", 0) or 0) != 1:
+        db.rollback()
+        latest = _load_job(request)
+        latest_pair = (
+            str(latest.get("status") or ""),
+            str(latest.get("stage") or ""),
+        )
+        latest_run_id = int(latest.get("experiment_run_id") or 0)
+        if latest_pair == target_pair and latest_run_id in {0, expected_run_id}:
+            return
+        raise BoundedExecutionError("exact job failure transition did not match")
     db.commit()
 
 
 def _settle_job(
     *,
-    job_id: int,
-    agenda_id: int,
+    request: BoundedExecutionRequest,
     experiment_run_id: int,
     note: str,
 ) -> None:
-    db.execute(
+    """Mark success only after a durable successful OutcomeRecord exists."""
+
+    current = _load_job(request)
+    current_pair = (
+        str(current.get("status") or ""),
+        str(current.get("stage") or ""),
+    )
+    current_run_id = int(current.get("experiment_run_id") or 0)
+    if current_pair == ("completed", DONE_STAGE):
+        if current_run_id != int(experiment_run_id):
+            raise BoundedExecutionError("completed exact job run mismatch")
+        return
+    if current_pair not in {
+        ("running_experiment", RUNNING_STAGE),
+        ("blocked", SETTLEMENT_REQUIRED_STAGE),
+    }:
+        raise BoundedExecutionError(
+            "exact job cannot complete from "
+            f"status={current_pair[0]!r} stage={current_pair[1]!r}"
+        )
+    cursor = db.execute(
         """
         UPDATE auto_research_jobs
         SET status='completed', stage=?, experiment_run_id=?, last_error=NULL,
             last_note=?, updated_at=CURRENT_TIMESTAMP
-        WHERE id=? AND agenda_id=?
+        WHERE id=? AND agenda_id=? AND deep_insight_id=? AND resource_grant_id=?
+          AND status=? AND stage=?
         """,
-        (DONE_STAGE, int(experiment_run_id), note[:1000], int(job_id), int(agenda_id)),
+        (
+            DONE_STAGE,
+            int(experiment_run_id),
+            note[:1000],
+            int(request.job_id or 0),
+            request.agenda_id,
+            request.idea_id,
+            request.resource_grant_id,
+            current_pair[0],
+            current_pair[1],
+        ),
     )
+    if int(getattr(cursor, "rowcount", 0) or 0) != 1:
+        db.rollback()
+        latest = _load_job(request)
+        if (
+            str(latest.get("status") or "") == "completed"
+            and str(latest.get("stage") or "") == DONE_STAGE
+            and int(latest.get("experiment_run_id") or 0)
+            == int(experiment_run_id)
+        ):
+            return
+        raise BoundedExecutionError("exact job settlement transition did not match")
     db.commit()
+
+
+def _attach_run_to_job(
+    request: BoundedExecutionRequest,
+    *,
+    experiment_run_id: int,
+) -> None:
+    current = _load_job(request)
+    current_pair = (
+        str(current.get("status") or ""),
+        str(current.get("stage") or ""),
+    )
+    bound_run_id = int(current.get("experiment_run_id") or 0)
+    if bound_run_id:
+        if bound_run_id != int(experiment_run_id):
+            raise BoundedExecutionError("exact job is already bound to another run")
+        return
+    if current_pair != ("running_experiment", RUNNING_STAGE):
+        raise BoundedExecutionError("exact job is not claimable for run attachment")
+    cursor = db.execute(
+        """
+        UPDATE auto_research_jobs
+        SET experiment_run_id=?, updated_at=CURRENT_TIMESTAMP
+        WHERE id=? AND agenda_id=? AND deep_insight_id=? AND resource_grant_id=?
+          AND status='running_experiment' AND stage=?
+          AND experiment_run_id IS NULL
+        """,
+        (
+            int(experiment_run_id),
+            int(request.job_id or 0),
+            request.agenda_id,
+            request.idea_id,
+            request.resource_grant_id,
+            RUNNING_STAGE,
+        ),
+    )
+    if int(getattr(cursor, "rowcount", 0) or 0) != 1:
+        db.rollback()
+        latest = _load_job(request)
+        if int(latest.get("experiment_run_id") or 0) == int(experiment_run_id):
+            return
+        raise BoundedExecutionError("exact job run attachment did not match")
+    db.commit()
+
+
+def _real_final_results_present(
+    *, agenda_id: int, experiment_run_id: int
+) -> bool:
+    rows = db.fetchall(
+        """
+        SELECT path FROM experiment_artifacts
+        WHERE agenda_id=? AND run_id=? AND artifact_type='final_results'
+        ORDER BY id
+        """,
+        (int(agenda_id), int(experiment_run_id)),
+    )
+    for row in rows:
+        path = Path(str(row.get("path") or ""))
+        try:
+            if path.is_file() and not path.is_symlink():
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _durable_success(
+    *,
+    run: dict[str, Any],
+    artifacts_present: int,
+    final_results_present: bool,
+    outcome_execution_result: str | None = None,
+    outcome_verdict: str | None = None,
+) -> bool:
+    state = str(run.get("scientific_evidence_state") or "planned")
+    try:
+        evidence_ready = EVIDENCE_STATES.index(state) >= EVIDENCE_STATES.index(
+            "sanity_passed"
+        )
+    except ValueError:
+        evidence_ready = False
+    verdict = str(
+        outcome_verdict
+        if outcome_verdict is not None
+        else run.get("hypothesis_verdict") or ""
+    ).strip().lower()
+    return (
+        str(run.get("status") or "") == "completed"
+        and artifacts_present > 0
+        and final_results_present
+        and evidence_ready
+        and str(run.get("resource_class") or "").strip().lower() == "cpu"
+        and verdict in {"supported", "refuted", "inconclusive"}
+        and (
+            outcome_execution_result is None
+            or str(outcome_execution_result).strip().lower() == "completed"
+        )
+    )
 
 
 def _default_forge(idea_id: int, resource_grant_id: int) -> dict[str, Any]:
@@ -332,6 +639,310 @@ def _default_validate(run_id: int) -> dict[str, Any]:
     from agents.validation_loop import run_validation_loop
 
     return run_validation_loop(run_id)
+
+
+def _mark_settlement_required(
+    *,
+    request: BoundedExecutionRequest,
+    result: BoundedExecutionResult,
+    reason: str,
+    experiment_run_id: int | None,
+) -> BoundedExecutionResult:
+    result.status = "settlement_required"
+    result.reason = reason
+    try:
+        current = _load_job(request)
+        if (
+            str(current.get("status") or "") == "blocked"
+            and str(current.get("stage") or "") in WITHDRAWN_JOB_STAGES
+        ):
+            result.status = "failed"
+            return result
+        _mark_job_failed(
+            request=request,
+            reason=reason,
+            experiment_run_id=experiment_run_id,
+            settlement_required=True,
+        )
+    except Exception as transition_error:
+        result.details["job_transition_error"] = (
+            f"{type(transition_error).__name__}: {transition_error}"
+        )
+    return result
+
+
+def _finish_existing_outcome(
+    *,
+    request: BoundedExecutionRequest,
+    result: BoundedExecutionResult,
+    outcome: dict[str, Any],
+) -> BoundedExecutionResult:
+    """Repair only the exact job transition after outcome commit.
+
+    This is the critical crash boundary: a consumed grant cannot pass normal
+    authorization, and replay must not call forge or validation again.
+    """
+
+    run_id = int(outcome.get("experiment_run_id") or 0)
+    if run_id <= 0:
+        return _mark_settlement_required(
+            request=request,
+            result=result,
+            reason="existing outcome has no experiment run",
+            experiment_run_id=None,
+        )
+    try:
+        run = _load_run(request, run_id)
+        digest, present, missing = raw_artifacts_hash(
+            agenda_id=request.agenda_id,
+            experiment_run_id=run_id,
+        )
+        del digest  # presence and persisted evidence state decide replay truth.
+        final_results_present = _real_final_results_present(
+            agenda_id=request.agenda_id,
+            experiment_run_id=run_id,
+        )
+        result.experiment_run_id = run_id
+        result.outcome_record_id = int(outcome["id"])
+        result.evidence_state = str(
+            run.get("scientific_evidence_state")
+            or outcome.get("state_decision")
+            or "planned"
+        )
+        result.verdict = str(outcome.get("verdict") or "") or None
+        result.details["replay"] = "existing_outcome"
+        result.details["artifacts"] = {
+            "present": present,
+            "missing": missing,
+            "final_results_present": final_results_present,
+        }
+        if _durable_success(
+            run=run,
+            artifacts_present=present,
+            final_results_present=final_results_present,
+            outcome_execution_result=str(outcome.get("execution_result") or ""),
+            outcome_verdict=str(outcome.get("verdict") or ""),
+        ):
+            _settle_job(
+                request=request,
+                experiment_run_id=run_id,
+                note=(
+                    f"bounded pilot replay completed: outcome_record={outcome['id']} "
+                    f"state={result.evidence_state}"
+                ),
+            )
+            result.status = "completed"
+            return result
+        _mark_job_failed(
+            request=request,
+            reason="bounded pilot outcome did not meet durable success criteria",
+            experiment_run_id=run_id,
+        )
+        result.status = "settled_failed"
+        result.reason = "durable_success_criteria_not_met"
+        return result
+    except Exception as exc:
+        return _mark_settlement_required(
+            request=request,
+            result=result,
+            reason=f"existing_outcome_replay_failed:{type(exc).__name__}: {exc}",
+            experiment_run_id=run_id,
+        )
+
+
+def _finalize_persisted_run(
+    *,
+    request: BoundedExecutionRequest,
+    actor: str,
+    repository: MetaHarnessRepository,
+    result: BoundedExecutionResult,
+) -> BoundedExecutionResult:
+    """Settle one persisted run without invoking compute or LLM work."""
+
+    run_id = int(result.experiment_run_id or 0)
+    try:
+        run = _load_run(request, run_id)
+        digest, present, missing = raw_artifacts_hash(
+            agenda_id=request.agenda_id,
+            experiment_run_id=run_id,
+        )
+        final_results_present = _real_final_results_present(
+            agenda_id=request.agenda_id,
+            experiment_run_id=run_id,
+        )
+        result.details["artifacts"] = {
+            "present": present,
+            "missing": missing,
+            "final_results_present": final_results_present,
+        }
+        run_status = str(run.get("status") or "")
+        resource_class = str(run.get("resource_class") or "").strip().lower()
+        verdict = str(run.get("hypothesis_verdict") or "").strip().lower()
+        if result.verdict is None:
+            result.verdict = verdict or None
+        valid_verdict = verdict in {"supported", "refuted", "inconclusive"}
+        state = str(run.get("scientific_evidence_state") or "planned")
+        try:
+            already_sane = EVIDENCE_STATES.index(state) >= EVIDENCE_STATES.index(
+                "sanity_passed"
+            )
+        except ValueError:
+            already_sane = False
+        if (
+            run_status == "completed"
+            and resource_class == "cpu"
+            and present > 0
+            and final_results_present
+            and valid_verdict
+            and not already_sane
+        ):
+            try:
+                repository.advance_experiment_state(
+                    agenda_id=request.agenda_id,
+                    experiment_run_id=run_id,
+                    target="sanity_passed",
+                    context=EvidenceTransitionContext(
+                        resource_grant_valid=True,
+                        resource_grant_id=request.resource_grant_id,
+                        execution_succeeded=True,
+                        pilot_only=True,
+                        raw_artifacts_present=True,
+                        raw_artifacts_hash=digest,
+                    ),
+                    actor=actor,
+                )
+            except Exception as exc:
+                # Evidence authority failure must prevent scientific success,
+                # but it must not strand already-metered usage. Outcome
+                # assembly below remains the formal settlement path.
+                result.details["advance_error"] = f"{type(exc).__name__}: {exc}"
+                result.details["not_advanced"] = "evidence_transition_failed"
+            run = _load_run(request, run_id)
+            state = str(run.get("scientific_evidence_state") or "planned")
+        elif not already_sane:
+            result.details["not_advanced"] = (
+                "non_cpu_run"
+                if resource_class != "cpu"
+                else "invalid_or_missing_verdict"
+                if not valid_verdict
+                else "execution_incomplete"
+                if run_status != "completed"
+                else "no_final_results_file"
+                if not final_results_present
+                else "no_artifact_files"
+            )
+        result.evidence_state = str(run.get("scientific_evidence_state") or state)
+
+        outcome_id = repository.assemble_and_record_outcome(
+            resource_grant_id=request.resource_grant_id,
+            experiment_run_id=run_id,
+        )
+        result.outcome_record_id = int(outcome_id)
+        if _durable_success(
+            run=run,
+            artifacts_present=present,
+            final_results_present=final_results_present,
+        ):
+            _settle_job(
+                request=request,
+                experiment_run_id=run_id,
+                note=(
+                    f"bounded pilot settled: outcome_record={outcome_id} "
+                    f"state={result.evidence_state} "
+                    f"verdict={result.verdict or 'unknown'}"
+                ),
+            )
+            result.status = "completed"
+        else:
+            _mark_job_failed(
+                request=request,
+                reason="bounded pilot settled without durable scientific success",
+                experiment_run_id=run_id,
+            )
+            result.status = "settled_failed"
+            result.reason = "durable_success_criteria_not_met"
+        return result
+    except Exception as exc:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        return _mark_settlement_required(
+            request=request,
+            result=result,
+            reason=f"run_settlement_failed:{type(exc).__name__}: {exc}",
+            experiment_run_id=run_id,
+        )
+
+
+def _fail_without_run(
+    *,
+    request: BoundedExecutionRequest,
+    repository: MetaHarnessRepository,
+    result: BoundedExecutionResult,
+    grant_status: str,
+    reason: str,
+) -> BoundedExecutionResult:
+    """Refund an unused grant; fail closed if metered usage prevents it."""
+
+    result.reason = reason
+    if grant_status == "consumed":
+        return _mark_settlement_required(
+            request=request,
+            result=result,
+            reason=f"consumed_grant_without_outcome_or_run:{reason}",
+            experiment_run_id=None,
+        )
+    try:
+        if grant_status == "active":
+            revoked = repository.revoke_grant(
+                request.resource_grant_id,
+                agenda_id=request.agenda_id,
+                reason=f"bounded_pilot_failed:{reason}"[:500],
+            )
+            result.details["grant"] = (
+                "revoked_and_refunded" if revoked else "already_withdrawn"
+            )
+            if not revoked:
+                outcome = _existing_outcome(request)
+                if outcome:
+                    return _finish_existing_outcome(
+                        request=request,
+                        result=result,
+                        outcome=outcome,
+                    )
+                _, refreshed = _load_bounded_grant(request)
+                if str(refreshed.get("status") or "") == "consumed":
+                    return _mark_settlement_required(
+                        request=request,
+                        result=result,
+                        reason="grant_consumed_during_unused_release_without_outcome",
+                        experiment_run_id=None,
+                    )
+        else:
+            result.details["grant"] = f"already_{grant_status or 'non_active'}"
+        current = _load_job(request)
+        if (
+            str(current.get("status") or "") == "blocked"
+            and str(current.get("stage") or "") in WITHDRAWN_JOB_STAGES
+        ):
+            result.status = "failed"
+            return result
+        _mark_job_failed(
+            request=request,
+            reason=reason,
+            experiment_run_id=None,
+        )
+        result.status = "failed"
+        return result
+    except Exception as exc:
+        result.details["grant"] = f"settlement_required:{type(exc).__name__}: {exc}"
+        return _mark_settlement_required(
+            request=request,
+            result=result,
+            reason=f"unused_grant_release_failed:{type(exc).__name__}: {exc}",
+            experiment_run_id=None,
+        )
 
 
 def execute_granted_candidate(
@@ -355,7 +966,7 @@ def execute_granted_candidate(
     run_forge = forge or _default_forge
     run_validate = validate or _default_validate
 
-    grant, grant_row = _authorize_bounded_grant(request)
+    grant, grant_row = _load_bounded_grant(request)
     job = _claim_job(request)
     job_id = int(job["id"])
     result = BoundedExecutionResult(
@@ -365,157 +976,141 @@ def execute_granted_candidate(
         resource_grant_id=request.resource_grant_id,
         job_id=job_id,
     )
-    log_event(
-        "bounded_execution",
-        {
-            "step": "claimed",
-            "agenda_id": request.agenda_id,
-            "idea_id": request.idea_id,
-            "resource_grant_id": request.resource_grant_id,
-            "token_cap": grant.token_cap,
-            "backends": sorted(grant.backend_allowlist),
-        },
-    )
+    outcome = _existing_outcome(request)
+    if outcome:
+        return _finish_existing_outcome(
+            request=request,
+            result=result,
+            outcome=outcome,
+        )
 
-    run_id: int | None = None
-    try:
-        forge_error = ""
-        forged = run_forge(request.idea_id, request.resource_grant_id)
-        if not isinstance(forged, dict) or forged.get("error"):
-            forge_error = str((forged or {}).get("error") or "unknown")
-        # The forge creates the run before the stages that can reject it, so a
-        # reported error does not mean nothing exists. Ask the database what
-        # this grant actually produced instead of trusting the return value: a
-        # run that exists must be settled, or its metered spend strands the
-        # agenda's reservation with no way to release it.
-        run_id = _run_bound_to_grant(request) or int(
-            (forged or {}).get("run_id") or 0
-        ) or None
-        if not run_id:
-            raise BoundedExecutionError(
-                "forge_failed:" + (forge_error or "forge_returned_no_run")
-            )
+    # Durable bindings win over process-local return values. If a prior
+    # invocation reached run creation, this replay settles that run and never
+    # invokes forge or validation again.
+    run_id = int(job.get("experiment_run_id") or 0) or _run_bound_to_grant(request)
+    if run_id:
         result.experiment_run_id = run_id
-        if forge_error:
-            result.details["forge_error"] = forge_error
-
-        verdict = ""
-        if not forge_error:
-            validated = run_validate(run_id)
-            if not isinstance(validated, dict) or validated.get("error"):
-                raise BoundedExecutionError(
-                    "validation_failed:"
-                    + str((validated or {}).get("error") or "unknown")
-                )
-            verdict = str(validated.get("verdict") or "").strip().lower()
-            result.verdict = verdict
-            result.details["validation"] = {
-                key: validated.get(key)
-                for key in ("verdict", "baseline", "best_value", "effect_pct")
-            }
-            if verdict == "blocked":
-                raise BoundedExecutionError(
-                    "validation_blocked:" + str(validated.get("reason") or "unknown")
-                )
-
-        run = db.fetchone(
-            """
-            SELECT id, agenda_id, deep_insight_id, status, resource_grant_id,
-                   scientific_evidence_state
-            FROM experiment_runs
-            WHERE id=? AND agenda_id=?
-            """,
-            (run_id, request.agenda_id),
-        )
-        if not run or int(run.get("resource_grant_id") or 0) != request.resource_grant_id:
-            raise BoundedExecutionError("run_not_bound_to_grant")
-        execution_succeeded = (
-            not forge_error and str(run.get("status") or "") == "completed"
-        )
-
-        digest, present, missing = raw_artifacts_hash(
-            agenda_id=request.agenda_id,
-            experiment_run_id=run_id,
-        )
-        result.details["artifacts"] = {"present": present, "missing": missing}
-        if execution_succeeded and present > 0:
-            # A pilot's ladder tops out at sanity_passed by construction:
-            # pilot_only blocks full_benchmark_complete in the state machine.
-            state = repo.advance_experiment_state(
-                agenda_id=request.agenda_id,
+        try:
+            _attach_run_to_job(request, experiment_run_id=run_id)
+        except BoundedExecutionError as exc:
+            return _mark_settlement_required(
+                request=request,
+                result=result,
+                reason=f"existing_run_attachment_failed:{exc}",
                 experiment_run_id=run_id,
-                target="sanity_passed",
-                context=EvidenceTransitionContext(
-                    resource_grant_valid=True,
-                    resource_grant_id=request.resource_grant_id,
-                    execution_succeeded=True,
-                    pilot_only=True,
-                    raw_artifacts_present=True,
-                    raw_artifacts_hash=digest,
-                ),
-                actor=actor,
             )
-            result.evidence_state = state
-        else:
-            # No artifacts, or an execution that did not complete, is a real
-            # outcome. It still gets recorded -- an unsettled grant would leave
-            # the agenda's reservation stranded, which is the failure mode this
-            # path exists to avoid.
-            result.evidence_state = str(run.get("scientific_evidence_state") or "planned")
-            result.details["not_advanced"] = (
-                "forge_rejected_the_experiment"
-                if forge_error
-                else "execution_incomplete"
-                if not execution_succeeded
-                else "no_artifact_files"
-            )
+        result.details["replay"] = "existing_run"
+        return _finalize_persisted_run(
+            request=request,
+            actor=actor,
+            repository=repo,
+            result=result,
+        )
 
-        outcome_id = repo.assemble_and_record_outcome(
-            resource_grant_id=request.resource_grant_id,
-            experiment_run_id=run_id,
+    current_pair = (
+        str(job.get("status") or ""),
+        str(job.get("stage") or ""),
+    )
+    if current_pair in {
+        ("blocked", SETTLEMENT_REQUIRED_STAGE),
+        ("failed", FAILED_STAGE),
+        ("completed", DONE_STAGE),
+    } | {("blocked", stage) for stage in WITHDRAWN_JOB_STAGES}:
+        return _fail_without_run(
+            request=request,
+            repository=repo,
+            result=result,
+            grant_status=str(grant_row.get("status") or ""),
+            reason="terminal_job_has_no_outcome_or_run",
         )
-        result.outcome_record_id = int(outcome_id)
-        result.status = "settled_without_result" if forge_error else "completed"
-        _settle_job(
-            job_id=job_id,
-            agenda_id=request.agenda_id,
-            experiment_run_id=run_id,
-            note=(
-                f"bounded pilot settled: outcome_record={outcome_id} "
-                f"state={result.evidence_state} verdict={verdict or 'unknown'}"
-            ),
-        )
-        log_event(
-            "bounded_execution",
-            {"step": "settled", **result.to_dict()},
-        )
-        return result
+
+    try:
+        # Authorization is deliberately after the replay checks. A consumed
+        # grant must be able to repair its exact job, but only an active grant
+        # may enter forge/validation and incur new usage.
+        grant, grant_row = _authorize_bounded_grant(request)
     except Exception as exc:
-        reason = f"{type(exc).__name__}: {exc}"
-        result.reason = reason
-        try:
-            db.rollback()
-        except Exception:
-            pass
-        _release_job(
-            job_id=job_id,
-            agenda_id=request.agenda_id,
-            reason=reason,
+        return _fail_without_run(
+            request=request,
+            repository=repo,
+            result=result,
+            grant_status=str(grant_row.get("status") or ""),
+            reason=f"grant_authorization_failed:{type(exc).__name__}: {exc}",
+        )
+
+    forge_error = ""
+    forged: dict[str, Any] = {}
+    try:
+        candidate = run_forge(request.idea_id, request.resource_grant_id)
+        if isinstance(candidate, dict):
+            forged = candidate
+            forge_error = str(candidate.get("error") or "")
+        else:
+            forge_error = "forge_returned_non_mapping"
+    except Exception as exc:
+        forge_error = f"{type(exc).__name__}: {exc}"
+
+    run_id = _run_bound_to_grant(request) or int(forged.get("run_id") or 0)
+    if not run_id:
+        return _fail_without_run(
+            request=request,
+            repository=repo,
+            result=result,
+            grant_status=str(grant_row.get("status") or ""),
+            reason=f"forge_failed:{forge_error or 'forge_returned_no_run'}",
+        )
+
+    result.experiment_run_id = run_id
+    try:
+        _load_run(request, run_id)
+        _attach_run_to_job(request, experiment_run_id=run_id)
+    except Exception as exc:
+        return _mark_settlement_required(
+            request=request,
+            result=result,
+            reason=f"new_run_binding_failed:{type(exc).__name__}: {exc}",
             experiment_run_id=run_id,
         )
-        # The grant must not stay reserved behind a failed pilot. Revocation
-        # refunds the agenda; a grant that already metered usage cannot be
-        # revoked, and is left for outcome assembly to settle explicitly.
-        try:
-            repo.revoke_grant(
-                request.resource_grant_id,
-                agenda_id=request.agenda_id,
-                reason=f"bounded_pilot_failed:{reason}"[:500],
-            )
-            result.details["grant"] = "revoked_and_refunded"
-        except Exception as revoke_error:
-            result.details["grant"] = f"not_revoked:{revoke_error}"
-        log_event("error", {"step": "bounded_execution", **result.to_dict()})
-        if isinstance(exc, (BoundedExecutionError, GrantDeniedError)):
-            return result
-        raise
+
+    if forge_error:
+        result.details["forge_error"] = forge_error
+    else:
+        run_before_validation = _load_run(request, run_id)
+        if str(run_before_validation.get("resource_class") or "").lower() != "cpu":
+            result.details["validation_skipped"] = "bounded_path_refuses_non_cpu_run"
+        else:
+            try:
+                validated = run_validate(run_id)
+                if not isinstance(validated, dict):
+                    result.details["validation_error"] = "non_mapping_result"
+                else:
+                    result.verdict = str(validated.get("verdict") or "").lower() or None
+                    result.details["validation"] = {
+                        key: validated.get(key)
+                        for key in (
+                            "verdict",
+                            "baseline",
+                            "best_value",
+                            "effect_pct",
+                            "reason",
+                            "error",
+                        )
+                    }
+                    if validated.get("error"):
+                        result.details["validation_error"] = str(validated["error"])
+                    elif result.verdict == "blocked":
+                        result.details["validation_error"] = (
+                            "blocked:" + str(validated.get("reason") or "unknown")
+                        )
+            except Exception as exc:
+                result.details["validation_error"] = f"{type(exc).__name__}: {exc}"
+
+    # Whether validation succeeded, failed, or crashed, a persisted run may
+    # carry metered usage. Settlement is mandatory; only the evidence/artifact
+    # truth decides whether the job is successful.
+    return _finalize_persisted_run(
+        request=request,
+        actor=actor,
+        repository=repo,
+        result=result,
+    )

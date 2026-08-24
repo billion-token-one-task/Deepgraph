@@ -6,11 +6,89 @@ so downstream storage and graph-writing code do not need to change.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Mapping
 from typing import Any
 
-from meta_harness.scoped_llm import proposer_json
+from meta_harness.scoped_llm import proposer_json, require_scope
+
+
+_ROLE_CHECKPOINT_SCHEMA = "paper-extraction-role-v1"
+
+
+def _role_checkpoint_stage(role_name: str) -> str:
+    return f"paper_extraction_role:{role_name}"
+
+
+def _role_input_digest(
+    operation: str,
+    system_prompt: str,
+    user_prompt: str,
+) -> str:
+    """Identify the exact role input independently of a retrying grant."""
+    return hashlib.sha256(
+        "\n".join((operation, system_prompt, user_prompt)).encode("utf-8")
+    ).hexdigest()
+
+
+def _load_role_checkpoint(
+    paper_id: str,
+    role_name: str,
+    input_digest: str,
+) -> dict | None:
+    from db import database as db
+
+    checkpoint = db.get_paper_checkpoint(
+        paper_id, _role_checkpoint_stage(role_name)
+    )
+    payload = checkpoint.get("payload") if checkpoint else None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("schema") != _ROLE_CHECKPOINT_SCHEMA:
+        return None
+    if payload.get("role") != role_name:
+        return None
+    if payload.get("input_sha256") != input_digest:
+        return None
+    result = payload.get("result")
+    return result if isinstance(result, dict) else None
+
+
+def _record_role_checkpoint(
+    paper_id: str,
+    role_name: str,
+    input_digest: str,
+    result: dict,
+    *,
+    operation: str,
+    llm_scope: Mapping[str, Any],
+    tokens: int,
+    route: Mapping[str, Any] | None,
+) -> None:
+    from db import database as db
+
+    db.record_paper_checkpoint(
+        paper_id,
+        _role_checkpoint_stage(role_name),
+        {
+            "schema": _ROLE_CHECKPOINT_SCHEMA,
+            "role": role_name,
+            "input_sha256": input_digest,
+            "operation": operation,
+            "scope": {
+                "agenda_id": int(llm_scope["agenda_id"]),
+                "idea_id": int(llm_scope["idea_id"]),
+                "resource_grant_id": int(llm_scope["resource_grant_id"]),
+                "stage": str(llm_scope["stage"]),
+            },
+            "result": result,
+            "usage": {
+                "tokens": max(0, int(tokens)),
+                "route": dict(route or {}),
+            },
+        },
+    )
 
 
 TAXONOMY_OVERVIEW_SYSTEM = """You are the Taxonomy and Paper-Overview Reader.
@@ -383,6 +461,7 @@ def extract_paper_multi_agent(
     outputs: dict[str, dict] = {}
     total_tokens = 0
     errors: dict[str, str] = {}
+    checkpoint_scope = require_scope(llm_scope) if llm_scope is not None else None
     for role_name, system_prompt, needs_taxonomy in roles:
         user_prompt = _paper_user_prompt(
             paper_id,
@@ -391,15 +470,37 @@ def extract_paper_multi_agent(
             compact_text,
             include_taxonomy=needs_taxonomy,
         )
+        operation = f"paper_extraction:{paper_id}:{role_name}"
+        input_digest = _role_input_digest(operation, system_prompt, user_prompt)
         try:
-            payload, tokens, _route = proposer_json(
+            cached = (
+                _load_role_checkpoint(paper_id, role_name, input_digest)
+                if checkpoint_scope is not None
+                else None
+            )
+            if cached is not None:
+                outputs[role_name] = cached
+                continue
+            payload, tokens, route = proposer_json(
                 system_prompt,
                 user_prompt,
                 llm_scope=llm_scope,
-                operation=f"paper_extraction:{paper_id}:{role_name}",
+                operation=operation,
             )
             total_tokens += tokens
-            outputs[role_name] = payload if isinstance(payload, dict) else {}
+            result = payload if isinstance(payload, dict) else {}
+            if checkpoint_scope is not None:
+                _record_role_checkpoint(
+                    paper_id,
+                    role_name,
+                    input_digest,
+                    result,
+                    operation=operation,
+                    llm_scope=checkpoint_scope,
+                    tokens=tokens,
+                    route=route,
+                )
+            outputs[role_name] = result
         except Exception as exc:
             errors[role_name] = str(exc)
 

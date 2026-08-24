@@ -131,6 +131,23 @@ class RouteObservation:
     reservation_id: int | None
 
 
+@dataclass(frozen=True)
+class RouteDelivery:
+    """A provider result that must be made durable before usage settlement.
+
+    A caller may opt into this hook when replaying the delivered result is
+    safer than issuing another provider request after a process crash.  The
+    aggregate usage includes any metered failed route attempts that preceded
+    the delivered output under the same reservation.
+    """
+
+    request: RouteRequest
+    output: Any
+    route: ProviderRoute
+    usage: RouteUsage
+    reservation_id: int
+
+
 class ReservationLedger(Protocol):
     def reserve(
         self,
@@ -179,6 +196,7 @@ class LLMRouter:
         ledger: ReservationLedger,
         observation_sink: Callable[[RouteObservation], None],
         cooldown_store: CooldownStore | None = None,
+        delivery_sink: Callable[[RouteDelivery], None] | None = None,
     ):
         if set(routes_by_role) - VALID_ROLES:
             raise LLMRouteError("unknown LLM role")
@@ -191,6 +209,7 @@ class LLMRouter:
         self._ledger = ledger
         self._observation_sink = observation_sink
         self._cooldown_store = cooldown_store
+        self._delivery_sink = delivery_sink
         self._cooldown_until: dict[str, datetime] = {}
 
     @staticmethod
@@ -321,29 +340,120 @@ class LLMRouter:
                         if usage.cost_usd is not None:
                             consumed_cost += usage.cost_usd
                             has_cost = True
-                        self._ledger.settle(
-                            reservation.reservation_id,
-                            tokens_used=consumed_input + consumed_output,
-                            cost_usd=consumed_cost if has_cost else None,
+                        aggregate_usage = RouteUsage(
+                            consumed_input,
+                            consumed_output,
+                            consumed_cost if has_cost else None,
                         )
-                        settled = True
-                        self._observation_sink(
-                            RouteObservation(
-                                agenda_id=request.agenda_id,
-                                idea_id=request.idea_id,
-                                role=request.role,
-                                provider=route.provider,
-                                model=route.model,
-                                model_family=route.model_family,
-                                prompt_version=route.prompt_version,
-                                input_tokens=usage.input_tokens,
-                                output_tokens=usage.output_tokens,
-                                cost_usd=usage.cost_usd,
-                                status="succeeded",
-                                failure_reason=None,
-                                reservation_id=reservation.reservation_id,
+                        if self._delivery_sink is not None:
+                            try:
+                                self._delivery_sink(
+                                    RouteDelivery(
+                                        request=request,
+                                        output=output,
+                                        route=route,
+                                        usage=aggregate_usage,
+                                        reservation_id=reservation.reservation_id,
+                                    )
+                                )
+                            except Exception as checkpoint_exc:
+                                # The provider has returned billable output. Do
+                                # not route-fallback or repeat it merely because
+                                # its durable replay checkpoint could not be
+                                # written. Settle what was metered and stop for
+                                # operator review.
+                                try:
+                                    self._ledger.settle(
+                                        reservation.reservation_id,
+                                        tokens_used=aggregate_usage.total_tokens,
+                                        cost_usd=aggregate_usage.cost_usd,
+                                    )
+                                    settled = True
+                                except Exception as settlement_exc:
+                                    # There is now neither a replayable delivery
+                                    # nor a confirmed settlement.  This is an
+                                    # ambiguous billed attempt and must never be
+                                    # presented to the fallback loop as a
+                                    # transient provider failure.
+                                    raise LLMRouteError(
+                                        "delivery_checkpoint_and_settlement_failed;"
+                                        "manual_review_required"
+                                    ) from settlement_exc
+                                try:
+                                    self._observation_sink(
+                                        RouteObservation(
+                                            agenda_id=request.agenda_id,
+                                            idea_id=request.idea_id,
+                                            role=request.role,
+                                            provider=route.provider,
+                                            model=route.model,
+                                            model_family=route.model_family,
+                                            prompt_version=route.prompt_version,
+                                            input_tokens=usage.input_tokens,
+                                            output_tokens=usage.output_tokens,
+                                            cost_usd=usage.cost_usd,
+                                            status="failed",
+                                            failure_reason=(
+                                                "delivery_checkpoint_failed;"
+                                                "manual_review_required"
+                                            ),
+                                            reservation_id=reservation.reservation_id,
+                                        )
+                                    )
+                                except Exception:
+                                    # The accounting state is already durable;
+                                    # observation failure cannot make a second
+                                    # provider request safe.
+                                    pass
+                                raise LLMRouteError(
+                                    "delivery_checkpoint_failed;"
+                                    "manual_review_required"
+                                ) from checkpoint_exc
+                        try:
+                            self._ledger.settle(
+                                reservation.reservation_id,
+                                tokens_used=aggregate_usage.total_tokens,
+                                cost_usd=aggregate_usage.cost_usd,
                             )
-                        )
+                        except Exception as exc:
+                            if self._delivery_sink is None:
+                                raise
+                            # The checkpoint was committed before this settle.
+                            # A replay can settle its exact reservation from the
+                            # recorded usage; never repeat the provider request.
+                            raise LLMRouteError(
+                                "delivery_checkpointed_settlement_pending;"
+                                "replay_required"
+                            ) from exc
+                        settled = True
+                        try:
+                            self._observation_sink(
+                                RouteObservation(
+                                    agenda_id=request.agenda_id,
+                                    idea_id=request.idea_id,
+                                    role=request.role,
+                                    provider=route.provider,
+                                    model=route.model,
+                                    model_family=route.model_family,
+                                    prompt_version=route.prompt_version,
+                                    input_tokens=usage.input_tokens,
+                                    output_tokens=usage.output_tokens,
+                                    cost_usd=usage.cost_usd,
+                                    status="succeeded",
+                                    failure_reason=None,
+                                    reservation_id=reservation.reservation_id,
+                                )
+                            )
+                        except Exception as exc:
+                            if self._delivery_sink is None:
+                                raise
+                            # Delivery and accounting are durable. Retrying a
+                            # provider because auxiliary observation failed
+                            # would double-buy the same proposal output.
+                            raise LLMRouteError(
+                                "delivery_checkpointed_observation_failed;"
+                                "replay_required"
+                            ) from exc
                         return RouteResult(output, route, usage, attempts)
                     except Exception as exc:
                         if isinstance(exc, LLMRouteError) and not isinstance(

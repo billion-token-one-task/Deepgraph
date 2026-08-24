@@ -88,12 +88,23 @@ class GrantUsageLedger:
             raise GrantUsageError("max_attempts must be positive")
         row = db.fetchone(
             """
-            SELECT COUNT(*) AS c FROM resource_grant_usage_reservations
+            SELECT COUNT(*) AS c,
+                   COALESCE(SUM(CASE WHEN status='reserved' THEN 1 ELSE 0 END), 0)
+                       AS open_count
+            FROM resource_grant_usage_reservations
             WHERE resource_grant_id=?
-              AND (idempotency_key=? OR idempotency_key LIKE ?)
+              AND (
+                    idempotency_key=?
+                    OR substr(idempotency_key, 1, length(?)+2)=? || ':t'
+                  )
             """,
-            (self.resource_grant_id, base, f"{base}:t%"),
+            (self.resource_grant_id, base, base, base),
         )
+        if int((row or {}).get("open_count") or 0):
+            raise GrantUsageError(
+                f"operation {base} has an open reservation; exact operator "
+                "usage disposition is required before retry"
+            )
         used = int((row or {}).get("c") or 0)
         if used >= max_attempts:
             raise GrantUsageError(

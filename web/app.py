@@ -9,6 +9,7 @@ import threading
 import time
 import traceback
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from flask import Flask, Response, abort, jsonify, render_template, request, send_file, url_for
@@ -19,6 +20,11 @@ from db import database as db
 from db import evidence_graph as graph
 from db import opportunity_engine as opp
 from db import taxonomy as tax
+from meta_harness.grant_stages import (
+    INGESTION_GRANT_LANE,
+    ResourceGrantStageError,
+    classify_resource_grant_stage,
+)
 from orchestrator.pipeline import get_events, log_event
 
 app = Flask(__name__,
@@ -1040,13 +1046,14 @@ def _legacy_paper_ingestion_snapshot(
     worker_status = str(paper_worker_status.get("status") or "unknown")
     if paper_worker_status.get("running") or recent_processing_count:
         state = "running"
-    elif worker_status in {"failed", "worker_error", "crashed"}:
+    elif worker_status in {"error", "failed", "worker_error", "crashed"}:
         state = "worker_error"
     elif worker_status.startswith("disabled_"):
         state = worker_status
     else:
         state = "idle"
     return {
+        "available": bool(paper_worker_status.get("available", True)),
         "state": state,
         "record_state": "stale_records" if stale_processing_count else "current",
         "processing_count": processing_count,
@@ -1056,11 +1063,33 @@ def _legacy_paper_ingestion_snapshot(
     }
 
 
-def _classify_scoped_ingestion(worker_status: dict, counts: dict) -> str:
+def _classify_scoped_ingestion(
+    worker_status: dict,
+    counts: dict,
+    *,
+    active_grants: int = 0,
+    orphan_active_grants: int = 0,
+    orphan_jobs: int = 0,
+    unresolved_manual_reconciliation_jobs: int = 0,
+    unresolved_open_usage_reservations: int = 0,
+    unclassified_grants: int = 0,
+) -> str:
     queued = int(counts.get("queued", 0) or 0) + int(counts.get("retryable", 0) or 0)
     running_jobs = int(counts.get("running", 0) or 0)
     worker_running = bool(worker_status.get("running"))
     worker_state = str(worker_status.get("status") or "unknown")
+    if int(unclassified_grants or 0) > 0:
+        return "failed"
+    if any(
+        int(value or 0) > 0
+        for value in (
+            orphan_active_grants,
+            orphan_jobs,
+            unresolved_manual_reconciliation_jobs,
+            unresolved_open_usage_reservations,
+        )
+    ):
+        return "halted"
     if worker_state in {"error", "worker_error", "failed", "crashed"}:
         return "worker_error"
     if (queued or running_jobs) and not worker_running:
@@ -1069,7 +1098,370 @@ def _classify_scoped_ingestion(worker_status: dict, counts: dict) -> str:
         return "running"
     if queued:
         return "queued"
+    if int(active_grants or 0) > 0:
+        return "authorized_idle"
     return "idle" if worker_running else "stopped"
+
+
+_HARVEST_LOG_PATH = Path(os.getenv(
+    "DEEPGRAPH_HARVEST_LOG_PATH",
+    "/home/ec2-user/deepgraph-reports/harvest_log.jsonl",
+))
+_BACKFILL_PROGRESS_PATH = Path(os.getenv(
+    "DEEPGRAPH_BACKFILL_PROGRESS_PATH",
+    "/home/ec2-user/ops/deepgraph-paper-backfill/last_progress.txt",
+))
+_BACKFILL_STALE_SECONDS = 3 * 60 * 60
+
+
+def _parse_status_timestamp(value: Any) -> datetime:
+    """Parse one producer timestamp and normalize it to aware UTC."""
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError("timestamp is empty")
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    parsed = datetime.fromisoformat(text)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _status_timestamp(value: Any) -> str:
+    return _parse_status_timestamp(value).isoformat().replace("+00:00", "Z")
+
+
+def _harvest_record(record: Any) -> dict | None:
+    """Validate one append-only harvest record without inventing defaults."""
+    if not isinstance(record, dict) or record.get("step") != "harvest":
+        return None
+    try:
+        finished_at = _status_timestamp(record.get("finished_at"))
+        new_count = record.get("new")
+        if isinstance(new_count, bool):
+            return None
+        new_count = int(new_count)
+        if new_count < 0:
+            return None
+    except (TypeError, ValueError):
+        return None
+    categories = record.get("by_category")
+    if not isinstance(categories, dict) or not categories:
+        return None
+    failed_categories: list[str] = []
+    for category, value in categories.items():
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, int) and value >= 0:
+            continue
+        if isinstance(value, str) and value.lower().startswith("error:"):
+            failed_categories.append(str(category))
+            continue
+        return None
+    if len(failed_categories) == len(categories):
+        state = "failed"
+    elif failed_categories:
+        state = "degraded"
+    else:
+        state = "idle"
+    return {
+        "state": state,
+        "finished_at": finished_at,
+        "new_count": new_count,
+        "failed_categories": sorted(failed_categories),
+    }
+
+
+def _harvest_snapshot(path: Path | None = None) -> dict:
+    """Return the latest valid producer truth, retaining the last full success."""
+    source = path or _HARVEST_LOG_PATH
+    base = {
+        "available": False,
+        "state": "unknown",
+        "last_success_at": None,
+        "last_new_count": None,
+        "last_attempt_at": None,
+        "failed_categories": [],
+        "diagnostic": None,
+    }
+    try:
+        lines = source.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return {**base, "diagnostic": "source_missing"}
+    except OSError:
+        return {**base, "state": "failed", "diagnostic": "source_unreadable"}
+
+    valid_records: list[tuple[int, dict]] = []
+    nonempty_indexes: list[int] = []
+    for index, line in enumerate(lines):
+        if not line.strip():
+            continue
+        nonempty_indexes.append(index)
+        try:
+            candidate = _harvest_record(json.loads(line))
+        except (TypeError, json.JSONDecodeError):
+            candidate = None
+        if candidate is not None:
+            valid_records.append((index, candidate))
+    if not valid_records:
+        return {**base, "diagnostic": "no_valid_record"}
+
+    latest_index, latest = valid_records[-1]
+    last_success = next(
+        (record for _, record in reversed(valid_records) if record["state"] == "idle"),
+        None,
+    )
+    malformed_tail = bool(nonempty_indexes and nonempty_indexes[-1] > latest_index)
+    state = "degraded" if malformed_tail and latest["state"] == "idle" else latest["state"]
+    if malformed_tail:
+        diagnostic = "malformed_tail"
+    elif latest["state"] in {"degraded", "failed"}:
+        diagnostic = "category_errors"
+    else:
+        diagnostic = None
+    return {
+        "available": True,
+        "state": state,
+        "last_success_at": last_success["finished_at"] if last_success else None,
+        "last_new_count": last_success["new_count"] if last_success else None,
+        "last_attempt_at": latest["finished_at"],
+        "failed_categories": latest["failed_categories"],
+        "diagnostic": diagnostic,
+    }
+
+
+def _backfill_snapshot(
+    path: Path | None = None,
+    *,
+    now: datetime | None = None,
+) -> dict:
+    """Apply the same three-hour fail-closed guard as the backfill tick."""
+    source = path or _BACKFILL_PROGRESS_PATH
+    base = {
+        "available": False,
+        "state": "unknown",
+        "last_progress_at": None,
+        "halt_reason": None,
+        "stale_after_seconds": _BACKFILL_STALE_SECONDS,
+        "age_seconds": None,
+    }
+    try:
+        value = source.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return {**base, "halt_reason": "progress_marker_missing"}
+    except OSError:
+        return {**base, "state": "failed", "halt_reason": "progress_marker_unreadable"}
+    try:
+        progress_at = _parse_status_timestamp(value)
+    except (TypeError, ValueError):
+        return {**base, "state": "failed", "halt_reason": "progress_marker_invalid"}
+    observed_at = now or datetime.now(timezone.utc)
+    if observed_at.tzinfo is None:
+        observed_at = observed_at.replace(tzinfo=timezone.utc)
+    age_seconds = int((observed_at.astimezone(timezone.utc) - progress_at).total_seconds())
+    if age_seconds < 0:
+        return {
+            **base,
+            "available": True,
+            "state": "failed",
+            "last_progress_at": _status_timestamp(progress_at),
+            "halt_reason": "progress_marker_in_future",
+            "age_seconds": age_seconds,
+        }
+    halted = age_seconds > _BACKFILL_STALE_SECONDS
+    return {
+        **base,
+        "available": True,
+        "state": "halted" if halted else "idle",
+        "last_progress_at": _status_timestamp(progress_at),
+        "halt_reason": "no_progress_over_3h" if halted else None,
+        "age_seconds": age_seconds,
+    }
+
+
+def _corpus_snapshot() -> dict:
+    row = db.fetchone(
+        """
+        SELECT COUNT(*) AS total,
+               SUM(CASE WHEN status='ingested' THEN 1 ELSE 0 END) AS pending,
+               SUM(CASE WHEN status IN ('extracted','abstracted','reasoned') THEN 1 ELSE 0 END) AS processed,
+               SUM(CASE WHEN status='error' THEN 1 ELSE 0 END) AS error
+        FROM papers
+        """
+    )
+    if row is None:
+        raise RuntimeError("corpus status query returned no aggregate row")
+    required = {"total", "pending", "processed", "error"}
+    missing = required.difference(row)
+    if missing:
+        raise RuntimeError(f"corpus status query omitted columns: {sorted(missing)}")
+
+    def _count(name: str, *, nullable_sum: bool = False) -> int:
+        value = row.get(name)
+        if value is None and nullable_sum:
+            return 0
+        if isinstance(value, bool):
+            raise RuntimeError(f"corpus status {name} is not an integer count")
+        count = int(value)
+        if count < 0:
+            raise RuntimeError(f"corpus status {name} is negative")
+        return count
+
+    return {
+        "available": True,
+        "total": _count("total"),
+        "pending": _count("pending", nullable_sum=True),
+        "processed": _count("processed", nullable_sum=True),
+        "error": _count("error", nullable_sum=True),
+    }
+
+
+def _scoped_ingestion_authority_counts(rows: list[dict]) -> dict[str, int]:
+    """Classify durable ingestion authority separately from queue history.
+
+    A manual-reconciliation row is unresolved until its source row contains the
+    exact repository reconciliation audit.  An open child usage reservation is
+    unresolved unless the one bound job is currently running: while a provider
+    call is in flight that reservation is expected, but outside a running lease
+    it is ambiguous spend and must halt recovery.
+    """
+
+    grants: dict[int, dict[str, Any]] = {}
+    unclassified: set[int] = set()
+    for row in rows:
+        grant_id = int(row.get("grant_id") or 0)
+        if grant_id <= 0:
+            continue
+        try:
+            lane = classify_resource_grant_stage(
+                str(row.get("grant_stage") or "")
+            )
+        except ResourceGrantStageError:
+            # An unknown unbound grant has no evidence that it belongs to the
+            # ingestion lane; research_runtime reports that global integrity
+            # error.  Once it is bound to a scoped-ingestion row it is a scoped
+            # contract violation too and must fail this domain closed.
+            if int(row.get("job_id") or 0) > 0:
+                unclassified.add(grant_id)
+            continue
+        if lane != INGESTION_GRANT_LANE:
+            # A research grant is legitimately outside this domain only while
+            # it is unbound.  Binding it to a scoped-ingestion row is a lane
+            # violation and must not disappear from the scoped status truth.
+            if int(row.get("job_id") or 0) > 0:
+                unclassified.add(grant_id)
+            continue
+        entry = grants.setdefault(
+            grant_id,
+            {
+                "active": False,
+                "jobs": {},
+                "open_usage": 0,
+            },
+        )
+        entry["active"] = bool(
+            entry["active"]
+            or (
+                str(row.get("grant_status") or "") == "active"
+                and bool(row.get("grant_live"))
+            )
+        )
+        entry["open_usage"] = max(
+            int(entry["open_usage"]),
+            max(0, int(row.get("open_usage_count") or 0)),
+        )
+        job_id = int(row.get("job_id") or 0)
+        if job_id > 0:
+            job_result = _json_load(row.get("job_result_json"), {})
+            scope_match = True
+            for grant_key, job_key in (
+                ("grant_agenda_id", "job_agenda_id"),
+                ("grant_idea_id", "job_idea_id"),
+            ):
+                if row.get(grant_key) is not None and row.get(job_key) is not None:
+                    scope_match = scope_match and int(row[grant_key]) == int(
+                        row[job_key]
+                    )
+            if row.get("job_stage") is not None:
+                scope_match = scope_match and str(row.get("job_stage") or "") == str(
+                    row.get("grant_stage") or ""
+                )
+            entry["jobs"][job_id] = {
+                "status": str(row.get("job_status") or ""),
+                "result": job_result if isinstance(job_result, dict) else {},
+                "scope_match": scope_match,
+            }
+
+    active_grants = bound_active_grants = unbound_active_grants = 0
+    orphan_active_grants = unresolved_open_usage = 0
+    orphan_jobs: set[int] = set()
+    unresolved_manual_jobs: set[int] = set()
+    active_job_states = {"queued", "retryable", "running"}
+    for entry in grants.values():
+        jobs = entry["jobs"]
+        exact_running_authority = (
+            entry["active"]
+            and len(jobs) == 1
+            and next(iter(jobs.values()))["status"] == "running"
+            and next(iter(jobs.values()))["scope_match"]
+        )
+        if entry["active"]:
+            active_grants += 1
+            if len(jobs) == 1:
+                bound_active_grants += 1
+            else:
+                unbound_active_grants += int(not jobs)
+            if (
+                len(jobs) != 1
+                or next(iter(jobs.values()))["status"] not in active_job_states
+                or not next(iter(jobs.values()))["scope_match"]
+            ):
+                orphan_active_grants += 1
+        for job_id, job in jobs.items():
+            if (
+                job["status"] in active_job_states
+                and (
+                    not entry["active"]
+                    or len(jobs) != 1
+                    or not job["scope_match"]
+                )
+            ):
+                # This queue/running claim cannot pass claim_next's durable
+                # authority checks.  Reporting it as queued/running would
+                # invent executable work from an expired, revoked, shared or
+                # scope-mismatched grant.
+                orphan_jobs.add(job_id)
+            reconciliation = job["result"].get("reconciliation")
+            try:
+                replacement_job_id = int(
+                    (reconciliation or {}).get("replacement_job_id") or 0
+                )
+            except (AttributeError, TypeError, ValueError):
+                replacement_job_id = 0
+            reconciliation_complete = (
+                isinstance(reconciliation, dict)
+                and reconciliation.get("version")
+                == "scoped-ingestion-reconciliation-v1"
+                and replacement_job_id > 0
+            )
+            if (
+                job["status"] == "manual_reconciliation"
+                and not reconciliation_complete
+            ):
+                unresolved_manual_jobs.add(job_id)
+        if int(entry["open_usage"] or 0) > 0 and not exact_running_authority:
+            unresolved_open_usage += int(entry["open_usage"])
+
+    return {
+        "active_grants": active_grants,
+        "bound_active_grants": bound_active_grants,
+        "unbound_active_grants": unbound_active_grants,
+        "orphan_active_grants": orphan_active_grants,
+        "orphan_jobs": len(orphan_jobs),
+        "unresolved_manual_reconciliation_jobs": len(unresolved_manual_jobs),
+        "unresolved_open_usage_reservations": unresolved_open_usage,
+        "unclassified_grants": len(unclassified),
+    }
 
 
 def _scoped_ingestion_snapshot() -> dict:
@@ -1082,23 +1474,78 @@ def _scoped_ingestion_snapshot() -> dict:
             "SELECT status, COUNT(*) AS c FROM scoped_ingestion_jobs_v1 GROUP BY status"
         )
     }
+    authority = _scoped_ingestion_authority_counts(
+        db.fetchall(
+            """
+            SELECT rg.id AS grant_id, rg.agenda_id AS grant_agenda_id,
+                   rg.idea_id AS grant_idea_id, rg.stage AS grant_stage,
+                   rg.status AS grant_status,
+                   CASE WHEN rg.expires_at > CURRENT_TIMESTAMP THEN 1 ELSE 0 END
+                       AS grant_live,
+                   sij.id AS job_id, sij.agenda_id AS job_agenda_id,
+                   sij.idea_id AS job_idea_id, sij.stage AS job_stage,
+                   sij.status AS job_status,
+                   sij.result_json AS job_result_json,
+                   COALESCE((
+                       SELECT COUNT(*)
+                       FROM resource_grant_usage_reservations AS rgu
+                       WHERE rgu.resource_grant_id=rg.id
+                         AND rgu.agenda_id=rg.agenda_id
+                         AND rgu.status='reserved'
+                   ), 0) AS open_usage_count
+            FROM resource_grants AS rg
+            LEFT JOIN scoped_ingestion_jobs_v1 AS sij
+              ON sij.resource_grant_id=rg.id
+            WHERE (rg.status='active' AND rg.expires_at > CURRENT_TIMESTAMP)
+               OR sij.status IN ('queued', 'retryable', 'running')
+               OR sij.status='manual_reconciliation'
+               OR EXISTS (
+                   SELECT 1
+                   FROM resource_grant_usage_reservations AS open_rgu
+                   WHERE open_rgu.resource_grant_id=rg.id
+                     AND open_rgu.agenda_id=rg.agenda_id
+                     AND open_rgu.status='reserved'
+               )
+            ORDER BY rg.id, sij.id
+            """
+        )
+    )
     status["counts"] = counts
     status["queued_jobs"] = counts.get("queued", 0) + counts.get("retryable", 0)
     status["running_jobs"] = counts.get("running", 0)
+    status.update(authority)
     status["available"] = True
-    status["state"] = _classify_scoped_ingestion(status, counts)
+    status["state"] = _classify_scoped_ingestion(
+        status,
+        counts,
+        active_grants=authority["active_grants"],
+        orphan_active_grants=authority["orphan_active_grants"],
+        orphan_jobs=authority["orphan_jobs"],
+        unresolved_manual_reconciliation_jobs=authority[
+            "unresolved_manual_reconciliation_jobs"
+        ],
+        unresolved_open_usage_reservations=authority[
+            "unresolved_open_usage_reservations"
+        ],
+        unclassified_grants=authority["unclassified_grants"],
+    )
     return status
 
 
-_ACTIVE_RESEARCH_JOB_STATES = (
+_RUNNING_RESEARCH_JOB_STATES = (
     "verifying",
     "researching",
     "running_experiment",
-    "queued_gpu",
     "running_gpu",
     "running_cpu",
-    "review_pending",
 )
+_QUEUED_AUTHORIZED_RESEARCH_JOB_STATES = (
+    "queued",
+    "queued_gpu",
+    "review_pending",
+    "deferred",
+)
+_RESEARCH_WORK_STALE_SECONDS = 30 * 60
 
 
 def _classify_research_runtime(
@@ -1106,51 +1553,208 @@ def _classify_research_runtime(
     *,
     active_grants: int,
     active_work_items: int,
+    running_work_items: int = 0,
+    queued_authorized_work_items: int = 0,
+    stale_work_items: int = 0,
+    unclassified_active_grants: int = 0,
 ) -> str:
     controller_state = str(controller_status.get("status") or "")
-    if controller_state in {"error", "worker_error", "failed", "crashed"}:
+    if int(unclassified_active_grants or 0) > 0:
         return "error"
-    if int(active_work_items or 0) > 0:
-        return "running" if controller_status.get("running") else "stalled"
+    if int(stale_work_items or 0) > 0:
+        return "halted"
+    # Bounded one-shot execution is an operator process, not the global
+    # auto_research controller.  A fresh durable running state is the authority
+    # for display; controller.running must not turn it into a false stall.
+    if int(running_work_items or 0) > 0:
+        return "running"
+    if int(queued_authorized_work_items or 0) > 0:
+        return "queued"
     if int(active_grants or 0) > 0:
         return "authorized_idle"
+    if controller_state in {"error", "worker_error", "failed", "crashed"}:
+        return "error"
     return "idle_no_authorized_work"
 
 
-def _research_runtime_snapshot() -> dict:
+def _research_work_counts(
+    rows: list[dict],
+    *,
+    now: datetime | None = None,
+) -> dict[str, int]:
+    """Separate fresh execution from authorized queues and stale claims."""
+
+    observed_at = now or datetime.now(timezone.utc)
+    if observed_at.tzinfo is None:
+        observed_at = observed_at.replace(tzinfo=timezone.utc)
+    observed_at = observed_at.astimezone(timezone.utc)
+    running = queued = stale = unclassified = 0
+    for row in rows:
+        count = int(row.get("c") or 0) if "c" in row else 1
+        if count <= 0:
+            raise RuntimeError("research work query returned a non-positive count")
+        try:
+            lane = classify_resource_grant_stage(
+                str(row.get("grant_stage") or row.get("stage") or "")
+            )
+        except ResourceGrantStageError:
+            unclassified += count
+            continue
+        if lane == INGESTION_GRANT_LANE:
+            continue
+        status = str(row.get("job_status") or row.get("status") or "")
+        if status in _RUNNING_RESEARCH_JOB_STATES:
+            try:
+                updated_at = _parse_status_timestamp(row.get("updated_at"))
+                age_seconds = (observed_at - updated_at).total_seconds()
+            except (TypeError, ValueError):
+                age_seconds = _RESEARCH_WORK_STALE_SECONDS + 1
+            if age_seconds < 0 or age_seconds > _RESEARCH_WORK_STALE_SECONDS:
+                stale += count
+            else:
+                running += count
+        elif status in _QUEUED_AUTHORIZED_RESEARCH_JOB_STATES:
+            queued += count
+    return {
+        "active_work_items": running + queued + stale,
+        "running_work_items": running,
+        "queued_authorized_work_items": queued,
+        "stale_work_items": stale,
+        "unclassified_active_work_items": unclassified,
+    }
+
+
+def _research_runtime_snapshot(*, now: datetime | None = None) -> dict:
     from orchestrator import auto_research
 
     controller = dict(auto_research.get_status())
-    grant_row = db.fetchone(
+    grant_rows = db.fetchall(
         """
-        SELECT COUNT(*) AS c
-        FROM resource_grants
-        WHERE status='active' AND expires_at > CURRENT_TIMESTAMP
+        SELECT rg.stage, COUNT(*) AS c
+        FROM resource_grants AS rg
+        WHERE rg.status='active' AND rg.expires_at > CURRENT_TIMESTAMP
+        GROUP BY rg.stage
         """
-    ) or {}
-    placeholders = ",".join("?" for _ in _ACTIVE_RESEARCH_JOB_STATES)
-    work_row = db.fetchone(
+    )
+    work_states = (
+        *_RUNNING_RESEARCH_JOB_STATES,
+        *_QUEUED_AUTHORIZED_RESEARCH_JOB_STATES,
+    )
+    placeholders = ",".join("?" for _ in work_states)
+    work_rows = db.fetchall(
         f"""
-        SELECT COUNT(*) AS c
+        SELECT arj.id, arj.status AS job_status, arj.stage AS job_stage,
+               arj.updated_at, rg.stage AS grant_stage
         FROM auto_research_jobs AS arj
-        JOIN resource_grants AS rg ON rg.id=arj.resource_grant_id
+        JOIN resource_grants AS rg
+          ON rg.id=arj.resource_grant_id
+         AND rg.agenda_id=arj.agenda_id
+         AND rg.idea_id=arj.deep_insight_id
         WHERE arj.status IN ({placeholders})
           AND rg.status='active' AND rg.expires_at > CURRENT_TIMESTAMP
+        ORDER BY arj.id
         """,
-        _ACTIVE_RESEARCH_JOB_STATES,
+        work_states,
+    )
+    queued_row = db.fetchone(
+        """
+        SELECT
+          COALESCE(SUM(CASE
+            WHEN ra.is_active=1 AND ra.status='active' THEN 1 ELSE 0 END), 0)
+            AS queued_active,
+          COALESCE(SUM(CASE
+            WHEN ra.is_active=0 OR ra.status='closed' THEN 1 ELSE 0 END), 0)
+            AS queued_closed,
+          COALESCE(SUM(CASE
+            WHEN ra.id IS NULL OR NOT (
+              (ra.is_active=1 AND ra.status='active')
+              OR ra.is_active=0 OR ra.status='closed'
+            ) THEN 1 ELSE 0 END), 0)
+            AS queued_unclassified
+        FROM auto_research_jobs AS arj
+        LEFT JOIN research_agendas AS ra ON ra.id=arj.agenda_id
+        LEFT JOIN resource_grants AS active_rg
+          ON active_rg.id=arj.resource_grant_id
+         AND active_rg.agenda_id=arj.agenda_id
+         AND active_rg.idea_id=arj.deep_insight_id
+         AND active_rg.status='active'
+         AND active_rg.expires_at > CURRENT_TIMESTAMP
+        WHERE arj.status='queued' AND active_rg.id IS NULL
+        """
     ) or {}
-    active_grants = int(grant_row.get("c") or 0)
-    active_work_items = int(work_row.get("c") or 0)
+    def _research_counts(rows: list[dict]) -> tuple[int, int]:
+        research_count = 0
+        unclassified_count = 0
+        for row in rows:
+            count = int(row.get("c") or 0)
+            if count < 0:
+                raise RuntimeError("research runtime query returned a negative count")
+            try:
+                lane = classify_resource_grant_stage(str(row.get("stage") or ""))
+            except ResourceGrantStageError:
+                unclassified_count += count
+                continue
+            if lane != INGESTION_GRANT_LANE:
+                research_count += count
+        return research_count, unclassified_count
+
+    active_grants, unclassified_active_grants = _research_counts(grant_rows)
+    work_counts = _research_work_counts(work_rows, now=now)
+    active_work_items = work_counts["active_work_items"]
+    unclassified_active_work_items = work_counts[
+        "unclassified_active_work_items"
+    ]
+    # Every active work item is backed by one of the active grants above, so
+    # an unsupported work-item stage is already represented in the grant
+    # integrity count.  Keep the additional diagnostic explicit without
+    # double-counting it when classifying the domain.
+    if unclassified_active_work_items > unclassified_active_grants:
+        raise RuntimeError(
+            "research work-item stage counts exceed active grant stage counts"
+        )
     return {
         "state": _classify_research_runtime(
             controller,
             active_grants=active_grants,
             active_work_items=active_work_items,
+            running_work_items=work_counts["running_work_items"],
+            queued_authorized_work_items=work_counts[
+                "queued_authorized_work_items"
+            ],
+            stale_work_items=work_counts["stale_work_items"],
+            unclassified_active_grants=unclassified_active_grants,
         ),
         "active_grants": active_grants,
+        "unclassified_active_grants": unclassified_active_grants,
         "active_work_items": active_work_items,
+        "running_work_items": work_counts["running_work_items"],
+        "queued_authorized_work_items": work_counts[
+            "queued_authorized_work_items"
+        ],
+        "stale_work_items": work_counts["stale_work_items"],
+        "unclassified_active_work_items": unclassified_active_work_items,
+        # These are queued job counts partitioned by agenda lifecycle.  They
+        # are demand, not authorization, and deliberately do not affect state.
+        "queued_active_agendas": int(queued_row.get("queued_active") or 0),
+        "queued_closed_agendas": int(queued_row.get("queued_closed") or 0),
+        "queued_unclassified_agendas": int(queued_row.get("queued_unclassified") or 0),
         "controller": controller,
     }
+
+
+def _processing_domain_snapshot(name: str, fn, unavailable: dict) -> dict:
+    """Keep one failed status source from fabricating healthy zeroes."""
+    try:
+        snapshot = dict(fn())
+        snapshot.setdefault("available", True)
+        return snapshot
+    except Exception as exc:
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        log_event("error", {"step": f"{name}_status", "error": str(exc)})
+        return {**unavailable, "state": "failed", "available": False}
 
 
 def _automation_snapshot() -> dict:
@@ -1570,7 +2174,7 @@ def api_agent_office():
 
 @app.route("/api/processing")
 def api_processing():
-    """Return separate legacy-ingestion, scoped-ingestion and research states."""
+    """Return independently sourced lifecycle truth for processing-status-v3."""
     try:
         rows = db.fetchall(
             f"""SELECT id, title, status FROM papers
@@ -1590,23 +2194,93 @@ def api_processing():
             from orchestrator import paper_worker
             paper_worker_status = paper_worker.get_status()
         except Exception as exc:
-            paper_worker_status = {"running": False, "error": str(exc)}
+            paper_worker_status = {
+                "running": False,
+                "status": "error",
+                "error": str(exc),
+                "available": False,
+            }
         legacy_paper_ingestion = _legacy_paper_ingestion_snapshot(
             paper_worker_status,
             processing_count=processing_count,
             recent_processing_count=recent_processing_count,
         )
-        scoped_ingestion = _safe_service_payload(
-            "scoped_ingestion", _scoped_ingestion_snapshot
+        scoped_ingestion = _processing_domain_snapshot(
+            "scoped_ingestion",
+            _scoped_ingestion_snapshot,
+            {
+                "queued_jobs": None,
+                "running_jobs": None,
+                "counts": None,
+                "active_grants": None,
+                "bound_active_grants": None,
+                "unbound_active_grants": None,
+                "orphan_active_grants": None,
+                "orphan_jobs": None,
+                "unresolved_manual_reconciliation_jobs": None,
+                "unresolved_open_usage_reservations": None,
+                "unclassified_grants": None,
+            },
         )
-        research_runtime = _safe_service_payload(
-            "research_runtime", _research_runtime_snapshot
+        research_runtime = _processing_domain_snapshot(
+            "research_runtime",
+            _research_runtime_snapshot,
+            {
+                "active_grants": None,
+                "unclassified_active_grants": None,
+                "active_work_items": None,
+                "running_work_items": None,
+                "queued_authorized_work_items": None,
+                "stale_work_items": None,
+                "unclassified_active_work_items": None,
+                "queued_active_agendas": None,
+                "queued_closed_agendas": None,
+                "queued_unclassified_agendas": None,
+                "controller": None,
+            },
+        )
+        corpus = _processing_domain_snapshot(
+            "corpus",
+            _corpus_snapshot,
+            {"total": None, "pending": None, "processed": None, "error": None},
+        )
+        harvest = _processing_domain_snapshot(
+            "harvest",
+            _harvest_snapshot,
+            {
+                "last_success_at": None,
+                "last_new_count": None,
+                "last_attempt_at": None,
+                "failed_categories": None,
+                "diagnostic": "snapshot_error",
+            },
+        )
+        backfill = _processing_domain_snapshot(
+            "backfill",
+            _backfill_snapshot,
+            {
+                "last_progress_at": None,
+                "halt_reason": "snapshot_error",
+                "stale_after_seconds": _BACKFILL_STALE_SECONDS,
+                "age_seconds": None,
+            },
         )
         pipeline_state = str(research_runtime.get("state") or "error")
         is_running = pipeline_state == "running"
-        stats = _stats_cache.get() or {}
+        degraded_sources = [
+            name
+            for name, snapshot in (
+                ("scoped_ingestion", scoped_ingestion),
+                ("research_runtime", research_runtime),
+                ("corpus", corpus),
+                ("harvest", harvest),
+                ("backfill", backfill),
+            )
+            if not snapshot.get("available", False)
+            or snapshot.get("state") in {"failed", "unknown", "degraded", "error", "worker_error"}
+        ]
         return jsonify({
-            "contract_version": "processing-status-v2",
+            "contract_version": "processing-status-v3",
             "papers": rows,
             "pipeline_running": is_running,
             "pipeline_state": pipeline_state,
@@ -1615,11 +2289,19 @@ def api_processing():
             "legacy_paper_ingestion": legacy_paper_ingestion,
             "scoped_ingestion": scoped_ingestion,
             "research_runtime": research_runtime,
+            "corpus": corpus,
+            "harvest": harvest,
+            "backfill": backfill,
             "data_health": {
-                "status": "ok",
+                # Preserve the v2 meaning of this compatibility field: it is
+                # database/corpus health, not an aggregate lifecycle badge.
+                # Per-domain failures remain explicit in each ``state`` /
+                # ``available`` pair and in ``degraded_sources``.
+                "status": "degraded" if not corpus.get("available", False) else "ok",
                 "database_round_trip": True,
                 "source_rows": len(rows),
-                "papers_total": int(stats.get("papers_total", 0) or 0),
+                "papers_total": corpus.get("total"),
+                "degraded_sources": degraded_sources,
             },
         })
     except Exception as exc:

@@ -77,7 +77,7 @@ def run_one() -> dict:
                     f"{persisted.get('status') or 'missing'}:"
                     f"{persisted.get('processing_stage') or 'missing'}"
                 )
-        repository.complete(
+        settlement = repository.complete(
             int(row["id"]),
             agenda_id=int(row["agenda_id"]),
             worker_id=worker_id,
@@ -87,6 +87,8 @@ def run_one() -> dict:
             "status": "succeeded",
             "ingestion_job_id": int(row["id"]),
             "paper_count": len(results),
+            "resource_grant_id": int(row["resource_grant_id"]),
+            "settled_tokens": int(settlement.get("tokens_used") or 0),
         }
     except Exception as exc:
         try:

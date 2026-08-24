@@ -1121,6 +1121,435 @@ class ProposalProblemUnavailable(Exception):
     """
 
 
+def _load_json_value(value, default):
+    if isinstance(value, type(default)):
+        return value
+    if isinstance(value, (dict, list)):
+        return default
+    try:
+        parsed = json.loads(value or "")
+    except (TypeError, ValueError):
+        return default
+    return parsed if isinstance(parsed, type(default)) else default
+
+
+def _load_exact_proposal_problem(
+    *,
+    job_id: int,
+    agenda_id: int,
+    idea_id: int,
+    resource_grant_id: int,
+) -> tuple[dict, dict]:
+    """Load only the records named by a controlled proposal request.
+
+    This deliberately does not hydrate from signal tables, refresh the problem
+    pool, inspect recent ideas, or touch scheduler/EvoScientist state.  The
+    persisted research problem and proposal shell are the complete authority
+    for this one-shot recovery path.
+    """
+
+    row = db.fetchone(
+        """
+        SELECT arj.id AS job_id, arj.status AS job_status,
+               arj.stage AS job_stage, arj.resource_grant_id,
+               di.id AS idea_id, di.status AS insight_status,
+               di.title AS insight_title,
+               di.problem_statement AS insight_problem_statement,
+               di.source_node_ids AS insight_node_ids,
+               di.source_paper_ids AS insight_paper_ids,
+               di.source_signal_refs AS insight_signal_refs,
+               di.research_problem_id,
+               rp.problem_statement, rp.source_signal_ref,
+               rp.node_ids, rp.paper_ids, rp.ruled_out_approaches,
+               rp.problem_quality_score, rp.status AS problem_status,
+               rp.attempts_count,
+               rg.id AS grant_id, rg.stage AS grant_stage,
+               rg.status AS grant_status, rg.token_cap, rg.max_gpu_hours,
+               rg.backend_allowlist_json,
+               CASE WHEN rg.expires_at > CURRENT_TIMESTAMP THEN 1 ELSE 0 END
+                   AS grant_live
+        FROM auto_research_jobs arj
+        JOIN deep_insights di
+          ON di.id=arj.deep_insight_id AND di.agenda_id=arj.agenda_id
+        JOIN research_problems rp
+          ON rp.id=di.research_problem_id AND rp.agenda_id=arj.agenda_id
+        JOIN resource_grants rg
+          ON rg.id=arj.resource_grant_id AND rg.agenda_id=arj.agenda_id
+         AND rg.idea_id=arj.deep_insight_id
+        WHERE arj.id=? AND arj.agenda_id=? AND arj.deep_insight_id=?
+          AND arj.resource_grant_id=?
+        """,
+        (job_id, agenda_id, idea_id, resource_grant_id),
+    )
+    if not row:
+        raise ValueError("exact proposal job/problem/grant scope was not found")
+    scope = dict(row)
+    backends = {
+        str(item).strip().lower()
+        for item in _load_json_value(scope.get("backend_allowlist_json"), [])
+    }
+    if (
+        str(scope.get("job_status") or "") != "deferred"
+        or str(scope.get("job_stage") or "") != "proposal_generation_granted"
+        or str(scope.get("insight_status") or "") != "proposal_pending"
+        or str(scope.get("problem_status") or "") not in {"open", "exploring"}
+        or int(scope.get("attempts_count") or 0) >= 3
+        or str(scope.get("grant_stage") or "") != "proposal"
+        or str(scope.get("grant_status") or "") != "active"
+        or int(scope.get("grant_live") or 0) != 1
+        or int(scope.get("token_cap") or 0) <= 0
+        or float(scope.get("max_gpu_hours") or 0.0) != 0.0
+        or backends != {"llm"}
+    ):
+        raise ValueError("exact proposal scope is not executable and llm-only")
+
+    statement = str(
+        scope.get("problem_statement")
+        or scope.get("insight_problem_statement")
+        or ""
+    ).strip()
+    if not statement:
+        raise ValueError("exact proposal research problem has no statement")
+    node_ids = _load_json_value(scope.get("node_ids"), []) or _load_json_value(
+        scope.get("insight_node_ids"), []
+    )
+    paper_ids = _load_json_value(scope.get("paper_ids"), []) or _load_json_value(
+        scope.get("insight_paper_ids"), []
+    )
+    source_ref = _load_json_value(scope.get("source_signal_ref"), {})
+    source_refs = _load_json_value(scope.get("insight_signal_refs"), {})
+    if not source_refs:
+        source_refs = {
+            "signals": [source_ref] if source_ref else [],
+            "node_ids": node_ids,
+            "paper_ids": paper_ids,
+        }
+    source_table = str(source_ref.get("table") or "persisted_problem")
+    mechanism = {
+        "contradiction_clusters": "mechanism_mismatch",
+        "performance_plateaus": "plateau",
+        "protocol_artifacts": "protocol_artifact",
+        "negative_space_gaps": "negative_space_gap",
+        "claim_method_gaps": "claim_method_gap",
+        "mechanism_mismatches": "mechanism_mismatch",
+    }.get(source_table, "claim_method_gap")
+    title = str(scope.get("insight_title") or statement).strip()
+    problem = {
+        "id": int(scope["research_problem_id"]),
+        "research_problem_id": int(scope["research_problem_id"]),
+        "title": title,
+        "source_type": source_table,
+        "source_evidence": (
+            f"Persisted research problem {int(scope['research_problem_id'])}; "
+            f"supporting_papers={len(paper_ids)}"
+        ),
+        "formal_statement": statement,
+        "problem_statement": statement,
+        "current_failure_mode": statement,
+        "desideratum": (
+            "Produce a falsifiable, bounded method and an executable "
+            "CPU-first validation plan for this persisted problem."
+        ),
+        "impact_scope": (
+            f"{len(paper_ids)} persisted supporting papers across "
+            f"{len(node_ids)} persisted taxonomy nodes"
+        ),
+        "related_node_ids": [str(item) for item in node_ids],
+        "source_paper_ids": [str(item) for item in paper_ids],
+        "source_signal_refs": source_refs,
+        "source_evidence_ref": source_ref,
+        "ruled_out_approaches": _load_json_value(
+            scope.get("ruled_out_approaches"), []
+        ),
+        "mechanism_type": mechanism,
+        "central_question": statement,
+        "motivation": statement,
+        "result_that_would_change_belief": (
+            "A preregistered bounded experiment that rejects the named failure "
+            "mode against explicit baselines."
+        ),
+        "non_numeric_evidence": [statement],
+        "problem_quality_score": float(
+            scope.get("problem_quality_score") or 0.0
+        ),
+    }
+    return problem, {"id": int(scope["grant_id"]), "token_cap": int(scope["token_cap"])}
+
+
+def _build_exact_method_prompt(problem: dict) -> str:
+    """Pure prompt builder for an exact, CPU-first recovery proposal."""
+
+    ruled_out = _problem_ruled_out(problem)
+    ruled_out_text = json.dumps(ruled_out[:6], ensure_ascii=False, sort_keys=True)
+    return f"""# EXACT PERSISTED RESEARCH PROBLEM
+
+Title: {problem['title']}
+Formal statement: {problem['formal_statement']}
+Failure mode: {problem['current_failure_mode']}
+Desideratum: {problem['desideratum']}
+Persisted taxonomy nodes: {json.dumps(problem.get('related_node_ids') or [])}
+Persisted ruled-out approaches: {ruled_out_text}
+
+Invent one technically novel method for this exact problem. The first
+validation must be CPU-only and bounded; do not require GPU training or a
+global discovery refresh."""
+
+
+def _build_exact_experiment_prompt(problem: dict, method: dict) -> str:
+    """Pure experiment prompt; unlike the periodic path it queries no state."""
+
+    return f"""# EXACT BOUNDED PROPOSAL
+
+Problem: {problem['formal_statement']}
+Failure mode: {problem['current_failure_mode']}
+Method: {method.get('name', 'Unnamed')}
+Method summary: {method.get('one_line', '')}
+Method definition: {str(method.get('definition') or '')[:800]}
+Persisted taxonomy nodes: {json.dumps(problem.get('related_node_ids') or [])}
+
+Design one complete, falsifiable CPU-only pilot. Specify concrete data or
+materialized artifacts, baselines, metrics, ablations, rejection thresholds,
+expected outcomes, and bounded execution requirements. Do not require GPU
+training, an agenda-wide scan, or a new global benchmark service."""
+
+
+def _call_exact_proposal_llm(
+    *,
+    job_id: int,
+    agenda_id: int,
+    idea_id: int,
+    grant_id: int,
+    operation: str,
+    system_prompt: str,
+    user_prompt: str,
+    prompt_version: str,
+    token_cap: int,
+) -> tuple[str, int, dict]:
+    """Replay one delivered output or buy it once behind a durable checkpoint."""
+
+    from meta_harness.grant_usage import GrantUsageLedger
+    from meta_harness.proposal_checkpoint import (
+        ProposalCheckpointError,
+        ProposalCheckpointRepository,
+        ProposalCheckpointScope,
+        proposal_input_digest,
+    )
+
+    digest = proposal_input_digest(
+        job_id=job_id,
+        agenda_id=agenda_id,
+        idea_id=idea_id,
+        resource_grant_id=grant_id,
+        operation=operation,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        prompt_version=prompt_version,
+        token_cap=token_cap,
+    )
+    checkpoint_scope = ProposalCheckpointScope(
+        job_id=job_id,
+        agenda_id=agenda_id,
+        idea_id=idea_id,
+        resource_grant_id=grant_id,
+        operation=operation,
+        input_digest=digest,
+    )
+    checkpoints = ProposalCheckpointRepository()
+    delivered = checkpoints.recover_or_refuse(checkpoint_scope)
+    if delivered is None:
+        base_key = checkpoints.idempotency_base(checkpoint_scope)
+        attempt_key = GrantUsageLedger(grant_id).next_attempt_key(base_key)
+        call_llm_for_role(
+            system_prompt,
+            user_prompt,
+            agenda_id=agenda_id,
+            idea_id=idea_id,
+            role="proposer",
+            stage="proposal",
+            resource_grant_id=grant_id,
+            operation=operation,
+            idempotency_key=attempt_key,
+            prompt_version=prompt_version,
+            max_tokens=token_cap,
+            total_token_cap=token_cap,
+            delivery_sink=lambda payload: checkpoints.save_delivery(
+                checkpoint_scope, payload
+            ),
+        )
+        delivered = checkpoints.recover_or_refuse(checkpoint_scope)
+        if delivered is None:
+            raise ProposalCheckpointError(
+                "proposal provider returned without a durable delivery checkpoint"
+            )
+    return (
+        str(delivered["output"]),
+        int(delivered.get("tokens_used") or 0),
+        dict(delivered.get("route") or {}),
+    )
+
+
+def _discover_exact_bounded_proposal(
+    *,
+    job_id: int,
+    agenda_id: int,
+    idea_id: int,
+    resource_grant_id: int,
+) -> list[dict]:
+    """Realize one named proposal without any agenda-wide side path."""
+
+    from meta_harness.proposal_checkpoint import ProposalCheckpointError
+
+    def invalid_delivery(reason: str, exc: Exception | None = None) -> None:
+        error = ProposalCheckpointError(
+            f"checkpointed exact proposal {reason}; automatic retry is "
+            "forbidden and operator reconciliation is required"
+        )
+        if exc is None:
+            raise error
+        raise error from exc
+
+    problem, grant = _load_exact_proposal_problem(
+        job_id=job_id,
+        agenda_id=agenda_id,
+        idea_id=idea_id,
+        resource_grant_id=resource_grant_id,
+    )
+    prompt_version = configured_role_prompt_version("proposer")
+    token_cap = max(1, min(16_000, int(grant["token_cap"]) // 2))
+
+    raw_method, method_tokens, method_route = _call_exact_proposal_llm(
+        job_id=job_id,
+        agenda_id=agenda_id,
+        idea_id=idea_id,
+        grant_id=resource_grant_id,
+        operation="proposal_method_invention",
+        system_prompt=METHOD_INVENTION_SYSTEM,
+        user_prompt=_build_exact_method_prompt(problem),
+        prompt_version=prompt_version,
+        token_cap=token_cap,
+    )
+    try:
+        method_payload, _ = parse_llm_json_text(raw_method)
+    except Exception as exc:
+        invalid_delivery("method output is not valid JSON", exc)
+    method = _extract_method_payload(method_payload)
+    if not method.get("name"):
+        invalid_delivery("has no method")
+    why_novel = str(method.get("why_novel") or "").strip()
+    if len(why_novel) < 30:
+        invalid_delivery("has no novelty argument")
+
+    raw_experiment, experiment_tokens, experiment_route = _call_exact_proposal_llm(
+        job_id=job_id,
+        agenda_id=agenda_id,
+        idea_id=idea_id,
+        grant_id=resource_grant_id,
+        operation="proposal_experiment_design",
+        system_prompt=EXPERIMENT_DESIGN_SYSTEM,
+        user_prompt=_build_exact_experiment_prompt(problem, method),
+        prompt_version=prompt_version,
+        token_cap=token_cap,
+    )
+    try:
+        experiment, _ = parse_llm_json_text(raw_experiment)
+    except Exception as exc:
+        invalid_delivery("experiment output is not valid JSON", exc)
+    if not isinstance(experiment, dict) or not experiment:
+        invalid_delivery("has no experiment design")
+
+    generated_awareness = experiment.get("problem_awareness")
+    if not isinstance(generated_awareness, dict):
+        generated_awareness = {}
+    expected_results = experiment.get("expected_results")
+    if not isinstance(expected_results, dict):
+        expected_results = {}
+    awareness = {
+        "central_question": generated_awareness.get("central_question")
+        or problem["central_question"],
+        "motivation": generated_awareness.get("motivation")
+        or problem["motivation"],
+        "method_answer": generated_awareness.get("method_answer")
+        or method.get("mechanism_repair")
+        or method.get("one_line", ""),
+        "result_claim": generated_awareness.get("result_claim")
+        or expected_results.get("solid")
+        or problem["result_that_would_change_belief"],
+        "falsification_result": generated_awareness.get("falsification_result")
+        or method.get("falsification_hook", ""),
+    }
+    raw_title = experiment.get("paper_title") or f"{method['name']}: {problem['title']}"
+    title = normalize_paper_title(
+        raw_title,
+        method_name=method.get("name"),
+        claim=awareness["central_question"],
+        context={"full_benchmark_completed": False},
+    )
+    source_refs = problem.get("source_signal_refs") or {}
+    signal_ids = [
+        str(ref.get("content_hash"))
+        for ref in source_refs.get("signals", [])
+        if isinstance(ref, dict) and ref.get("content_hash")
+    ]
+    plan = {
+        "baselines": experiment.get("baselines", []),
+        "datasets": experiment.get("datasets", []),
+        "metrics": experiment.get("metrics", {}),
+        "ablations": experiment.get("ablations", []),
+        "expected_results": expected_results,
+        "compute_budget": experiment.get("compute_budget", {}),
+        "execution_requirements": experiment.get("execution_requirements", {}),
+        "risks": experiment.get("risks", []),
+        "paper_title": title,
+        "raw_paper_title": raw_title,
+        "title_source": "bounded_proposal_title_policy",
+    }
+    return [
+        {
+            "proposal_candidate_id": idea_id,
+            "resource_grant_id": resource_grant_id,
+            "agenda_id": agenda_id,
+            "tier": 2,
+            "status": "candidate",
+            "title": title,
+            "problem_statement": problem["problem_statement"],
+            "existing_weakness": problem["current_failure_mode"],
+            "proposed_method": json.dumps(method),
+            "experimental_plan": json.dumps(plan),
+            "related_work_positioning": json.dumps(
+                experiment.get("paper_outline", {})
+            ),
+            "supporting_papers": json.dumps(problem["source_paper_ids"]),
+            "source_node_ids": json.dumps(problem["related_node_ids"]),
+            "source_paper_ids": json.dumps(problem["source_paper_ids"]),
+            "source_signal_ids": json.dumps(signal_ids),
+            "source_signal_refs": json.dumps(source_refs),
+            "evidence_summary": problem["source_evidence"],
+            "mechanism_type": problem["mechanism_type"],
+            "problem_awareness": json.dumps(awareness),
+            "research_problem_id": problem["research_problem_id"],
+            "signal_mix": json.dumps(
+                sorted({problem["source_type"], problem["mechanism_type"]})
+            ),
+            "evidence_packet": build_evidence_packet(
+                signal_mix=[problem["source_type"], problem["mechanism_type"]],
+                evidence_summary=problem["source_evidence"],
+                falsification=method.get("falsification_hook")
+                or {"summary": "See the bounded experimental plan."},
+                structural_evidence=[problem["formal_statement"]],
+                non_numeric_evidence=problem["non_numeric_evidence"],
+            ),
+            "novelty_status": "unchecked",
+            "generation_tokens": method_tokens + experiment_tokens,
+            "llm_calls": 2,
+            "prompt_version": prompt_version,
+            "model_version": str(
+                experiment_route.get("model") or method_route.get("model") or ""
+            ),
+            "proposer_route": experiment_route or method_route,
+        }
+    ]
+
+
 def _proposal_problem_is_over_budget(agenda_id: int, problem_id: int) -> bool:
     """Thin wrapper so the grant-time ceiling stays the single definition."""
 
@@ -1284,6 +1713,9 @@ def discover_paper_ideas(
     agenda_id: int,
     tier2_plateau_limit: int = 20,
     tier2_limitation_nodes: int = 15,
+    proposal_job_id: int | None = None,
+    proposal_candidate_id: int | None = None,
+    proposal_grant_id: int | None = None,
 ) -> list[dict]:
     """Run the 3-stage paper idea discovery pipeline.
 
@@ -1292,6 +1724,18 @@ def discover_paper_ideas(
     """
     if max_papers is None:
         max_papers = max_problems
+    exact_values = (proposal_job_id, proposal_candidate_id, proposal_grant_id)
+    if any(value is not None for value in exact_values):
+        if any(value is None for value in exact_values):
+            raise ValueError(
+                "exact proposal requires job, candidate, and grant identities"
+            )
+        return _discover_exact_bounded_proposal(
+            job_id=int(proposal_job_id),
+            agenda_id=int(agenda_id),
+            idea_id=int(proposal_candidate_id),
+            resource_grant_id=int(proposal_grant_id),
+        )
 
     print(f"[PAPER_IDEA] Starting Tier 2 discovery...", flush=True)
     total_tokens = 0

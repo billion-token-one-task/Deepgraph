@@ -1,0 +1,95 @@
+{
+  "contract_version": "processing-status-v3",
+  "papers": [],
+  "pipeline_running": false,
+  "pipeline_state": "idle_no_authorized_work",
+  "stale_processing_count": 10,
+  "paper_worker": {
+    "running": false,
+    "status": "disabled_resource_grant_required",
+    "reason": "agenda_scoped_ingestion_job_required"
+  },
+  "legacy_paper_ingestion": {
+    "available": true,
+    "state": "disabled_resource_grant_required",
+    "record_state": "stale_records",
+    "processing_count": 10,
+    "recent_processing_count": 0,
+    "stale_processing_count": 10,
+    "worker": {
+      "running": false,
+      "status": "disabled_resource_grant_required",
+      "reason": "agenda_scoped_ingestion_job_required"
+    }
+  },
+  "scoped_ingestion": {
+    "state": "halted",
+    "available": true,
+    "running": true,
+    "status": "idle",
+    "queued_jobs": 0,
+    "running_jobs": 0,
+    "active_grants": 0,
+    "bound_active_grants": 0,
+    "unbound_active_grants": 0,
+    "orphan_active_grants": 0,
+    "orphan_jobs": 0,
+    "unresolved_manual_reconciliation_jobs": 9,
+    "unresolved_open_usage_reservations": 0,
+    "unclassified_grants": 0,
+    "counts": {
+      "succeeded": 8,
+      "failed": 8,
+      "manual_reconciliation": 9
+    }
+  },
+  "research_runtime": {
+    "state": "idle_no_authorized_work",
+    "available": true,
+    "active_grants": 0,
+    "unclassified_active_grants": 0,
+    "active_work_items": 0,
+    "running_work_items": 0,
+    "queued_authorized_work_items": 0,
+    "stale_work_items": 0,
+    "unclassified_active_work_items": 0,
+    "queued_active_agendas": 11,
+    "queued_closed_agendas": 33,
+    "queued_unclassified_agendas": 0,
+    "controller": {
+      "running": true,
+      "status": "idle"
+    }
+  },
+  "corpus": {
+    "available": true,
+    "total": 24153,
+    "pending": 16194,
+    "processed": 7000,
+    "error": 949
+  },
+  "harvest": {
+    "available": true,
+    "state": "idle",
+    "last_success_at": "2026-08-24T16:16:14Z",
+    "last_new_count": 0,
+    "last_attempt_at": "2026-08-24T16:16:14Z",
+    "failed_categories": [],
+    "diagnostic": null
+  },
+  "backfill": {
+    "available": true,
+    "state": "halted",
+    "last_progress_at": "2026-08-20T08:54:18Z",
+    "halt_reason": "no_progress_over_3h",
+    "stale_after_seconds": 10800,
+    "age_seconds": 300000
+  },
+  "data_health": {
+    "status": "ok",
+    "database_round_trip": true,
+    "source_rows": 0,
+    "papers_total": 24153,
+    "degraded_sources": []
+  }
+}

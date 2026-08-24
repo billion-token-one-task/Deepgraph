@@ -293,6 +293,36 @@ class GrantRevocationTests(unittest.TestCase):
             ):
                 MetaHarnessRepository().revoke_grant(2, agenda_id=11, reason="oops")
 
+    def test_open_ingestion_usage_cannot_be_revoked_or_auto_released(self):
+        row = {
+            "id": 2,
+            "agenda_id": 11,
+            "reservation_id": 7,
+            "stage": "ingestion_backfill_canary",
+            "reservation_status": "reserved",
+        }
+        with mock.patch(
+            "meta_harness.repository.db.fetchone", return_value=row
+        ), mock.patch(
+            "meta_harness.repository.db.fetchall",
+            return_value=[{"id": 91, "status": "reserved"}],
+        ), mock.patch(
+            "meta_harness.repository.db.execute"
+        ) as execute, mock.patch(
+            "meta_harness.repository.db.rollback"
+        ) as rollback, mock.patch(
+            "meta_harness.repository.db._use_pg", return_value=False
+        ):
+            with self.assertRaisesRegex(
+                MetaHarnessPersistenceError, "exact usage disposition"
+            ):
+                MetaHarnessRepository().revoke_grant(
+                    2, agenda_id=11, reason="operator recovery"
+                )
+
+        execute.assert_not_called()
+        rollback.assert_called_once_with()
+
     def test_a_reason_is_required(self):
         with mock.patch("meta_harness.repository.db.rollback"):
             with self.assertRaises(MetaHarnessPersistenceError):

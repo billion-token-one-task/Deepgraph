@@ -7,6 +7,7 @@ token is configured in the environment and supplied in the request header.
 from __future__ import annotations
 
 import hmac
+import math
 import os
 from datetime import datetime, timedelta, timezone
 
@@ -56,8 +57,10 @@ from meta_harness.harness_evolution import HarnessCandidate, HarnessPolicy
 from meta_harness.harness_repository import HarnessRepository
 from meta_harness.backends.colab_durable import ColabWorkSpec
 from meta_harness.ingestion_queue import (
+    ScopedIngestionReconciliationRequest,
     ScopedIngestionRepository,
     ScopedIngestionRequest,
+    ScopedIngestionUsageDispositionRequest,
 )
 from orchestrator.meta_compute_runtime import submit_colab_work
 from web import provider_config
@@ -532,20 +535,146 @@ def enqueue_scoped_ingestion():
         paper_ids = payload.get("paper_ids")
         if not isinstance(paper_ids, list):
             raise ValueError("paper_ids must be an array")
+        max_attempts = payload.get("max_attempts", 3)
+        for numeric_field, numeric_value in (
+            ("agenda_id", payload.get("agenda_id")),
+            ("idea_id", payload.get("idea_id")),
+            ("resource_grant_id", payload.get("resource_grant_id")),
+            ("max_attempts", max_attempts),
+        ):
+            if type(numeric_value) is not int:
+                raise ValueError(f"{numeric_field} must be an integer")
         job_id = ScopedIngestionRepository().enqueue(
             ScopedIngestionRequest(
-                agenda_id=int(payload["agenda_id"]),
-                idea_id=int(payload["idea_id"]),
-                resource_grant_id=int(payload["resource_grant_id"]),
+                agenda_id=payload["agenda_id"],
+                idea_id=payload["idea_id"],
+                resource_grant_id=payload["resource_grant_id"],
                 stage=str(payload["stage"]),
                 idempotency_key=str(payload["idempotency_key"]),
                 paper_ids=tuple(str(value) for value in paper_ids),
-                max_attempts=int(payload.get("max_attempts") or 3),
+                max_attempts=max_attempts,
             )
         )
         return jsonify(
             {"status": "queued", "scoped_ingestion_job_id": job_id}
         ), 202
+    except Exception as exc:
+        return _error(exc)
+
+
+@blueprint.post("/ingestion/jobs/<int:source_job_id>/reconcile")
+def reconcile_scoped_ingestion(source_job_id: int):
+    """Replace one exact historical failure under fresh operator authority.
+
+    There is intentionally no collection-wide retry/reset endpoint.  The
+    operator must echo the source grant, complete scope and complete paper
+    list, and must supply a separately issued replacement ResourceGrant.
+    """
+
+    try:
+        _require_operator()
+        payload = _payload()
+        paper_ids = payload.get("paper_ids")
+        if not isinstance(paper_ids, list):
+            raise ValueError("paper_ids must be an array")
+        max_attempts = payload.get("max_attempts", 3)
+        for numeric_field, numeric_value in (
+            ("agenda_id", payload.get("agenda_id")),
+            ("idea_id", payload.get("idea_id")),
+            (
+                "source_resource_grant_id",
+                payload.get("source_resource_grant_id"),
+            ),
+            (
+                "replacement_resource_grant_id",
+                payload.get("replacement_resource_grant_id"),
+            ),
+            ("max_attempts", max_attempts),
+        ):
+            if type(numeric_value) is not int:
+                raise ValueError(f"{numeric_field} must be an integer")
+        result = ScopedIngestionRepository().reconcile_failed_job(
+            ScopedIngestionReconciliationRequest(
+                source_job_id=source_job_id,
+                agenda_id=payload["agenda_id"],
+                idea_id=payload["idea_id"],
+                source_resource_grant_id=payload["source_resource_grant_id"],
+                replacement_resource_grant_id=payload[
+                    "replacement_resource_grant_id"
+                ],
+                stage=str(payload["stage"]),
+                paper_ids=tuple(str(value) for value in paper_ids),
+                actor=str(payload["actor"]),
+                reason=str(payload["reason"]),
+                idempotency_key=str(payload["idempotency_key"]),
+                max_attempts=max_attempts,
+            )
+        )
+        status_code = 200 if result["status"] == "already_reconciled" else 202
+        return jsonify(result), status_code
+    except Exception as exc:
+        return _error(exc)
+
+
+@blueprint.post(
+    "/ingestion/jobs/<int:job_id>/usage/<int:usage_reservation_id>/disposition"
+)
+def dispose_scoped_ingestion_usage(job_id: int, usage_reservation_id: int):
+    """Apply one evidence-backed terminal judgement to one open LLM call."""
+
+    try:
+        _require_operator()
+        payload = _payload()
+        paper_ids = payload.get("paper_ids")
+        if not isinstance(paper_ids, list):
+            raise ValueError("paper_ids must be an array")
+        for numeric_field, numeric_value in (
+            ("agenda_id", payload.get("agenda_id")),
+            ("idea_id", payload.get("idea_id")),
+            ("resource_grant_id", payload.get("resource_grant_id")),
+            (
+                "expected_token_reserved",
+                payload.get("expected_token_reserved"),
+            ),
+        ):
+            if type(numeric_value) is not int:
+                raise ValueError(f"{numeric_field} must be an integer")
+        tokens_used = payload.get("tokens_used")
+        if tokens_used is not None and type(tokens_used) is not int:
+            raise ValueError("tokens_used must be an integer or null")
+        cost_usd = payload.get("cost_usd")
+        if cost_usd is not None and (
+            isinstance(cost_usd, bool)
+            or not isinstance(cost_usd, (int, float))
+            or not math.isfinite(float(cost_usd))
+        ):
+            raise ValueError("cost_usd must be a finite number or null")
+        resume = payload.get("resume", False)
+        if not isinstance(resume, bool):
+            raise ValueError("resume must be a boolean")
+        result = ScopedIngestionRepository().dispose_open_usage(
+            ScopedIngestionUsageDispositionRequest(
+                job_id=job_id,
+                agenda_id=payload["agenda_id"],
+                idea_id=payload["idea_id"],
+                resource_grant_id=payload["resource_grant_id"],
+                stage=str(payload["stage"]),
+                paper_ids=tuple(str(value) for value in paper_ids),
+                usage_reservation_id=usage_reservation_id,
+                operation=str(payload["operation"]),
+                usage_idempotency_key=str(payload["usage_idempotency_key"]),
+                expected_token_reserved=payload["expected_token_reserved"],
+                disposition=str(payload["disposition"]),
+                tokens_used=tokens_used,
+                cost_usd=float(cost_usd) if cost_usd is not None else None,
+                actor=str(payload["actor"]),
+                reason=str(payload["reason"]),
+                evidence_ref=str(payload["evidence_ref"]),
+                operator_request_id=str(payload["operator_request_id"]),
+                resume=resume,
+            )
+        )
+        return jsonify(result), 200
     except Exception as exc:
         return _error(exc)
 

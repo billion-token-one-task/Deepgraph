@@ -365,6 +365,37 @@ def process_single_paper(
         current_stage = paper.get("processing_stage") or "ingested"
         if _stage_at_least(current_stage, "reasoned"):
             log_event("step", {"paper_id": paper_id, "step": "skip_already_reasoned"})
+            graph_checkpoint = _load_checkpoint_payload(paper_id, "graph_written")
+            reasoned_checkpoint = _load_checkpoint_payload(paper_id, "reasoned")
+            if not graph_checkpoint or not reasoned_checkpoint:
+                return {
+                    **result,
+                    "error": "reasoned paper lacks durable lifecycle checkpoints",
+                }
+            result["claims"] = int(
+                reasoned_checkpoint.get("claims")
+                or graph_checkpoint.get("claim_count")
+                or 0
+            )
+            result["results"] = int(
+                reasoned_checkpoint.get("results")
+                or graph_checkpoint.get("result_count")
+                or 0
+            )
+            result["taxonomy_nodes"] = list(
+                reasoned_checkpoint.get("taxonomy_nodes")
+                or graph_checkpoint.get("taxonomy_nodes")
+                or []
+            )
+            result["graph_entities"] = int(
+                graph_checkpoint.get("graph_entities") or 0
+            )
+            result["graph_relations"] = int(
+                graph_checkpoint.get("graph_relations") or 0
+            )
+            result["contradictions"] = int(
+                reasoned_checkpoint.get("contradictions") or 0
+            )
             return result
 
         # Step 1: Get full text / resume from text-ready

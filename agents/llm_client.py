@@ -4,6 +4,8 @@ import json
 import os
 import threading
 import time
+from typing import Any, Callable
+
 import httpx
 from config import (
     LLM_API_KEY,
@@ -1316,6 +1318,7 @@ def call_llm_for_role(
     max_tokens: int | None = None,
     total_token_cap: int | None = None,
     max_route_attempts: int | None = None,
+    delivery_sink: Callable[[dict[str, Any]], None] | None = None,
 ) -> tuple[str, int, dict]:
     """Resource-granted role route with provider/model/token observation.
 
@@ -1329,6 +1332,7 @@ def call_llm_for_role(
         LLMExecutionFailure,
         LLMRouter,
         ProviderRoute,
+        RouteDelivery,
         RouteRequest,
         RouteUsage,
     )
@@ -1450,11 +1454,36 @@ def call_llm_for_role(
         )
         proposer_contract.validate()
     repository = MetaHarnessRepository()
+
+    def _deliver(result: RouteDelivery) -> None:
+        if delivery_sink is None:
+            return
+        delivery_sink(
+            {
+                "agenda_id": result.request.agenda_id,
+                "idea_id": result.request.idea_id,
+                "resource_grant_id": result.request.resource_grant_id,
+                "operation": result.request.operation,
+                "idempotency_key": result.request.idempotency_key,
+                "reservation_id": result.reservation_id,
+                "output": str(result.output),
+                "tokens_used": result.usage.total_tokens,
+                "cost_usd": result.usage.cost_usd,
+                "route": {
+                    "provider": result.route.provider,
+                    "model": result.route.model,
+                    "model_family": result.route.model_family,
+                    "prompt_version": result.route.prompt_version,
+                },
+            }
+        )
+
     router = LLMRouter(
         {name: list(routes) for name in ("proposer", "evaluator", "reviewer")},
         ledger=GrantUsageLedger(resource_grant_id),
         observation_sink=repository.save_route_observation,
         cooldown_store=repository,
+        delivery_sink=_deliver if delivery_sink is not None else None,
     )
     request_contract = RouteRequest(
         agenda_id=agenda_id,

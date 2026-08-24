@@ -7,7 +7,7 @@ executes exactly that one, then settles an OutcomeRecord. It never reads or
 changes the autonomy flags.
 
     python3 scripts/run_bounded_pilot.py --agenda 5 --idea 97 --grant 1 \
-        --actor ops:recovery --dry-run
+        --job 42 --actor ops:recovery --dry-run
 
 ``--dry-run`` performs the admission checks and prints what would run without
 claiming the job or spending anything.
@@ -27,6 +27,7 @@ from orchestrator.bounded_execution import (  # noqa: E402
     BoundedExecutionError,
     BoundedExecutionRequest,
     _authorize_bounded_grant,
+    _load_job,
     execute_granted_candidate,
 )
 
@@ -36,6 +37,12 @@ def main() -> int:
     parser.add_argument("--agenda", type=int, required=True)
     parser.add_argument("--idea", type=int, required=True)
     parser.add_argument("--grant", type=int, required=True)
+    parser.add_argument(
+        "--job",
+        type=int,
+        required=True,
+        help="exact persisted auto_research_jobs id",
+    )
     parser.add_argument(
         "--actor",
         required=True,
@@ -52,10 +59,13 @@ def main() -> int:
         agenda_id=args.agenda,
         idea_id=args.idea,
         resource_grant_id=args.grant,
+        job_id=args.job,
     )
     try:
         request.validate()
-        grant, _ = _authorize_bounded_grant(request)
+        if args.dry_run:
+            grant, _ = _authorize_bounded_grant(request)
+            job = _load_job(request)
     except BoundedExecutionError as exc:
         print(json.dumps({"status": "refused", "reason": str(exc)}, indent=2))
         return 1
@@ -76,6 +86,9 @@ def main() -> int:
                     "agenda_id": grant.agenda_id,
                     "idea_id": grant.idea_id,
                     "resource_grant_id": grant.grant_id,
+                    "job_id": args.job,
+                    "job_status": job.get("status"),
+                    "job_stage": job.get("stage"),
                     "stage": grant.stage,
                     "token_cap": grant.token_cap,
                     "max_gpu_hours": grant.max_gpu_hours,
@@ -88,7 +101,16 @@ def main() -> int:
         )
         return 0
 
-    result = execute_granted_candidate(request, actor=args.actor)
+    try:
+        result = execute_granted_candidate(request, actor=args.actor)
+    except Exception as exc:
+        print(
+            json.dumps(
+                {"status": "refused", "reason": f"{type(exc).__name__}: {exc}"},
+                indent=2,
+            )
+        )
+        return 1
     print(json.dumps(result.to_dict(), indent=2, default=str))
     return 0 if result.status == "completed" else 1
 

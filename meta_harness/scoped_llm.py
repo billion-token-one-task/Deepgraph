@@ -97,6 +97,17 @@ def proposer_json(
             )
         ).encode("utf-8")
     ).hexdigest()
+    # Operation identity and attempt identity deliberately differ. A routed
+    # call is settled before its response is parsed, so a worker crash (or an
+    # unusable JSON response) can leave a settled/reserved key without a
+    # deliverable result. Reusing that key is correctly refused by the usage
+    # ledger; allocate a bounded attempt key instead. Callers that *do* have a
+    # durable result must reuse it before reaching this function.
+    from meta_harness.grant_usage import GrantUsageLedger
+
+    attempt_key = GrantUsageLedger(
+        int(llm_scope["resource_grant_id"])
+    ).next_attempt_key(f"{operation}:{digest}", max_attempts=3)
     return call_llm_json_for_role(
         system_prompt,
         user_prompt,
@@ -106,7 +117,7 @@ def proposer_json(
         stage=str(llm_scope["stage"]),
         resource_grant_id=int(llm_scope["resource_grant_id"]),
         operation=operation,
-        idempotency_key=f"{operation}:{digest}",
+        idempotency_key=attempt_key,
         prompt_version=configured_role_prompt_version("proposer"),
         max_tokens=requested_cap,
     )

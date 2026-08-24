@@ -561,14 +561,24 @@ def build_packet(agenda_id: int, idea_id: int, frontier_packet_id: int) -> IdeaD
 
 
 def ensure_frontier_packet(
-    agenda_id: int, state: dict, journal: Journal, args
+    agenda_id: int,
+    state: dict,
+    journal: Journal,
+    args,
+    *,
+    research_problem_id: int | None = None,
 ) -> int | None:
     cached = state["frontier_packets"].get(str(agenda_id))
     if cached:
-        row = db.fetchone(
-            "SELECT id FROM frontier_packets WHERE id=? AND agenda_id=? AND gate_allowed=1",
-            (int(cached), agenda_id),
+        cache_sql = (
+            "SELECT id FROM frontier_packets "
+            "WHERE id=? AND agenda_id=? AND gate_allowed=1"
         )
+        cache_params: tuple = (int(cached), agenda_id)
+        if research_problem_id is not None:
+            cache_sql += " AND research_problem_id=?"
+            cache_params += (int(research_problem_id),)
+        row = db.fetchone(cache_sql, cache_params)
         if row:
             return int(cached)
         journal.log("frontier_cache_stale", agenda_id=agenda_id, cached=cached)
@@ -576,12 +586,19 @@ def ensure_frontier_packet(
     # dozens of open problems, and capping the pool at the top 3 meant that
     # once those three were spent the agenda could never obtain a packet again
     # no matter how many untried problems it still had.
-    problems = _rows(
-        "SELECT id, problem_statement FROM research_problems"
-        " WHERE agenda_id=? AND COALESCE(status,'open')='open'"
-        " ORDER BY problem_quality_score DESC NULLS LAST, id ASC LIMIT ?",
-        (agenda_id, FRONTIER_PROBLEM_POOL),
-    )
+    if research_problem_id is not None:
+        problems = _rows(
+            "SELECT id, problem_statement FROM research_problems"
+            " WHERE id=? AND agenda_id=? AND COALESCE(status,'open')='open'",
+            (int(research_problem_id), agenda_id),
+        )
+    else:
+        problems = _rows(
+            "SELECT id, problem_statement FROM research_problems"
+            " WHERE agenda_id=? AND COALESCE(status,'open')='open'"
+            " ORDER BY problem_quality_score DESC NULLS LAST, id ASC LIMIT ?",
+            (agenda_id, FRONTIER_PROBLEM_POOL),
+        )
     if not problems:
         journal.log("frontier_no_problems", agenda_id=agenda_id)
         return None
@@ -914,15 +931,33 @@ def _rebuild_decision(agenda_id: int, idea_id: int, packet_id: int) -> IdeaDecis
     return packet
 
 
-def advance_agenda(agenda_id: int, state: dict, journal: Journal, args) -> None:
+def advance_agenda(
+    agenda_id: int,
+    state: dict,
+    journal: Journal,
+    args,
+    *,
+    target_job_id: int | None = None,
+) -> None:
     # a. pre-registrations for unregistered, still-live insights
-    unregistered = _rows(
-        "SELECT * FROM deep_insights WHERE agenda_id=?"
-        " AND (topic_gate_json IS NULL OR topic_gate_json='')"
-        " AND COALESCE(status,'candidate') NOT IN ('exists','archived')"
-        " ORDER BY id ASC LIMIT 10",
-        (agenda_id,),
-    )
+    if target_job_id is not None:
+        unregistered = _rows(
+            "SELECT di.* FROM deep_insights di"
+            " JOIN auto_research_jobs arj"
+            "   ON arj.deep_insight_id=di.id AND arj.agenda_id=di.agenda_id"
+            " WHERE arj.id=? AND di.agenda_id=?"
+            " AND (di.topic_gate_json IS NULL OR di.topic_gate_json='')"
+            " AND COALESCE(di.status,'candidate') NOT IN ('exists','archived')",
+            (int(target_job_id), agenda_id),
+        )
+    else:
+        unregistered = _rows(
+            "SELECT * FROM deep_insights WHERE agenda_id=?"
+            " AND (topic_gate_json IS NULL OR topic_gate_json='')"
+            " AND COALESCE(status,'candidate') NOT IN ('exists','archived')"
+            " ORDER BY id ASC LIMIT 10",
+            (agenda_id,),
+        )
     for insight in unregistered:
         try:
             proposal_pending = str(insight.get("status") or "") == "proposal_pending"
@@ -952,32 +987,46 @@ def advance_agenda(agenda_id: int, state: dict, journal: Journal, args) -> None:
             )
 
     # b. queue gate-passing candidates (select_next persists the selection itself)
-    for _ in range(2):
-        try:
-            selection = select_next(agenda_id)
-        except Exception as exc:
-            db.rollback()
-            journal.log("select_next_failed", agenda_id=agenda_id,
-                        reason=f"{type(exc).__name__}: {exc}")
-            break
-        if selection is None:
-            journal.log("select_next_empty", agenda_id=agenda_id)
-            break
-        journal.log("selected", agenda_id=agenda_id,
-                    idea_id=selection.selected_insight_id, score=selection.score)
+    if target_job_id is None:
+        for _ in range(2):
+            try:
+                selection = select_next(agenda_id)
+            except Exception as exc:
+                db.rollback()
+                journal.log("select_next_failed", agenda_id=agenda_id,
+                            reason=f"{type(exc).__name__}: {exc}")
+                break
+            if selection is None:
+                journal.log("select_next_empty", agenda_id=agenda_id)
+                break
+            journal.log("selected", agenda_id=agenda_id,
+                        idea_id=selection.selected_insight_id, score=selection.score)
 
     # c/d. decide + grant for waiting jobs
     # A retired insight must not keep a live job: idea 123 was archived by the
     # proposal-retire path on 2026-08-17 while its job stayed queued, so the
     # zombie won the portfolio's single promote slot every pass and starved
     # the designed candidate behind it. Close such jobs before deciding.
-    for zombie in _rows(
+    zombie_sql = (
         "SELECT arj.deep_insight_id FROM auto_research_jobs arj"
         " JOIN deep_insights di ON di.id=arj.deep_insight_id"
         " WHERE arj.agenda_id=? AND arj.status='queued'"
-        " AND COALESCE(di.status,'candidate') IN ('archived','exists')",
-        (agenda_id,),
-    ):
+        " AND COALESCE(di.status,'candidate') IN ('archived','exists')"
+    )
+    zombie_params: tuple = (agenda_id,)
+    if target_job_id is not None:
+        zombie_sql += " AND arj.id=?"
+        zombie_params += (int(target_job_id),)
+    zombies = _rows(zombie_sql, zombie_params)
+    if target_job_id is not None and zombies:
+        journal.log(
+            "target_job_not_live",
+            agenda_id=agenda_id,
+            job_id=int(target_job_id),
+            idea_id=zombies[0]["deep_insight_id"],
+        )
+        return
+    for zombie in zombies:
         from orchestrator.auto_research import _upsert_job
 
         _upsert_job(
@@ -990,20 +1039,48 @@ def advance_agenda(agenda_id: int, state: dict, journal: Journal, args) -> None:
         )
         journal.log("archived_insight_job_closed", agenda_id=agenda_id,
                     idea_id=zombie["deep_insight_id"])
-    waiting = _rows(
-        "SELECT arj.id, arj.deep_insight_id, di.status AS insight_status"
+    waiting_sql = (
+        "SELECT arj.id, arj.deep_insight_id, di.status AS insight_status,"
+        " di.research_problem_id"
         " FROM auto_research_jobs arj"
         " JOIN deep_insights di ON di.id=arj.deep_insight_id"
         " WHERE arj.agenda_id=? AND arj.status='queued'"
         " AND arj.stage='awaiting_portfolio_decision'"
         " AND COALESCE(di.status,'candidate') NOT IN ('archived','exists')"
-        " ORDER BY arj.updated_at ASC, arj.id ASC LIMIT ?",
-        (agenda_id, args.max_new_grants),
     )
+    waiting_params: tuple = (agenda_id,)
+    if target_job_id is not None:
+        waiting_sql += " AND arj.id=?"
+        waiting_params += (int(target_job_id),)
+    waiting_sql += " ORDER BY arj.updated_at ASC, arj.id ASC LIMIT ?"
+    waiting_params += (1 if target_job_id is not None else args.max_new_grants,)
+    waiting = _rows(waiting_sql, waiting_params)
     if not waiting:
-        journal.log("no_waiting_jobs", agenda_id=agenda_id)
+        journal.log(
+            "no_waiting_jobs",
+            agenda_id=agenda_id,
+            target_job_id=target_job_id,
+        )
         return
-    packet_id = ensure_frontier_packet(agenda_id, state, journal, args)
+    target_problem_id = (
+        int(waiting[0].get("research_problem_id") or 0)
+        if target_job_id is not None
+        else None
+    )
+    if target_job_id is not None and not target_problem_id:
+        journal.log(
+            "target_problem_missing",
+            agenda_id=agenda_id,
+            job_id=int(target_job_id),
+        )
+        return
+    packet_id = ensure_frontier_packet(
+        agenda_id,
+        state,
+        journal,
+        args,
+        research_problem_id=target_problem_id,
+    )
     if not packet_id:
         journal.log("no_frontier_packet", agenda_id=agenda_id)
         return
@@ -1087,7 +1164,10 @@ def advance_agenda(agenda_id: int, state: dict, journal: Journal, args) -> None:
                     expires_at=(_now() + timedelta(hours=4)).isoformat(),
                     idempotency_key=_grant_key(agenda_id, idea_id, "proposal"),
                 )
-                grant_id = repo.issue_grant(grant)
+                grant_id = repo.issue_grant(
+                    grant,
+                    target_job_id=target_job_id,
+                )
             except Exception as exc:
                 db.rollback()
                 journal.log(
@@ -1096,6 +1176,11 @@ def advance_agenda(agenda_id: int, state: dict, journal: Journal, args) -> None:
                     idea_id=idea_id,
                     reason=f"{type(exc).__name__}: {exc}",
                 )
+                if target_job_id is not None:
+                    # Controlled recovery records the refusal and stops.  It
+                    # must never convert a budget/preflight refusal into an
+                    # automatic archival decision, even for the named job.
+                    continue
                 # Refusing to re-fund is only half the fix. Left queued, the
                 # candidate is reselected every pass and refused every pass,
                 # and it holds one of the agenda's portfolio slots forever.
@@ -1191,6 +1276,30 @@ def advance_agenda(agenda_id: int, state: dict, journal: Journal, args) -> None:
             )
             continue
         compute_backend = str(preflight.selected_backend)
+        if target_job_id is not None and compute_backend != "cpu":
+            # The paired one-shot executor intentionally accepts CPU/LLM only.
+            # Signing GPU authority here would create a grant that the only
+            # authorized recovery executor must reject, reserving budget with
+            # no legal consumer.
+            journal.log(
+                "exact_target_backend_refused",
+                agenda_id=agenda_id,
+                job_id=int(target_job_id),
+                idea_id=idea_id,
+                selected_backend=compute_backend,
+                reason="bounded_executor_supports_cpu_llm_only",
+            )
+            continue
+        if target_job_id is not None and "llm" not in agenda_backends:
+            journal.log(
+                "exact_target_backend_refused",
+                agenda_id=agenda_id,
+                job_id=int(target_job_id),
+                idea_id=idea_id,
+                selected_backend=compute_backend,
+                reason="bounded_executor_requires_cpu_and_llm",
+            )
+            continue
         selected_backends = [compute_backend]
         if "llm" in agenda_backends:
             selected_backends.append("llm")
@@ -1216,7 +1325,10 @@ def advance_agenda(agenda_id: int, state: dict, journal: Journal, args) -> None:
                     idempotency_key=_grant_key(agenda_id, idea_id, attempt["suffix"]),
                     preflight_result_id=preflight.preflight_result_id,
                 )
-                grant_id = repo.issue_grant(grant)
+                grant_id = repo.issue_grant(
+                    grant,
+                    target_job_id=target_job_id,
+                )
             except Exception as exc:
                 db.rollback()
                 journal.log("grant_refused", agenda_id=agenda_id, idea_id=idea_id,
@@ -1228,6 +1340,45 @@ def advance_agenda(agenda_id: int, state: dict, journal: Journal, args) -> None:
                         backends=attempt["backends"], gpu_hours=attempt["gpu_hours"],
                         token_cap=args.grant_token_cap)
             break
+
+
+def _exact_target_grant_state(job_id: int, agenda_id: int) -> dict:
+    """Read back the only two authorized post-advance states."""
+
+    row = db.fetchone(
+        """
+        SELECT arj.id AS job_id, arj.agenda_id, arj.deep_insight_id,
+               arj.status AS job_status, arj.stage AS job_stage,
+               arj.resource_grant_id, rg.status AS grant_status,
+               rg.stage AS grant_stage,
+               CASE WHEN rg.expires_at > CURRENT_TIMESTAMP THEN 1 ELSE 0 END
+                   AS grant_live
+        FROM auto_research_jobs arj
+        LEFT JOIN resource_grants rg
+          ON rg.id=arj.resource_grant_id AND rg.agenda_id=arj.agenda_id
+         AND rg.idea_id=arj.deep_insight_id
+        WHERE arj.id=? AND arj.agenda_id=?
+        """,
+        (int(job_id), int(agenda_id)),
+    )
+    return dict(row or {})
+
+
+def _exact_target_was_granted(state: dict) -> bool:
+    if (
+        str(state.get("grant_status") or "") != "active"
+        or int(state.get("grant_live") or 0) != 1
+        or not state.get("resource_grant_id")
+    ):
+        return False
+    return (
+        str(state.get("job_status") or ""),
+        str(state.get("job_stage") or ""),
+        str(state.get("grant_stage") or ""),
+    ) in {
+        ("deferred", "proposal_generation_granted", "proposal"),
+        ("queued", "portfolio_granted", "pilot"),
+    }
 
 
 def _pilot_arm_that_measured_nothing(run_id: int) -> str:
@@ -1955,10 +2106,62 @@ def retry_deferred_preflights(agenda_id: int, state: dict, journal: Journal, arg
                     token_cap=args.grant_token_cap)
 
 
+def _option_was_explicit(argv: list[str], name: str) -> bool:
+    return any(value == name or value.startswith(name + "=") for value in argv)
+
+
+def _require_exact_task_paths(parser, args, argv: list[str]) -> None:
+    """Keep one-shot recovery journals out of scheduler-owned state.
+
+    Exact recovery is intentionally operator-scoped.  Reusing the periodic
+    scheduler's default state would advance retry counters/cache entries even
+    though the global pass never ran, and its shared log would make the two
+    authorities indistinguishable.  Requiring an explicit task root also
+    makes "local" mechanically checkable instead of a naming convention.
+    """
+
+    if not args.task_dir:
+        parser.error("--job requires an explicit --task-dir")
+    for option in ("--state", "--log"):
+        if not _option_was_explicit(argv, option):
+            parser.error(f"--job requires an explicit {option}")
+    task_dir = Path(args.task_dir).expanduser().resolve()
+    if not task_dir.is_dir():
+        parser.error("--task-dir must name an existing directory")
+    resolved: dict[str, Path] = {}
+    for field in ("state", "log"):
+        path = Path(getattr(args, field)).expanduser().resolve()
+        if path == task_dir or not path.is_relative_to(task_dir):
+            parser.error(f"--{field} must be a file inside --task-dir")
+        if not path.parent.is_dir():
+            parser.error(f"--{field} parent directory must already exist")
+        resolved[field] = path
+    if resolved["state"] == resolved["log"]:
+        parser.error("--state and --log must be different task-local files")
+    args.task_dir = task_dir
+    args.state = str(resolved["state"])
+    args.log = str(resolved["log"])
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--agenda", type=int, action="append",
                         help="repeatable; default: every active budgeted agenda")
+    parser.add_argument(
+        "--job",
+        type=int,
+        help=(
+            "controlled one-shot mode: advance exactly this already-queued job; "
+            "requires exactly one --agenda and skips discovery and global housekeeping"
+        ),
+    )
+    parser.add_argument(
+        "--task-dir",
+        help=(
+            "required with --job; exact-mode state and log must both be files "
+            "inside this existing recovery task directory"
+        ),
+    )
     parser.add_argument("--state", default="/home/ec2-user/deepgraph-reports/auto_advance_state.json")
     parser.add_argument("--log", default="/home/ec2-user/deepgraph-reports/auto_advance_log.jsonl")
     parser.add_argument("--spend-limit", type=int, default=0,
@@ -1984,8 +2187,17 @@ def main() -> int:
     parser.add_argument("--evaluator-family", default=_role_default("EVALUATOR", "_FAMILY"))
     parser.add_argument("--proposer-provider", default=_role_default("PRIMARY", ""))
     parser.add_argument("--proposer-family", default=_role_default("PRIMARY", "_FAMILY"))
-    args = parser.parse_args()
-    args.agenda = args.agenda or active_agenda_ids()
+    argv = sys.argv[1:]
+    args = parser.parse_args(argv)
+    if args.job is not None:
+        if int(args.job) <= 0:
+            parser.error("--job must be positive")
+        if not args.agenda or len(args.agenda) != 1:
+            parser.error("--job requires exactly one --agenda")
+        _require_exact_task_paths(parser, args, argv)
+        args.max_new_grants = 1
+    else:
+        args.agenda = args.agenda or active_agenda_ids()
 
     journal = Journal(Path(args.log))
     state_path = Path(args.state)
@@ -1993,10 +2205,49 @@ def main() -> int:
     args.process_spend_baseline = (
         _capture_spend_baseline(args.agenda) if args.spend_limit > 0 else None
     )
-    journal.log("pass_start", agendas=args.agenda, backend=db.describe_backend())
+    journal.log(
+        "pass_start",
+        agendas=args.agenda,
+        target_job_id=args.job,
+        backend=db.describe_backend(),
+    )
     # Before anything reads an agenda: a drifted reservation makes validate()
     # refuse the row, and the agenda then selects nothing at all.
-    _reconcile_gpu_reservation_drift(args.agenda, journal)
+    if args.job is None:
+        _reconcile_gpu_reservation_drift(args.agenda, journal)
+
+    if args.job is not None:
+        # Exact-target recovery deliberately excludes every agenda-wide side
+        # effect in the normal pass: no discovery, expired-grant sweep,
+        # outcome finalization, drift repair, recycle or unrelated preflight.
+        # The selected job still traverses the same topic gate, portfolio and
+        # ResourceGrant repositories inside advance_agenda.
+        exact_state: dict = {}
+        try:
+            advance_agenda(
+                int(args.agenda[0]),
+                state,
+                journal,
+                args,
+                target_job_id=int(args.job),
+            )
+            exact_state = _exact_target_grant_state(
+                int(args.job), int(args.agenda[0])
+            )
+        finally:
+            _save_state(state_path, state)
+            try:
+                db.rollback()
+            except Exception:
+                pass
+        journal.log(
+            "pass_end",
+            target_job_id=int(args.job),
+            target_granted=_exact_target_was_granted(exact_state),
+            target_state=exact_state,
+            spent_delta=_guard_spent_delta(state, args),
+        )
+        return 0 if _exact_target_was_granted(exact_state) else 1
 
     try:
         repo = MetaHarnessRepository()

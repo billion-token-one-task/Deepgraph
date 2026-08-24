@@ -34,7 +34,12 @@ class ScopedLLMTests(unittest.TestCase):
             "stage": "ingestion",
             "token_cap": 4000,
         }
-        with mock.patch.dict(sys.modules, {"agents.llm_client": fake_client}):
+        with mock.patch.dict(
+            sys.modules, {"agents.llm_client": fake_client}
+        ), mock.patch(
+            "meta_harness.grant_usage.GrantUsageLedger.next_attempt_key",
+            return_value="paper_extraction:test:digest:t1",
+        ):
             result = proposer_json(
                 "system",
                 "user",
@@ -52,3 +57,4 @@ class ScopedLLMTests(unittest.TestCase):
         self.assertTrue(
             calls[0]["idempotency_key"].startswith("paper_extraction:test:")
         )
+        self.assertTrue(calls[0]["idempotency_key"].endswith(":t1"))

@@ -375,6 +375,37 @@ def select_problem_first_candidates(
     return [hydrate_problem_candidate(candidate) for candidate in candidates[:limit]]
 
 
+def load_problem_first_candidate(
+    *,
+    agenda_id: int,
+    research_problem_id: int,
+) -> dict | None:
+    """Load one already-persisted problem without refreshing the global pool.
+
+    Controlled proposal realization must not run discovery merely to recover
+    the problem behind an explicitly named proposal shell.  This exact lookup
+    is intentionally read-only and accepts only a still-live problem in the
+    same agenda.
+    """
+
+    agenda_id = _require_agenda_id(agenda_id)
+    research_problem_id = int(research_problem_id)
+    if research_problem_id <= 0:
+        raise ValueError("research_problem_id must be positive")
+    row = db.fetchone(
+        """
+        SELECT * FROM research_problems
+        WHERE id=? AND agenda_id=?
+          AND status IN ('open', 'exploring')
+          AND attempts_count < ?
+        """,
+        (research_problem_id, agenda_id, MAX_ATTEMPTS),
+    )
+    if not row:
+        return None
+    return hydrate_problem_candidate(_row_to_problem(dict(row)))
+
+
 def upsert_research_problem(problem: dict, *, agenda_id: int) -> int:
     agenda_id = _require_agenda_id(agenda_id)
     source_ref = problem.get("source_signal_ref") or {}

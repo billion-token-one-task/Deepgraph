@@ -78,8 +78,8 @@ class AttemptKeyTests(unittest.TestCase):
 
         self.assertEqual(key, f"{BASE}:t2")
         self.assertIn("idempotency_key=?", captured["sql"])
-        self.assertIn("idempotency_key LIKE ?", captured["sql"])
-        self.assertEqual(captured["params"], (20, BASE, f"{BASE}:t%"))
+        self.assertIn("substr(idempotency_key", captured["sql"])
+        self.assertEqual(captured["params"], (20, BASE, BASE, BASE))
 
     def test_a_blank_base_is_refused(self):
         ledger = GrantUsageLedger(20)

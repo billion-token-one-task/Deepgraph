@@ -64,6 +64,8 @@ _ACCOUNTED = {
     "TEMP": "environment variable",
     "DEEPGRAPH_DATABASE_URL": "environment variable",
     "grant_live": "SQL boolean alias (expires_at > CURRENT_TIMESTAMP)",
+    "insight_status": "deep_insights.status SQL alias",
+    "open_count": "aggregate SQL alias for open reservations",
     "auto_experiment_run_id": "SQL column alias",
     "patch_agenda_id": "SQL column alias",
     "max_vram_gb": "preflight environment probe payload",
