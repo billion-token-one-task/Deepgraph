@@ -68,11 +68,12 @@ def _release_process_lock() -> None:
 def get_status() -> dict:
     with _worker_lock:
         running = bool(_worker_thread and _worker_thread.is_alive())
+        last_status = dict(_last_status)
     return {
         "running": running,
         "batch_size": AUTO_PIPELINE_BATCH_SIZE,
         "interval_seconds": AUTO_PIPELINE_INTERVAL_SECONDS,
-        **_last_status,
+        **last_status,
     }
 
 
@@ -106,10 +107,14 @@ def _run_loop() -> None:
 
 
 def start() -> dict:
-    return {
+    global _last_status
+    status = {
         "status": "disabled_resource_grant_required",
         "reason": "agenda_scoped_ingestion_job_required",
     }
+    with _worker_lock:
+        _last_status = dict(status)
+    return status
 
 
 def stop() -> dict:

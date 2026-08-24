@@ -122,6 +122,12 @@ Runbooks for recovery baselines, canaries, and rollback are in
 The reviewed public dashboard release, its data guarantees, immutable-release
 procedure, and China-facing Nginx profile are recorded in
 [internal/frontend/PUBLIC_FRONTEND_RELEASE_20260823.md](internal/frontend/PUBLIC_FRONTEND_RELEASE_20260823.md).
+The separated legacy-ingestion, scoped-ingestion, and research-runtime status
+contract is recorded in
+[internal/frontend/PROCESSING_STATUS_CONTRACT_20260824.md](internal/frontend/PROCESSING_STATUS_CONTRACT_20260824.md).
+The live Flask bind-address mismatch is intentionally not repaired by the
+frontend/status release; its operations handoff is
+[internal/runbooks/NETWORK_BOUNDARY_HANDOFF_20260824.md](internal/runbooks/NETWORK_BOUNDARY_HANDOFF_20260824.md).
 
 ## Configuration reference
 

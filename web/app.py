@@ -1027,6 +1027,132 @@ def _current_work_snapshot() -> dict[str, list[dict]]:
     }
 
 
+def _legacy_paper_ingestion_snapshot(
+    paper_worker_status: dict,
+    *,
+    processing_count: int,
+    recent_processing_count: int,
+) -> dict:
+    """Describe the retired paper lane without promoting it to research state."""
+    processing_count = max(0, int(processing_count or 0))
+    recent_processing_count = max(0, int(recent_processing_count or 0))
+    stale_processing_count = max(0, processing_count - recent_processing_count)
+    worker_status = str(paper_worker_status.get("status") or "unknown")
+    if paper_worker_status.get("running") or recent_processing_count:
+        state = "running"
+    elif worker_status in {"failed", "worker_error", "crashed"}:
+        state = "worker_error"
+    elif worker_status.startswith("disabled_"):
+        state = worker_status
+    else:
+        state = "idle"
+    return {
+        "state": state,
+        "record_state": "stale_records" if stale_processing_count else "current",
+        "processing_count": processing_count,
+        "recent_processing_count": recent_processing_count,
+        "stale_processing_count": stale_processing_count,
+        "worker": paper_worker_status,
+    }
+
+
+def _classify_scoped_ingestion(worker_status: dict, counts: dict) -> str:
+    queued = int(counts.get("queued", 0) or 0) + int(counts.get("retryable", 0) or 0)
+    running_jobs = int(counts.get("running", 0) or 0)
+    worker_running = bool(worker_status.get("running"))
+    worker_state = str(worker_status.get("status") or "unknown")
+    if worker_state in {"error", "worker_error", "failed", "crashed"}:
+        return "worker_error"
+    if (queued or running_jobs) and not worker_running:
+        return "stalled"
+    if running_jobs:
+        return "running"
+    if queued:
+        return "queued"
+    return "idle" if worker_running else "stopped"
+
+
+def _scoped_ingestion_snapshot() -> dict:
+    from orchestrator import scoped_ingestion_worker
+
+    status = dict(scoped_ingestion_worker.get_status())
+    counts = {
+        str(row["status"]): int(row["c"])
+        for row in db.fetchall(
+            "SELECT status, COUNT(*) AS c FROM scoped_ingestion_jobs_v1 GROUP BY status"
+        )
+    }
+    status["counts"] = counts
+    status["queued_jobs"] = counts.get("queued", 0) + counts.get("retryable", 0)
+    status["running_jobs"] = counts.get("running", 0)
+    status["available"] = True
+    status["state"] = _classify_scoped_ingestion(status, counts)
+    return status
+
+
+_ACTIVE_RESEARCH_JOB_STATES = (
+    "verifying",
+    "researching",
+    "running_experiment",
+    "queued_gpu",
+    "running_gpu",
+    "running_cpu",
+    "review_pending",
+)
+
+
+def _classify_research_runtime(
+    controller_status: dict,
+    *,
+    active_grants: int,
+    active_work_items: int,
+) -> str:
+    controller_state = str(controller_status.get("status") or "")
+    if controller_state in {"error", "worker_error", "failed", "crashed"}:
+        return "error"
+    if int(active_work_items or 0) > 0:
+        return "running" if controller_status.get("running") else "stalled"
+    if int(active_grants or 0) > 0:
+        return "authorized_idle"
+    return "idle_no_authorized_work"
+
+
+def _research_runtime_snapshot() -> dict:
+    from orchestrator import auto_research
+
+    controller = dict(auto_research.get_status())
+    grant_row = db.fetchone(
+        """
+        SELECT COUNT(*) AS c
+        FROM resource_grants
+        WHERE status='active' AND expires_at > CURRENT_TIMESTAMP
+        """
+    ) or {}
+    placeholders = ",".join("?" for _ in _ACTIVE_RESEARCH_JOB_STATES)
+    work_row = db.fetchone(
+        f"""
+        SELECT COUNT(*) AS c
+        FROM auto_research_jobs AS arj
+        JOIN resource_grants AS rg ON rg.id=arj.resource_grant_id
+        WHERE arj.status IN ({placeholders})
+          AND rg.status='active' AND rg.expires_at > CURRENT_TIMESTAMP
+        """,
+        _ACTIVE_RESEARCH_JOB_STATES,
+    ) or {}
+    active_grants = int(grant_row.get("c") or 0)
+    active_work_items = int(work_row.get("c") or 0)
+    return {
+        "state": _classify_research_runtime(
+            controller,
+            active_grants=active_grants,
+            active_work_items=active_work_items,
+        ),
+        "active_grants": active_grants,
+        "active_work_items": active_work_items,
+        "controller": controller,
+    }
+
+
 def _automation_snapshot() -> dict:
     from orchestrator import auto_research, paper_worker
 
@@ -1085,33 +1211,10 @@ def _automation_snapshot() -> dict:
             "recent_runs": manuscripts,
         }
 
-    def scoped_ingestion_status():
-        """The worker that actually reads papers under V1.
-
-        orchestrator.paper_worker is fail-closed by design here -- it refuses to
-        run without an agenda-scoped ResourceGrant -- so the dashboard was
-        reporting the retired worker as idle while the scoped worker was
-        processing a 500-paper batch that had no card at all.
-        """
-        from orchestrator import scoped_ingestion_worker
-
-        status = dict(scoped_ingestion_worker.get_status())
-        counts = {
-            str(row["status"]): int(row["c"])
-            for row in db.fetchall(
-                "SELECT status, COUNT(*) AS c FROM scoped_ingestion_jobs_v1 GROUP BY status"
-            )
-        }
-        status["counts"] = counts
-        status["queued_jobs"] = counts.get("queued", 0)
-        status["running_jobs"] = counts.get("running", 0)
-        status["available"] = True
-        return status
-
     return {
         "paper_worker": paper_worker_status,
         "scoped_ingestion": _safe_service_payload(
-            "scoped_ingestion", scoped_ingestion_status
+            "scoped_ingestion", _scoped_ingestion_snapshot
         ),
         "auto_research": auto_research_status,
         "gpu_scheduler": _safe_service_payload("gpu_scheduler", gpu_status),
@@ -1467,7 +1570,7 @@ def api_agent_office():
 
 @app.route("/api/processing")
 def api_processing():
-    """Get papers currently being processed + recently completed (last 15s)."""
+    """Return separate legacy-ingestion, scoped-ingestion and research states."""
     try:
         rows = db.fetchall(
             f"""SELECT id, title, status FROM papers
@@ -1488,23 +1591,30 @@ def api_processing():
             paper_worker_status = paper_worker.get_status()
         except Exception as exc:
             paper_worker_status = {"running": False, "error": str(exc)}
-        with _pipeline_lock:
-            is_running = _pipeline_running or bool(paper_worker_status.get("running")) or recent_processing_count > 0
-        if is_running:
-            pipeline_state = "running"
-        elif str(paper_worker_status.get("status") or "").startswith("disabled_"):
-            pipeline_state = "paused_scope_required"
-        elif stale_processing_count:
-            pipeline_state = "stalled"
-        else:
-            pipeline_state = "idle"
+        legacy_paper_ingestion = _legacy_paper_ingestion_snapshot(
+            paper_worker_status,
+            processing_count=processing_count,
+            recent_processing_count=recent_processing_count,
+        )
+        scoped_ingestion = _safe_service_payload(
+            "scoped_ingestion", _scoped_ingestion_snapshot
+        )
+        research_runtime = _safe_service_payload(
+            "research_runtime", _research_runtime_snapshot
+        )
+        pipeline_state = str(research_runtime.get("state") or "error")
+        is_running = pipeline_state == "running"
         stats = _stats_cache.get() or {}
         return jsonify({
+            "contract_version": "processing-status-v2",
             "papers": rows,
             "pipeline_running": is_running,
             "pipeline_state": pipeline_state,
             "stale_processing_count": stale_processing_count,
             "paper_worker": paper_worker_status,
+            "legacy_paper_ingestion": legacy_paper_ingestion,
+            "scoped_ingestion": scoped_ingestion,
+            "research_runtime": research_runtime,
             "data_health": {
                 "status": "ok",
                 "database_round_trip": True,

@@ -556,24 +556,13 @@ function startSSE() {
     };
 }
 
-let pipelineRunning = false;
 let pipelineState = 'unknown';
 let staleProcessingCount = 0;
 
-function updateLiveBadge(ev) {
-    if (ev) {
-        if (ev.type === 'pipeline_start') {
-            pipelineRunning = true;
-            pipelineState = 'running';
-        }
-        if (ev.type === 'pipeline_done' || ev.type === 'pipeline_crash') {
-            pipelineRunning = false;
-            pipelineState = ev.type === 'pipeline_crash' ? 'stalled' : 'idle';
-        }
-    }
+function updateLiveBadge() {
     const badge = el('liveBadge');
-    const stalled = pipelineState === 'stalled' || (!pipelineRunning && staleProcessingCount > 0);
-    const running = pipelineRunning && !stalled;
+    const stalled = pipelineState === 'stalled' || pipelineState === 'error';
+    const running = pipelineState === 'running';
     badge.textContent = stalled
         ? tr('app.live.stalled', 'STALLED')
         : running ? tr('app.live.live', 'LIVE') : tr('app.live.idle', 'IDLE');
@@ -590,15 +579,23 @@ function renderRuntimeStatus(running, stalled) {
     line.classList.toggle('running', running);
     line.classList.toggle('stalled', stalled);
     if (stalled) {
-        title.textContent = tr('overview.pipelineStalled', 'Research pipeline stalled');
-        detail.textContent = tr('overview.pipelineStaleItems', '{n} stale processing items')
-            .replace('{n}', fmt(staleProcessingCount));
+        title.textContent = tr('overview.pipelineStalled', 'Research runtime stalled');
+        detail.textContent = tr('overview.pipelineStaleItems', 'Approved research work is not progressing');
     } else if (running) {
-        title.textContent = tr('overview.pipelineRunning', 'Research pipeline running');
-        detail.textContent = tr('overview.pipelineRecent', 'Recent pipeline activity is being reported');
+        title.textContent = tr('overview.pipelineRunning', 'Research runtime active');
+        detail.textContent = staleProcessingCount > 0
+            ? tr('overview.paperIngestionStale', 'Paper ingestion has {n} stale tasks').replace('{n}', fmt(staleProcessingCount))
+            : tr('overview.pipelineRecent', 'Approved research work is active');
+    } else if (pipelineState === 'idle_no_authorized_work') {
+        title.textContent = tr('overview.noAuthorizedResearch', 'No approved research work right now');
+        detail.textContent = staleProcessingCount > 0
+            ? tr('overview.paperIngestionStale', 'Paper ingestion has {n} stale tasks').replace('{n}', fmt(staleProcessingCount))
+            : tr('overview.pipelineNoActive', 'Research control plane idle');
     } else {
-        title.textContent = tr('overview.pipelineIdle', 'Research pipeline idle');
-        detail.textContent = tr('overview.pipelineNoActive', 'No active pipeline run is reported');
+        title.textContent = tr('overview.pipelineIdle', 'Research control plane idle');
+        detail.textContent = staleProcessingCount > 0
+            ? tr('overview.paperIngestionStale', 'Paper ingestion has {n} stale tasks').replace('{n}', fmt(staleProcessingCount))
+            : tr('overview.pipelineNoActive', 'No active research work is reported');
     }
 }
 
@@ -629,9 +626,12 @@ async function loadProcessingPapers() {
         const [data, office] = await Promise.all([api("/api/processing"), api("/api/agent_office").catch(() => null)]);
         if (office && Array.isArray(office.departments)) agentOfficeData = office;
         const rows = data.papers || data;
-        if (data.pipeline_running != null) pipelineRunning = data.pipeline_running;
-        pipelineState = data.pipeline_state || (pipelineRunning ? 'running' : 'idle');
-        staleProcessingCount = Number(data.stale_processing_count || 0);
+        const researchRuntime = data.research_runtime || {};
+        const legacyIngestion = data.legacy_paper_ingestion || {};
+        pipelineState = researchRuntime.state || data.pipeline_state || 'error';
+        staleProcessingCount = Number(
+            legacyIngestion.stale_processing_count ?? data.stale_processing_count ?? 0
+        );
 
         for (const r of rows) {
             const isDone = r.status === 'reasoned' || r.status === 'error';
