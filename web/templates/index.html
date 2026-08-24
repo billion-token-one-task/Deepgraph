@@ -127,6 +127,7 @@
                         <div class="hero-runtime-bg" aria-hidden="true">
                             <div id="officeOverviewSlot" class="overview-office-slot">
                                 <div class="card card-compact office-mode-preview" id="officeProcessing" data-office-mode="preview">
+                                    <span id="processingCount" hidden>—</span>
                                     <div class="processing-list" id="processingList"><div class="agent-office-loading"><span data-i18n="office.mapping">Mapping DeepGraph departments...</span></div></div>
                                 </div>
                             </div>
@@ -137,14 +138,14 @@
                             <p class="hero-sub" data-testid="hero-sub" data-i18n="overview.heroSubtitle">DeepGraph links experiments, knowledge, and evidence into one verifiable loop that keeps improving itself.</p>
                             <div class="hero-proof" data-testid="hero-proof">
                                 <div class="hero-evidence-proof">
-                                    <p id="heroEvidenceLabel" class="proof-label">EVIDENCE VERDICTS · 0 TOTAL</p>
-                                    <div class="evidence-bar" data-testid="evidence-bar" aria-label="Evidence verdict distribution">
+                                    <p id="heroEvidenceLabel" class="proof-label"></p>
+                                    <div class="evidence-bar" data-testid="evidence-bar">
                                         <span class="evidence-bar-segment supported" data-testid="evidence-bar-segment"></span><span class="evidence-bar-segment refuted" data-testid="evidence-bar-segment"></span><span class="evidence-bar-segment inconclusive" data-testid="evidence-bar-segment"></span>
                                     </div>
                                     <div class="hero-verdict-stats">
-                                        <button class="verdict-stat" data-testid="verdict-stat" type="button" data-tab="evidence" data-verdict="supported"><strong id="heroSupported" data-testid="verdict-value">—</strong><span data-i18n="verdict.supported">supported</span></button>
-                                        <button class="verdict-stat" data-testid="verdict-stat" type="button" data-tab="evidence" data-verdict="refuted"><strong id="heroRefuted" data-testid="verdict-value">—</strong><span data-i18n="verdict.refuted">refuted</span></button>
-                                        <button class="verdict-stat" data-testid="verdict-stat" type="button" data-tab="evidence" data-verdict="inconclusive"><strong id="heroInconclusive" data-testid="verdict-value">—</strong><span data-i18n="verdict.inconclusive">inconclusive</span></button>
+                                        <button class="verdict-stat" data-testid="verdict-stat" type="button" data-tab="evidence" data-verdict="supported"><strong id="heroSupported" data-testid="verdict-value">—</strong><span data-i18n="verdict.supported">supported</span><small id="heroSupportedZero" class="zero-note"></small></button>
+                                        <button class="verdict-stat" data-testid="verdict-stat" type="button" data-tab="evidence" data-verdict="refuted"><strong id="heroRefuted" data-testid="verdict-value">—</strong><span data-i18n="verdict.refuted">refuted</span><small id="heroRefutedZero" class="zero-note"></small></button>
+                                        <button class="verdict-stat" data-testid="verdict-stat" type="button" data-tab="evidence" data-verdict="inconclusive"><strong id="heroInconclusive" data-testid="verdict-value">—</strong><span data-i18n="verdict.inconclusive">inconclusive</span><small id="heroInconclusiveZero" class="zero-note"></small></button>
                                     </div>
                                 </div>
                                 <div class="hero-memory-proof">
@@ -161,7 +162,7 @@
                             </div>
                         </div>
                         <div class="runtime-stage" data-testid="runtime-stage">
-                            <div class="stage-legend" data-testid="stage-legend" aria-label="Research runtime stages">
+                            <div class="stage-legend" data-testid="stage-legend" role="group" aria-label="Research runtime stages">
                                 <button type="button" data-tab="experiments" data-stage="paper_extraction" data-testid="stage-legend-item"><i></i><span data-i18n="office.department.paper_extraction.title">Paper intake & extraction</span></button>
                                 <button type="button" data-tab="explore" data-stage="graph_construction" data-testid="stage-legend-item"><i></i><span data-i18n="office.department.graph_construction.title">Knowledge graph</span></button>
                                 <button type="button" data-tab="discoveries" data-stage="idea_generation" data-testid="stage-legend-item"><i></i><span data-i18n="office.department.idea_generation.title">Research idea generation</span></button>
@@ -201,7 +202,6 @@
                             <div class="stat-subtext" id="statDecidedSub"></div>
                         </aside>
                     </section>
-                    </section>
 
                     <section class="volume-strip" data-testid="volume-strip" aria-label="Accumulated research volume">
                         <div class="volume-item" data-testid="volume-item"><strong id="statGraphEntities">—</strong><span data-i18n="stat.knowledgeEntities">Knowledge entities</span></div>
@@ -222,57 +222,57 @@
                         <svg id="overviewGraphSvg" data-testid="map-canvas" width="100%" height="380" aria-label="Research map preview"></svg>
                     </section>
 
-                    <details class="overview-details">
+                    <details class="overview-details" data-testid="portfolio-section" open>
                         <summary data-i18n="overview.portfolio">Research portfolio and process</summary>
                         <p class="overview-details-note" data-i18n="overview.portfolioNote">Aggregate counts and in-progress work are available here when you need context.</p>
                     <!-- Stat cards -->
                     <div class="stat-grid" id="overviewStats">
-                        <div class="stat-card"><div class="stat-number" id="statCorpusPapers">0</div><div class="stat-label" data-i18n="stat.corpusPapers">Paper corpus records</div></div>
-                        <div class="stat-card"><div class="stat-number" id="statPapersWithText">0</div><div class="stat-label" data-i18n="stat.papersWithText">Papers with full text</div></div>
-                        <div class="stat-card" title="Papers admitted to the corpus but not yet through the complete reasoning pipeline">
+                        <div class="stat-card" data-testid="portfolio-cell" data-tab="overview" role="link" tabindex="0"><div class="stat-number" id="statCorpusPapers">0</div><div class="stat-label" data-i18n="stat.corpusPapers">Paper corpus records</div></div>
+                        <div class="stat-card" data-testid="portfolio-cell" data-tab="overview" role="link" tabindex="0"><div class="stat-number" id="statPapersWithText">0</div><div class="stat-label" data-i18n="stat.papersWithText">Papers with full text</div></div>
+                        <div class="stat-card" data-testid="portfolio-cell" data-tab="overview" role="link" tabindex="0" title="Papers admitted to the corpus but not yet through the complete reasoning pipeline">
                             <div class="stat-number" id="statPendingPapers">0</div>
                             <div class="stat-label" data-i18n="stat.pendingPapers">Awaiting Analysis</div>
                         </div>
-                        <div class="stat-card" title="Papers whose latest processing attempt ended in error">
+                        <div class="stat-card" data-testid="portfolio-cell" data-tab="overview" role="link" tabindex="0" title="Papers whose latest processing attempt ended in error">
                             <div class="stat-number" id="statErrorPapers">0</div>
                             <div class="stat-label" data-i18n="stat.errorPapers">Processing Errors</div>
                         </div>
-                        <div class="stat-card">
+                        <div class="stat-card" data-testid="portfolio-cell" data-tab="evidence" role="link" tabindex="0">
                             <div class="stat-icon stat-icon-cyan">
                                 <svg width="22" height="22" viewBox="0 0 20 20" fill="none"><path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
                             </div>
                             <div class="stat-number" id="statResults">0</div>
                             <div class="stat-label" data-i18n="stat.results">Results</div>
                         </div>
-                        <div class="stat-card">
+                        <div class="stat-card" data-testid="portfolio-cell" data-tab="explore" role="link" tabindex="0">
                             <div class="stat-icon stat-icon-gold">
                                 <svg width="22" height="22" viewBox="0 0 20 20" fill="none"><path d="M10 2l2.5 5 5.5.8-4 3.9.9 5.3-4.9-2.6L5.1 17l.9-5.3-4-3.9 5.5-.8L10 2z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
                             </div>
                             <div class="stat-number" id="statTaxonomy">0</div>
                             <div class="stat-label" data-i18n="stat.taxonomyNodes">Taxonomy Nodes</div>
                         </div>
-                        <div class="stat-card">
+                        <div class="stat-card" data-testid="portfolio-cell" data-tab="evidence" role="link" tabindex="0">
                             <div class="stat-icon stat-icon-red">
                                 <svg width="22" height="22" viewBox="0 0 20 20" fill="none"><path d="M10 3L2 17h16L10 3z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/><path d="M10 8v4M10 14v1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
                             </div>
                             <div class="stat-number" id="statContradictions">0</div>
                             <div class="stat-label" data-i18n="stat.contradictions">Contradictions</div>
                         </div>
-                        <div class="stat-card">
+                        <div class="stat-card" data-testid="portfolio-cell" data-tab="evidence" role="link" tabindex="0">
                             <div class="stat-icon stat-icon-purple">
                                 <svg width="22" height="22" viewBox="0 0 20 20" fill="none"><path d="M10 2C5.6 2 2 5.6 2 10s3.6 8 8 8 8-3.6 8-8-3.6-8-8-8zm0 3a1.5 1.5 0 110 3 1.5 1.5 0 010-3zm2 9H8v-1h1v-3H8v-1h3v4h1v1z" fill="currentColor"/></svg>
                             </div>
                             <div class="stat-number" id="statInsights">0</div>
                             <div class="stat-label" data-i18n="stat.insights">Insights</div>
                         </div>
-                        <div class="stat-card" title="LLM tokens metered against research agendas (kept separate from analysis tokens; the two ledgers are not summed)">
+                        <div class="stat-card" data-testid="portfolio-cell" data-tab="experiments" role="link" tabindex="0" title="LLM tokens metered against research agendas (kept separate from analysis tokens; the two ledgers are not summed)">
                             <div class="stat-icon stat-icon-cyan">
                                 <svg width="22" height="22" viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="7.5" stroke="currentColor" stroke-width="1.5"/><path d="M6.5 10h7M10 6.5v7" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
                             </div>
                             <div class="stat-number" id="statAgendaTokens">0</div>
                             <div class="stat-label" data-i18n="stat.agendaTokens">Agenda Tokens</div>
                         </div>
-                        <div class="stat-card" title="Bundled submission packages produced">
+                        <div class="stat-card" data-testid="portfolio-cell" data-tab="papers" role="link" tabindex="0" title="Bundled submission packages produced">
                             <div class="stat-icon stat-icon-blue">
                                 <svg width="22" height="22" viewBox="0 0 20 20" fill="none"><path d="M4 3h8l4 4v10a1 1 0 01-1 1H4a1 1 0 01-1-1V4a1 1 0 011-1z" stroke="currentColor" stroke-width="1.5"/><path d="M12 3v4h4M7 10l2 2 4-4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
                             </div>

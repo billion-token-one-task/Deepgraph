@@ -838,17 +838,19 @@ header#topBar {
 .homepage-hierarchy-v2 .topbar-right { flex: 0 0 auto; gap: 12px; }
 .homepage-hierarchy-v2 .topbar-right .search-container { width: 250px; min-width: 0; }
 .homepage-hierarchy-v2 .search-input { height: 36px; font-size: 0.78rem; }
+.homepage-hierarchy-v2 .lang-btn { color: #57534e; }
+.homepage-hierarchy-v2 .lang-btn.active { color: #7a2e13; }
 .homepage-hierarchy-v2 .status-pill { display: inline-flex; align-items: center; gap: 7px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg-base); color: var(--text-secondary); font: 600 0.68rem/1 var(--font); cursor: pointer; }
 .homepage-hierarchy-v2 .status-pill i { width: 7px; height: 7px; border-radius: 50%; background: #8a8377; }
 .homepage-hierarchy-v2 .status-pill.running i { background: #7fa96f; }
 .homepage-hierarchy-v2 .status-pill.stalled i { background: #c8a96a; }
 .homepage-hierarchy-v2 .status-pill time { color: var(--text-dim); font-family: var(--font-mono); font-size: 0.59rem; }
-.homepage-hierarchy-v2 .sidebar { width: 56px; overflow: visible; }
+.homepage-hierarchy-v2 .sidebar { position: relative; z-index: 100; width: 56px; overflow: visible; }
 .homepage-hierarchy-v2 .sidebar.collapsed { width: 56px; }
 .homepage-hierarchy-v2 .nav-items { padding: 10px 7px; gap: 5px; }
 .homepage-hierarchy-v2 .nav-item, .homepage-hierarchy-v2 .sidebar.collapsed .nav-item { justify-content: center; padding: 10px; }
 .homepage-hierarchy-v2 .nav-item span, .homepage-hierarchy-v2 .sidebar.collapsed .nav-item span { width: 0; opacity: 0; }
-.homepage-hierarchy-v2 .content { background: var(--bg-base); }
+.homepage-hierarchy-v2 .content { position: relative; z-index: 0; background: var(--bg-base); }
 .homepage-hierarchy-v2 .tab-scroll { gap: 34px; padding: 0 0 48px; }
 .homepage-hierarchy-v2 .research-hero { position: relative; min-height: 700px; height: 700px; padding: 64px 52px 0; border: 0; border-radius: 0; background: #22201d; color: #fbf8f3; overflow: hidden; }
 .homepage-hierarchy-v2 .research-hero::before { content: ""; position: absolute; z-index: 1; inset: 0; background: linear-gradient(90deg, rgba(34,32,29,.94) 0%, rgba(34,32,29,.82) 48%, rgba(34,32,29,.28) 80%, rgba(34,32,29,.12) 100%); }
@@ -919,6 +921,21 @@ header#topBar {
 @media (max-width: 1160px) { .homepage-hierarchy-v2 .research-hero { padding-left: 36px; } .homepage-hierarchy-v2 .runtime-stage { padding-inline: 36px; } .homepage-hierarchy-v2 .system-now-card, .homepage-hierarchy-v2 .scientific-credibility-card, .homepage-hierarchy-v2 .volume-strip, .homepage-hierarchy-v2 .card-graph-preview, .homepage-hierarchy-v2 .overview-details, .homepage-hierarchy-v2 .site-footer { width: min(calc(100% - 72px), 1512px); } .homepage-hierarchy-v2 .stage-legend { gap: 8px; } }
 @media (max-width: 860px) { .homepage-hierarchy-v2 .research-hero { height: auto; min-height: 720px; padding: 46px 26px 142px; } .homepage-hierarchy-v2 .hero-copy { width: 100%; } .homepage-hierarchy-v2 .research-hero h1 { font-size: clamp(38px, 6vw, 46px); } .homepage-hierarchy-v2 .runtime-stage { padding: 12px 26px; align-items: flex-start; flex-direction: column; } .homepage-hierarchy-v2 .scientific-credibility-card { grid-template-columns: 1fr; gap: 18px; } .homepage-hierarchy-v2 .system-now-card, .homepage-hierarchy-v2 .scientific-credibility-card, .homepage-hierarchy-v2 .volume-strip, .homepage-hierarchy-v2 .card-graph-preview, .homepage-hierarchy-v2 .overview-details, .homepage-hierarchy-v2 .site-footer { width: min(calc(100% - 52px), 1512px); } }
 @media (max-width: 600px) { .homepage-hierarchy-v2 header#topBar { height: 104px; } .homepage-hierarchy-v2 .app-shell { top: 104px; } .homepage-hierarchy-v2 .topbar-right .search-container { width: 100%; } .homepage-hierarchy-v2 .hero-proof { grid-template-columns: 1fr; gap: 18px; } .homepage-hierarchy-v2 .hero-memory-proof { padding-left: 0; border-left: 0; } .homepage-hierarchy-v2 .research-hero { min-height: 810px; } .homepage-hierarchy-v2 .system-status-grid, .homepage-hierarchy-v2 .volume-strip { grid-template-columns: 1fr 1fr; } .homepage-hierarchy-v2 .system-status-line + .system-status-line { border-left: 0; border-top: 1px solid var(--border); } .homepage-hierarchy-v2 .volume-item:nth-child(2) { border-right: 0; } .homepage-hierarchy-v2 .volume-item:nth-child(-n+2) { border-bottom: 1px solid var(--border); } .homepage-hierarchy-v2 .site-footer { align-items: flex-start; flex-direction: column; } .homepage-hierarchy-v2 .idea-entry-disabled { align-items: flex-start; text-align: left; } }
+
+/* P1: overview map and portfolio retain their existing data/renderers, with a denser view. */
+.homepage-hierarchy-v2 .zero-note { display: block; min-height: 14px; margin-top: 4px; color: #b7b0a4; font-size: 12.5px; line-height: 1.2; }
+.homepage-hierarchy-v2 .overview-details { border: 0; border-radius: 0; background: transparent; }
+.homepage-hierarchy-v2 .overview-details summary { padding: 0 0 10px; color: var(--text-primary); font-family: var(--font-serif); font-size: 21px; }
+.homepage-hierarchy-v2 .overview-details-note { margin: 0 0 14px; color: var(--text-secondary); }
+.homepage-hierarchy-v2 .overview-details .stat-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 0; padding: 0; border-top: 1px solid var(--border); }
+.homepage-hierarchy-v2 .overview-details .stat-card { min-width: 0; min-height: 94px; padding: 12px 14px; border: 0; border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); border-radius: 0; background: transparent; align-items: flex-start; cursor: pointer; }
+.homepage-hierarchy-v2 .overview-details .stat-card:nth-child(5n) { border-right: 0; }
+.homepage-hierarchy-v2 .overview-details .stat-card:hover, .homepage-hierarchy-v2 .overview-details .stat-card:focus-visible { border-color: var(--border); outline: 2px solid rgba(194,86,42,.34); outline-offset: -2px; transform: none; }
+.homepage-hierarchy-v2 .overview-details .stat-icon { display: none; }
+.homepage-hierarchy-v2 .overview-details .stat-number { order: 2; font: 600 15px/1.2 var(--font-mono); }
+.homepage-hierarchy-v2 .overview-details .stat-label { order: 1; color: var(--text-dim); font-size: 13px; font-weight: 500; letter-spacing: 0; text-transform: none; }
+.homepage-hierarchy-v2 #overviewGraphSvg .taxonomy-child { cursor: pointer; }
+@media (max-width: 900px) { .homepage-hierarchy-v2 .overview-details .stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .homepage-hierarchy-v2 .overview-details .stat-card:nth-child(5n) { border-right: 1px solid var(--border); } .homepage-hierarchy-v2 .overview-details .stat-card:nth-child(2n) { border-right: 0; } }
 
 /* ── 2026-08-23 release candidate: approved scale-first hierarchy ── */
 

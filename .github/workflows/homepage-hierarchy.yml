@@ -1,0 +1,46 @@
+name: homepage-hierarchy
+
+on:
+  pull_request:
+    paths:
+      - 'web/templates/index.html'
+      - 'web/static/js/app.js'
+      - 'web/static/js/i18n.js'
+      - 'web/static/css/style.css'
+      - 'tests/homepage-hierarchy.spec.ts'
+      - 'tests/homepage-hierarchy.spec.json'
+      - 'playwright.config.ts'
+      - 'package.json'
+      - 'package-lock.json'
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm' }
+      - run: python -m pip install -r requirements.txt pytest
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: Start Flask candidate
+        run: |
+          DEEPGRAPH_DATABASE_URL=sqlite:////tmp/deepgraph-homepage-ci.db python -c "from web.app import app; app.run(host='127.0.0.1', port=8080, threaded=True)" > /tmp/deepgraph-web.log 2>&1 &
+          for i in $(seq 1 60); do curl -fsS http://127.0.0.1:8080/ >/dev/null && exit 0; sleep 1; done
+          cat /tmp/deepgraph-web.log
+          exit 1
+      - run: BASE_URL=http://127.0.0.1:8080 npx playwright test tests/homepage-hierarchy.spec.ts
+      - run: python -m pytest -q
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: homepage-hierarchy-report
+          path: |
+            playwright-report/
+            test-results/
+            /tmp/deepgraph-web.log
+          retention-days: 14

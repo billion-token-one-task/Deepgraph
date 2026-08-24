@@ -60,14 +60,13 @@ function zeroSafeValue(value) {
 function updateHeroProof(s) {
     const counts = ['supported', 'refuted', 'inconclusive'].map(kind => Number(s[`decisions_${kind}`] || 0));
     const total = counts.reduce((sum, value) => sum + value, 0);
-    const language = window.dgI18n && window.dgI18n.getLanguage() === 'zh' ? 'zh' : 'en';
-    const label = language === 'zh'
-        ? `证据裁定 · 累计 ${fmt(total)} 项`
-        : `EVIDENCE VERDICTS · ${fmt(total)} TOTAL`;
-    setText('heroEvidenceLabel', label);
+    setText('heroEvidenceLabel', tr('overview.heroProofEvidence', '').replace('{total}', fmt(total)));
     setText('heroSupported', zeroSafeValue(counts[0]));
     setText('heroRefuted', zeroSafeValue(counts[1]));
     setText('heroInconclusive', zeroSafeValue(counts[2]));
+    ['Supported', 'Refuted', 'Inconclusive'].forEach((suffix, index) => {
+        setText(`hero${suffix}Zero`, counts[index] === 0 ? tr('overview.zeroVerdict', 'No verdicts yet') : '');
+    });
     setText('heroGraphEntities', zeroSafeValue(s.graph_entities_total));
     setText('heroGraphRelations', zeroSafeValue(s.graph_relations_total));
 
@@ -410,23 +409,6 @@ function switchTab(tab) {
     // Update nav items
     $$('.nav-item, .advanced-nav-item').forEach(btn => {
         btn.classList.toggle('active', btn.dataset.tab === tab);
-    });
-
-    // Homepage hierarchy links stay within the established single-page tab
-    // navigation; no routes or API sources are introduced for this layout.
-    $$('[data-tab]').forEach(control => {
-        if (control.classList.contains('nav-item') || control.classList.contains('advanced-nav-item')) return;
-        control.addEventListener('click', () => {
-            const tab = control.dataset.tab;
-            if (!tab) return;
-            switchTab(tab);
-            if (control.dataset.verdict) {
-                window.requestAnimationFrame(() => {
-                    const card = el('decisionsCard');
-                    if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                });
-            }
-        });
     });
 
     // Update panels
@@ -2169,6 +2151,8 @@ function renderRadialGraph(svgId, parentNode, children, targetHeight, isPreview)
     const childG = svg.append('g').selectAll('g')
         .data(childNodes).join('g')
         .attr('class', 'graph-node taxonomy-card taxonomy-child draggable')
+        .attr('data-testid', isPreview ? 'map-node' : null)
+        .attr('data-area-id', d => d.id)
         .attr('transform', d => `translate(${d.x},${d.y})`);
     drawChildCards(childG, isPreview, maxGap, maxPapers, maxMethods);
 
@@ -2331,7 +2315,6 @@ function drawRootCard(g, d, isPreview) {
     drawMetricPills(g, [
         [`${d.paper_count}`, 'papers', '#c4704b'],
         [`${d.gap_count}`, 'gaps', '#3d8b5e'],
-        [`${d.method_count}`, 'methods', '#7c5cbf'],
     ], 14, d.h - 34, d.w - 28, isPreview);
 }
 
@@ -2379,9 +2362,8 @@ function drawChildCards(selection, isPreview, maxGap, maxPapers, maxMethods) {
             'font-weight': '600',
         }, d.w - 36);
         drawMetricPills(g, [
-            [`${d.paper_count}`, 'p', '#c4704b'],
+            [`${d.paper_count}`, 'papers', '#c4704b'],
             [`${d.gap_count}`, 'gaps', '#3d8b5e'],
-            [`${d.method_count}`, 'm', '#7c5cbf'],
         ], 14, d.h - 25, d.w - 28, isPreview);
     });
 }
@@ -4251,6 +4233,32 @@ function init() {
         });
     });
 
+    // Homepage hierarchy links stay within the established single-page tab
+    // navigation; no routes or API sources are introduced for this layout.
+    $$('[data-tab]').forEach(control => {
+        if (control.classList.contains('nav-item') || control.classList.contains('advanced-nav-item')) return;
+        const activate = () => {
+            const tab = control.dataset.tab;
+            if (!tab) return;
+            switchTab(tab);
+            if (control.dataset.verdict) {
+                window.requestAnimationFrame(() => {
+                    const card = el('decisionsCard');
+                    if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                });
+            }
+        };
+        control.addEventListener('click', activate);
+        if (!/^(BUTTON|A)$/.test(control.tagName)) {
+            control.addEventListener('keydown', event => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    activate();
+                }
+            });
+        }
+    });
+
     // Sidebar toggle
     el('sidebarToggle').addEventListener('click', toggleSidebar);
 
@@ -4308,6 +4316,9 @@ function init() {
 
     // Initial data loads. Agenda scope resolves first so that scoped
     // endpoints get their agenda_id; the unscoped loads run regardless.
+    // Keep the existing pixel-office visual available as the hero background
+    // during API startup. The next processing snapshot replaces this fallback.
+    renderProcessingList();
     initAgendaScope().finally(() => {
         refreshStats();
         loadRecentlyDiscovered();
