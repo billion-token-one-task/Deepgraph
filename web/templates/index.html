@@ -36,15 +36,18 @@
     <link rel="stylesheet" href="/static/css/style.css?v=20260824-status1">
 </head>
 <body data-root-node="{{ root_node_id }}" data-profile="{{ profile }}">
+    <a class="skip-link" href="#mainContent" data-i18n="a11y.skipToContent">Skip to main content</a>
 
     <!-- ── Top Bar ──────────────────────────────────────────────── -->
-    <header id="topBar">
+    <header id="topBar" data-testid="app-header">
         <div class="topbar-left">
             <button class="sidebar-toggle" id="sidebarToggle" aria-label="Toggle sidebar">
                 <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M2 4h14M2 9h14M2 14h14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
             </button>
             <span class="app-name">DeepGraph</span>
-            <span class="live-badge" id="liveBadge" data-i18n="app.live.idle">IDLE</span>
+            <button class="status-pill live-badge" id="liveBadge" data-testid="status-pill" type="button" data-tab="office" aria-label="Open system activity">
+                <i aria-hidden="true"></i><span id="statusPillText" data-i18n="app.live.idle">IDLE</span><span aria-hidden="true">·</span><time id="statusPillTime">—</time>
+            </button>
         </div>
         <div class="topbar-stats" id="topbarStats">
             <div class="topbar-stat" title="Papers that completed DeepGraph's full processing pipeline">
@@ -64,11 +67,11 @@
             </div>
         </div>
         <div class="topbar-right">
-            <div class="lang-switch">
+            <div class="lang-switch" data-testid="lang-toggle">
                 <button type="button" class="lang-btn" data-lang="en" data-i18n="lang.en">EN</button>
                 <button type="button" class="lang-btn" data-lang="zh" data-i18n="lang.zh">ZH</button>
             </div>
-            <div class="search-container">
+            <div class="search-container" data-testid="global-search">
                 <svg class="search-icon" width="16" height="16" viewBox="0 0 16 16" fill="none"><circle cx="6.5" cy="6.5" r="5" stroke="currentColor" stroke-width="1.5"/><path d="M10.5 10.5L14.5 14.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
                 <input type="text" id="searchInput" class="search-input" placeholder="Search papers, methods, insights..." data-i18n-placeholder="topbar.search.placeholder" autocomplete="off">
                 <div id="searchResults" class="search-results"></div>
@@ -80,47 +83,38 @@
     <div class="app-shell">
 
         <!-- Sidebar -->
-        <nav class="sidebar" id="sidebar" aria-label="DeepGraph">
+        <nav class="sidebar" id="sidebar" data-testid="nav-rail" aria-label="DeepGraph">
             <div class="nav-items">
-                <button class="nav-item active" data-tab="overview">
+                <button class="nav-item active" data-tab="overview" data-testid="nav-rail-item" title="Overview">
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><rect x="2" y="2" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5"/><rect x="11" y="2" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5"/><rect x="2" y="11" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5"/><rect x="11" y="11" width="7" height="7" rx="1.5" stroke="currentColor" stroke-width="1.5"/></svg>
                     <span data-i18n="nav.research">Overview</span>
                 </button>
-                <button class="nav-item" data-tab="discoveries">
+                <button class="nav-item" data-tab="discoveries" data-testid="nav-rail-item" title="Research ideas">
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M10 1L12.5 6.5 18.5 7.5 14 11.5 15 17.5 10 14.5 5 17.5 6 11.5 1.5 7.5 7.5 6.5Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"/></svg>
                     <span data-i18n="nav.ideas">Research ideas</span>
                 </button>
-                <button class="nav-item" data-tab="experiments">
+                <button class="nav-item" data-tab="experiments" data-testid="nav-rail-item" title="Experiments and process">
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M4 10h3l2-5 3 10 2-5h2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/><circle cx="10" cy="10" r="8" stroke="currentColor" stroke-width="1.5"/></svg>
                     <span data-i18n="nav.process">Experiments &amp; process</span>
                 </button>
-                <button class="nav-item" data-tab="evidence">
+                <button class="nav-item" data-tab="evidence" data-testid="nav-rail-item" title="Evidence and decisions">
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="6" cy="5" r="1" fill="currentColor"/><circle cx="10" cy="10" r="1" fill="currentColor"/><circle cx="14" cy="15" r="1" fill="currentColor"/></svg>
                     <span data-i18n="nav.evidence">Evidence &amp; decisions</span>
                 </button>
-                <button class="nav-item" data-tab="papers">
+                <button class="nav-item" data-tab="papers" data-testid="nav-rail-item" title="Manuscripts">
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M4 3h8l4 4v10a1 1 0 01-1 1H4a1 1 0 01-1-1V4a1 1 0 011-1z" stroke="currentColor" stroke-width="1.5"/><path d="M12 3v4h4" stroke="currentColor" stroke-width="1.5"/><path d="M6 10h8M6 13h5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
                     <span data-i18n="nav.manuscripts">Manuscripts</span>
                 </button>
-                <button class="nav-item" data-tab="explore">
+                <button class="nav-item" data-tab="explore" data-testid="nav-rail-item" title="Research areas">
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="7.5" stroke="currentColor" stroke-width="1.5"/><circle cx="10" cy="10" r="3" stroke="currentColor" stroke-width="1.5"/><path d="M10 2.5V5M10 15v2.5M2.5 10H5M15 10h2.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
                     <span data-i18n="nav.map">Research areas</span>
                 </button>
-                <button class="nav-item" data-tab="office" type="button">
+                <button class="nav-item" data-tab="office" type="button" data-testid="nav-rail-item" title="Activity">
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none"><path d="M3 16V7l7-4 7 4v9H3Z" stroke="currentColor" stroke-width="1.5"/><path d="M6 16v-5h3v5M12 9h2M12 12h2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
                     <span data-i18n="nav.activity">Activity</span>
                 </button>
             </div>
 
-            <div class="sidebar-footer">
-                <button class="idea-entry-disabled" type="button" disabled aria-disabled="true">
-                    <span data-i18n="nav.propose">Submit an autonomous research idea</span>
-                    <small data-i18n="nav.comingSoon">Coming soon</small>
-                </button>
-                <div class="pipeline-controls" style="font-size:0.72rem;color:var(--text-dim);line-height:1.5;">
-                    <span data-i18n="footer.scoped">Research work runs only through approved agendas and scoped grants.</span>
-                </div>
-            </div>
         </nav>
 
         <!-- Main Content -->
@@ -129,15 +123,69 @@
             <!-- ── Overview Tab ─────────────────────────────────── -->
             <section class="tab-panel active" id="tab-overview">
                 <div class="tab-scroll">
-                    <div class="preview-ribbon"><span data-i18n="preview.readOnly">Live production data · read-only</span><time id="statsGeneratedAt">—</time></div>
-                    <section class="research-hero" aria-labelledby="heroTitle">
-                        <p class="section-kicker" data-i18n="overview.heroEyebrow">DEEPGRAPH · AI RESEARCH HARNESS</p>
-                        <h1 id="heroTitle" data-i18n="overview.heroTitle">A verifiable research harness for long-horizon AI</h1>
-                        <p data-i18n="overview.heroSubtitle">DeepGraph connects experiments, knowledge, and evidence into an auditable, recoverable research loop—and investigates whether verified experience can improve future research.</p>
+                    <section class="research-hero" data-testid="hero" aria-labelledby="heroTitle">
+                        <div class="hero-runtime-bg" aria-hidden="true">
+                            <div id="officeOverviewSlot" class="overview-office-slot">
+                                <div class="card card-compact office-mode-preview" id="officeProcessing" data-office-mode="preview">
+                                    <div class="processing-list" id="processingList"><div class="agent-office-loading"><span data-i18n="office.mapping">Mapping DeepGraph departments...</span></div></div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="hero-copy">
+                            <p class="section-kicker" data-testid="hero-eyebrow" data-i18n="overview.heroEyebrow">DEEPGRAPH · AI RESEARCH HARNESS</p>
+                            <h1 id="heroTitle" data-testid="hero-title" data-i18n="overview.heroTitle">An AI research harness that compounds experience</h1>
+                            <p class="hero-sub" data-testid="hero-sub" data-i18n="overview.heroSubtitle">DeepGraph links experiments, knowledge, and evidence into one verifiable loop that keeps improving itself.</p>
+                            <div class="hero-proof" data-testid="hero-proof">
+                                <div class="hero-evidence-proof">
+                                    <p id="heroEvidenceLabel" class="proof-label">EVIDENCE VERDICTS · 0 TOTAL</p>
+                                    <div class="evidence-bar" data-testid="evidence-bar" aria-label="Evidence verdict distribution">
+                                        <span class="evidence-bar-segment supported" data-testid="evidence-bar-segment"></span><span class="evidence-bar-segment refuted" data-testid="evidence-bar-segment"></span><span class="evidence-bar-segment inconclusive" data-testid="evidence-bar-segment"></span>
+                                    </div>
+                                    <div class="hero-verdict-stats">
+                                        <button class="verdict-stat" data-testid="verdict-stat" type="button" data-tab="evidence" data-verdict="supported"><strong id="heroSupported" data-testid="verdict-value">—</strong><span data-i18n="verdict.supported">supported</span></button>
+                                        <button class="verdict-stat" data-testid="verdict-stat" type="button" data-tab="evidence" data-verdict="refuted"><strong id="heroRefuted" data-testid="verdict-value">—</strong><span data-i18n="verdict.refuted">refuted</span></button>
+                                        <button class="verdict-stat" data-testid="verdict-stat" type="button" data-tab="evidence" data-verdict="inconclusive"><strong id="heroInconclusive" data-testid="verdict-value">—</strong><span data-i18n="verdict.inconclusive">inconclusive</span></button>
+                                    </div>
+                                </div>
+                                <div class="hero-memory-proof">
+                                    <p class="proof-label" data-i18n="overview.heroProofMemory">RESEARCH MEMORY · REUSABLE</p>
+                                    <div class="hero-memory-stats">
+                                        <div class="memory-stat" data-testid="memory-stat"><strong id="heroGraphEntities" data-testid="memory-value">—</strong><span data-i18n="stat.knowledgeEntities">Knowledge entities</span></div>
+                                        <div class="memory-stat" data-testid="memory-stat"><strong id="heroGraphRelations" data-testid="memory-value">—</strong><span data-i18n="stat.knowledgeRelations">Knowledge relations</span></div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="hero-actions">
+                                <button class="hero-cta primary" data-testid="cta-runtime" data-tab="office" type="button" data-i18n="overview.ctaRuntime">Open research runtime</button>
+                                <button class="hero-cta secondary" data-testid="cta-map" data-tab="explore" type="button" data-i18n="overview.ctaMap">View research map</button>
+                            </div>
+                        </div>
+                        <div class="runtime-stage" data-testid="runtime-stage">
+                            <div class="stage-legend" data-testid="stage-legend" aria-label="Research runtime stages">
+                                <button type="button" data-tab="experiments" data-stage="paper_extraction" data-testid="stage-legend-item"><i></i><span data-i18n="office.department.paper_extraction.title">Paper intake & extraction</span></button>
+                                <button type="button" data-tab="explore" data-stage="graph_construction" data-testid="stage-legend-item"><i></i><span data-i18n="office.department.graph_construction.title">Knowledge graph</span></button>
+                                <button type="button" data-tab="discoveries" data-stage="idea_generation" data-testid="stage-legend-item"><i></i><span data-i18n="office.department.idea_generation.title">Research idea generation</span></button>
+                                <button type="button" data-tab="experiments" data-stage="experiment_planning" data-testid="stage-legend-item"><i></i><span data-i18n="office.department.experiment_planning.title">Experiment planning</span></button>
+                                <button type="button" data-tab="experiments" data-stage="experiment_execution" data-testid="stage-legend-item"><i></i><span data-i18n="office.department.experiment_execution.title">Experiment execution</span></button>
+                                <button type="button" data-tab="papers" data-stage="manuscript_generation" data-testid="stage-legend-item"><i></i><span data-i18n="office.department.manuscript_generation.title">Manuscript generation</span></button>
+                                <button type="button" data-tab="office" data-stage="orchestration" data-testid="stage-legend-item"><i></i><span data-i18n="office.department.orchestration.title">Research orchestration</span></button>
+                            </div>
+                            <span id="runtimeStageSummary">—</span>
+                        </div>
                     </section>
 
-                    <div class="overview-proof-grid">
-                    <section class="scientific-credibility-card" id="coreStats" aria-labelledby="credibilityTitle">
+                    <section class="system-now-card" data-testid="status-row" aria-labelledby="systemNowTitle">
+                        <div class="card-header">
+                            <div><p class="section-kicker" data-i18n="overview.now">NOW</p><h2 id="systemNowTitle" data-i18n="overview.systemStatus">Current system status</h2></div>
+                            <button class="btn-link" type="button" id="btnOpenOffice" data-testid="link-activity" data-tab="office" data-i18n="overview.fullActivity">Open full activity</button>
+                        </div>
+                        <div class="system-status-grid">
+                            <div class="system-status-line data-status"><i></i><div><strong id="dataStatusText" data-i18n="overview.dataConnected">Production data connected</strong><small id="systemHealthText" data-i18n="overview.healthLoading">Checking production data health…</small></div></div>
+                            <div class="system-status-line runtime-status" id="runtimeStatusLine"><i></i><div><strong id="pipelineStatusText" data-i18n="overview.pipelineChecking">Checking research pipeline…</strong><small id="pipelineStatusDetail">—</small></div></div>
+                        </div>
+                    </section>
+
+                    <section class="scientific-credibility-card" id="coreStats" data-testid="credibility-section" aria-labelledby="credibilityTitle">
                         <div class="credibility-copy">
                             <span data-i18n="overview.scientificCredibility">SCIENTIFIC CREDIBILITY</span>
                             <h2 id="credibilityTitle" data-i18n="overview.credibilityTitle">Every verdict keeps uncertainty visible</h2>
@@ -145,60 +193,34 @@
                         </div>
                         <aside class="outcome-rail">
                             <div class="credibility-grid">
-                                <div class="credibility-metric supported"><strong id="statSupported">0</strong><span><span data-i18n="verdict.supported">supported</span> <button class="metric-help" type="button" data-tip-key="tip.supported" aria-label="Supported verdict definition">?</button></span></div>
-                                <div class="credibility-metric refuted"><strong id="statRefutedBreakdown">0</strong><span><span data-i18n="verdict.refuted">refuted</span> <button class="metric-help" type="button" data-tip-key="tip.refuted" aria-label="Refuted verdict definition">?</button></span></div>
-                                <div class="credibility-metric inconclusive"><strong id="statInconclusiveBreakdown">0</strong><span><span data-i18n="verdict.inconclusive">inconclusive</span> <button class="metric-help" type="button" data-tip-key="tip.inconclusive" aria-label="Inconclusive verdict definition">?</button></span></div>
+                                <button class="credibility-metric supported verdict-stat" data-testid="verdict-stat" type="button" data-tab="evidence" data-verdict="supported"><strong id="statSupported" data-testid="verdict-value">—</strong><span data-i18n="verdict.supported">supported</span></button>
+                                <button class="credibility-metric refuted verdict-stat" data-testid="verdict-stat" type="button" data-tab="evidence" data-verdict="refuted"><strong id="statRefutedBreakdown" data-testid="verdict-value">—</strong><span data-i18n="verdict.refuted">refuted</span></button>
+                                <button class="credibility-metric inconclusive verdict-stat" data-testid="verdict-stat" type="button" data-tab="evidence" data-verdict="inconclusive"><strong id="statInconclusiveBreakdown" data-testid="verdict-value">—</strong><span data-i18n="verdict.inconclusive">inconclusive</span></button>
                             </div>
                             <span id="statSupportedBreakdown" hidden>0</span>
                             <div class="stat-subtext" id="statDecidedSub"></div>
                         </aside>
                     </section>
-                    <section class="research-foundation-card memory-card" aria-labelledby="researchMemoryTitle">
-                        <div><p class="section-kicker" data-i18n="overview.researchMemory">RESEARCH MEMORY</p><h3 id="researchMemoryTitle" data-i18n="overview.researchMemoryTitle">Knowledge retained for future research</h3></div>
-                        <div class="foundation-metrics memory-metrics">
-                            <div><strong id="statGraphEntities">0</strong><span><span data-i18n="stat.knowledgeEntities">Knowledge entities</span> <button class="metric-help" type="button" data-tip-key="tip.knowledgeEntities" aria-label="Knowledge entities definition">?</button></span></div>
-                            <div><strong id="statGraphRelations">0</strong><span><span data-i18n="stat.knowledgeRelations">Knowledge relations</span> <button class="metric-help" type="button" data-tip-key="tip.knowledgeRelations" aria-label="Knowledge relations definition">?</button></span></div>
-                        </div>
                     </section>
-                    <section class="research-foundation-card compute-card" aria-labelledby="researchComputeTitle">
-                        <div><p class="section-kicker" data-i18n="overview.researchCompute">RESEARCH COMPUTE</p><h3 id="researchComputeTitle" data-i18n="overview.researchComputeTitle">Work used to process the paper corpus</h3></div>
-                        <div class="foundation-metrics"><div><strong id="statTokens">0</strong><span><span data-i18n="stat.processedTokens">Paper-processing tokens</span> <button class="metric-help" type="button" data-tip-key="tip.analysisTokens" aria-label="Paper-processing tokens definition">?</button></span></div></div>
-                    </section>
-                    </div>
 
-                    <div class="overview-lower">
-                    <section class="system-now-card" aria-labelledby="systemNowTitle">
-                        <div class="card-header">
-                            <div><p class="section-kicker" data-i18n="overview.now">NOW</p><h3 id="systemNowTitle" data-i18n="overview.systemStatus">Current system status</h3></div>
-                            <button class="btn-link" type="button" id="btnOpenOffice" data-i18n="overview.fullActivity">Open full activity</button>
-                        </div>
-                        <div class="system-status-grid">
-                            <div class="system-status-line data-status"><i></i><div><strong id="dataStatusText" data-i18n="overview.dataConnected">Production data connected</strong><small id="systemHealthText" data-i18n="overview.healthLoading">Checking production data health…</small></div></div>
-                            <div class="system-status-line runtime-status" id="runtimeStatusLine"><i></i><div><strong id="pipelineStatusText" data-i18n="overview.pipelineChecking">Checking research pipeline…</strong><small id="pipelineStatusDetail">—</small></div></div>
-                        </div>
-                        <div id="officeOverviewSlot" class="overview-office-slot">
-                            <div class="card card-compact office-mode-preview" id="officeProcessing" data-office-mode="preview">
-                                <div class="card-header office-card-header">
-                                    <div><h3 data-i18n="office.title">Research Runtime</h3><div class="office-subtitle" data-i18n="office.subtitle">A live view from literature and hypotheses to experiments and evidence-backed decisions.</div></div>
-                                    <span class="badge badge-dim" id="processingCount" data-i18n="office.idle">office idle</span>
-                                </div>
-                                <div class="processing-list" id="processingList"><div class="agent-office-loading"><div class="pixel-loader" aria-hidden="true"><span></span><span></span><span></span></div><span data-i18n="office.mapping">Mapping DeepGraph departments...</span></div></div>
-                            </div>
-                        </div>
+                    <section class="volume-strip" data-testid="volume-strip" aria-label="Accumulated research volume">
+                        <div class="volume-item" data-testid="volume-item"><strong id="statGraphEntities">—</strong><span data-i18n="stat.knowledgeEntities">Knowledge entities</span></div>
+                        <div class="volume-item" data-testid="volume-item"><strong id="statGraphRelations">—</strong><span data-i18n="stat.knowledgeRelations">Knowledge relations</span></div>
+                        <div class="volume-item" data-testid="volume-item"><strong id="statTokens">—</strong><span data-i18n="stat.processedTokens">Paper-processing tokens</span></div>
+                        <div class="volume-item" data-testid="volume-item"><strong id="statStaleProcessing">—</strong><span data-i18n="overview.staleProcessing">Stale processing items</span></div>
                     </section>
-                    </div>
 
-                    <div class="card card-graph-preview" id="overviewMapCard">
+                    <section class="card card-graph-preview" id="overviewMapCard" data-testid="map-section">
                         <div class="card-header">
                             <div>
                                 <h3 data-i18n="overview.map">Research map</h3>
                                 <p class="overview-results-note" data-i18n="overview.mapNote">Explore the active research landscape and its evidence-bearing areas.</p>
                             </div>
-                            <button class="btn-link" id="btnJumpExplore" data-i18n="overview.openMap">Open map</button>
+                            <button class="btn-link" id="btnJumpExplore" data-testid="link-map" data-tab="explore" data-i18n="overview.openMap">Open map</button>
                         </div>
                         <div class="graph-loading" id="overviewGraphLoading" data-i18n="overview.mapLoading">Loading the research map from the production taxonomy…</div>
-                        <svg id="overviewGraphSvg" width="100%" height="330" aria-label="Research map preview"></svg>
-                    </div>
+                        <svg id="overviewGraphSvg" data-testid="map-canvas" width="100%" height="380" aria-label="Research map preview"></svg>
+                    </section>
 
                     <details class="overview-details">
                         <summary data-i18n="overview.portfolio">Research portfolio and process</summary>
@@ -259,6 +281,11 @@
                         </div>
                     </div>
                     </details>
+
+                    <footer class="site-footer" data-testid="site-footer">
+                        <p data-testid="footer-notice" data-i18n="footer.scoped">Research work runs only through approved agendas and scoped grants.</p>
+                        <button class="idea-entry-disabled" data-testid="cta-submit-idea" type="button" disabled aria-disabled="true" tabindex="-1" title="Research work runs only through approved agendas and scoped grants."><span data-i18n="nav.propose">Submit an autonomous research idea</span><small data-i18n="nav.comingSoon">Coming soon</small></button>
+                    </footer>
 
                 </div>
             </section>

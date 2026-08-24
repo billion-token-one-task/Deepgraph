@@ -9,6 +9,11 @@
 // ── State ────────────────────────────────────────────────────────────
 
 const ROOT_NODE = document.body.dataset.rootNode || 'ml';
+const homepageHierarchyEnabled = (() => {
+    const value = new URLSearchParams(window.location.search).get('ff');
+    return !['homepage_hierarchy_v2_off', '0', 'false'].includes(String(value || '').toLowerCase());
+})();
+document.body.classList.toggle('homepage-hierarchy-v2', homepageHierarchyEnabled);
 
 let activeTab       = 'overview';
 let exploreNodeId   = ROOT_NODE;
@@ -41,6 +46,56 @@ function fmt(n) {
     if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
     if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
     return String(n);
+}
+
+function setText(id, value) {
+    const node = el(id);
+    if (node) node.textContent = value;
+}
+
+function zeroSafeValue(value) {
+    return Number(value || 0) === 0 ? '—' : fmt(value);
+}
+
+function updateHeroProof(s) {
+    const counts = ['supported', 'refuted', 'inconclusive'].map(kind => Number(s[`decisions_${kind}`] || 0));
+    const total = counts.reduce((sum, value) => sum + value, 0);
+    const language = window.dgI18n && window.dgI18n.getLanguage() === 'zh' ? 'zh' : 'en';
+    const label = language === 'zh'
+        ? `证据裁定 · 累计 ${fmt(total)} 项`
+        : `EVIDENCE VERDICTS · ${fmt(total)} TOTAL`;
+    setText('heroEvidenceLabel', label);
+    setText('heroSupported', zeroSafeValue(counts[0]));
+    setText('heroRefuted', zeroSafeValue(counts[1]));
+    setText('heroInconclusive', zeroSafeValue(counts[2]));
+    setText('heroGraphEntities', zeroSafeValue(s.graph_entities_total));
+    setText('heroGraphRelations', zeroSafeValue(s.graph_relations_total));
+
+    const segments = $$('[data-testid="evidence-bar-segment"]');
+    segments.forEach((segment, index) => {
+        segment.style.flexGrow = String(total ? counts[index] : 1);
+        segment.hidden = false;
+        segment.classList.toggle('is-empty', total === 0);
+    });
+}
+
+function updateStatusPill() {
+    const state = String(pipelineState || 'unknown').toLowerCase();
+    const failure = ['stalled', 'error', 'failed', 'halted', 'worker_error'].includes(state);
+    const running = state === 'running';
+    const label = failure
+        ? tr('overview.pipelineStalled', 'Research runtime stalled')
+        : running
+            ? tr('overview.pipelineRunning', 'Research runtime active')
+            : state === 'idle_no_authorized_work'
+                ? tr('overview.noAuthorizedResearch', 'No approved research work right now')
+                : tr('overview.pipelineIdle', 'Research control plane idle');
+    setText('statusPillText', label);
+    const pill = el('liveBadge');
+    if (pill) {
+        pill.classList.toggle('running', running);
+        pill.classList.toggle('stalled', failure);
+    }
 }
 
 // i18n bridge: translate via window.t (from i18n.js) with an English
@@ -357,6 +412,23 @@ function switchTab(tab) {
         btn.classList.toggle('active', btn.dataset.tab === tab);
     });
 
+    // Homepage hierarchy links stay within the established single-page tab
+    // navigation; no routes or API sources are introduced for this layout.
+    $$('[data-tab]').forEach(control => {
+        if (control.classList.contains('nav-item') || control.classList.contains('advanced-nav-item')) return;
+        control.addEventListener('click', () => {
+            const tab = control.dataset.tab;
+            if (!tab) return;
+            switchTab(tab);
+            if (control.dataset.verdict) {
+                window.requestAnimationFrame(() => {
+                    const card = el('decisionsCard');
+                    if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                });
+            }
+        });
+    });
+
     // Update panels
     $$('.tab-panel').forEach(panel => {
         panel.classList.toggle('active', panel.id === 'tab-' + tab);
@@ -468,11 +540,11 @@ async function refreshStats() {
                     : '';
             }
         }
-        el('statTokens').textContent        = fmt(s.tokens_consumed || 0);
-        el('statSupported').textContent = fmt(s.decisions_supported || 0);
-        el('statSupportedBreakdown').textContent = fmt(s.decisions_supported || 0);
-        el('statRefutedBreakdown').textContent = fmt(s.decisions_refuted || 0);
-        el('statInconclusiveBreakdown').textContent = fmt(s.decisions_inconclusive || 0);
+        setText('statTokens', zeroSafeValue(s.tokens_consumed));
+        setText('statSupported', zeroSafeValue(s.decisions_supported));
+        setText('statSupportedBreakdown', fmt(s.decisions_supported || 0));
+        setText('statRefutedBreakdown', zeroSafeValue(s.decisions_refuted));
+        setText('statInconclusiveBreakdown', zeroSafeValue(s.decisions_inconclusive));
         el('statExperimentsCompleted').textContent = fmt(s.experiments_completed || 0);
         el('statExperimentsFailed').textContent = fmt(s.experiments_failed || 0);
         el('statExperimentsSuperseded').textContent = fmt(s.experiments_superseded || 0);
@@ -487,8 +559,8 @@ async function refreshStats() {
         el('statTaxonomy').textContent = fmt(s.taxonomy_nodes_total || 0);
         el('statContradictions').textContent = fmt(s.contradictions_total || 0);
         el('statInsights').textContent      = publicCount('insights_total');
-        el('statGraphEntities').textContent = publicCount('graph_entities_total');
-        el('statGraphRelations').textContent = publicCount('graph_relations_total');
+        setText('statGraphEntities', zeroSafeValue(s.graph_entities_total));
+        setText('statGraphRelations', zeroSafeValue(s.graph_relations_total));
         el('statAgendaTokens').textContent  = fmt(s.agenda_tokens_total || 0);
         el('statCompletePapers').textContent = fmt(s.submission_bundles_total || 0);
         const generatedAt = el('statsGeneratedAt');
@@ -498,6 +570,7 @@ async function refreshStats() {
                 month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit'
             });
             generatedAt.dateTime = new Date(Number(s.generated_at) * 1000).toISOString();
+            setText('statusPillTime', generatedAt.textContent);
         }
         const healthText = el('systemHealthText');
         const healthOk = s.data_health && s.data_health.status === 'ok';
@@ -507,6 +580,7 @@ async function refreshStats() {
         if (dataStatusText) dataStatusText.textContent = healthOk
             ? t('overview.dataConnected') : t('overview.dataDegraded');
         applyMetricTips();
+        updateHeroProof(s);
     } catch (e) {
         console.error('Stats error:', e);
     }
@@ -561,13 +635,13 @@ let staleProcessingCount = 0;
 
 function updateLiveBadge() {
     const badge = el('liveBadge');
-    const stalled = pipelineState === 'stalled' || pipelineState === 'error';
+    const stalled = ['stalled', 'error', 'failed', 'halted', 'worker_error'].includes(pipelineState);
     const running = pipelineState === 'running';
-    badge.textContent = stalled
-        ? tr('app.live.stalled', 'STALLED')
-        : running ? tr('app.live.live', 'LIVE') : tr('app.live.idle', 'IDLE');
-    badge.classList.toggle('running', running);
-    badge.classList.toggle('stalled', stalled);
+    if (badge) {
+        badge.classList.toggle('running', running);
+        badge.classList.toggle('stalled', stalled);
+    }
+    updateStatusPill();
     renderRuntimeStatus(running, stalled);
 }
 
@@ -632,6 +706,7 @@ async function loadProcessingPapers() {
         staleProcessingCount = Number(
             legacyIngestion.stale_processing_count ?? data.stale_processing_count ?? 0
         );
+        setText('statStaleProcessing', zeroSafeValue(staleProcessingCount));
 
         for (const r of rows) {
             const isDone = r.status === 'reasoned' || r.status === 'error';
@@ -664,6 +739,12 @@ async function loadProcessingPapers() {
             }
         }
         renderProcessingList();
+        const summary = agentOfficeData && agentOfficeData.summary;
+        if (summary) {
+            setText('runtimeStageSummary', tr('office.countSummary', '{working} active stages / {modules} runtime modules')
+                .replace('{working}', fmt(summary.working || 0))
+                .replace('{modules}', fmt(summary.sub_agents || 0)));
+        }
         updateLiveBadge();
     } catch (e) { /* ignore */ }
 }
@@ -4217,6 +4298,8 @@ function init() {
     // static chrome is re-applied by i18n.js itself.
     document.addEventListener('deepgraph:languagechange', () => {
         applyMetricTips();
+        if (statsCache) updateHeroProof(statsCache);
+        updateStatusPill();
         updateLiveBadge();
         renderProcessingList();
         if (agentOfficeRenderer) agentOfficeRenderer.rebuildForCurrentSize();
