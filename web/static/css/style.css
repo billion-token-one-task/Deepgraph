@@ -3818,3 +3818,33 @@ mjx-assistive-mml {
     .timeline-scope-controls .agenda-select { width: min(230px, 58vw); }
     .timeline-scope-controls .badge { display: none; }
 }
+
+
+/* A verdict chip filters the judged-findings list; the banner says what is
+   being hidden so a filtered view is never mistaken for an empty one. */
+.decision-filter-banner {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2, 8px);
+    flex-wrap: wrap;
+    padding: var(--space-2, 8px) var(--space-3, 12px);
+    margin-bottom: var(--space-3, 12px);
+    border-radius: 6px;
+    background: var(--surface-2, rgba(127, 127, 127, 0.08));
+    font-size: 0.875rem;
+}
+
+.decision-filter-clear {
+    margin-left: auto;
+    border: 1px solid var(--border, rgba(127, 127, 127, 0.35));
+    background: transparent;
+    color: inherit;
+    border-radius: 4px;
+    padding: 2px 10px;
+    cursor: pointer;
+    font: inherit;
+}
+
+.decision-filter-clear:hover {
+    background: var(--surface-3, rgba(127, 127, 127, 0.16));
+}

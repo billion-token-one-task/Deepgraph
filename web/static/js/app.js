@@ -2618,12 +2618,20 @@ function decisionMetricLine(d) {
     return parts.join(' &middot; ');
 }
 
+// The verdict chips on the hero carry data-verdict and used to only scroll
+// here, so clicking "1 supported" landed the reader in a list of sixty-four
+// mixed verdicts with the empty evidence-matrix placeholder above it. The rows
+// are kept so a chip can actually filter what it names.
+let decisionRows = [];
+let decisionVerdictFilter = '';
+
 async function loadDecisions() {
     const body = el('decisionsBody');
     if (!body) return;
     try {
         const payload = await api('/api/scientific_decisions');
         const rows = payload.decisions || [];
+        decisionRows = rows;
         const badge = el('decisionsCountBadge');
         if (badge) {
             const auditedTotal = Number(payload.total);
@@ -2640,7 +2648,35 @@ async function loadDecisions() {
             body.innerHTML = `<div class="paper-reader-empty-title">${esc(t('decisions.empty'))}</div>`;
             return;
         }
-        body.innerHTML = rows.map(d => {
+        renderDecisionRows();
+    } catch (e) {
+        console.error('Decisions unavailable:', e);
+        body.innerHTML = `<div class="paper-reader-empty-title">${esc(t('decisions.empty'))}</div>`;
+    }
+}
+
+function renderDecisionRows() {
+    const body = el('decisionsBody');
+    if (!body) return;
+    const filter = String(decisionVerdictFilter || '').toLowerCase();
+    const rows = filter
+        ? decisionRows.filter(d => String(d.verdict || '').toLowerCase() === filter)
+        : decisionRows;
+    const banner = filter
+        ? `<div class="decision-filter-banner">
+               ${esc(t('decisions.filtered') || 'Showing')} ${fmt(rows.length)} / ${fmt(decisionRows.length)}
+               &middot; <span class="decision-verdict ${VERDICT_CLASS[filter] || ''}">${esc(filter)}</span>
+               <button type="button" class="decision-filter-clear" onclick="window._dg.clearDecisionFilter()">
+                   ${esc(t('decisions.clearFilter') || 'Show all')}
+               </button>
+           </div>`
+        : '';
+    if (!rows.length) {
+        body.innerHTML = banner
+            + `<div class="paper-reader-empty-title">${esc(t('decisions.empty'))}</div>`;
+        return;
+    }
+    body.innerHTML = banner + rows.map(d => {
             const cls = VERDICT_CLASS[String(d.verdict)] || '';
             const metrics = decisionMetricLine(d);
             const detail = d.decision_detail || {};
@@ -2678,11 +2714,7 @@ async function loadDecisions() {
                     <span class="decision-meta">${esc(String(paper.asset_count || 0))} ${esc(t('decisions.assets'))}${paper.status ? ` &middot; ${esc(String(paper.status))}` : ''}</span></div>` : ''}
                 ${d.verdict_hash ? `<div class="decision-hash">${esc(String(d.verdict_hash).slice(0, 16))}…</div>` : ''}
             </details>`;
-        }).join('');
-    } catch (e) {
-        console.error('Decisions unavailable:', e);
-        body.innerHTML = `<div class="paper-reader-empty-title">${esc(t('decisions.empty'))}</div>`;
-    }
+    }).join('');
 }
 
 async function loadTaxonomyDropdown() {
@@ -4079,6 +4111,10 @@ function searchNav(type, id) {
 
 window._dg = {
     navigateTo,
+    clearDecisionFilter() {
+        decisionVerdictFilter = '';
+        renderDecisionRows();
+    },
     exploreNode(nodeId) {
         switchTab('explore');
         navigateTo(nodeId);
@@ -4399,6 +4435,8 @@ function init() {
             if (!tab) return;
             switchTab(tab);
             if (control.dataset.verdict) {
+                decisionVerdictFilter = control.dataset.verdict;
+                renderDecisionRows();
                 window.requestAnimationFrame(() => {
                     const card = el('decisionsCard');
                     if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
