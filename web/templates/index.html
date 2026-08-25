@@ -148,6 +148,7 @@
                                         <button class="verdict-stat" data-testid="verdict-stat" type="button" data-tab="evidence" data-verdict="inconclusive"><strong id="heroInconclusive" data-testid="verdict-value">—</strong><span data-i18n="verdict.inconclusive">inconclusive</span><small id="heroInconclusiveZero" class="zero-note"></small></button>
                                     </div>
                                 </div>
+                                <i class="hero-proof-divider" aria-hidden="true"></i>
                                 <div class="hero-memory-proof">
                                     <p class="proof-label" data-i18n="overview.heroProofMemory">RESEARCH MEMORY · REUSABLE</p>
                                     <div class="hero-memory-stats">
@@ -197,6 +198,9 @@
                             <p data-i18n="overview.credibilityNote">Scientific outcomes are separated from execution volume.</p>
                         </div>
                         <aside class="outcome-rail">
+                            <div class="credibility-bar evidence-bar" data-testid="credibility-bar">
+                                <span class="evidence-bar-segment supported"></span><span class="evidence-bar-segment refuted"></span><span class="evidence-bar-segment inconclusive"></span>
+                            </div>
                             <div class="credibility-grid">
                                 <button class="credibility-metric supported verdict-stat" data-testid="verdict-stat" type="button" data-tab="evidence" data-verdict="supported"><strong id="statSupported" data-testid="verdict-value">—</strong><span data-i18n="verdict.supported">supported</span></button>
                                 <button class="credibility-metric refuted verdict-stat" data-testid="verdict-stat" type="button" data-tab="evidence" data-verdict="refuted"><strong id="statRefutedBreakdown" data-testid="verdict-value">—</strong><span data-i18n="verdict.refuted">refuted</span></button>
@@ -209,8 +213,11 @@
 
                     <section class="volume-strip" data-testid="volume-strip" aria-label="Accumulated research volume">
                         <div class="volume-item" data-testid="volume-item"><strong id="statGraphEntities">—</strong><span data-i18n="stat.knowledgeEntities">Knowledge entities</span></div>
+                        <i class="volume-divider" aria-hidden="true"></i>
                         <div class="volume-item" data-testid="volume-item"><strong id="statGraphRelations">—</strong><span data-i18n="stat.knowledgeRelations">Knowledge relations</span></div>
+                        <i class="volume-divider" aria-hidden="true"></i>
                         <div class="volume-item" data-testid="volume-item"><strong id="statTokens">—</strong><span data-i18n="stat.processedTokens">Paper-processing tokens</span></div>
+                        <i class="volume-divider" aria-hidden="true"></i>
                         <div class="volume-item" data-testid="volume-item"><strong id="statStaleProcessing">—</strong><span data-i18n="overview.staleProcessing">Stale processing items</span></div>
                     </section>
 
