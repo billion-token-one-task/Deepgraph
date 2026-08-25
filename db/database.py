@@ -1919,8 +1919,14 @@ def sql_created_after_hours(hours: int) -> str:
     return f"created_at > datetime('now', '-{hours} hours')"
 
 
-def sql_updated_after_seconds(seconds: int) -> str:
-    """SQL fragment: ``updated_at`` more recent than N seconds (dialect-specific)."""
+def sql_updated_after_seconds(seconds: int, column: str = "updated_at") -> str:
+    """SQL fragment: `column` more recent than N seconds (dialect-specific).
+
+    The column is a literal supplied by calling code, never by a request; it is
+    restricted here so the fragment cannot become an injection point.
+    """
+    if column not in {"updated_at", "created_at", "recorded_at", "heartbeat_at"}:
+        raise ValueError(f"unsupported freshness column: {column!r}")
     if _use_pg():
-        return f"updated_at > NOW() - INTERVAL '{seconds} seconds'"
-    return f"updated_at > datetime('now', '-{seconds} seconds')"
+        return f"{column} > NOW() - INTERVAL '{int(seconds)} seconds'"
+    return f"{column} > datetime('now', '-{int(seconds)} seconds')"

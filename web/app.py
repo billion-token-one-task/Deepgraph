@@ -1112,15 +1112,26 @@ def _classify_scoped_ingestion(
     worker_state = str(worker_status.get("status") or "unknown")
     if int(unclassified_grants or 0) > 0:
         return "failed"
+    # An authority hazard genuinely stops the domain: an orphan grant or an open
+    # usage reservation is unaccounted spend, and continuing on top of it
+    # compounds the damage. A backlog of manual reconciliations is a different
+    # thing -- it is historical work awaiting an operator's decision, and it
+    # does not prevent new jobs from running. Nine such rows from 2026-08-17
+    # pinned this domain to `halted` for eight days while the very worker it
+    # describes completed a five-paper canary and then drained corpus backlog,
+    # which is how a front-page tile ends up reporting failure during success.
+    # The backlog stays visible in its own field; it no longer overrides the
+    # live state.
     if any(
         int(value or 0) > 0
         for value in (
             orphan_active_grants,
             orphan_jobs,
-            unresolved_manual_reconciliation_jobs,
             unresolved_open_usage_reservations,
         )
     ):
+        return "halted"
+    if int(unresolved_manual_reconciliation_jobs or 0) > 0 and not (queued or running_jobs):
         return "halted"
     if worker_state in {"error", "worker_error", "failed", "crashed"}:
         return "worker_error"
@@ -2084,6 +2095,33 @@ def _office_department_state(items: list[dict], service_running: bool = False) -
     return "idle"
 
 
+def _recent_activity_count(table: str, column: str, seconds: int,
+                           extra_where: str = "") -> int:
+    """Rows in `table` whose `column` moved within `seconds`.
+
+    Used to answer "is this department working?" from work rather than from a
+    service flag. Table and column names are literals supplied by this module,
+    never by a request. A failure reports zero: an unavailable count must not
+    take down the office view.
+    """
+    allowed = {
+        ("papers", "updated_at"),
+        ("deep_insights", "created_at"),
+        ("auto_research_jobs", "updated_at"),
+    }
+    if (table, column) not in allowed:
+        return 0
+    clause = f" AND ({extra_where})" if extra_where else ""
+    try:
+        row = db.fetchone(
+            f"SELECT COUNT(*) AS n FROM {table}"
+            f" WHERE {db.sql_updated_after_seconds(int(seconds), column=column)}{clause}"
+        )
+        return int((row or {}).get("n") or 0)
+    except Exception:
+        return 0
+
+
 @app.route("/api/agent_office")
 def api_agent_office():
     """Lightweight agent registry plus current work for the overview office."""
@@ -2155,9 +2193,26 @@ def api_agent_office():
         if auto_research_status.get("running"):
             items_by_key["orchestration"].append(_office_item("Auto research", "running", "review {} | blocked {} | completed {}".format(auto_research_status.get("review_pending") or 0, auto_research_status.get("blocked") or 0, auto_research_status.get("completed") or 0), "service"))
 
+        # Two tiles used to read a controller flag rather than work. The global
+        # auto-research controller is deliberately disabled -- research runs
+        # through agenda-scoped passes instead -- so `idea_generation` reported
+        # idle while ideas were being generated, and `graph_construction` had no
+        # entry at all and so reported idle while the corpus advanced from 7,014
+        # to 7,023 papers. A department is working when its work moved recently.
+        recent_graph_work = _recent_activity_count(
+            "papers", "updated_at", 900, "status = 'reasoned'")
+        recent_ideas = _recent_activity_count("deep_insights", "created_at", 3600)
+        pending_ideas = _recent_activity_count(
+            "auto_research_jobs", "updated_at", 3600,
+            "stage = 'awaiting_portfolio_decision'")
+
         service_running = {
             "paper_extraction": bool(paper_worker_status.get("running")) or bool(items_by_key["paper_extraction"]),
-            "idea_generation": bool(auto_research_status.get("running")) and bool((auto_research_status.get("researching") or 0) or (auto_research_status.get("verifying") or 0)),
+            "graph_construction": bool(recent_graph_work),
+            "idea_generation": bool(recent_ideas or pending_ideas) or (
+                bool(auto_research_status.get("running"))
+                and bool((auto_research_status.get("researching") or 0)
+                         or (auto_research_status.get("verifying") or 0))),
             "experiment_planning": bool(auto_research_status.get("review_pending") or 0),
             "experiment_execution": bool(running_gpu or queued_gpu),
             "manuscript_generation": bool(manuscript_counts.get("drafting", 0) or manuscript_counts.get("manuscript_blocked", 0)),

@@ -36,6 +36,15 @@ class ProcessingStatusContractTests(unittest.TestCase):
             ("unbound grant", {"running": True, "status": "idle"}, {}, {"orphan_active_grants": 1}, "halted"),
             ("orphan job", {"running": True, "status": "idle"}, {"queued": 1}, {"orphan_jobs": 1}, "halted"),
             ("manual reconciliation", {"running": True, "status": "idle"}, {}, {"unresolved_manual_reconciliation_jobs": 1}, "halted"),
+            # A reconciliation backlog is historical work awaiting an operator's
+            # decision; it does not stop new jobs. Nine such rows held this
+            # domain at `halted` for eight days while the worker they describe
+            # completed a canary and drained corpus backlog.
+            ("manual reconciliation while running", {"running": True, "status": "idle"}, {"running": 1}, {"unresolved_manual_reconciliation_jobs": 9}, "running"),
+            ("manual reconciliation while queued", {"running": True, "status": "idle"}, {"queued": 2}, {"unresolved_manual_reconciliation_jobs": 9}, "queued"),
+            # An authority hazard is different: it is unaccounted spend, and it
+            # halts the domain whatever else is happening.
+            ("orphan grant while running", {"running": True, "status": "idle"}, {"running": 1}, {"orphan_active_grants": 1}, "halted"),
             ("ambiguous usage", {"running": True, "status": "idle"}, {}, {"unresolved_open_usage_reservations": 1}, "halted"),
             ("unknown grant lane", {"running": True, "status": "idle"}, {}, {"unclassified_grants": 1}, "failed"),
             ("online idle", {"running": True, "status": "idle"}, {}, {}, "idle"),
