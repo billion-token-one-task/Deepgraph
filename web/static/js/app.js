@@ -33,6 +33,7 @@ let papersLoaded    = false;
 let oppsLoaded      = false;
 let sidebarCollapsed = false;
 let currentAgendaId = null;      // active research agenda scope for API calls
+let latestStats = null;          // last /api/stats payload, for the visitor-facing chain
 let agendaList      = [];        // /api/v1/agendas payload
 let evidenceStateMap = null;     // /api/v1/evidence_states for currentAgendaId
 const taxonomyNodeCache = new Map();
@@ -188,6 +189,7 @@ function renderV3StatusDomains(snapshot) {
     setV3DomainLine({ lineId: 'harvestStatusLine', titleId: 'harvestStatusText', detailId: 'harvestStatusDetail', titleKey: 'overview.domainHarvest', domain: harvest, kind: 'harvest', detail: v3DetailHarvest(harvest) });
     setV3DomainLine({ lineId: 'backfillStatusLine', titleId: 'backfillStatusText', detailId: 'backfillStatusDetail', titleKey: 'overview.domainBackfill', domain: backfill, kind: 'backfill', detail: v3DetailBackfill(backfill) });
     updateStatusPill();
+    renderResearchChain(latestStats, snapshot);
 }
 
 function updateStatusPill() {
@@ -589,6 +591,8 @@ function toggleSidebar() {
 async function refreshStats() {
     try {
         const s = await api('/api/stats');
+        latestStats = s;
+        renderResearchChain(s, processingSnapshot);
         // Cold-start marker from the server-side stats cache: keep whatever is
         // on screen instead of overwriting real numbers with zeros.
         if (s && s.warming) return;
@@ -2625,6 +2629,79 @@ function decisionMetricLine(d) {
 let decisionRows = [];
 let decisionVerdictFilter = '';
 
+
+// The front page used to show six runtime domains -- scoped ingestion, legacy
+// ingestion, reconciliation counts -- which are the plumbing an operator needs
+// and jargon to everyone else. Two of them were also misleading to a reader:
+// "scoped ingestion: halted" stayed on screen while that very worker was
+// processing papers, because the word described nine unresolved historical
+// reconciliations rather than the current run. The visitor now gets the chain
+// the system actually performs, and the domains move behind #ops.
+function renderResearchChain(stats, snapshot) {
+    if (!stats) return;
+    const set = (id, value) => { const node = el(id); if (node) node.textContent = value; };
+
+    set('chainLiterature', fmt(stats.papers_total || 0));
+    set('chainLiteratureNote', `${fmt(stats.papers_processed || 0)} ${tr('chain.intoGraph', 'built into the graph')}`);
+
+    set('chainGraph', fmt(stats.graph_entities_total || 0));
+    set('chainGraphNote', `${fmt(stats.graph_relations_total || 0)} ${tr('chain.relations', 'relations')}`);
+
+    set('chainIdeas', fmt(stats.deep_insights_total || 0));
+
+    set('chainExperiments', fmt(stats.experiment_runs_total || 0));
+    set('chainExperimentsNote', `${fmt(stats.experiments_completed || 0)} ${tr('chain.completed', 'completed')}`);
+
+    const supported = Number(stats.decisions_supported || 0);
+    set('chainSupported', fmt(supported));
+    set('chainSupportedNote',
+        `${fmt(stats.scientific_decisions_total || 0)} ${tr('chain.adjudicated', 'adjudicated')}`);
+
+    const nowLine = el('systemNowLine');
+    if (nowLine) nowLine.textContent = plainLanguageNow(stats, snapshot);
+}
+
+// One sentence a reader can act on. Idleness is only alarming when its reason
+// is hidden, so the reason is the sentence.
+function plainLanguageNow(stats, snapshot) {
+    const corpus = (snapshot && snapshot.corpus) || {};
+    const runtime = (snapshot && snapshot.research_runtime) || {};
+    const parts = [];
+
+    const pending = Number(corpus.pending || 0);
+    const processed = Number(corpus.processed || 0);
+    if (pending > 0) {
+        parts.push(tr('now.reading', 'Reading paper')
+            + ` ${fmt(processed + 1)} ${tr('now.of', 'of')} ${fmt(Number(corpus.total || 0))}`);
+    } else {
+        parts.push(tr('now.corpusDrained', 'Every collected paper has been read'));
+    }
+
+    const grants = Number(runtime.active_grants || 0);
+    const work = Number(runtime.active_work_items || 0);
+    if (work > 0) {
+        parts.push(`${fmt(work)} ${tr('now.experimentsRunning', 'research tasks are in the experiment queue')}`);
+    } else if (grants > 0) {
+        parts.push(`${fmt(grants)} ${tr('now.authorised', 'research tasks are authorised and starting')}`);
+    } else {
+        parts.push(tr('now.awaitingBudget',
+            'no research task is authorised right now -- the next one starts when budget is granted'));
+    }
+    return parts.join(' · ');
+}
+
+function revealOperatorPanelByPath() {
+    const panel = el('opsPanel');
+    if (!panel) return;
+    let wanted = window.location.hash === '#ops';
+    if (!wanted) {
+        try { wanted = localStorage.getItem('deepgraph.ops') === '1'; } catch (e) { wanted = false; }
+    } else {
+        try { localStorage.setItem('deepgraph.ops', '1'); } catch (e) {}
+    }
+    panel.hidden = !wanted;
+}
+
 async function loadDecisions() {
     const body = el('decisionsBody');
     if (!body) return;
@@ -2662,10 +2739,14 @@ function renderDecisionRows() {
     const rows = filter
         ? decisionRows.filter(d => String(d.verdict || '').toLowerCase() === filter)
         : decisionRows;
+    const scopeLabel = (currentAgendaId == null || currentAgendaId === ALL_AGENDAS)
+        ? (t('agenda.all') || 'all agendas')
+        : `agenda #${currentAgendaId}`;
     const banner = filter
         ? `<div class="decision-filter-banner">
                ${esc(t('decisions.filtered') || 'Showing')} ${fmt(rows.length)} / ${fmt(decisionRows.length)}
                &middot; <span class="decision-verdict ${VERDICT_CLASS[filter] || ''}">${esc(filter)}</span>
+               &middot; <span class="decision-filter-scope">${esc(scopeLabel)}</span>
                <button type="button" class="decision-filter-clear" onclick="window._dg.clearDecisionFilter()">
                    ${esc(t('decisions.clearFilter') || 'Show all')}
                </button>
@@ -4406,6 +4487,8 @@ async function submitDirection() {
         const payload = await r.json().catch(() => ({}));
         if (r.ok && payload.agenda_id) {
             resultBox.innerHTML = `<span style="color:#3d8b5e;">Registered as agenda #${payload.agenda_id} (token budget ${fmt(payload.token_budget || 0)}). It now awaits the normal selection and grant process.</span>`;
+            revealOperatorPanelByPath();
+            window.addEventListener('hashchange', revealOperatorPanelByPath);
             initAgendaScope();
         } else {
             resultBox.innerHTML = `<span style="color:#c4453a;">Rejected: ${esc(payload.error || `HTTP ${r.status}`)}</span>`;
@@ -4435,8 +4518,21 @@ function init() {
             if (!tab) return;
             switchTab(tab);
             if (control.dataset.verdict) {
+                // The hero counters are portfolio-wide, but the list they link
+                // to is agenda-scoped and that scope is sticky in
+                // localStorage. A reader who had once selected an agenda saw
+                // the headline claim one supported result and the list below
+                // it report none, because the supported run belongs to a
+                // different agenda. A global number must open a global list.
                 decisionVerdictFilter = control.dataset.verdict;
-                renderDecisionRows();
+                if (currentAgendaId !== ALL_AGENDAS) {
+                    currentAgendaId = ALL_AGENDAS;
+                    try { localStorage.setItem('deepgraph.agenda', ALL_AGENDAS); } catch (e) {}
+                    renderAgendaSwitcher();
+                    loadDecisions().then(() => renderDecisionRows());
+                } else {
+                    renderDecisionRows();
+                }
                 window.requestAnimationFrame(() => {
                     const card = el('decisionsCard');
                     if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });

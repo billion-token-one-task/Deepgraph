@@ -4,7 +4,7 @@ import json
 import threading
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from config import (
     PIPELINE_CONCURRENCY,
@@ -112,6 +112,48 @@ def _load_checkpoint_payload(paper_id: str, stage: str) -> dict | None:
     if isinstance(payload, dict) and payload.get("error"):
         return None
     return payload if isinstance(payload, dict) else None
+
+
+def recover_stuck_processing_papers(*, older_than_seconds: int = 3600) -> list[str]:
+    """Return papers abandoned mid-processing to the queue.
+
+    A paper is marked `processing` before extraction and cleared afterwards, so
+    a worker that stops in between leaves a row nobody owns: no queue holds it,
+    no retry reaches it, and it is invisible except as a count. Ten such rows
+    survived the 2026-06 and 2026-08-17 shutdowns and sat untouched for weeks.
+
+    The same recovery already ran at pipeline startup, but only there, which
+    meant it required restarting the whole pipeline to reclaim ten rows. It is
+    a named operation here so an operator can run exactly this.
+
+    `older_than_seconds` protects papers a live worker is holding right now.
+    """
+    rows = db.fetchall(
+        """
+        SELECT id FROM papers
+        WHERE status IN ('processing', 'failed_retryable')
+        ORDER BY updated_at ASC
+        """
+    )
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=max(0, int(older_than_seconds)))
+    recovered: list[str] = []
+    for row in rows:
+        paper_id = row["id"]
+        stamp = db.fetchone(
+            "SELECT updated_at FROM papers WHERE id=?", (paper_id,)
+        )
+        updated = (dict(stamp or {})).get("updated_at")
+        if isinstance(updated, datetime):
+            when = updated if updated.tzinfo else updated.replace(tzinfo=timezone.utc)
+            if when > cutoff:
+                continue
+        db.execute("UPDATE papers SET status='ingested' WHERE id=?", (paper_id,))
+        recovered.append(str(paper_id))
+    if recovered:
+        db.commit()
+        log_event("recovery", {"recovered_papers": len(recovered),
+                               "source": "recover_stuck_processing_papers"})
+    return recovered
 
 
 def recover_retryable_papers(limit: int = 1000) -> int:
@@ -771,12 +813,8 @@ def run_continuous(
     log_event("pipeline_start", {"max_papers": max_papers})
 
     # Step 0: Recover any papers stuck in 'processing' (from crashed runs)
-    stuck = db.fetchall("SELECT id FROM papers WHERE status IN ('processing', 'failed_retryable')")
+    stuck = recover_stuck_processing_papers(older_than_seconds=0)
     if stuck:
-        for s in stuck:
-            db.execute("UPDATE papers SET status='ingested' WHERE id=?", (s["id"],))
-        db.commit()
-        log_event("recovery", {"recovered_papers": len(stuck)})
         logger.info("Recovered %d stuck papers back to 'ingested'", len(stuck))
 
     recovered_retryable = recover_retryable_papers(limit=max(max_papers or 1000, 100))
