@@ -3848,3 +3848,15 @@ mjx-assistive-mml {
 .decision-filter-clear:hover {
     background: var(--surface-3, rgba(127, 127, 127, 0.16));
 }
+
+/* The chain's last step is the one a reader came for. */
+.system-status-line.chain-terminal strong {
+    color: var(--accent, #d97706);
+}
+
+.system-now-line {
+    margin: 0 0 var(--space-3, 12px);
+    font-size: 0.9375rem;
+    line-height: 1.5;
+    color: var(--text-secondary, inherit);
+}

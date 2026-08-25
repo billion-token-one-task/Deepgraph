@@ -33,6 +33,7 @@ let papersLoaded    = false;
 let oppsLoaded      = false;
 let sidebarCollapsed = false;
 let currentAgendaId = null;      // active research agenda scope for API calls
+let latestStats = {};            // last /api/stats payload, for the front-page chain
 let agendaList      = [];        // /api/v1/agendas payload
 let evidenceStateMap = null;     // /api/v1/evidence_states for currentAgendaId
 const taxonomyNodeCache = new Map();
@@ -175,17 +176,73 @@ function v3DetailBackfill(domain) {
 }
 
 function renderV3StatusDomains(snapshot) {
-    const research = snapshot && snapshot.research_runtime;
-    const scoped = snapshot && snapshot.scoped_ingestion;
-    const corpus = snapshot && snapshot.corpus;
-    const harvest = snapshot && snapshot.harvest;
-    const backfill = snapshot && snapshot.backfill;
-    setV3DomainLine({ lineId: 'corpusStatusLine', titleId: 'corpusStatusText', detailId: 'corpusStatusDetail', titleKey: 'overview.domainCorpus', domain: corpus, kind: 'corpus', detail: v3DetailCorpus(corpus) });
-    setV3DomainLine({ lineId: 'runtimeStatusLine', titleId: 'pipelineStatusText', detailId: 'pipelineStatusDetail', titleKey: 'overview.domainResearchRuntime', domain: research, kind: 'research', detail: v3DetailResearch(research) });
-    setV3DomainLine({ lineId: 'scopedIngestionStatusLine', titleId: 'scopedIngestionStatusText', detailId: 'scopedIngestionStatusDetail', titleKey: 'overview.domainScopedIngestion', domain: scoped, kind: 'scoped', detail: v3DetailScoped(scoped) });
-    setV3DomainLine({ lineId: 'harvestStatusLine', titleId: 'harvestStatusText', detailId: 'harvestStatusDetail', titleKey: 'overview.domainHarvest', domain: harvest, kind: 'harvest', detail: v3DetailHarvest(harvest) });
-    setV3DomainLine({ lineId: 'backfillStatusLine', titleId: 'backfillStatusText', detailId: 'backfillStatusDetail', titleKey: 'overview.domainBackfill', domain: backfill, kind: 'backfill', detail: v3DetailBackfill(backfill) });
+    // Same five tiles, same container, different question. The old ones named
+    // internal queues -- scoped ingestion, legacy ingestion, reconciliation
+    // counts -- which is what an operator debugs with and jargon to everyone
+    // else, and two of them read as failures while the work was succeeding.
+    // These five are the chain the system actually performs, end to end. The
+    // per-domain truth is unchanged and still served by /api/processing.
+    const stats = latestStats || {};
+    const corpus = (snapshot && snapshot.corpus) || {};
+
+    const total = isKnownCount(corpus.total) ? corpus.total : stats.papers_total;
+    const processed = isKnownCount(corpus.processed) ? corpus.processed : stats.papers_processed;
+
+    setText('chainLiteratureText', `${tr('chain.literature', 'Literature read')} · ${fmt(total || 0)}`);
+    setText('chainLiteratureDetail',
+        `${fmt(processed || 0)} ${tr('chain.intoGraph', 'built into the evidence graph')}`);
+
+    setText('chainGraphText',
+        `${tr('chain.graph', 'Evidence graph')} · ${fmt(stats.graph_entities_total || 0)}`);
+    setText('chainGraphDetail',
+        `${fmt(stats.graph_relations_total || 0)} ${tr('chain.relations', 'relations')}`);
+
+    setText('chainIdeasText',
+        `${tr('chain.ideas', 'Research questions raised')} · ${fmt(stats.deep_insights_total || 0)}`);
+    setText('chainIdeasDetail', tr('chain.ideasNote', 'found in the graph, not written by hand'));
+
+    setText('chainExperimentsText',
+        `${tr('chain.experiments', 'Experiments run')} · ${fmt(stats.experiment_runs_total || 0)}`);
+    setText('chainExperimentsDetail',
+        `${fmt(stats.experiments_completed || 0)} ${tr('chain.completed', 'completed')}`);
+
+    setText('chainSupportedText',
+        `${tr('chain.supported', 'Findings that survived')} · ${fmt(stats.decisions_supported || 0)}`);
+    setText('chainSupportedDetail',
+        `${fmt(stats.scientific_decisions_total || 0)} ${tr('chain.adjudicated', 'adjudicated')}`);
+
+    setText('systemNowLine', plainLanguageNow(stats, snapshot));
     updateStatusPill();
+}
+
+// One sentence a reader can act on. Idleness is only alarming when its reason
+// is hidden, so the reason is the sentence.
+function plainLanguageNow(stats, snapshot) {
+    const corpus = (snapshot && snapshot.corpus) || {};
+    const runtime = (snapshot && snapshot.research_runtime) || {};
+    const parts = [];
+
+    const total = isKnownCount(corpus.total) ? corpus.total : (stats.papers_total || 0);
+    const processed = isKnownCount(corpus.processed) ? corpus.processed : (stats.papers_processed || 0);
+    const pending = isKnownCount(corpus.pending) ? corpus.pending : null;
+    if (pending === null || pending > 0) {
+        parts.push(`${tr('now.reading', 'Reading paper')} ${fmt(processed + 1)}`
+            + ` ${tr('now.of', 'of')} ${fmt(total)}`);
+    } else {
+        parts.push(tr('now.corpusDrained', 'every collected paper has been read'));
+    }
+
+    const work = processingCount(runtime.active_work_items);
+    const grants = processingCount(runtime.active_grants);
+    if (Number(work) > 0) {
+        parts.push(`${fmt(work)} ${tr('now.experimentsRunning', 'research tasks are in the experiment queue')}`);
+    } else if (Number(grants) > 0) {
+        parts.push(`${fmt(grants)} ${tr('now.authorised', 'research tasks are authorised and starting')}`);
+    } else {
+        parts.push(tr('now.awaitingBudget',
+            'no research task is authorised right now -- the next one starts when budget is granted'));
+    }
+    return parts.join(' · ');
 }
 
 function updateStatusPill() {
@@ -587,6 +644,8 @@ function toggleSidebar() {
 async function refreshStats() {
     try {
         const s = await api('/api/stats');
+        latestStats = s;
+        renderV3StatusDomains(processingSnapshot);
         // Cold-start marker from the server-side stats cache: keep whatever is
         // on screen instead of overwriting real numbers with zeros.
         if (s && s.warming) return;

@@ -181,12 +181,13 @@
                             <div><p class="section-kicker" data-i18n="overview.now">NOW</p><h2 id="systemNowTitle" data-i18n="overview.systemStatus">Current system status</h2></div>
                             <button class="btn-link" type="button" id="btnOpenOffice" data-testid="link-activity" data-tab="office" data-i18n="overview.fullActivity">Open full activity</button>
                         </div>
+                        <p class="system-now-line" id="systemNowLine" data-testid="system-now-line">&mdash;</p>
                         <div class="system-status-grid" data-testid="v3-status-domains">
-                            <div class="system-status-line corpus-status" id="corpusStatusLine" data-testid="corpus-status" data-domain="corpus"><i></i><div><strong id="corpusStatusText" data-i18n="overview.domainCorpus">Corpus</strong><small id="corpusStatusDetail">—</small></div></div>
-                            <div class="system-status-line runtime-status" id="runtimeStatusLine" data-testid="research-runtime-status" data-domain="research_runtime"><i></i><div><strong id="pipelineStatusText" data-i18n="overview.domainResearchRuntime">Research runtime</strong><small id="pipelineStatusDetail">—</small></div></div>
-                            <div class="system-status-line scoped-status" id="scopedIngestionStatusLine" data-testid="scoped-ingestion-status" data-domain="scoped_ingestion"><i></i><div><strong id="scopedIngestionStatusText" data-i18n="overview.domainScopedIngestion">Scoped ingestion</strong><small id="scopedIngestionStatusDetail">—</small></div></div>
-                            <div class="system-status-line harvest-status" id="harvestStatusLine" data-testid="harvest-status" data-domain="harvest"><i></i><div><strong id="harvestStatusText" data-i18n="overview.domainHarvest">Harvest</strong><small id="harvestStatusDetail">—</small></div></div>
-                            <div class="system-status-line backfill-status" id="backfillStatusLine" data-testid="backfill-status" data-domain="backfill"><i></i><div><strong id="backfillStatusText" data-i18n="overview.domainBackfill">Backfill</strong><small id="backfillStatusDetail">—</small></div></div>
+                            <div class="system-status-line" id="chainLiteratureLine" data-testid="chain-literature" data-step="literature"><i></i><div><strong id="chainLiteratureText" data-i18n="chain.literature">Literature read</strong><small id="chainLiteratureDetail">&mdash;</small></div></div>
+                            <div class="system-status-line" id="chainGraphLine" data-testid="chain-graph" data-step="graph"><i></i><div><strong id="chainGraphText" data-i18n="chain.graph">Evidence graph</strong><small id="chainGraphDetail">&mdash;</small></div></div>
+                            <div class="system-status-line" id="chainIdeasLine" data-testid="chain-ideas" data-step="ideas"><i></i><div><strong id="chainIdeasText" data-i18n="chain.ideas">Research questions raised</strong><small id="chainIdeasDetail">&mdash;</small></div></div>
+                            <div class="system-status-line" id="chainExperimentsLine" data-testid="chain-experiments" data-step="experiments"><i></i><div><strong id="chainExperimentsText" data-i18n="chain.experiments">Experiments run</strong><small id="chainExperimentsDetail">&mdash;</small></div></div>
+                            <div class="system-status-line chain-terminal" id="chainSupportedLine" data-testid="chain-supported" data-step="supported"><i></i><div><strong id="chainSupportedText" data-i18n="chain.supported">Findings that survived</strong><small id="chainSupportedDetail">&mdash;</small></div></div>
                         </div>
                     </section>
 
