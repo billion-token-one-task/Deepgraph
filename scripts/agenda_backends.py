@@ -9,6 +9,7 @@ printed before/after so the ops log carries the rollback value.
     agenda_backends.py set --agenda 7 --backends cpu,llm,colab_gpu
     agenda_backends.py activate --agenda 14
     agenda_backends.py deactivate --agenda 14
+    agenda_backends.py create --spec new-agenda.json
 """
 from __future__ import annotations
 
@@ -35,6 +36,9 @@ def main() -> int:
     budget.add_argument("--tokens", type=int, default=None)
     budget.add_argument("--gpu-hours", type=float, default=None)
     budget.add_argument("--max-concurrency", type=int, default=None)
+    creator = sub.add_parser("create")
+    creator.add_argument("--spec", required=True,
+                         help="path to a JSON agenda spec; see docs/internal/AGENDA_SPEC.md")
     activate = sub.add_parser("activate")
     activate.add_argument("--agenda", type=int, required=True)
     deactivate = sub.add_parser("deactivate")
@@ -53,6 +57,23 @@ def main() -> int:
         )
         print(f"grant {args.grant}: {'expired+reconciled' if done else 'not eligible (must be active proposal-stage)'}")
         return 0 if done else 1
+
+    if args.cmd == "create":
+        import json
+        from contracts.agenda import ResearchAgenda
+
+        spec = json.loads(Path(args.spec).read_text(encoding="utf-8"))
+        agenda = ResearchAgenda(**spec)
+        agenda.validate()
+        agenda_id = AgendaRepository().create(agenda)
+        row = dict(db.fetchone(
+            "SELECT id, name, status, is_active, token_budget, gpu_hours_budget,"
+            " max_concurrency, backend_allowlist_json FROM research_agendas WHERE id=?",
+            (agenda_id,)) or {})
+        print(f"created agenda {agenda_id}")
+        for key, value in row.items():
+            print(f"  {key}: {value}")
+        return 0
 
     if args.cmd in ("activate", "deactivate"):
         want_active = args.cmd == "activate"
