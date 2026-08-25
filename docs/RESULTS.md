@@ -35,6 +35,25 @@ failure rate stays visible. Reducing this number is an engineering objective,
 not a scientific one; the 2026-08-25 semantic-binding guard removes one of its
 larger causes by refusing to fund a plan that no registered runner implements.
 
+### Eight of those refutations are not real
+
+An audit of every run whose raw predictions are still on disk (105 of 195) found
+eleven outcome records, across four runs, whose verdict rests on an arm that
+generated nothing at all: 200 of 200 predictions empty. Scoring an empty string
+is honest arithmetic -- it scores zero -- and the conclusion is still fiction.
+Run 235 walked the whole evidence ladder to `refuted` at p = 0.000999 that way.
+
+Eight of the 69 refutations and three of the 47 invalid records are of this
+kind. That is a lower bound: 90 older runs no longer have artifacts to audit.
+
+The gate that stops it is now in the pipeline in two places -- the evidence
+audit refuses to compute a verdict from an arm above the blank-prediction rate,
+and the pilot-promotion gate refuses to fund a full benchmark behind one. Both
+fired on 2026-08-25, refusing three promotions with `pilot arm measured
+nothing`. No new record of this kind can be produced; the historical ones stand
+until they are formally reclassified, and are named here rather than quietly
+dropped.
+
 ## The supported result
 
 `experiment_run 246`, object-counting literature agenda:
