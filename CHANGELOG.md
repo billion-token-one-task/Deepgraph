@@ -1,5 +1,45 @@
 # Changelog
 
+## 2026-08-25 — controlled recovery, semantic binding, and the v3 status contract
+
+Released as the unified production line: backend lifecycle repairs plus the
+processing-status-v3 homepage.
+
+- **A research plan can no longer be executed by a runner that does not
+  implement it.** A candidate whose dataset, model or metric identity was not
+  bound to the runner contract could still receive a `ResourceGrant`; a
+  structure-from-motion plan was scheduled onto a GLUE/BERT/accuracy runner and
+  failed after the authority had been issued. Preflight now refuses the grant
+  before any spend, so a capability gap surfaces as a refusal rather than as an
+  `invalid` outcome (`meta_harness/runner_capability.py`,
+  `meta_harness/preflight_repository.py`).
+- **A recovered preflight now resumes exactly one job.** After a preflight
+  failure was fixed there was no path to re-verify the single affected job and
+  rebind its grant; the only available route rescanned every deferred job in
+  the agenda. Recovery is now a scoped compare-and-set on one row
+  (`meta_harness/repository.py`, `scripts/auto_advance.py --job`).
+- **Status is six independent truths, not one.** `GET /api/processing` returns
+  `processing-status-v3`: corpus, research runtime, scoped ingestion, legacy
+  paper ingestion, harvest and backfill each carry their own state, reason code
+  and availability, and each fails closed on its own. `queued`, `authorized`,
+  `running` and `halted` can no longer be collapsed into a single indicator, and
+  an unknown value is never rendered as zero. The v2 field names remain as
+  aliases.
+- **Scoped ingestion settles or parks every metered reservation.** A terminal
+  worker failure used to leave child usage open; it now either settles the
+  usage or parks it for an explicit, evidence-backed operator disposition, and
+  retry is blocked until that disposition exists. A five-paper production canary
+  ran the full lifecycle -- extraction, claims, graph entities and relations,
+  33 child usages, 439,494 tokens -- and settled with zero orphan grants, jobs
+  or reservations.
+- **Cost-bearing automation is disabled, not merely stopped.** The global
+  research advance timer and execute service are now persistently disabled, so
+  a host reboot cannot restore unattended spending.
+- Homepage rebuilt against the v3 contract: per-domain status cards, an audited
+  versus not-audited split on judgements, loading distinguished from empty, the
+  research map fitted from the real taxonomy endpoint, and the seven-stage
+  office reflecting live agent state.
+
 ## Unreleased — 2026-08-11 comparison validity and candidate retirement
 
 - Withheld the verdict from a method comparison that was not fair

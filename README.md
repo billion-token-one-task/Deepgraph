@@ -19,11 +19,28 @@ contracted, budgeted, auditable experiments.**
 
 ## Current V1 scope
 
-V1 is an auditable pilot-execution control plane, not an autonomous scientist.
-Its real Colab T4 acceptance ran a four-example, three-seed GSM8K pilot with
-Qwen2.5-0.5B and produced verified artifacts, settled resource use, and a
-`sanity_passed` negative/refuted `OutcomeRecord`. It does not establish a
-scientific finding, an A100 benchmark, or unattended production research.
+V1 is an auditable, operator-governed research control plane. It is not an
+autonomous scientist.
+
+End to end it does five things, on real production data: it harvests the
+literature at scale (24,407 papers ingested, 7,005 carried through extraction,
+claim mining and evidence-graph construction); it enumerates research openings
+from the graph structure in pure SQL, with no LLM in the loop; it turns an
+opening into a falsifiable plan bound to a runner that can actually execute it;
+it runs that plan against a real model and dataset under a metered
+`ResourceGrant`; and it applies an evidence ladder that refuses a verdict when
+the comparison is unfair, the baseline is missing or zero, or the effect is not
+real.
+
+What runs unattended today: literature harvest, the evidence graph, the
+read-only observers, orphan-authority reclamation and the status contract. What
+does not: paper backfill and global research advance/execute, both deliberately
+stopped. Every token and GPU-hour passes through an explicit `ResourceGrant`,
+so "more compute" is a dial an operator turns, not a tap the system opens.
+
+Measured outcomes to date -- including the verdict distribution, the one
+supported result and the negative results -- are reported in
+[docs/RESULTS.md](docs/RESULTS.md) rather than summarised here.
 
 ## Design principle: The Bitter Lesson
 
