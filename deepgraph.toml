@@ -191,10 +191,38 @@ model_ref = "env:DEEPGRAPH_LLM_PRIMARY_MODEL"
 model_family_ref = "env:DEEPGRAPH_LLM_PRIMARY_FAMILY"
 prompt_version = "proposer_v1"
 
+# Second proposer route: AVAILABILITY. The proposer had exactly one route, so a
+# two-second network blip on 2026-08-25 ended it. Seven calls succeeded, three
+# failed inside two seconds with in=0 out=0 -- the request never left the host --
+# and fail_closed_or_manual then declared all_explicit_routes_failed. Two paper
+# ingestion jobs died, the backfill made no further progress and tripped its
+# three-hour breaker, while the same route completed sixteen calls twelve
+# minutes later. A different vendor means a different network path, which is the
+# only kind of fallback a transport blip cannot follow.
+[[llm_routes.proposer]]
+provider_ref = "novita_deepseek"
+model_ref = "deepseek/deepseek-v4-flash-0731"
+model_family_ref = "deepseek"
+prompt_version = "proposer_v1"
+
 [[llm_routes.evaluator]]
 provider_ref = "env:DEEPGRAPH_LLM_EVALUATOR"
 model_ref = "env:DEEPGRAPH_LLM_EVALUATOR_MODEL"
 model_family_ref = "env:DEEPGRAPH_LLM_EVALUATOR_FAMILY"
+prompt_version = "evaluator_v1"
+
+# Second evaluator route, required by the one above rather than for its own
+# sake. Independence is judged against the route the proposer actually used: if
+# the proposer falls back to deepseek and deepseek is the only evaluator, the
+# audit raises no_independent_evaluator_route_available and the ladder stalls
+# one rung higher than the blip it was meant to survive. gemini-pro is a
+# different family from both the primary proposer (gemini-flash) and the
+# primary evaluator (deepseek), so an independent evaluator exists whichever
+# vendor the proposer lands on.
+[[llm_routes.evaluator]]
+provider_ref = "sora2_gemini_pro"
+model_ref = "gemini-3.1-pro-high"
+model_family_ref = "gemini-pro"
 prompt_version = "evaluator_v1"
 
 [[llm_routes.reviewer]]
