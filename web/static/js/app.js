@@ -9,6 +9,11 @@
 // ── State ────────────────────────────────────────────────────────────
 
 const ROOT_NODE = document.body.dataset.rootNode || 'ml';
+const homepageHierarchyEnabled = (() => {
+    const value = new URLSearchParams(window.location.search).get('ff');
+    return !['homepage_hierarchy_v2_off', '0', 'false'].includes(String(value || '').toLowerCase());
+})();
+document.body.classList.toggle('homepage-hierarchy-v2', homepageHierarchyEnabled);
 
 let activeTab       = 'overview';
 let exploreNodeId   = ROOT_NODE;
@@ -41,6 +46,161 @@ function fmt(n) {
     if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
     if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
     return String(n);
+}
+
+function setText(id, value) {
+    const node = el(id);
+    if (node) node.textContent = value;
+}
+
+function zeroSafeValue(value) {
+    return Number(value || 0) === 0 ? '—' : fmt(value);
+}
+
+function updateHeroProof(s) {
+    const counts = ['supported', 'refuted', 'inconclusive'].map(kind => Number(s[`decisions_${kind}`] || 0));
+    const total = counts.reduce((sum, value) => sum + value, 0);
+    setText('heroEvidenceLabel', tr('overview.heroProofEvidence', '').replace('{total}', fmt(total)));
+    setText('heroSupported', zeroSafeValue(counts[0]));
+    setText('heroRefuted', zeroSafeValue(counts[1]));
+    setText('heroInconclusive', zeroSafeValue(counts[2]));
+    ['Supported', 'Refuted', 'Inconclusive'].forEach((suffix, index) => {
+        setText(`hero${suffix}Zero`, counts[index] === 0 ? tr('overview.zeroVerdict', 'No verdicts yet') : '');
+    });
+    setText('heroGraphEntities', zeroSafeValue(s.graph_entities_total));
+    setText('heroGraphRelations', zeroSafeValue(s.graph_relations_total));
+
+    const segments = $$('[data-testid="evidence-bar-segment"]');
+    segments.forEach((segment, index) => {
+        segment.style.flexGrow = String(total ? counts[index] : 1);
+        segment.hidden = false;
+        segment.classList.toggle('is-empty', total === 0);
+    });
+}
+
+function isKnownCount(value) {
+    return Number.isInteger(value) && value >= 0;
+}
+
+function processingCount(value) {
+    return isKnownCount(value) ? fmt(value) : '—';
+}
+
+function v3DisplayState(domain, kind) {
+    if (!domain || domain.available === false) return 'failed';
+    if (kind === 'corpus') return 'idle';
+    const state = String(domain.state || '').toLowerCase();
+    if (['failed', 'error', 'worker_error', 'degraded', 'unknown'].includes(state)) return 'failed';
+    if (state === 'halted' || state === 'stalled' || state.startsWith('disabled_')) return 'halted';
+    if (state === 'running') return 'running';
+    if (state === 'queued') return 'queued';
+    if (state === 'authorized_idle') return 'authorized';
+    return 'idle';
+}
+
+function v3StateLabel(domain, displayState) {
+    const raw = String(domain && domain.state || '').toLowerCase();
+    if (!domain || domain.available === false) return tr('overview.statusUnavailable', 'unavailable');
+    if (raw.startsWith('disabled_')) return tr('overview.statusDisabled', 'disabled');
+    if (raw === 'stopped') return tr('overview.statusStopped', 'stopped');
+    if (raw === 'degraded') return tr('overview.statusDegraded', 'degraded');
+    if (raw === 'unknown') return tr('overview.statusUnknown', 'unknown');
+    return tr(`overview.status${displayState[0].toUpperCase()}${displayState.slice(1)}`, displayState);
+}
+
+function setV3DomainLine({ lineId, titleId, detailId, titleKey, domain, kind, detail }) {
+    const line = el(lineId);
+    const state = v3DisplayState(domain, kind);
+    if (line) {
+        line.dataset.displayState = state;
+        line.classList.toggle('running', state === 'running');
+        line.classList.toggle('stalled', state === 'halted');
+        line.classList.toggle('failed', state === 'failed');
+    }
+    setText(titleId, `${tr(titleKey, titleKey)} · ${v3StateLabel(domain, state)}`);
+    setText(detailId, detail);
+}
+
+function v3DetailResearch(domain) {
+    if (!domain || domain.available === false) return tr('overview.statusUnavailable', 'unavailable');
+    const activeDemand = processingCount(domain.queued_active_agendas);
+    if (isKnownCount(domain.queued_active_agendas) && domain.queued_active_agendas > 0
+        && String(domain.state) === 'idle_no_authorized_work') {
+        return tr('overview.statusUnapprovedDemand', '{count} unapproved active-agenda jobs').replace('{count}', activeDemand);
+    }
+    return tr('overview.statusRunningQueued', '{running} running · {queued} queued')
+        .replace('{running}', processingCount(domain.running_work_items))
+        .replace('{queued}', processingCount(domain.queued_authorized_work_items));
+}
+
+function v3DetailScoped(domain) {
+    if (!domain || domain.available === false) return tr('overview.statusUnavailable', 'unavailable');
+    return tr('overview.statusScopedCounts', '{running} running · {queued} queued · {manual} reconciliation')
+        .replace('{running}', processingCount(domain.running_jobs))
+        .replace('{queued}', processingCount(domain.queued_jobs))
+        .replace('{manual}', processingCount(domain.unresolved_manual_reconciliation_jobs));
+}
+
+function v3DetailLegacy(domain) {
+    if (!domain || domain.available === false) return tr('overview.statusUnavailable', 'unavailable');
+    return tr('overview.statusLegacyStale', '{count} stale legacy processing')
+        .replace('{count}', processingCount(domain.stale_processing_count));
+}
+
+function v3DetailCorpus(domain) {
+    if (!domain || domain.available === false) return tr('overview.statusUnavailable', 'unavailable');
+    return tr('overview.statusCorpusCounts', '{total} total · {pending} pending · {processed} processed · {error} error')
+        .replace('{total}', processingCount(domain.total))
+        .replace('{pending}', processingCount(domain.pending))
+        .replace('{processed}', processingCount(domain.processed))
+        .replace('{error}', processingCount(domain.error));
+}
+
+function v3Timestamp(value) {
+    return typeof value === 'string' && /Z$/.test(value) ? value : '—';
+}
+
+function v3DetailHarvest(domain) {
+    if (!domain || domain.available === false) return tr('overview.statusUnavailable', 'unavailable');
+    return tr('overview.statusHarvestSuccess', 'Last success {when} · {count} new')
+        .replace('{when}', v3Timestamp(domain.last_success_at))
+        .replace('{count}', processingCount(domain.last_new_count));
+}
+
+function v3DetailBackfill(domain) {
+    if (!domain || domain.available === false) return tr('overview.statusUnavailable', 'unavailable');
+    return tr('overview.statusBackfillAge', 'Last progress {when} · {age}s old')
+        .replace('{when}', v3Timestamp(domain.last_progress_at))
+        .replace('{age}', processingCount(domain.age_seconds));
+}
+
+function renderV3StatusDomains(snapshot) {
+    const research = snapshot && snapshot.research_runtime;
+    const scoped = snapshot && snapshot.scoped_ingestion;
+    const legacy = snapshot && snapshot.legacy_paper_ingestion;
+    const corpus = snapshot && snapshot.corpus;
+    const harvest = snapshot && snapshot.harvest;
+    const backfill = snapshot && snapshot.backfill;
+    setV3DomainLine({ lineId: 'corpusStatusLine', titleId: 'corpusStatusText', detailId: 'corpusStatusDetail', titleKey: 'overview.domainCorpus', domain: corpus, kind: 'corpus', detail: v3DetailCorpus(corpus) });
+    setV3DomainLine({ lineId: 'runtimeStatusLine', titleId: 'pipelineStatusText', detailId: 'pipelineStatusDetail', titleKey: 'overview.domainResearchRuntime', domain: research, kind: 'research', detail: v3DetailResearch(research) });
+    setV3DomainLine({ lineId: 'scopedIngestionStatusLine', titleId: 'scopedIngestionStatusText', detailId: 'scopedIngestionStatusDetail', titleKey: 'overview.domainScopedIngestion', domain: scoped, kind: 'scoped', detail: v3DetailScoped(scoped) });
+    setV3DomainLine({ lineId: 'legacyIngestionStatusLine', titleId: 'legacyIngestionStatusText', detailId: 'legacyIngestionStatusDetail', titleKey: 'overview.domainLegacyIngestion', domain: legacy, kind: 'legacy', detail: v3DetailLegacy(legacy) });
+    setV3DomainLine({ lineId: 'harvestStatusLine', titleId: 'harvestStatusText', detailId: 'harvestStatusDetail', titleKey: 'overview.domainHarvest', domain: harvest, kind: 'harvest', detail: v3DetailHarvest(harvest) });
+    setV3DomainLine({ lineId: 'backfillStatusLine', titleId: 'backfillStatusText', detailId: 'backfillStatusDetail', titleKey: 'overview.domainBackfill', domain: backfill, kind: 'backfill', detail: v3DetailBackfill(backfill) });
+    updateStatusPill();
+}
+
+function updateStatusPill() {
+    const research = processingSnapshot && processingSnapshot.research_runtime;
+    const state = v3DisplayState(research, 'research');
+    const label = `${tr('overview.domainResearchRuntime', 'Research runtime')} · ${v3StateLabel(research, state)}`;
+    setText('statusPillText', label);
+    const pill = el('liveBadge');
+    if (pill) {
+        pill.classList.toggle('running', state === 'running');
+        pill.classList.toggle('stalled', state === 'halted');
+        pill.classList.toggle('failed', state === 'failed');
+    }
 }
 
 // i18n bridge: translate via window.t (from i18n.js) with an English
@@ -468,11 +628,11 @@ async function refreshStats() {
                     : '';
             }
         }
-        el('statTokens').textContent        = fmt(s.tokens_consumed || 0);
-        el('statSupported').textContent = fmt(s.decisions_supported || 0);
-        el('statSupportedBreakdown').textContent = fmt(s.decisions_supported || 0);
-        el('statRefutedBreakdown').textContent = fmt(s.decisions_refuted || 0);
-        el('statInconclusiveBreakdown').textContent = fmt(s.decisions_inconclusive || 0);
+        setText('statTokens', zeroSafeValue(s.tokens_consumed));
+        setText('statSupported', zeroSafeValue(s.decisions_supported));
+        setText('statSupportedBreakdown', fmt(s.decisions_supported || 0));
+        setText('statRefutedBreakdown', zeroSafeValue(s.decisions_refuted));
+        setText('statInconclusiveBreakdown', zeroSafeValue(s.decisions_inconclusive));
         el('statExperimentsCompleted').textContent = fmt(s.experiments_completed || 0);
         el('statExperimentsFailed').textContent = fmt(s.experiments_failed || 0);
         el('statExperimentsSuperseded').textContent = fmt(s.experiments_superseded || 0);
@@ -487,8 +647,8 @@ async function refreshStats() {
         el('statTaxonomy').textContent = fmt(s.taxonomy_nodes_total || 0);
         el('statContradictions').textContent = fmt(s.contradictions_total || 0);
         el('statInsights').textContent      = publicCount('insights_total');
-        el('statGraphEntities').textContent = publicCount('graph_entities_total');
-        el('statGraphRelations').textContent = publicCount('graph_relations_total');
+        setText('statGraphEntities', zeroSafeValue(s.graph_entities_total));
+        setText('statGraphRelations', zeroSafeValue(s.graph_relations_total));
         el('statAgendaTokens').textContent  = fmt(s.agenda_tokens_total || 0);
         el('statCompletePapers').textContent = fmt(s.submission_bundles_total || 0);
         const generatedAt = el('statsGeneratedAt');
@@ -498,15 +658,10 @@ async function refreshStats() {
                 month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit'
             });
             generatedAt.dateTime = new Date(Number(s.generated_at) * 1000).toISOString();
+            setText('statusPillTime', generatedAt.textContent);
         }
-        const healthText = el('systemHealthText');
-        const healthOk = s.data_health && s.data_health.status === 'ok';
-        if (healthText) healthText.textContent = healthOk
-            ? t('overview.healthOk') : t('overview.healthDegraded');
-        const dataStatusText = el('dataStatusText');
-        if (dataStatusText) dataStatusText.textContent = healthOk
-            ? t('overview.dataConnected') : t('overview.dataDegraded');
         applyMetricTips();
+        updateHeroProof(s);
     } catch (e) {
         console.error('Stats error:', e);
     }
@@ -557,46 +712,11 @@ function startSSE() {
 }
 
 let pipelineState = 'unknown';
-let staleProcessingCount = 0;
+let staleProcessingCount = null;
+let processingSnapshot = null;
 
 function updateLiveBadge() {
-    const badge = el('liveBadge');
-    const stalled = pipelineState === 'stalled' || pipelineState === 'error';
-    const running = pipelineState === 'running';
-    badge.textContent = stalled
-        ? tr('app.live.stalled', 'STALLED')
-        : running ? tr('app.live.live', 'LIVE') : tr('app.live.idle', 'IDLE');
-    badge.classList.toggle('running', running);
-    badge.classList.toggle('stalled', stalled);
-    renderRuntimeStatus(running, stalled);
-}
-
-function renderRuntimeStatus(running, stalled) {
-    const line = el('runtimeStatusLine');
-    const title = el('pipelineStatusText');
-    const detail = el('pipelineStatusDetail');
-    if (!line || !title || !detail) return;
-    line.classList.toggle('running', running);
-    line.classList.toggle('stalled', stalled);
-    if (stalled) {
-        title.textContent = tr('overview.pipelineStalled', 'Research runtime stalled');
-        detail.textContent = tr('overview.pipelineStaleItems', 'Approved research work is not progressing');
-    } else if (running) {
-        title.textContent = tr('overview.pipelineRunning', 'Research runtime active');
-        detail.textContent = staleProcessingCount > 0
-            ? tr('overview.paperIngestionStale', 'Paper ingestion has {n} stale tasks').replace('{n}', fmt(staleProcessingCount))
-            : tr('overview.pipelineRecent', 'Approved research work is active');
-    } else if (pipelineState === 'idle_no_authorized_work') {
-        title.textContent = tr('overview.noAuthorizedResearch', 'No approved research work right now');
-        detail.textContent = staleProcessingCount > 0
-            ? tr('overview.paperIngestionStale', 'Paper ingestion has {n} stale tasks').replace('{n}', fmt(staleProcessingCount))
-            : tr('overview.pipelineNoActive', 'Research control plane idle');
-    } else {
-        title.textContent = tr('overview.pipelineIdle', 'Research control plane idle');
-        detail.textContent = staleProcessingCount > 0
-            ? tr('overview.paperIngestionStale', 'Paper ingestion has {n} stale tasks').replace('{n}', fmt(staleProcessingCount))
-            : tr('overview.pipelineNoActive', 'No active research work is reported');
-    }
+    updateStatusPill();
 }
 
 function trackPaperEvent(ev) {
@@ -624,14 +744,20 @@ function trackPaperEvent(ev) {
 async function loadProcessingPapers() {
     try {
         const [data, office] = await Promise.all([api("/api/processing"), api("/api/agent_office").catch(() => null)]);
+        if (data.contract_version !== 'processing-status-v3') {
+            throw new Error('processing-status-v3 contract is required');
+        }
         if (office && Array.isArray(office.departments)) agentOfficeData = office;
-        const rows = data.papers || data;
+        const rows = Array.isArray(data.papers) ? data.papers : [];
         const researchRuntime = data.research_runtime || {};
         const legacyIngestion = data.legacy_paper_ingestion || {};
+        processingSnapshot = data;
         pipelineState = researchRuntime.state || data.pipeline_state || 'error';
-        staleProcessingCount = Number(
-            legacyIngestion.stale_processing_count ?? data.stale_processing_count ?? 0
-        );
+        staleProcessingCount = legacyIngestion.available === false
+            ? null
+            : (legacyIngestion.stale_processing_count ?? data.stale_processing_count ?? null);
+        setText('statStaleProcessing', zeroSafeValue(staleProcessingCount));
+        renderV3StatusDomains(processingSnapshot);
 
         for (const r of rows) {
             const isDone = r.status === 'reasoned' || r.status === 'error';
@@ -664,8 +790,20 @@ async function loadProcessingPapers() {
             }
         }
         renderProcessingList();
+        const summary = agentOfficeData && agentOfficeData.summary;
+        if (summary) {
+            setText('runtimeStageSummary', tr('office.countSummary', '{working} active stages / {modules} runtime modules')
+                .replace('{working}', fmt(summary.working || 0))
+                .replace('{modules}', fmt(summary.sub_agents || 0)));
+        }
         updateLiveBadge();
-    } catch (e) { /* ignore */ }
+    } catch (e) {
+        processingSnapshot = null;
+        pipelineState = 'error';
+        staleProcessingCount = null;
+        setText('statStaleProcessing', '—');
+        renderV3StatusDomains(null);
+    }
 }
 
 const OFFICE_ASSET_BASE = "/static/vendor/pixel-agents/assets";
@@ -2088,6 +2226,8 @@ function renderRadialGraph(svgId, parentNode, children, targetHeight, isPreview)
     const childG = svg.append('g').selectAll('g')
         .data(childNodes).join('g')
         .attr('class', 'graph-node taxonomy-card taxonomy-child draggable')
+        .attr('data-testid', isPreview ? 'map-node' : null)
+        .attr('data-area-id', d => d.id)
         .attr('transform', d => `translate(${d.x},${d.y})`);
     drawChildCards(childG, isPreview, maxGap, maxPapers, maxMethods);
 
@@ -2250,7 +2390,6 @@ function drawRootCard(g, d, isPreview) {
     drawMetricPills(g, [
         [`${d.paper_count}`, 'papers', '#c4704b'],
         [`${d.gap_count}`, 'gaps', '#3d8b5e'],
-        [`${d.method_count}`, 'methods', '#7c5cbf'],
     ], 14, d.h - 34, d.w - 28, isPreview);
 }
 
@@ -2298,9 +2437,8 @@ function drawChildCards(selection, isPreview, maxGap, maxPapers, maxMethods) {
             'font-weight': '600',
         }, d.w - 36);
         drawMetricPills(g, [
-            [`${d.paper_count}`, 'p', '#c4704b'],
+            [`${d.paper_count}`, 'papers', '#c4704b'],
             [`${d.gap_count}`, 'gaps', '#3d8b5e'],
-            [`${d.method_count}`, 'm', '#7c5cbf'],
         ], 14, d.h - 25, d.w - 28, isPreview);
     });
 }
@@ -4170,6 +4308,32 @@ function init() {
         });
     });
 
+    // Homepage hierarchy links stay within the established single-page tab
+    // navigation; no routes or API sources are introduced for this layout.
+    $$('[data-tab]').forEach(control => {
+        if (control.classList.contains('nav-item') || control.classList.contains('advanced-nav-item')) return;
+        const activate = () => {
+            const tab = control.dataset.tab;
+            if (!tab) return;
+            switchTab(tab);
+            if (control.dataset.verdict) {
+                window.requestAnimationFrame(() => {
+                    const card = el('decisionsCard');
+                    if (card) card.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                });
+            }
+        };
+        control.addEventListener('click', activate);
+        if (!/^(BUTTON|A)$/.test(control.tagName)) {
+            control.addEventListener('keydown', event => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    activate();
+                }
+            });
+        }
+    });
+
     // Sidebar toggle
     el('sidebarToggle').addEventListener('click', toggleSidebar);
 
@@ -4217,7 +4381,9 @@ function init() {
     // static chrome is re-applied by i18n.js itself.
     document.addEventListener('deepgraph:languagechange', () => {
         applyMetricTips();
-        updateLiveBadge();
+        if (statsCache) updateHeroProof(statsCache);
+        if (processingSnapshot) renderV3StatusDomains(processingSnapshot);
+        else updateLiveBadge();
         renderProcessingList();
         if (agentOfficeRenderer) agentOfficeRenderer.rebuildForCurrentSize();
         onTabActivated(activeTab);
@@ -4225,6 +4391,9 @@ function init() {
 
     // Initial data loads. Agenda scope resolves first so that scoped
     // endpoints get their agenda_id; the unscoped loads run regardless.
+    // Keep the existing pixel-office visual available as the hero background
+    // during API startup. The next processing snapshot replaces this fallback.
+    renderProcessingList();
     initAgendaScope().finally(() => {
         refreshStats();
         loadRecentlyDiscovered();

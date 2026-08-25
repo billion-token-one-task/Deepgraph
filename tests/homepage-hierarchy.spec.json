@@ -1,0 +1,10 @@
+{
+  "version": "1.0.0",
+  "requiredTestIds": ["app-header", "status-pill", "global-search", "lang-toggle", "nav-rail", "nav-rail-item", "hero", "hero-eyebrow", "hero-title", "hero-sub", "hero-proof", "evidence-bar", "evidence-bar-segment", "verdict-stat", "verdict-value", "memory-stat", "memory-value", "cta-runtime", "cta-map", "runtime-stage", "stage-legend", "stage-legend-item", "status-row", "v3-status-domains", "corpus-status", "research-runtime-status", "scoped-ingestion-status", "legacy-ingestion-status", "harvest-status", "backfill-status", "link-activity", "credibility-section", "volume-strip", "volume-item", "map-section", "map-canvas", "map-node", "link-map", "portfolio-section", "portfolio-cell", "site-footer", "footer-notice", "cta-submit-idea"],
+  "v3": {"contractVersion": "processing-status-v3", "fixtureSha256": "95c02a6ee6fc33a5b1ac6eb6dce41789cbbb16a6f664d7f8bd939f1b252b7385", "domains": ["corpus", "research_runtime", "scoped_ingestion", "legacy_paper_ingestion", "harvest", "backfill"]},
+  "copy": {
+    "zh": {"h1": "从经验中持续进化的 AI Research Harness", "sub": "DeepGraph 将实验、知识与证据连接成可验证的研究闭环，让 AI 研究系统积累经验并持续改进。"},
+    "en": {"h1": "An AI research harness that compounds experience", "sub": "DeepGraph links experiments, knowledge, and evidence into one verifiable loop that keeps improving itself."}
+  },
+  "thresholds": {"h1MinFontSize": 40, "searchMaxWidth": 320, "minLegibleFontSize": 12, "heroMaxNumber": 30, "inlineMaxNumber": 20, "sectionMinNumber": 30}
+}

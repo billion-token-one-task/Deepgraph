@@ -1,0 +1,10 @@
+{
+  "private": true,
+  "devDependencies": {
+    "@axe-core/playwright": "^4.10.2",
+    "@playwright/test": "^1.55.0"
+  },
+  "scripts": {
+    "test:homepage-hierarchy": "playwright test tests/homepage-hierarchy.spec.ts"
+  }
+}
