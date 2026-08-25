@@ -796,6 +796,7 @@ async function loadProcessingPapers() {
                 .replace('{working}', fmt(summary.working || 0))
                 .replace('{modules}', fmt(summary.sub_agents || 0)));
         }
+        renderRuntimeStageStates(officeSnapshot());
         updateLiveBadge();
     } catch (e) {
         processingSnapshot = null;
@@ -863,6 +864,24 @@ function officeStatusLabel(status) {
     if (status === "blocked") return tr('office.status.blocked', 'needs attention');
     if (status === "working") return tr('office.status.active', 'active');
     return tr('office.status.idle', 'idle');
+}
+
+function officeStatusColor(status) {
+    if (status === 'blocked') return '#c4453a';
+    if (status === 'working') return '#3d8b5e';
+    return '#8d8177';
+}
+
+function renderRuntimeStageStates(snapshot) {
+    const statuses = new Map((snapshot && Array.isArray(snapshot.departments) ? snapshot.departments : [])
+        .map(dep => [dep.key, dep.status === 'blocked' ? 'blocked' : dep.status === 'working' ? 'working' : 'idle']));
+    $$('[data-stage-status]').forEach(node => {
+        const state = statuses.get(node.dataset.stageStatus) || 'idle';
+        node.dataset.stageState = state;
+        node.textContent = officeStatusLabel(state);
+        const stage = node.closest('[data-stage]');
+        if (stage) stage.dataset.stageState = state;
+    });
 }
 
 function officeLeadText(dep) {
@@ -1498,14 +1517,16 @@ AgentOfficeCanvas.prototype.drawPacket = function(ctx, x, y, color, label) {
 
 AgentOfficeCanvas.prototype.drawRoomBase = function(ctx, room) {
     const dep = room.dep;
+    const status = dep.status === "blocked" ? "blocked" : dep.status === "working" ? "working" : "idle";
+    const statusColor = officeStatusColor(status);
     ctx.save();
     canvasFillRoundRect(ctx, room.x, room.y, room.w, room.h, 8, "rgba(246,239,226,0.94)", "rgba(67,55,45,0.25)", 3);
     this.tileImage(ctx, this.assets.floor, room.x + 4, room.y + 70, room.w - 8, room.h - 74, 2);
     ctx.fillStyle = "rgba(255,253,248,0.9)";
     ctx.fillRect(room.x + 4, room.y + 4, room.w - 8, 72);
-    ctx.fillStyle = room.accent;
+    ctx.fillStyle = statusColor;
     ctx.fillRect(room.x + 18, room.y + 24, 18, 18);
-    if (dep.status === "working") {
+    if (status === "working") {
         ctx.globalAlpha = 0.55 + 0.35 * Math.sin(this.t * 4 + room.index);
         ctx.fillRect(room.x + 18, room.y + 24, 18, 18);
         ctx.globalAlpha = 1;
@@ -1514,11 +1535,14 @@ AgentOfficeCanvas.prototype.drawRoomBase = function(ctx, room) {
     ctx.fillStyle = "#2b2520";
     canvasTextFit(ctx, officeDepartmentTitle(dep), room.x + 48, room.y + 42, room.w - 250);
     ctx.font = "800 12px Source Code Pro, monospace";
-    ctx.fillStyle = room.accent;
-    const label = officeStatusLabel(dep.status || "idle").toUpperCase();
+    const label = officeStatusLabel(status).toUpperCase();
     const labelW = Math.min(180, Math.max(78, ctx.measureText(label).width + 24));
-    canvasFillRoundRect(ctx, room.x + room.w - labelW - 18, room.y + 18, labelW, 32, 6, "rgba(255,255,255,0.92)", "rgba(67,55,45,0.12)", 1);
-    ctx.fillText(label, room.x + room.w - labelW - 6, room.y + 39);
+    const labelX = room.x + room.w - labelW - 18;
+    canvasFillRoundRect(ctx, labelX, room.y + 18, labelW, 32, 6, statusColor, "rgba(255,253,248,0.92)", 2);
+    ctx.fillStyle = "#fffdf8";
+    ctx.textAlign = "center";
+    ctx.fillText(label, labelX + labelW / 2, room.y + 39);
+    ctx.textAlign = "left";
     ctx.font = "700 15px Source Sans 3, system-ui, sans-serif";
     ctx.fillStyle = "#8d8177";
     canvasWrapText(ctx, officeDepartmentResponsibility(dep), room.x + 48, room.y + 66, room.w - 96, 17, 2);
@@ -2137,12 +2161,29 @@ function renderExploreChildren(children) {
 
 function renderRadialGraph(svgId, parentNode, children, targetHeight, isPreview) {
     const svg = d3.select('#' + svgId);
-    svg.selectAll('*').remove();
-
-    const container = svg.node().parentElement;
-    const width = container.clientWidth - 4;
+    const svgNode = svg.node();
+    const container = svgNode.parentElement;
+    const width = Math.max(280, Math.round(container.clientWidth - 4));
     const height = targetHeight;
+    svgNode._radialGraphConfig = { parentNode, children, targetHeight, isPreview };
+    svgNode.dataset.renderWidth = String(width);
+    if (!svgNode._radialGraphResizeObserver && 'ResizeObserver' in window) {
+        let pending = false;
+        svgNode._radialGraphResizeObserver = new ResizeObserver(entries => {
+            const nextWidth = Math.max(280, Math.round(entries[0].contentRect.width - 4));
+            if (pending || Math.abs(nextWidth - Number(svgNode.dataset.renderWidth || 0)) < 2) return;
+            pending = true;
+            window.requestAnimationFrame(() => {
+                pending = false;
+                const config = svgNode._radialGraphConfig;
+                if (config) renderRadialGraph(svgId, config.parentNode, config.children, config.targetHeight, config.isPreview);
+            });
+        });
+        svgNode._radialGraphResizeObserver.observe(container);
+    }
+    svg.selectAll('*').remove();
     svg.attr('width', width).attr('height', height).attr('viewBox', `0 0 ${width} ${height}`);
+    svg.attr('preserveAspectRatio', 'xMidYMid meet');
 
     const cx = width / 2;
     const cy = height / 2;
@@ -2585,8 +2626,15 @@ async function loadDecisions() {
         const rows = payload.decisions || [];
         const badge = el('decisionsCountBadge');
         if (badge) {
-            badge.textContent = Object.entries(payload.counts_by_verdict || {})
-                .map(([verdict, n]) => `${n} ${verdict}`).join(' / ') || '0';
+            const auditedTotal = Number(payload.total);
+            const unauditedTotal = Number(payload.legacy_total || 0);
+            if (Number.isFinite(auditedTotal)) {
+                badge.textContent = `${fmt(auditedTotal)} ${tr('decisions.audited', 'audited')}`
+                    + (unauditedTotal > 0 ? ` · ${fmt(unauditedTotal)} ${tr('decisions.unaudited', 'not audited')}` : '');
+            } else {
+                badge.textContent = Object.entries(payload.counts_by_verdict || {})
+                    .map(([verdict, n]) => `${n} ${verdict}`).join(' / ') || '0';
+            }
         }
         if (!rows.length) {
             body.innerHTML = `<div class="paper-reader-empty-title">${esc(t('decisions.empty'))}</div>`;
@@ -3145,6 +3193,14 @@ function renderDiscoverySources(d) {
 function renderDiscoveries(discoveries) {
     const list = el('discoveriesList');
     const visible = (discoveries || []).filter(isDisplayableDiscovery);
+    const countBadge = el('discoveriesCountBadge');
+    if (countBadge) {
+        const total = Number(statsCache && statsCache.deep_insights_total);
+        const tierFilter = el('discoveryTierFilter')?.value || '';
+        countBadge.textContent = !tierFilter && Number.isFinite(total) && total > visible.length
+            ? tr('ideas.showingOf', 'Showing {shown} of {total}').replace('{shown}', fmt(visible.length)).replace('{total}', fmt(total))
+            : tr('ideas.loaded', '{count} loaded').replace('{count}', fmt(visible.length));
+    }
     if (visible.length === 0) {
         list.innerHTML = '<p class="empty-msg">No ready discoveries yet. Automatic discovery is still filtering candidates.</p>';
         return;
@@ -3268,13 +3324,35 @@ async function loadAutomationSnapshot() {
     }
 }
 
+function latestActiveAgenda() {
+    const active = agendaList.filter(agenda => Number.isInteger(Number(agenda.id)) && String(agenda.status || 'active') === 'active');
+    const candidates = active.length ? active : agendaList.filter(agenda => Number.isInteger(Number(agenda.id)));
+    return [...candidates].sort((a, b) => {
+        const aUpdated = Date.parse(a.updated_at || a.created_at || 0) || 0;
+        const bUpdated = Date.parse(b.updated_at || b.created_at || 0) || 0;
+        return bUpdated - aUpdated;
+    })[0] || null;
+}
+
+function processDetailAgenda() {
+    if (currentAgendaId === ALL_AGENDAS) return latestActiveAgenda();
+    return agendaList.find(agenda => agenda.id === currentAgendaId) || (Number.isInteger(Number(currentAgendaId)) ? { id: currentAgendaId } : null);
+}
+
 async function loadExperimentsTab() {
     const statusFilter = el('experimentStatusFilter')?.value || '';
     const badge = el('timelineAgendaBadge');
+    const detailAgenda = processDetailAgenda();
+    const groupsList = el('experimentsList');
+    if (groupsList) {
+        groupsList.innerHTML = `<p class="empty-msg">${esc(tr('process.loadingExperiments', 'Loading experiment history…'))}</p>`;
+    }
     if (badge) {
         const active = agendaList.find(a => a.id === currentAgendaId);
         badge.textContent = currentAgendaId === ALL_AGENDAS
-            ? tr('process.allScope', 'all agendas')
+            ? (detailAgenda
+                ? tr('process.allScopeShowing', 'all agendas · showing agenda #{agenda}').replace('{agenda}', String(detailAgenda.id))
+                : tr('process.allScope', 'all agendas'))
             : (active ? `agenda #${active.id}: ${trunc(active.name, 40)}` : tr('process.noScope', 'no agenda scope'));
     }
     // This response is large, so start it without blocking the much smaller
@@ -3284,11 +3362,11 @@ async function loadExperimentsTab() {
     if (currentAgendaId != null) {
         try {
             await loadEvidenceStates();
-            if (currentAgendaId === ALL_AGENDAS) {
+            if (!detailAgenda) {
                 const tl = el('processTimeline');
                 if (tl) tl.innerHTML = `<p class="empty-msg empty-msg-explained">${esc(tr('process.allAgendaTimeline', 'You are viewing all agendas. Process events are recorded per agenda and cannot be merged into one reliable chronology. Choose a specific agenda in this timeline.'))}</p>`;
             } else {
-                const timeline = await api(`/api/v1/agendas/${currentAgendaId}/timeline?limit=120`);
+                const timeline = await api(`/api/v1/agendas/${detailAgenda.id}/timeline?limit=120`);
                 renderProcessTimeline(timeline.events || []);
             }
         } catch (e) {
@@ -3296,11 +3374,11 @@ async function loadExperimentsTab() {
             if (tl) tl.innerHTML = '<p class="empty-msg">Timeline unavailable. The provenance API may not be deployed yet.</p>';
         }
         try {
-            if (currentAgendaId === ALL_AGENDAS) {
+            if (!detailAgenda) {
                 const sr = el('selectionRationale');
                 if (sr) sr.innerHTML = `<p class="empty-msg empty-msg-explained">${esc(tr('process.allAgendaRationale', 'You are viewing all agendas. Selection rationale belongs to one agenda and is not aggregated. Choose a specific agenda in this timeline.'))}</p>`;
             } else {
-                const selection = await api(`/api/v1/agendas/${currentAgendaId}/selection`);
+                const selection = await api(`/api/v1/agendas/${detailAgenda.id}/selection`);
                 renderSelectionRationale(selection);
             }
         } catch (e) {
@@ -3480,6 +3558,10 @@ function renderAutomationOverview(snapshot) {
         + Number(auto.researching || 0) + Number(auto.verifying || 0);
     const gpuRunning = Number(gpu.running_jobs || 0);
     const gpuQueued = Number(gpu.queued_jobs || 0);
+    const evoSessions = Array.isArray(evo.recent_sessions) ? evo.recent_sessions : [];
+    const evoBlocked = evoSessions.filter(session => session.status === 'blocked').length;
+    const poRuns = Array.isArray(po.recent_runs) ? po.recent_runs : [];
+    const poStale = Number((po.counts || {}).stale || poRuns.filter(run => run.status === 'stale').length);
     const activityLabel = (working, queued = 0) => working > 0
         ? tr('process.currentWork', 'current work')
         : (queued > 0 ? tr('process.queuedWork', 'waiting in queue') : tr('process.noCurrentJob', 'no current job'));
@@ -3500,12 +3582,12 @@ function renderAutomationOverview(snapshot) {
         serviceCard(
             'EvoScientist',
             serviceState(evo.available, false, (evo.active_count || 0) > 0),
-            `${evo.active_count || 0} ${esc(tr('process.activeSessions', 'active sessions'))} · ${esc(activityLabel(evo.active_count || 0))}`
+            `${evo.active_count || 0} ${esc(tr('process.activeSessions', 'active sessions'))} · ${evoBlocked} ${esc(tr('process.blocked', 'blocked'))} · ${evoSessions.length} ${esc(tr('process.recentRecords', 'recent records'))}`
         ),
         serviceCard(
             'PaperOrchestra',
             serviceState(po.available, false, (po.active_count || 0) > 0),
-            `${(po.counts || {}).bundle_ready || 0} ${esc(tr('process.bundles', 'bundles'))} · ${(po.counts || {}).drafting || 0} ${esc(tr('process.drafting', 'drafting'))} · ${esc(activityLabel(po.active_count || 0))}`
+            `${poRuns.length} ${esc(tr('process.recentRecords', 'recent records'))} · ${poStale} ${esc(tr('process.stale', 'stale'))} · ${esc(activityLabel(po.active_count || 0))}`
         ),
         serviceCard(
             tr('process.service.gpuScheduler', 'GPU Scheduler'),
@@ -4385,6 +4467,7 @@ function init() {
         if (processingSnapshot) renderV3StatusDomains(processingSnapshot);
         else updateLiveBadge();
         renderProcessingList();
+        renderRuntimeStageStates(officeSnapshot());
         if (agentOfficeRenderer) agentOfficeRenderer.rebuildForCurrentSize();
         onTabActivated(activeTab);
     });

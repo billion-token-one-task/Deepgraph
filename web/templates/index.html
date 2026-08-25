@@ -164,13 +164,13 @@
                         </div>
                         <div class="runtime-stage" data-testid="runtime-stage">
                             <div class="stage-legend" data-testid="stage-legend" role="group" aria-label="Research runtime stages">
-                                <button type="button" data-tab="experiments" data-stage="paper_extraction" data-testid="stage-legend-item"><i></i><span data-i18n="office.department.paper_extraction.title">Paper intake & extraction</span></button>
-                                <button type="button" data-tab="explore" data-stage="graph_construction" data-testid="stage-legend-item"><i></i><span data-i18n="office.department.graph_construction.title">Knowledge graph</span></button>
-                                <button type="button" data-tab="discoveries" data-stage="idea_generation" data-testid="stage-legend-item"><i></i><span data-i18n="office.department.idea_generation.title">Research idea generation</span></button>
-                                <button type="button" data-tab="experiments" data-stage="experiment_planning" data-testid="stage-legend-item"><i></i><span data-i18n="office.department.experiment_planning.title">Experiment planning</span></button>
-                                <button type="button" data-tab="experiments" data-stage="experiment_execution" data-testid="stage-legend-item"><i></i><span data-i18n="office.department.experiment_execution.title">Experiment execution</span></button>
-                                <button type="button" data-tab="papers" data-stage="manuscript_generation" data-testid="stage-legend-item"><i></i><span data-i18n="office.department.manuscript_generation.title">Manuscript generation</span></button>
-                                <button type="button" data-tab="office" data-stage="orchestration" data-testid="stage-legend-item"><i></i><span data-i18n="office.department.orchestration.title">Research orchestration</span></button>
+                                <button type="button" data-tab="experiments" data-stage="paper_extraction" data-testid="stage-legend-item"><i></i><span data-i18n="office.department.paper_extraction.title">Paper intake & extraction</span><small data-testid="stage-status" data-stage-status="paper_extraction">—</small></button>
+                                <button type="button" data-tab="explore" data-stage="graph_construction" data-testid="stage-legend-item"><i></i><span data-i18n="office.department.graph_construction.title">Knowledge graph</span><small data-testid="stage-status" data-stage-status="graph_construction">—</small></button>
+                                <button type="button" data-tab="discoveries" data-stage="idea_generation" data-testid="stage-legend-item"><i></i><span data-i18n="office.department.idea_generation.title">Research idea generation</span><small data-testid="stage-status" data-stage-status="idea_generation">—</small></button>
+                                <button type="button" data-tab="experiments" data-stage="experiment_planning" data-testid="stage-legend-item"><i></i><span data-i18n="office.department.experiment_planning.title">Experiment planning</span><small data-testid="stage-status" data-stage-status="experiment_planning">—</small></button>
+                                <button type="button" data-tab="experiments" data-stage="experiment_execution" data-testid="stage-legend-item"><i></i><span data-i18n="office.department.experiment_execution.title">Experiment execution</span><small data-testid="stage-status" data-stage-status="experiment_execution">—</small></button>
+                                <button type="button" data-tab="papers" data-stage="manuscript_generation" data-testid="stage-legend-item"><i></i><span data-i18n="office.department.manuscript_generation.title">Manuscript generation</span><small data-testid="stage-status" data-stage-status="manuscript_generation">—</small></button>
+                                <button type="button" data-tab="office" data-stage="orchestration" data-testid="stage-legend-item"><i></i><span data-i18n="office.department.orchestration.title">Research orchestration</span><small data-testid="stage-status" data-stage-status="orchestration">—</small></button>
                             </div>
                             <span id="runtimeStageSummary">—</span>
                         </div>
@@ -417,6 +417,7 @@
                         <div class="card-header">
                             <h3 data-i18n="ideas.title">Generated Paper Ideas</h3>
                             <div class="opp-controls">
+                                <span id="discoveriesCountBadge" class="paper-library-subtitle"></span>
                                 <select id="discoveryTierFilter" class="select-input-sm">
                                     <option value="" data-i18n="ideas.allTiers">All Tiers</option>
                                     <option value="1" data-i18n="ideas.tier1">Tier 1: Paradigm</option>

@@ -56,6 +56,20 @@ test.describe('homepage hierarchy', () => {
     for (const item of await page.locator(tid('stage-legend-item')).all()) {
       expect(await size(item)).toBeGreaterThanOrEqual(spec.thresholds.minLegibleFontSize);
     }
+    const stageStatuses = page.locator(tid('stage-status'));
+    expect(await stageStatuses.count()).toBe(7);
+  });
+
+  test('starts with labelled desktop navigation and can collapse it', async ({ page }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await gotoHome(page);
+    const rail = page.locator(tid('nav-rail'));
+    const firstLabel = page.locator(`${tid('nav-rail-item')} span`).first();
+    expect((await rail.boundingBox())?.width).toBeGreaterThanOrEqual(200);
+    await expect(firstLabel).toBeVisible();
+    await page.locator('#sidebarToggle').click();
+    await expect(rail).toHaveClass(/collapsed/);
+    await expect.poll(async () => (await rail.boundingBox())?.width ?? Infinity).toBeLessThanOrEqual(60);
   });
 
   test('keeps verdict ratios and number tiers coherent with live API values', async ({ page }) => {
@@ -92,6 +106,11 @@ test.describe('homepage hierarchy', () => {
     await expect(page.locator(tid('backfill-status'))).toHaveAttribute('data-display-state', 'halted');
     await expect(page.locator(tid('backfill-status'))).toContainText('300.0K');
     await expect(page.locator(tid('status-pill'))).toContainText('Research runtime · idle');
+    for (const selector of ['corpus-status', 'research-runtime-status', 'scoped-ingestion-status', 'legacy-ingestion-status', 'harvest-status', 'backfill-status']) {
+      const detail = page.locator(`${tid(selector)} small`);
+      await expect(detail).toHaveCSS('white-space', 'normal');
+      await expect(detail).toHaveCSS('text-overflow', 'clip');
+    }
   });
 
   test('renders all research lifecycle states without borrowing another domain state', async ({ page }) => {
@@ -151,6 +170,25 @@ test.describe('homepage hierarchy', () => {
       expect(box?.y ?? -1).toBeGreaterThanOrEqual((canvasBox?.y ?? 0) - 1);
       expect((box?.y ?? 0) + (box?.height ?? 0)).toBeLessThanOrEqual((canvasBox?.y ?? 0) + (canvasBox?.height ?? 0) + 1);
     }
+  });
+
+  test('refits the research map when the viewport changes', async ({ page }) => {
+    await page.route('**/api/taxonomy/ml', route => route.fulfill({ json: {
+      node: { id: 'ml', name: 'Machine learning' },
+      children: [
+        { id: 'ml.a', name: 'Area A', paper_count: 12, gap_count: 2, method_count: 4 },
+        { id: 'ml.b', name: 'Area B', paper_count: 8, gap_count: 0, method_count: 3 },
+      ],
+    } }));
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await gotoHome(page);
+    const graph = page.locator(tid('map-canvas'));
+    await expect(page.locator(tid('map-node')).first()).toBeVisible();
+    const before = await graph.getAttribute('viewBox');
+    await page.setViewportSize({ width: 1024, height: 900 });
+    await expect.poll(() => graph.getAttribute('viewBox')).not.toBe(before);
+    const width = (value: string | null) => Number(value?.split(' ')[2] || 0);
+    expect(width(await graph.getAttribute('viewBox'))).toBeLessThan(width(before));
   });
 
   test('uses the specified bilingual hero copy and equivalent structure', async ({ page }) => {
