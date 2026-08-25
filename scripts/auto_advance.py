@@ -2309,6 +2309,36 @@ def _require_exact_task_paths(parser, args, argv: list[str]) -> None:
     args.log = str(resolved["log"])
 
 
+
+def resolve_gpu_class(requested=None) -> str:
+    """The GPU model to request, taken from the hardware that exists.
+
+    An explicit value always wins: an operator pinning a class is making a
+    statement about what the measurement runs on. With nothing pinned the
+    registry is the truth, and the widest registered card is chosen because a
+    plan that fits the biggest available card fits the smaller ones too.
+    Asking for a class nobody registers yields a grant no backend can serve.
+    """
+    if requested:
+        return str(requested)
+    try:
+        rows = db.fetchall(
+            """SELECT gpu_model, total_mem_gb FROM gpu_workers
+                WHERE status NOT IN ('retired', 'offline')
+                  AND COALESCE(gpu_model, '') <> ''
+                ORDER BY total_mem_gb DESC"""
+        )
+    except Exception:
+        rows = []
+    for row in rows:
+        model = str(dict(row).get("gpu_model") or "").strip()
+        if model:
+            return model
+    # Nothing registered: say so through the grant rather than inventing
+    # hardware, so preflight refuses instead of queuing onto a missing backend.
+    return "none"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--agenda", type=int, action="append",
@@ -2339,7 +2369,15 @@ def main() -> int:
     parser.add_argument("--grant-token-cap", type=int, default=40000)
     parser.add_argument("--proposal-token-cap", type=int, default=32000)
     parser.add_argument("--grant-gpu-hours", type=float, default=2.0)
-    parser.add_argument("--gpu-class", default="NVIDIA A100-PCIE-40GB")
+    # Not a constant. The requested class decides which backend a grant may
+    # draw on, so a stale default silently pins every pilot to hardware that is
+    # no longer there: the old default named an A100 fleet that had been
+    # unreachable for days, and a lane asking for a Tesla T4 sent three runs to
+    # Colab and recorded three invalid outcomes while a registered, verified
+    # A10G sat idle. Left unset, the class is resolved from the worker registry.
+    parser.add_argument("--gpu-class", default=None,
+                        help="GPU model to request; default: resolved from the "
+                             "registered workers at run time")
     # Contract max is 20000; cycle-1's real evaluator consumed 13717 and a
     # 15000 cap was exceeded in practice, charging the agenda for nothing.
     parser.add_argument("--authority-token-cap", type=int, default=20000)
@@ -2355,6 +2393,7 @@ def main() -> int:
     parser.add_argument("--proposer-family", default=_role_default("PRIMARY", "_FAMILY"))
     argv = sys.argv[1:]
     args = parser.parse_args(argv)
+    args.gpu_class = resolve_gpu_class(args.gpu_class)
     if args.job is not None:
         if int(args.job) <= 0:
             parser.error("--job must be positive")
