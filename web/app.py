@@ -30,6 +30,38 @@ from orchestrator.pipeline import get_events, log_event
 app = Flask(__name__,
             template_folder="templates",
             static_folder="static")
+
+
+def _asset_version() -> str:
+    """Cache-busting token for the frontend bundle.
+
+    Static assets are served `immutable` for a week, so a browser that already
+    holds them never revalidates. The query string is what makes a new bundle a
+    new URL -- and a hand-maintained literal goes stale silently: it was last
+    bumped in d953811 and six frontend commits shipped behind it, so returning
+    visitors got new HTML with a week-old script and stylesheet. Deriving it
+    from the deployed release makes that failure impossible.
+    """
+    release_marker = Path(__file__).resolve().parent.parent / ".release-commit"
+    try:
+        commit = release_marker.read_text(encoding="utf-8").strip()
+        if commit:
+            return commit[:12]
+    except OSError:
+        pass
+    # A development tree has no release marker; fall back to the newest mtime
+    # across the served bundle so an edit still invalidates the cache.
+    newest = 0.0
+    static_root = Path(__file__).resolve().parent / "static"
+    for name in ("js/app.js", "js/i18n.js", "css/style.css"):
+        try:
+            newest = max(newest, (static_root / name).stat().st_mtime)
+        except OSError:
+            continue
+    return "dev-%d" % int(newest)
+
+
+ASSET_VERSION = _asset_version()
 from web.meta_harness_routes import blueprint as meta_harness_blueprint
 from web.provenance_routes import blueprint as provenance_blueprint
 from web.provenance_routes import _scrub_text as _scrub_path_text
@@ -1940,6 +1972,7 @@ def index():
         subtitle=APP_SUBTITLE,
         root_node_id=ROOT_NODE_ID,
         profile=PROFILE,
+        asset_version=ASSET_VERSION,
     )
 
 

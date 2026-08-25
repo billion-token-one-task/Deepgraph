@@ -11,7 +11,7 @@
          render-blocking and unreachable/slow from some networks. -->
     <script defer src="/static/vendor/d3/d3.v7.min.js"></script>
     <script defer src="/static/vendor/marked/marked.min.js"></script>
-    <script defer src="/static/js/i18n.js?v=20260824-status1"></script>
+    <script defer src="/static/js/i18n.js?v={{ asset_version }}"></script>
     <script>
         window.MathJax = {
             tex: {
@@ -33,7 +33,7 @@
         };
     </script>
     <script defer src="/static/vendor/mathjax/tex-svg.js"></script>
-    <link rel="stylesheet" href="/static/css/style.css?v=20260824-status1">
+    <link rel="stylesheet" href="/static/css/style.css?v={{ asset_version }}">
 </head>
 <body data-root-node="{{ root_node_id }}" data-profile="{{ profile }}">
     <a class="skip-link" href="#mainContent" data-i18n="a11y.skipToContent">Skip to main content</a>
@@ -511,6 +511,6 @@
     <!-- Tooltip (shared) -->
     <div class="tooltip" id="tooltip"></div>
 
-    <script src="/static/js/app.js?v=20260824-status1"></script>
+    <script src="/static/js/app.js?v={{ asset_version }}"></script>
 </body>
 </html>
