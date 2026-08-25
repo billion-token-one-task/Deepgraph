@@ -18,10 +18,13 @@ The system has recorded 150 `OutcomeRecord`s across six research agendas.
 
 | verdict | count | meaning |
 |---|---|---|
-| `refuted` | 69 | the system measured its own hypothesis and rejected it |
-| `invalid` | 47 | the experiment itself failed; no scientific claim is made |
+| `refuted` | 61 | the system measured its own hypothesis and rejected it |
+| `invalid` | 57 | the experiment itself failed; no scientific claim is made |
 | `inconclusive` | 33 | the evidence did not license a verdict either way |
 | `supported` | 1 | the hypothesis survived the evidence ladder |
+
+Eleven of the `invalid` records were `refuted` or `invalid` until 2026-08-25,
+when they were retracted; see below.
 
 Refutation dominating is a property of the evidence ladder, not an accident. A
 verdict is withheld when the comparison is unfair, when the baseline is absent
@@ -35,24 +38,28 @@ failure rate stays visible. Reducing this number is an engineering objective,
 not a scientific one; the 2026-08-25 semantic-binding guard removes one of its
 larger causes by refusing to fund a plan that no registered runner implements.
 
-### Eight of those refutations are not real
+### Eleven verdicts have been retracted
 
 An audit of every run whose raw predictions are still on disk (105 of 195) found
-eleven outcome records, across four runs, whose verdict rests on an arm that
+eleven outcome records, across four runs, whose verdict rested on an arm that
 generated nothing at all: 200 of 200 predictions empty. Scoring an empty string
 is honest arithmetic -- it scores zero -- and the conclusion is still fiction.
 Run 235 walked the whole evidence ladder to `refuted` at p = 0.000999 that way.
 
-Eight of the 69 refutations and three of the 47 invalid records are of this
-kind. That is a lower bound: 90 older runs no longer have artifacts to audit.
+Eight of them were refutations. On 2026-08-25 all eleven were retracted: the
+verdict became `invalid`, the evidence state became `unmeasurable_retracted`,
+and the reason and the path to the raw predictions were written into each
+record. They were not deleted, because the count of what the system got wrong is
+itself a measurement, and a history that quietly loses its errors cannot be
+audited. The refutation count above fell from 69 to 61 for this reason.
+
+That is a lower bound: 90 older runs no longer have artifacts to audit.
 
 The gate that stops it is now in the pipeline in two places -- the evidence
 audit refuses to compute a verdict from an arm above the blank-prediction rate,
 and the pilot-promotion gate refuses to fund a full benchmark behind one. Both
 fired on 2026-08-25, refusing three promotions with `pilot arm measured
-nothing`. No new record of this kind can be produced; the historical ones stand
-until they are formally reclassified, and are named here rather than quietly
-dropped.
+nothing`. No new record of this kind can be produced.
 
 ## The supported result
 

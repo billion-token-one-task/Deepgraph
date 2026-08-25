@@ -3359,6 +3359,76 @@ class MetaHarnessRepository:
         )
         return self.record_outcome(outcome)
 
+    def retract_unmeasurable_outcome(
+        self,
+        outcome_id: int,
+        *,
+        reason: str,
+        evidence: str,
+    ) -> dict:
+        """Withdraw a verdict that was computed from an arm that measured nothing.
+
+        Eleven records were written before the blank-arm guard existed: eight
+        refutations and three invalid results whose candidate produced 200 of
+        200 empty predictions. Scoring an empty string is honest arithmetic --
+        it scores zero -- and run 235 walked the whole evidence ladder to
+        `refuted` at p = 0.000999 on exactly that. The arithmetic was right and
+        the conclusion was fiction.
+
+        Deleting them would be worse than leaving them: the count of what the
+        system got wrong is itself a measurement, and a history that quietly
+        loses its errors cannot be audited. The verdict becomes `invalid`, the
+        state becomes `unmeasurable_retracted`, and the reason and its evidence
+        are written into the record so the retraction carries its own proof.
+
+        Only a directional verdict can be retracted. A record already marked
+        `invalid` for this reason is left alone and reported as such, so the
+        operation is safe to repeat.
+        """
+        reason = str(reason or "").strip()
+        evidence = str(evidence or "").strip()
+        if not reason or not evidence:
+            raise ValueError("retraction requires both a reason and its evidence")
+        row = db.fetchone(
+            "SELECT id, agenda_id, verdict, state_decision, new_information_json"
+            " FROM outcome_records WHERE id=?",
+            (int(outcome_id),),
+        )
+        if not row:
+            raise ValueError(f"outcome {outcome_id} does not exist")
+        row = dict(row)
+        before = str(row.get("verdict") or "")
+        if str(row.get("state_decision") or "") == "unmeasurable_retracted":
+            return {"outcome_id": int(outcome_id), "changed": False,
+                    "verdict": before, "note": "already retracted"}
+        if before not in ("supported", "refuted", "invalid"):
+            return {"outcome_id": int(outcome_id), "changed": False,
+                    "verdict": before, "note": "verdict carries no direction"}
+
+        information = _load_mapping(row.get("new_information_json"))
+        information["retraction"] = {
+            "previous_verdict": before,
+            "reason": reason,
+            "evidence": evidence,
+        }
+        cur = db.execute(
+            """
+            UPDATE outcome_records
+               SET verdict='invalid',
+                   state_decision='unmeasurable_retracted',
+                   new_information_json=?
+             WHERE id=?
+            """,
+            (json.dumps(information, sort_keys=True), int(outcome_id)),
+        )
+        if int(getattr(cur, "rowcount", 0) or 0) != 1:
+            db.rollback()
+            raise ValueError(f"outcome {outcome_id} was not updated")
+        db.commit()
+        return {"outcome_id": int(outcome_id), "changed": True,
+                "verdict_before": before, "verdict_after": "invalid",
+                "state_decision": "unmeasurable_retracted"}
+
     def record_outcome(self, outcome: OutcomeRecord) -> int:
         """Persist actual usage and consume the reserved grant atomically."""
         outcome.validate()
