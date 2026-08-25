@@ -84,7 +84,13 @@ ARTIFACT_REQUIREMENTS = list(REQUIRED_ARTIFACTS)
 # the execution class the forge derived from a passed preflight. Every bump
 # here must name a repair that is already deployed; the counter is the only
 # thing standing between a broken candidate and an unbounded retry loop.
-RECYCLE_EPOCH = "evaluator-route-and-pvalue-repair-2026-08-17"
+# Bumped 2026-08-25: _direction_evidence matched an agenda's scope terms only
+# against taxonomy labels, so three agendas created that day got direction
+# problems with no linked papers, and the frontier gate refused all six on
+# every pass until their rations ran out. The matcher now falls back to the
+# corpus and a problem with no evidence is refused at creation, so those
+# rations were spent against a defect, not against the problems.
+RECYCLE_EPOCH = "direction-evidence-corpus-fallback-2026-08-25"
 
 # A preflight whose blockers cannot heal on their own (missing requirements,
 # unresolvable declared repos) is retried this many times before the candidate

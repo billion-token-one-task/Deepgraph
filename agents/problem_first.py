@@ -491,11 +491,27 @@ def _direction_evidence(agenda) -> tuple[list[str], list[str]]:
             matched.append(str(node["id"]))
         if len(matched) >= DIRECTION_EVIDENCE_NODE_LIMIT:
             break
-    if not matched:
-        return [], []
+    if matched:
+        paper_ids = _papers_under_nodes(matched)
+        if paper_ids:
+            return _dedupe(matched), paper_ids
+
+    # A taxonomy label is short and technical; an agenda's scope terms are
+    # often research phrases -- "acceptance rule", "generalisation gap" -- that
+    # are never substrings of one. Matching only labels returned nothing for
+    # three agendas created on 2026-08-25, and their direction problems were
+    # persisted with no evidence and refused by the frontier gate on every pass
+    # until their attempts ran out. The corpus itself is the wider index: a
+    # paper whose title carries the term is evidence for the direction whether
+    # or not the taxonomy happens to name it.
+    return matched, _papers_matching_terms(terms)
+
+
+def _papers_under_nodes(node_ids: list[str]) -> list[str]:
+    from db import taxonomy as tax
 
     paper_ids: list[str] = []
-    for node_id in matched:
+    for node_id in node_ids:
         try:
             rows = tax.get_node_papers(node_id, limit=DIRECTION_EVIDENCE_PAPER_LIMIT)
         except Exception:  # noqa: BLE001
@@ -503,7 +519,31 @@ def _direction_evidence(agenda) -> tuple[list[str], list[str]]:
         paper_ids.extend(str(row["id"]) for row in rows if row.get("id"))
         if len(paper_ids) >= DIRECTION_EVIDENCE_PAPER_LIMIT:
             break
-    return _dedupe(matched), _dedupe(paper_ids)[:DIRECTION_EVIDENCE_PAPER_LIMIT]
+    return _dedupe(paper_ids)[:DIRECTION_EVIDENCE_PAPER_LIMIT]
+
+
+def _papers_matching_terms(terms: list[str]) -> list[str]:
+    """Papers whose title carries one of the agenda's scope terms.
+
+    Only fully processed papers qualify: a direction problem anchored to a
+    paper the pipeline has not read yet would clear the gate on a promise.
+    """
+    paper_ids: list[str] = []
+    for term in terms:
+        if len(term) < 4:
+            continue
+        try:
+            rows = db.fetchall(
+                "SELECT id FROM papers WHERE status='reasoned' AND title ILIKE ?"
+                " ORDER BY published_date DESC LIMIT ?",
+                (f"%{term}%", DIRECTION_EVIDENCE_PAPER_LIMIT),
+            )
+        except Exception:  # noqa: BLE001 - a search failure must not break discovery
+            continue
+        paper_ids.extend(str(dict(row)["id"]) for row in rows if dict(row).get("id"))
+        if len(paper_ids) >= DIRECTION_EVIDENCE_PAPER_LIMIT:
+            break
+    return _dedupe(paper_ids)[:DIRECTION_EVIDENCE_PAPER_LIMIT]
 
 
 def discover_research_problems(
@@ -580,6 +620,24 @@ def discover_research_problems(
                     "problem_quality_score": 0.9,
                 },
             ]
+    # A problem with no linked evidence cannot clear the frontier gate, so
+    # persisting one only spends its per-problem ration on four guaranteed
+    # refusals and then locks it out. Refuse it here, where the cause is
+    # visible, rather than downstream where only the symptom is.
+    unusable = [
+        problem for problem in candidates
+        if str((problem.get("source_signal_ref") or {}).get("kind")) == "agenda_direction"
+        and not (problem.get("paper_ids") or [])
+    ]
+    if unusable:
+        candidates = [problem for problem in candidates if problem not in unusable]
+        print(
+            f"[PROBLEM-FIRST] agenda {agenda_id}: dropped {len(unusable)} direction "
+            "problem(s) with no corpus evidence; widen the agenda's focus terms so "
+            "they match taxonomy labels or paper titles",
+            flush=True,
+        )
+
     candidates.sort(key=lambda item: item.get("problem_quality_score") or 0, reverse=True)
     out = candidates[:limit]
     if persist:

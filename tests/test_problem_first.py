@@ -149,6 +149,10 @@ class ProblemFirstTests(TempDbTestCase):
             mock.patch("agents.problem_first.get_problem_signals", return_value=[]),
             mock.patch.object(database, "table_exists", return_value=True),
             mock.patch.object(database, "fetchone", return_value=agenda_row),
+            mock.patch(
+                "agents.problem_first._direction_evidence",
+                return_value=(["ml.clinical"], ["2605.06165"]),
+            ),
         ):
             problems = discover_research_problems(
                 limit=2, agenda_id=9, persist=False
@@ -163,6 +167,34 @@ class ProblemFirstTests(TempDbTestCase):
             problems[0]["source_signal_ref"]["axis"],
             problems[1]["source_signal_ref"]["axis"],
         )
+        for problem in problems:
+            self.assertEqual(problem["paper_ids"], ["2605.06165"])
+
+    def test_a_direction_problem_with_no_corpus_evidence_is_not_seeded(self):
+        """It could never clear the frontier gate, and would burn its ration
+        on four guaranteed refusals before locking itself out. Three agendas
+        created on 2026-08-25 sat in exactly that state, spending nothing and
+        explaining nothing."""
+        agenda_row = {
+            "id": 9, "version": "v1", "name": "Acceptance rule benchmark",
+            "description": "Which acceptance rule generalises",
+            "focus_json": '["acceptance rule", "generalisation gap"]',
+            "prefer_json": "{}", "reject_json": "{}", "required_output_json": "{}",
+            "raw_config_json": "{}", "is_active": 1, "submitter": "test",
+            "token_budget": 1000, "token_spent": 0, "token_reserved": 0,
+            "gpu_hours_budget": 1, "gpu_hours_spent": 0, "gpu_hours_reserved": 0,
+            "max_concurrency": 1, "backend_allowlist_json": '["cpu","llm"]',
+            "backlog_policy": "new_only", "status": "active",
+        }
+        with (
+            mock.patch("agents.problem_first.get_problem_signals", return_value=[]),
+            mock.patch.object(database, "table_exists", return_value=True),
+            mock.patch.object(database, "fetchone", return_value=agenda_row),
+            mock.patch("agents.problem_first._direction_evidence", return_value=([], [])),
+        ):
+            problems = discover_research_problems(limit=2, agenda_id=9, persist=False)
+
+        self.assertEqual(problems, [])
 
     def test_problem_first_cycle_records_inconclusive_attempts(self):
         problem = discover_research_problems(limit=1, agenda_id=1, persist=True)[0]
