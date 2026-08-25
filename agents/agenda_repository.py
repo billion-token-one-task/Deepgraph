@@ -159,6 +159,77 @@ class AgendaRepository:
             raise AgendaNotFoundError(agenda_id)
         db.commit()
 
+    def set_active(self, agenda_id: int, active: bool) -> dict:
+        """Operator surface for reopening or closing a research agenda.
+
+        Added 2026-08-25: agenda 14 held the only `supported` outcome in the
+        system and twelve unfinished jobs, but was closed, and nothing outside
+        raw SQL could reopen it. Two invariants keep this from creating the
+        stranded states this repository has paid for before:
+
+        * activation is refused when the agenda has no fundable headroom --
+          `list_active` requires `token_budget > 0`, and an agenda whose budget
+          is already spent or reserved produces candidates that can never
+          receive a grant;
+        * closing is refused while authority is outstanding, because a closed
+          agenda's active grant has no legitimate settlement path.
+
+        `is_active` and `status` are written together: `list_active` reads
+        both, so setting one without the other yields an agenda that is
+        neither open nor closed.
+        """
+        row = db.fetchone(
+            "SELECT id, status, is_active, token_budget, token_spent,"
+            " token_reserved FROM research_agendas WHERE id=?",
+            (int(agenda_id),),
+        )
+        if not row:
+            raise AgendaNotFoundError(agenda_id)
+        row = dict(row)
+        before = {"status": row.get("status"), "is_active": row.get("is_active")}
+
+        if active:
+            budget = int(row.get("token_budget") or 0)
+            committed = int(row.get("token_spent") or 0) + int(
+                row.get("token_reserved") or 0
+            )
+            if budget <= committed:
+                raise ValueError(
+                    "agenda %d has no fundable headroom (budget %d <= spent+reserved %d);"
+                    " raise the budget before activating"
+                    % (int(agenda_id), budget, committed)
+                )
+        else:
+            open_grants = db.fetchone(
+                "SELECT COUNT(*) AS n FROM resource_grants"
+                " WHERE agenda_id=? AND status IN ('issued','active')",
+                (int(agenda_id),),
+            )
+            outstanding = int(dict(open_grants or {}).get("n") or 0)
+            if outstanding:
+                raise ValueError(
+                    "agenda %d still holds %d active grant(s); settle or expire"
+                    " them before closing" % (int(agenda_id), outstanding)
+                )
+
+        cur = db.execute(
+            """
+            UPDATE research_agendas
+            SET is_active=?, status=?, updated_at=CURRENT_TIMESTAMP
+            WHERE id=?
+            """,
+            (1 if active else 0, "active" if active else "closed", int(agenda_id)),
+        )
+        if int(getattr(cur, "rowcount", 0) or 0) != 1:
+            db.rollback()
+            raise AgendaNotFoundError(agenda_id)
+        db.commit()
+        return {
+            "before": before,
+            "after": {"status": "active" if active else "closed",
+                      "is_active": 1 if active else 0},
+        }
+
     def set_budgets(
         self,
         agenda_id: int,

@@ -7,6 +7,8 @@ printed before/after so the ops log carries the rollback value.
 
     agenda_backends.py show
     agenda_backends.py set --agenda 7 --backends cpu,llm,colab_gpu
+    agenda_backends.py activate --agenda 14
+    agenda_backends.py deactivate --agenda 14
 """
 from __future__ import annotations
 
@@ -33,6 +35,10 @@ def main() -> int:
     budget.add_argument("--tokens", type=int, default=None)
     budget.add_argument("--gpu-hours", type=float, default=None)
     budget.add_argument("--max-concurrency", type=int, default=None)
+    activate = sub.add_parser("activate")
+    activate.add_argument("--agenda", type=int, required=True)
+    deactivate = sub.add_parser("deactivate")
+    deactivate.add_argument("--agenda", type=int, required=True)
     expire = sub.add_parser("expire-grant")
     expire.add_argument("--agenda", type=int, required=True)
     expire.add_argument("--grant", type=int, required=True)
@@ -47,6 +53,17 @@ def main() -> int:
         )
         print(f"grant {args.grant}: {'expired+reconciled' if done else 'not eligible (must be active proposal-stage)'}")
         return 0 if done else 1
+
+    if args.cmd in ("activate", "deactivate"):
+        want_active = args.cmd == "activate"
+        try:
+            change = AgendaRepository().set_active(args.agenda, want_active)
+        except ValueError as exc:
+            print(f"agenda {args.agenda}: refused -- {exc}")
+            return 1
+        print(f"agenda {args.agenda} before: {change['before']}")
+        print(f"agenda {args.agenda} after:  {change['after']}")
+        return 0
 
     if args.cmd == "show":
         for row in db.fetchall(
