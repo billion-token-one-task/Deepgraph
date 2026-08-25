@@ -172,6 +172,25 @@ test.describe('homepage hierarchy', () => {
     }
   });
 
+  test('refits the research map when the viewport changes', async ({ page }) => {
+    await page.route('**/api/taxonomy/ml', route => route.fulfill({ json: {
+      node: { id: 'ml', name: 'Machine learning' },
+      children: [
+        { id: 'ml.a', name: 'Area A', paper_count: 12, gap_count: 2, method_count: 4 },
+        { id: 'ml.b', name: 'Area B', paper_count: 8, gap_count: 0, method_count: 3 },
+      ],
+    } }));
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await gotoHome(page);
+    const graph = page.locator(tid('map-canvas'));
+    await expect(page.locator(tid('map-node')).first()).toBeVisible();
+    const before = await graph.getAttribute('viewBox');
+    await page.setViewportSize({ width: 1024, height: 900 });
+    await expect.poll(() => graph.getAttribute('viewBox')).not.toBe(before);
+    const width = (value: string | null) => Number(value?.split(' ')[2] || 0);
+    expect(width(await graph.getAttribute('viewBox'))).toBeLessThan(width(before));
+  });
+
   test('uses the specified bilingual hero copy and equivalent structure', async ({ page }) => {
     await gotoHome(page, 'zh');
     const zhHooks = await page.locator('[data-testid]').evaluateAll(nodes => nodes.map(node => node.getAttribute('data-testid')).sort());
