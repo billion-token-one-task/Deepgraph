@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import re
+from typing import Any
 from collections import Counter, defaultdict
 
 from db import database as db
@@ -125,6 +126,81 @@ def _dedupe_opportunities(opportunities: list[dict]) -> list[dict]:
         seen.add(key)
         ordered.append(opportunity)
     return ordered
+
+
+
+# How much a kind of opening is worth as a research lead, which is not what
+# value_score measures. `benchmark_diversification` scores 4.8 because a node
+# has few `evaluated_on` links -- a statement about graph completeness -- while
+# an open question an author explicitly called unresolved scores 2.5. Ordering
+# by value_score therefore buries the leads under the bookkeeping: of the top
+# 4,000 openings by value, every agent-related hit was a completeness statistic.
+# The weight below is the research reading of the same rows; value_score is kept
+# as a tiebreak rather than discarded.
+OPENING_RESEARCH_WEIGHT: dict[str, int] = {
+    "open_question": 100,              # an author named this unresolved
+    "contradiction_resolution": 90,    # two papers disagree; someone is wrong
+    "limitation_cluster": 70,          # an author named this a limitation
+    "problem_operationalization": 50,  # a stated problem lacking a measurable form
+    "metric_diversification": 20,      # a measurement gap, not a question
+    "benchmark_diversification": 10,   # graph completeness, not a research lead
+}
+DEFAULT_OPENING_WEIGHT = 30
+
+
+def opening_research_weight(opportunity_type: Any) -> int:
+    return OPENING_RESEARCH_WEIGHT.get(str(opportunity_type or ""), DEFAULT_OPENING_WEIGHT)
+
+
+def rank_research_openings(
+    *,
+    limit: int = 50,
+    terms: "list[str] | None" = None,
+    min_weight: int = 50,
+    scan_limit: int = 4000,
+) -> list[dict]:
+    """Portfolio-wide research leads, ranked as leads rather than as statistics.
+
+    Openings were only ever readable one taxonomy node at a time, so nothing
+    ever asked the graph its best question across all 25,652 of them. Agenda
+    directions were written by hand instead, which is the one part of this
+    system a human should not be supplying.
+
+    `min_weight` drops the completeness statistics by default; `terms` narrows
+    to a research area by matching title and description.
+    """
+    rows = db.fetchall(
+        """SELECT node_id, opportunity_type, title, description, why_now,
+                  value_score, confidence, signal_counts, evidence_paper_ids
+             FROM node_opportunities
+            ORDER BY confidence DESC, value_score DESC, id DESC
+            LIMIT ?""",
+        (max(1, int(scan_limit)),),
+    )
+    wanted = [str(t).lower() for t in (terms or []) if str(t).strip()]
+    ranked = []
+    for row in rows:
+        weight = opening_research_weight(row.get("opportunity_type"))
+        if weight < int(min_weight):
+            continue
+        if wanted:
+            blob = " ".join(str(row.get(key) or "") for key in
+                            ("node_id", "title", "description")).lower()
+            if not any(term in blob for term in wanted):
+                continue
+        row = dict(row)
+        row["research_weight"] = weight
+        row["signal_counts"] = db._load_json(row.get("signal_counts"), {})
+        row["evidence_paper_ids"] = db._load_json(row.get("evidence_paper_ids"), [])
+        ranked.append(row)
+    ranked.sort(
+        key=lambda item: (
+            -item["research_weight"],
+            -float(item.get("confidence") or 0.0),
+            -float(item.get("value_score") or 0.0),
+        )
+    )
+    return ranked[: max(1, int(limit))]
 
 
 def get_node_opportunities(node_id: str) -> list[dict]:

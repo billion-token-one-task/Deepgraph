@@ -2205,6 +2205,39 @@ def api_agent_office():
         return _api_failure("agent_office", exc, status=503)
 
 
+@app.route("/api/research_openings")
+def api_research_openings():
+    """The graph's best open questions, ranked as research leads.
+
+    Openings were previously readable only one taxonomy node at a time, so the
+    25,652 the harvester had already found were never ranked against each
+    other, and research directions were written by hand instead. Completeness
+    statistics are excluded by default -- see OPENING_RESEARCH_WEIGHT.
+    """
+    try:
+        limit = max(1, min(200, int(request.args.get("limit", 30))))
+    except (TypeError, ValueError):
+        limit = 30
+    try:
+        min_weight = max(0, min(100, int(request.args.get("min_weight", 50))))
+    except (TypeError, ValueError):
+        min_weight = 50
+    raw_terms = str(request.args.get("terms") or "").strip()
+    terms = [t.strip() for t in raw_terms.split(",") if t.strip()] if raw_terms else None
+    try:
+        openings = opp.rank_research_openings(
+            limit=limit, terms=terms, min_weight=min_weight)
+        return jsonify({
+            "openings": openings,
+            "count": len(openings),
+            "min_research_weight": min_weight,
+            "terms": terms or [],
+            "weights": opp.OPENING_RESEARCH_WEIGHT,
+        })
+    except Exception as exc:
+        return _api_failure("research_openings", exc, status=503)
+
+
 @app.route("/api/processing")
 def api_processing():
     """Return independently sourced lifecycle truth for processing-status-v3."""

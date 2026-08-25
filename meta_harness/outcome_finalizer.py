@@ -24,6 +24,10 @@ class OutcomeFinalizationReport:
     already_finalized: list[int] = field(default_factory=list)
     deferred: dict[int, str] = field(default_factory=dict)
     recovery: dict[str, Any] = field(default_factory=dict)
+    # What the signal layer was told about each finalised outcome. Reported
+    # rather than silent, so a feedback loop that stops running is visible in
+    # the same place the outcome is.
+    signal_feedback: dict[int, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -32,6 +36,7 @@ class OutcomeFinalizationReport:
             "already_finalized": self.already_finalized,
             "deferred": self.deferred,
             "recovery": self.recovery,
+            "signal_feedback": self.signal_feedback,
         }
 
 
@@ -174,6 +179,57 @@ def _mark_closed(row: dict[str, Any], outcome_id: int, verdict: str) -> None:
     )
 
 
+
+def _feed_signal_posterior(outcome_id: int, verdict: str) -> str:
+    """Tell the signal layer what its lead produced.
+
+    The evidence graph proposes research openings, and `agenda_signal_outcomes`
+    is where the system learns which kinds of opening pay off -- an author's
+    stated open question against a performance plateau against a claim-method
+    gap. The writer for that table hangs off the older knowledge-loop path,
+    which the meta-harness execution route never calls, so after 150 outcomes
+    the table still held zero rows and every signal posterior was its prior.
+    A search that cannot see which of its leads worked cannot improve, which is
+    the whole premise of the harness.
+
+    Failures here are reported, never raised: a bookkeeping gap must not undo a
+    settled outcome.
+    """
+    if verdict not in ("supported", "refuted"):
+        return "skipped_non_directional_verdict"
+    row = db.fetchone(
+        """
+        SELECT o.agenda_id, o.idea_id, o.experiment_run_id, o.effect,
+               di.source_signal_refs
+          FROM outcome_records o
+          LEFT JOIN deep_insights di ON di.id = o.idea_id
+         WHERE o.id = ?
+        """,
+        (int(outcome_id),),
+    )
+    if not row:
+        return "outcome_not_found"
+    refs = dict(row).get("source_signal_refs")
+    if not refs:
+        return "no_signal_provenance"
+    try:
+        from agents.problem_first import update_signal_posterior
+
+        updates = update_signal_posterior(
+            refs,
+            "confirmed" if verdict == "supported" else "refuted",
+            agenda_id=int(dict(row)["agenda_id"]),
+            run_id=dict(row).get("experiment_run_id"),
+            experimental_claim_id=None,
+            effect_size=dict(row).get("effect"),
+            p_value=None,
+            conditions={"source": "outcome_finalizer", "outcome_id": int(outcome_id)},
+        )
+        return "updated_%d_signals" % len(updates)
+    except Exception as exc:                       # never undo a settled outcome
+        return "%s: %s" % (type(exc).__name__, str(exc)[:120])
+
+
 def finalize_terminal_outcomes(*, limit: int = 50) -> OutcomeFinalizationReport:
     """Finalize every currently eligible run without advancing live work.
 
@@ -283,6 +339,8 @@ def finalize_terminal_outcomes(*, limit: int = 50) -> OutcomeFinalizationReport:
             ) or {}
             verdict = str(outcome.get("verdict") or "inconclusive")
             _mark_closed(row, int(outcome_id), verdict)
+            report.signal_feedback[int(outcome_id)] = _feed_signal_posterior(
+                int(outcome_id), verdict)
             report.finalized.append(int(outcome_id))
         except Exception as exc:
             db.rollback()
