@@ -180,9 +180,13 @@
                             <div><p class="section-kicker" data-i18n="overview.now">NOW</p><h2 id="systemNowTitle" data-i18n="overview.systemStatus">Current system status</h2></div>
                             <button class="btn-link" type="button" id="btnOpenOffice" data-testid="link-activity" data-tab="office" data-i18n="overview.fullActivity">Open full activity</button>
                         </div>
-                        <div class="system-status-grid">
-                            <div class="system-status-line data-status"><i></i><div><strong id="dataStatusText" data-i18n="overview.dataConnected">Production data connected</strong><small id="systemHealthText" data-i18n="overview.healthLoading">Checking production data health…</small></div></div>
-                            <div class="system-status-line runtime-status" id="runtimeStatusLine"><i></i><div><strong id="pipelineStatusText" data-i18n="overview.pipelineChecking">Checking research pipeline…</strong><small id="pipelineStatusDetail">—</small></div></div>
+                        <div class="system-status-grid" data-testid="v3-status-domains">
+                            <div class="system-status-line corpus-status" id="corpusStatusLine" data-testid="corpus-status" data-domain="corpus"><i></i><div><strong id="corpusStatusText" data-i18n="overview.domainCorpus">Corpus</strong><small id="corpusStatusDetail">—</small></div></div>
+                            <div class="system-status-line runtime-status" id="runtimeStatusLine" data-testid="research-runtime-status" data-domain="research_runtime"><i></i><div><strong id="pipelineStatusText" data-i18n="overview.domainResearchRuntime">Research runtime</strong><small id="pipelineStatusDetail">—</small></div></div>
+                            <div class="system-status-line scoped-status" id="scopedIngestionStatusLine" data-testid="scoped-ingestion-status" data-domain="scoped_ingestion"><i></i><div><strong id="scopedIngestionStatusText" data-i18n="overview.domainScopedIngestion">Scoped ingestion</strong><small id="scopedIngestionStatusDetail">—</small></div></div>
+                            <div class="system-status-line legacy-status" id="legacyIngestionStatusLine" data-testid="legacy-ingestion-status" data-domain="legacy_paper_ingestion"><i></i><div><strong id="legacyIngestionStatusText" data-i18n="overview.domainLegacyIngestion">Legacy ingestion</strong><small id="legacyIngestionStatusDetail">—</small></div></div>
+                            <div class="system-status-line harvest-status" id="harvestStatusLine" data-testid="harvest-status" data-domain="harvest"><i></i><div><strong id="harvestStatusText" data-i18n="overview.domainHarvest">Harvest</strong><small id="harvestStatusDetail">—</small></div></div>
+                            <div class="system-status-line backfill-status" id="backfillStatusLine" data-testid="backfill-status" data-domain="backfill"><i></i><div><strong id="backfillStatusText" data-i18n="overview.domainBackfill">Backfill</strong><small id="backfillStatusDetail">—</small></div></div>
                         </div>
                     </section>
 

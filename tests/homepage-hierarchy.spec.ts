@@ -1,6 +1,9 @@
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import spec from './homepage-hierarchy.spec.json';
+import processingV3 from './fixtures/processing_status_v3.json';
 
 const tid = (name: string) => `[data-testid="${name}"]`;
 const px = (value: string) => Number.parseFloat(value) || 0;
@@ -9,8 +12,12 @@ async function size(locator: Locator) {
   return px(await locator.evaluate(node => getComputedStyle(node).fontSize));
 }
 
-async function gotoHome(page: Page, language: 'zh' | 'en' = 'zh') {
+async function gotoHome(page: Page, language: 'zh' | 'en' = 'zh', processingSnapshot?: typeof processingV3) {
   await page.addInitScript(lang => localStorage.setItem('deepgraph.lang', lang), language);
+  await page.unroute('**/api/processing');
+  if (processingSnapshot) {
+    await page.route('**/api/processing', route => route.fulfill({ json: processingSnapshot }));
+  }
   // The overview opens an existing long-polling status stream, so networkidle
   // is neither reachable nor a useful readiness condition here.
   await page.goto('/?ff=homepage_hierarchy_v2', { waitUntil: 'domcontentloaded' });
@@ -18,6 +25,12 @@ async function gotoHome(page: Page, language: 'zh' | 'en' = 'zh') {
 }
 
 test.describe('homepage hierarchy', () => {
+  test('pins the frozen v3 fixture before using it for UI coverage', () => {
+    const fixture = readFileSync('tests/fixtures/processing_status_v3.json');
+    expect(createHash('sha256').update(fixture).digest('hex')).toBe(spec.v3.fixtureSha256);
+    expect(processingV3.contract_version).toBe(spec.v3.contractVersion);
+  });
+
   test('supplies the required static test hooks', async ({ page }) => {
     await gotoHome(page);
     const dynamic = new Set(['map-node']);
@@ -62,6 +75,55 @@ test.describe('homepage hierarchy', () => {
     for (const value of await page.locator(`${tid('hero')} ${tid('verdict-value')}`).all()) expect(await size(value)).toBeLessThanOrEqual(spec.thresholds.heroMaxNumber);
     for (const value of await page.locator(`${tid('volume-item')} strong`).all()) expect(await size(value)).toBeLessThanOrEqual(spec.thresholds.inlineMaxNumber);
     for (const value of await page.locator(`${tid('credibility-section')} ${tid('verdict-value')}`).all()) expect(await size(value)).toBeGreaterThanOrEqual(spec.thresholds.sectionMinNumber);
+  });
+
+  test('maps frozen v3 truth independently by domain', async ({ page }) => {
+    await gotoHome(page, 'en', processingV3);
+    await expect(page.locator(tid('research-runtime-status'))).toHaveAttribute('data-display-state', 'idle');
+    await expect(page.locator(tid('research-runtime-status'))).toContainText('11 unapproved active-agenda jobs');
+    await expect(page.locator(tid('scoped-ingestion-status'))).toHaveAttribute('data-display-state', 'halted');
+    await expect(page.locator(tid('scoped-ingestion-status'))).toContainText('9 reconciliation');
+    await expect(page.locator(tid('legacy-ingestion-status'))).toHaveAttribute('data-display-state', 'halted');
+    await expect(page.locator(tid('legacy-ingestion-status'))).toContainText('disabled');
+    await expect(page.locator(tid('corpus-status'))).toHaveAttribute('data-display-state', 'idle');
+    await expect(page.locator(tid('corpus-status'))).toContainText('24.2K total');
+    await expect(page.locator(tid('harvest-status'))).toHaveAttribute('data-display-state', 'idle');
+    await expect(page.locator(tid('harvest-status'))).toContainText('0 new');
+    await expect(page.locator(tid('backfill-status'))).toHaveAttribute('data-display-state', 'halted');
+    await expect(page.locator(tid('backfill-status'))).toContainText('300.0K');
+    await expect(page.locator(tid('status-pill'))).toContainText('Research runtime · idle');
+  });
+
+  test('renders all research lifecycle states without borrowing another domain state', async ({ page }) => {
+    const cases: Array<[string, string]> = [
+      ['authorized_idle', 'authorized'],
+      ['queued', 'queued'],
+      ['running', 'running'],
+      ['halted', 'halted'],
+      ['failed', 'failed'],
+    ];
+    for (const [state, expected] of cases) {
+      const snapshot = structuredClone(processingV3);
+      snapshot.research_runtime.state = state;
+      snapshot.research_runtime.available = state !== 'failed';
+      if (state === 'queued') snapshot.research_runtime.queued_authorized_work_items = 1;
+      await gotoHome(page, 'en', snapshot);
+      await expect(page.locator(tid('research-runtime-status'))).toHaveAttribute('data-display-state', expected);
+      await expect(page.locator(tid('status-pill'))).toContainText(`Research runtime · ${expected === 'failed' ? 'unavailable' : expected}`);
+    }
+  });
+
+  test('keeps unavailable v3 domain counts unknown instead of manufacturing zeroes', async ({ page }) => {
+    const snapshot = structuredClone(processingV3);
+    Object.assign(snapshot.corpus, { available: false, state: 'failed', total: null, pending: null, processed: null, error: null });
+    Object.assign(snapshot.harvest, { available: false, state: 'failed', last_success_at: null, last_new_count: null, last_attempt_at: null, failed_categories: null, diagnostic: 'snapshot_error' });
+    Object.assign(snapshot.backfill, { available: false, state: 'failed', last_progress_at: null, age_seconds: null, halt_reason: 'snapshot_error' });
+    await gotoHome(page, 'en', snapshot);
+    for (const domain of ['corpus-status', 'harvest-status', 'backfill-status']) {
+      await expect(page.locator(tid(domain))).toHaveAttribute('data-display-state', 'failed');
+      await expect(page.locator(tid(domain))).toContainText('unavailable');
+      await expect(page.locator(tid(domain))).not.toContainText('0 total');
+    }
   });
 
   test('maps homepage actions into existing single-page views', async ({ page }) => {

@@ -892,9 +892,10 @@ header#topBar {
 .homepage-hierarchy-v2 .system-now-card { padding: 0; border: 0; border-radius: 0; background: transparent; }
 .homepage-hierarchy-v2 .system-now-card .card-header { margin: 0 0 12px; }
 .homepage-hierarchy-v2 .system-now-card h2 { margin-top: 3px; font-family: var(--font-serif); font-size: 24px; line-height: 1.2; }
-.homepage-hierarchy-v2 .system-status-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.homepage-hierarchy-v2 .system-status-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
 .homepage-hierarchy-v2 .system-status-line { min-height: 52px; margin: 0; padding: 10px 14px; border: 0; border-radius: 0; background: transparent; }
-.homepage-hierarchy-v2 .system-status-line + .system-status-line { border-left: 1px solid var(--border); }
+.homepage-hierarchy-v2 .system-status-line { border-left: 1px solid var(--border); }
+.homepage-hierarchy-v2 .system-status-line:nth-child(3n + 1) { border-left: 0; }
 .homepage-hierarchy-v2 .system-status-line strong { font-family: var(--font); font-size: 13px; }
 .homepage-hierarchy-v2 .system-status-line small { font-size: 12.5px; }
 .homepage-hierarchy-v2 .scientific-credibility-card { display: grid; grid-template-columns: minmax(0, 1fr) minmax(420px, .95fr); gap: 38px; padding: 0; border: 0; border-radius: 0; background: transparent; color: var(--text-primary); }
@@ -919,8 +920,8 @@ header#topBar {
 .homepage-hierarchy-v2 .idea-entry-disabled span { font-size: 13px; }
 .homepage-hierarchy-v2 .idea-entry-disabled small { font-size: 11px; }
 @media (max-width: 1160px) { .homepage-hierarchy-v2 .research-hero { padding-left: 36px; } .homepage-hierarchy-v2 .runtime-stage { padding-inline: 36px; } .homepage-hierarchy-v2 .system-now-card, .homepage-hierarchy-v2 .scientific-credibility-card, .homepage-hierarchy-v2 .volume-strip, .homepage-hierarchy-v2 .card-graph-preview, .homepage-hierarchy-v2 .overview-details, .homepage-hierarchy-v2 .site-footer { width: min(calc(100% - 72px), 1512px); } .homepage-hierarchy-v2 .stage-legend { gap: 8px; } }
-@media (max-width: 860px) { .homepage-hierarchy-v2 .research-hero { height: auto; min-height: 720px; padding: 46px 26px 142px; } .homepage-hierarchy-v2 .hero-copy { width: 100%; } .homepage-hierarchy-v2 .research-hero h1 { font-size: clamp(38px, 6vw, 46px); } .homepage-hierarchy-v2 .runtime-stage { padding: 12px 26px; align-items: flex-start; flex-direction: column; } .homepage-hierarchy-v2 .scientific-credibility-card { grid-template-columns: 1fr; gap: 18px; } .homepage-hierarchy-v2 .system-now-card, .homepage-hierarchy-v2 .scientific-credibility-card, .homepage-hierarchy-v2 .volume-strip, .homepage-hierarchy-v2 .card-graph-preview, .homepage-hierarchy-v2 .overview-details, .homepage-hierarchy-v2 .site-footer { width: min(calc(100% - 52px), 1512px); } }
-@media (max-width: 600px) { .homepage-hierarchy-v2 header#topBar { height: 104px; } .homepage-hierarchy-v2 .app-shell { top: 104px; } .homepage-hierarchy-v2 .topbar-right .search-container { width: 100%; } .homepage-hierarchy-v2 .hero-proof { grid-template-columns: 1fr; gap: 18px; } .homepage-hierarchy-v2 .hero-memory-proof { padding-left: 0; border-left: 0; } .homepage-hierarchy-v2 .research-hero { min-height: 810px; } .homepage-hierarchy-v2 .system-status-grid, .homepage-hierarchy-v2 .volume-strip { grid-template-columns: 1fr 1fr; } .homepage-hierarchy-v2 .system-status-line + .system-status-line { border-left: 0; border-top: 1px solid var(--border); } .homepage-hierarchy-v2 .volume-item:nth-child(2) { border-right: 0; } .homepage-hierarchy-v2 .volume-item:nth-child(-n+2) { border-bottom: 1px solid var(--border); } .homepage-hierarchy-v2 .site-footer { align-items: flex-start; flex-direction: column; } .homepage-hierarchy-v2 .idea-entry-disabled { align-items: flex-start; text-align: left; } }
+@media (max-width: 860px) { .homepage-hierarchy-v2 .research-hero { height: auto; min-height: 720px; padding: 46px 26px 142px; } .homepage-hierarchy-v2 .hero-copy { width: 100%; } .homepage-hierarchy-v2 .research-hero h1 { font-size: clamp(38px, 6vw, 46px); } .homepage-hierarchy-v2 .runtime-stage { padding: 12px 26px; align-items: flex-start; flex-direction: column; } .homepage-hierarchy-v2 .scientific-credibility-card { grid-template-columns: 1fr; gap: 18px; } .homepage-hierarchy-v2 .system-status-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .homepage-hierarchy-v2 .system-status-line:nth-child(3n + 1) { border-left: 1px solid var(--border); } .homepage-hierarchy-v2 .system-status-line:nth-child(2n + 1) { border-left: 0; } .homepage-hierarchy-v2 .system-now-card, .homepage-hierarchy-v2 .scientific-credibility-card, .homepage-hierarchy-v2 .volume-strip, .homepage-hierarchy-v2 .card-graph-preview, .homepage-hierarchy-v2 .overview-details, .homepage-hierarchy-v2 .site-footer { width: min(calc(100% - 52px), 1512px); } }
+@media (max-width: 600px) { .homepage-hierarchy-v2 header#topBar { height: 104px; } .homepage-hierarchy-v2 .app-shell { top: 104px; } .homepage-hierarchy-v2 .topbar-right .search-container { width: 100%; } .homepage-hierarchy-v2 .hero-proof { grid-template-columns: 1fr; gap: 18px; } .homepage-hierarchy-v2 .hero-memory-proof { padding-left: 0; border-left: 0; } .homepage-hierarchy-v2 .research-hero { min-height: 810px; } .homepage-hierarchy-v2 .system-status-grid, .homepage-hierarchy-v2 .volume-strip { grid-template-columns: 1fr 1fr; } .homepage-hierarchy-v2 .system-status-line { border-left: 0; border-top: 1px solid var(--border); } .homepage-hierarchy-v2 .system-status-line:nth-child(-n + 2) { border-top: 0; } .homepage-hierarchy-v2 .volume-item:nth-child(2) { border-right: 0; } .homepage-hierarchy-v2 .volume-item:nth-child(-n+2) { border-bottom: 1px solid var(--border); } .homepage-hierarchy-v2 .site-footer { align-items: flex-start; flex-direction: column; } .homepage-hierarchy-v2 .idea-entry-disabled { align-items: flex-start; text-align: left; } }
 
 /* P1: overview map and portfolio retain their existing data/renderers, with a denser view. */
 .homepage-hierarchy-v2 .zero-note { display: block; min-height: 14px; margin-top: 4px; color: #b7b0a4; font-size: 12.5px; line-height: 1.2; }
@@ -1239,7 +1240,13 @@ header#topBar {
 .system-status-line.runtime-status.running > i { background: var(--green); box-shadow: 0 0 0 5px var(--green-dim); }
 .system-status-line.runtime-status.stalled > i { background: var(--gold); box-shadow: 0 0 0 5px var(--gold-dim); }
 .system-status-line.runtime-status.stalled strong { color: #8a6b1f; }
+.system-status-line.stalled > i { background: var(--gold); box-shadow: 0 0 0 5px var(--gold-dim); }
+.system-status-line.stalled strong { color: #8a6b1f; }
+.system-status-line.failed > i { background: var(--red); box-shadow: 0 0 0 5px var(--red-dim); }
+.system-status-line.failed strong { color: var(--red); }
 .live-badge.stalled { background: var(--gold-dim); color: #8a6b1f; animation: none; }
+.live-badge.failed { background: #9f382f; color: #fff8f2; animation: none; }
+.homepage-hierarchy-v2 .status-pill.failed i { background: #fff8f2; }
 
 .overview-office-slot .office-stage {
     width: 100%;

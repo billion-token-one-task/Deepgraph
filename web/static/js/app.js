@@ -78,22 +78,128 @@ function updateHeroProof(s) {
     });
 }
 
+function isKnownCount(value) {
+    return Number.isInteger(value) && value >= 0;
+}
+
+function processingCount(value) {
+    return isKnownCount(value) ? fmt(value) : '—';
+}
+
+function v3DisplayState(domain, kind) {
+    if (!domain || domain.available === false) return 'failed';
+    if (kind === 'corpus') return 'idle';
+    const state = String(domain.state || '').toLowerCase();
+    if (['failed', 'error', 'worker_error', 'degraded', 'unknown'].includes(state)) return 'failed';
+    if (state === 'halted' || state === 'stalled' || state.startsWith('disabled_')) return 'halted';
+    if (state === 'running') return 'running';
+    if (state === 'queued') return 'queued';
+    if (state === 'authorized_idle') return 'authorized';
+    return 'idle';
+}
+
+function v3StateLabel(domain, displayState) {
+    const raw = String(domain && domain.state || '').toLowerCase();
+    if (!domain || domain.available === false) return tr('overview.statusUnavailable', 'unavailable');
+    if (raw.startsWith('disabled_')) return tr('overview.statusDisabled', 'disabled');
+    if (raw === 'stopped') return tr('overview.statusStopped', 'stopped');
+    if (raw === 'degraded') return tr('overview.statusDegraded', 'degraded');
+    if (raw === 'unknown') return tr('overview.statusUnknown', 'unknown');
+    return tr(`overview.status${displayState[0].toUpperCase()}${displayState.slice(1)}`, displayState);
+}
+
+function setV3DomainLine({ lineId, titleId, detailId, titleKey, domain, kind, detail }) {
+    const line = el(lineId);
+    const state = v3DisplayState(domain, kind);
+    if (line) {
+        line.dataset.displayState = state;
+        line.classList.toggle('running', state === 'running');
+        line.classList.toggle('stalled', state === 'halted');
+        line.classList.toggle('failed', state === 'failed');
+    }
+    setText(titleId, `${tr(titleKey, titleKey)} · ${v3StateLabel(domain, state)}`);
+    setText(detailId, detail);
+}
+
+function v3DetailResearch(domain) {
+    if (!domain || domain.available === false) return tr('overview.statusUnavailable', 'unavailable');
+    const activeDemand = processingCount(domain.queued_active_agendas);
+    if (isKnownCount(domain.queued_active_agendas) && domain.queued_active_agendas > 0
+        && String(domain.state) === 'idle_no_authorized_work') {
+        return tr('overview.statusUnapprovedDemand', '{count} unapproved active-agenda jobs').replace('{count}', activeDemand);
+    }
+    return tr('overview.statusRunningQueued', '{running} running · {queued} queued')
+        .replace('{running}', processingCount(domain.running_work_items))
+        .replace('{queued}', processingCount(domain.queued_authorized_work_items));
+}
+
+function v3DetailScoped(domain) {
+    if (!domain || domain.available === false) return tr('overview.statusUnavailable', 'unavailable');
+    return tr('overview.statusScopedCounts', '{running} running · {queued} queued · {manual} reconciliation')
+        .replace('{running}', processingCount(domain.running_jobs))
+        .replace('{queued}', processingCount(domain.queued_jobs))
+        .replace('{manual}', processingCount(domain.unresolved_manual_reconciliation_jobs));
+}
+
+function v3DetailLegacy(domain) {
+    if (!domain || domain.available === false) return tr('overview.statusUnavailable', 'unavailable');
+    return tr('overview.statusLegacyStale', '{count} stale legacy processing')
+        .replace('{count}', processingCount(domain.stale_processing_count));
+}
+
+function v3DetailCorpus(domain) {
+    if (!domain || domain.available === false) return tr('overview.statusUnavailable', 'unavailable');
+    return tr('overview.statusCorpusCounts', '{total} total · {pending} pending · {processed} processed · {error} error')
+        .replace('{total}', processingCount(domain.total))
+        .replace('{pending}', processingCount(domain.pending))
+        .replace('{processed}', processingCount(domain.processed))
+        .replace('{error}', processingCount(domain.error));
+}
+
+function v3Timestamp(value) {
+    return typeof value === 'string' && /Z$/.test(value) ? value : '—';
+}
+
+function v3DetailHarvest(domain) {
+    if (!domain || domain.available === false) return tr('overview.statusUnavailable', 'unavailable');
+    return tr('overview.statusHarvestSuccess', 'Last success {when} · {count} new')
+        .replace('{when}', v3Timestamp(domain.last_success_at))
+        .replace('{count}', processingCount(domain.last_new_count));
+}
+
+function v3DetailBackfill(domain) {
+    if (!domain || domain.available === false) return tr('overview.statusUnavailable', 'unavailable');
+    return tr('overview.statusBackfillAge', 'Last progress {when} · {age}s old')
+        .replace('{when}', v3Timestamp(domain.last_progress_at))
+        .replace('{age}', processingCount(domain.age_seconds));
+}
+
+function renderV3StatusDomains(snapshot) {
+    const research = snapshot && snapshot.research_runtime;
+    const scoped = snapshot && snapshot.scoped_ingestion;
+    const legacy = snapshot && snapshot.legacy_paper_ingestion;
+    const corpus = snapshot && snapshot.corpus;
+    const harvest = snapshot && snapshot.harvest;
+    const backfill = snapshot && snapshot.backfill;
+    setV3DomainLine({ lineId: 'corpusStatusLine', titleId: 'corpusStatusText', detailId: 'corpusStatusDetail', titleKey: 'overview.domainCorpus', domain: corpus, kind: 'corpus', detail: v3DetailCorpus(corpus) });
+    setV3DomainLine({ lineId: 'runtimeStatusLine', titleId: 'pipelineStatusText', detailId: 'pipelineStatusDetail', titleKey: 'overview.domainResearchRuntime', domain: research, kind: 'research', detail: v3DetailResearch(research) });
+    setV3DomainLine({ lineId: 'scopedIngestionStatusLine', titleId: 'scopedIngestionStatusText', detailId: 'scopedIngestionStatusDetail', titleKey: 'overview.domainScopedIngestion', domain: scoped, kind: 'scoped', detail: v3DetailScoped(scoped) });
+    setV3DomainLine({ lineId: 'legacyIngestionStatusLine', titleId: 'legacyIngestionStatusText', detailId: 'legacyIngestionStatusDetail', titleKey: 'overview.domainLegacyIngestion', domain: legacy, kind: 'legacy', detail: v3DetailLegacy(legacy) });
+    setV3DomainLine({ lineId: 'harvestStatusLine', titleId: 'harvestStatusText', detailId: 'harvestStatusDetail', titleKey: 'overview.domainHarvest', domain: harvest, kind: 'harvest', detail: v3DetailHarvest(harvest) });
+    setV3DomainLine({ lineId: 'backfillStatusLine', titleId: 'backfillStatusText', detailId: 'backfillStatusDetail', titleKey: 'overview.domainBackfill', domain: backfill, kind: 'backfill', detail: v3DetailBackfill(backfill) });
+    updateStatusPill();
+}
+
 function updateStatusPill() {
-    const state = String(pipelineState || 'unknown').toLowerCase();
-    const failure = ['stalled', 'error', 'failed', 'halted', 'worker_error'].includes(state);
-    const running = state === 'running';
-    const label = failure
-        ? tr('overview.pipelineStalled', 'Research runtime stalled')
-        : running
-            ? tr('overview.pipelineRunning', 'Research runtime active')
-            : state === 'idle_no_authorized_work'
-                ? tr('overview.noAuthorizedResearch', 'No approved research work right now')
-                : tr('overview.pipelineIdle', 'Research control plane idle');
+    const research = processingSnapshot && processingSnapshot.research_runtime;
+    const state = v3DisplayState(research, 'research');
+    const label = `${tr('overview.domainResearchRuntime', 'Research runtime')} · ${v3StateLabel(research, state)}`;
     setText('statusPillText', label);
     const pill = el('liveBadge');
     if (pill) {
-        pill.classList.toggle('running', running);
-        pill.classList.toggle('stalled', failure);
+        pill.classList.toggle('running', state === 'running');
+        pill.classList.toggle('stalled', state === 'halted');
+        pill.classList.toggle('failed', state === 'failed');
     }
 }
 
@@ -554,13 +660,6 @@ async function refreshStats() {
             generatedAt.dateTime = new Date(Number(s.generated_at) * 1000).toISOString();
             setText('statusPillTime', generatedAt.textContent);
         }
-        const healthText = el('systemHealthText');
-        const healthOk = s.data_health && s.data_health.status === 'ok';
-        if (healthText) healthText.textContent = healthOk
-            ? t('overview.healthOk') : t('overview.healthDegraded');
-        const dataStatusText = el('dataStatusText');
-        if (dataStatusText) dataStatusText.textContent = healthOk
-            ? t('overview.dataConnected') : t('overview.dataDegraded');
         applyMetricTips();
         updateHeroProof(s);
     } catch (e) {
@@ -613,46 +712,11 @@ function startSSE() {
 }
 
 let pipelineState = 'unknown';
-let staleProcessingCount = 0;
+let staleProcessingCount = null;
+let processingSnapshot = null;
 
 function updateLiveBadge() {
-    const badge = el('liveBadge');
-    const stalled = ['stalled', 'error', 'failed', 'halted', 'worker_error'].includes(pipelineState);
-    const running = pipelineState === 'running';
-    if (badge) {
-        badge.classList.toggle('running', running);
-        badge.classList.toggle('stalled', stalled);
-    }
     updateStatusPill();
-    renderRuntimeStatus(running, stalled);
-}
-
-function renderRuntimeStatus(running, stalled) {
-    const line = el('runtimeStatusLine');
-    const title = el('pipelineStatusText');
-    const detail = el('pipelineStatusDetail');
-    if (!line || !title || !detail) return;
-    line.classList.toggle('running', running);
-    line.classList.toggle('stalled', stalled);
-    if (stalled) {
-        title.textContent = tr('overview.pipelineStalled', 'Research runtime stalled');
-        detail.textContent = tr('overview.pipelineStaleItems', 'Approved research work is not progressing');
-    } else if (running) {
-        title.textContent = tr('overview.pipelineRunning', 'Research runtime active');
-        detail.textContent = staleProcessingCount > 0
-            ? tr('overview.paperIngestionStale', 'Paper ingestion has {n} stale tasks').replace('{n}', fmt(staleProcessingCount))
-            : tr('overview.pipelineRecent', 'Approved research work is active');
-    } else if (pipelineState === 'idle_no_authorized_work') {
-        title.textContent = tr('overview.noAuthorizedResearch', 'No approved research work right now');
-        detail.textContent = staleProcessingCount > 0
-            ? tr('overview.paperIngestionStale', 'Paper ingestion has {n} stale tasks').replace('{n}', fmt(staleProcessingCount))
-            : tr('overview.pipelineNoActive', 'Research control plane idle');
-    } else {
-        title.textContent = tr('overview.pipelineIdle', 'Research control plane idle');
-        detail.textContent = staleProcessingCount > 0
-            ? tr('overview.paperIngestionStale', 'Paper ingestion has {n} stale tasks').replace('{n}', fmt(staleProcessingCount))
-            : tr('overview.pipelineNoActive', 'No active research work is reported');
-    }
 }
 
 function trackPaperEvent(ev) {
@@ -680,15 +744,20 @@ function trackPaperEvent(ev) {
 async function loadProcessingPapers() {
     try {
         const [data, office] = await Promise.all([api("/api/processing"), api("/api/agent_office").catch(() => null)]);
+        if (data.contract_version !== 'processing-status-v3') {
+            throw new Error('processing-status-v3 contract is required');
+        }
         if (office && Array.isArray(office.departments)) agentOfficeData = office;
-        const rows = data.papers || data;
+        const rows = Array.isArray(data.papers) ? data.papers : [];
         const researchRuntime = data.research_runtime || {};
         const legacyIngestion = data.legacy_paper_ingestion || {};
+        processingSnapshot = data;
         pipelineState = researchRuntime.state || data.pipeline_state || 'error';
-        staleProcessingCount = Number(
-            legacyIngestion.stale_processing_count ?? data.stale_processing_count ?? 0
-        );
+        staleProcessingCount = legacyIngestion.available === false
+            ? null
+            : (legacyIngestion.stale_processing_count ?? data.stale_processing_count ?? null);
         setText('statStaleProcessing', zeroSafeValue(staleProcessingCount));
+        renderV3StatusDomains(processingSnapshot);
 
         for (const r of rows) {
             const isDone = r.status === 'reasoned' || r.status === 'error';
@@ -728,7 +797,13 @@ async function loadProcessingPapers() {
                 .replace('{modules}', fmt(summary.sub_agents || 0)));
         }
         updateLiveBadge();
-    } catch (e) { /* ignore */ }
+    } catch (e) {
+        processingSnapshot = null;
+        pipelineState = 'error';
+        staleProcessingCount = null;
+        setText('statStaleProcessing', '—');
+        renderV3StatusDomains(null);
+    }
 }
 
 const OFFICE_ASSET_BASE = "/static/vendor/pixel-agents/assets";
@@ -4307,8 +4382,8 @@ function init() {
     document.addEventListener('deepgraph:languagechange', () => {
         applyMetricTips();
         if (statsCache) updateHeroProof(statsCache);
-        updateStatusPill();
-        updateLiveBadge();
+        if (processingSnapshot) renderV3StatusDomains(processingSnapshot);
+        else updateLiveBadge();
         renderProcessingList();
         if (agentOfficeRenderer) agentOfficeRenderer.rebuildForCurrentSize();
         onTabActivated(activeTab);
