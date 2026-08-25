@@ -4,6 +4,7 @@ import unittest
 from unittest import mock
 
 from meta_harness.runner_capability import (
+    CapabilityContractError,
     DatasetRequirement,
     ExperimentRequirements,
     MetricRequirement,
@@ -13,6 +14,7 @@ from meta_harness.runner_capability import (
     RepositoryMetadata,
     RunnerRegistry,
     requirements_from_plan,
+    validate_explicit_requirements_alignment,
 )
 from orchestrator import gpu_scheduler
 
@@ -231,6 +233,67 @@ class RunnerCapabilityTests(unittest.TestCase):
         )
         self.assertEqual(requirements.model.task, "sequence_classification")
         self.assertEqual(requirements.seeds, (0, 1))
+
+
+class ExplicitRequirementsAlignmentTests(unittest.TestCase):
+    def _plan(self):
+        requirements = classification_requirements()
+        return {
+            "datasets": [
+                {
+                    "name": "Named benchmark",
+                    "repository_id": requirements.dataset.repository_id,
+                }
+            ],
+            "model_targets": [
+                {"repository_id": requirements.model.repository_id}
+            ],
+            "metrics": {"primary": requirements.metric.name},
+            "execution_requirements": requirements.to_dict(),
+        }, requirements
+
+    def test_explicit_contract_must_bind_the_same_scientific_identities(self):
+        plan, requirements = self._plan()
+        validate_explicit_requirements_alignment(plan, requirements)
+
+    def test_unrelated_generic_contract_is_refused_before_preflight(self):
+        plan, requirements = self._plan()
+        plan["datasets"] = [
+            {"name": "ScanNet Multi-View Pair/Triplet Benchmark"}
+        ]
+        plan["model_targets"] = []
+        plan["metrics"] = {"primary": "Inlier classification F1-Score"}
+
+        with self.assertRaisesRegex(
+            CapabilityContractError,
+            "execution_dataset_identity_unbound",
+        ):
+            validate_explicit_requirements_alignment(plan, requirements)
+
+    def test_dataset_model_and_metric_drift_each_fail_closed(self):
+        for mutation, reason in (
+            (
+                lambda plan: plan["datasets"][0].update(
+                    repository_id="other/dataset"
+                ),
+                "execution_dataset_identity_mismatch",
+            ),
+            (
+                lambda plan: plan["model_targets"][0].update(
+                    repository_id="other/model"
+                ),
+                "execution_model_identity_mismatch",
+            ),
+            (
+                lambda plan: plan["metrics"].update(primary="accuracy"),
+                "execution_metric_identity_mismatch",
+            ),
+        ):
+            with self.subTest(reason=reason):
+                plan, requirements = self._plan()
+                mutation(plan)
+                with self.assertRaisesRegex(CapabilityContractError, reason):
+                    validate_explicit_requirements_alignment(plan, requirements)
 
 
 class ComputePreflightGuardTests(unittest.TestCase):

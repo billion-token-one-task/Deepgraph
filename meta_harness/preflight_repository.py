@@ -18,6 +18,7 @@ from meta_harness.runner_capability import (
     PreflightResult,
     local_preflight_environment,
     requirements_from_plan,
+    validate_explicit_requirements_alignment,
 )
 
 
@@ -262,6 +263,7 @@ class CandidatePreflightRepository:
         selected_engine = engine or PreflightEngine()
         try:
             requirements = requirements_from_plan(plan)
+            validate_explicit_requirements_alignment(plan, requirements)
             requirement_id = self.declare(
                 agenda_id=agenda_id,
                 idea_id=idea_id,

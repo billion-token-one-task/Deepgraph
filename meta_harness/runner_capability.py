@@ -998,3 +998,73 @@ def requirements_from_plan(plan: Mapping[str, Any]) -> ExperimentRequirements:
     result = apply_measurement_floors(result, clamp_sample_cap=plan_stated_cap)
     result.validate()
     return result
+
+
+def validate_explicit_requirements_alignment(
+    plan: Mapping[str, Any],
+    requirements: ExperimentRequirements,
+) -> None:
+    """Bind an explicit runner contract to the scientific plan it claims to test.
+
+    A structurally executable dataset/model pair is not evidence for an
+    unrelated hypothesis.  The proposal must name the same repository
+    identities in its benchmark/model targets; otherwise preflight used to
+    grant a generic GLUE/BERT run for a geometry/SfM proposal.  Plans without
+    an explicit requirements block continue through the legacy derivation,
+    which already constructs requirements from those targets.
+    """
+
+    if not isinstance(plan.get("execution_requirements"), Mapping):
+        return
+
+    dataset_ids: set[str] = set()
+    for field in ("benchmark_targets", "datasets"):
+        values = plan.get(field)
+        if not isinstance(values, Sequence) or isinstance(values, (str, bytes)):
+            continue
+        for item in values:
+            if not isinstance(item, Mapping):
+                continue
+            selected = canonical_dataset_repository_id(
+                item.get("hf_dataset")
+                or item.get("dataset_id")
+                or item.get("repository_id")
+            )
+            if selected:
+                dataset_ids.add(selected)
+    if not dataset_ids:
+        raise CapabilityContractError("execution_dataset_identity_unbound")
+    if requirements.dataset.repository_id not in dataset_ids:
+        raise CapabilityContractError("execution_dataset_identity_mismatch")
+
+    model_ids: set[str] = set()
+    values = plan.get("model_targets")
+    if isinstance(values, Sequence) and not isinstance(values, (str, bytes)):
+        for item in values:
+            if not isinstance(item, Mapping):
+                continue
+            selected = str(
+                item.get("hf_model")
+                or item.get("model_id")
+                or item.get("repository_id")
+                or ""
+            ).strip()
+            if selected:
+                model_ids.add(selected)
+    if not model_ids:
+        raise CapabilityContractError("execution_model_identity_unbound")
+    if requirements.model.repository_id not in model_ids:
+        raise CapabilityContractError("execution_model_identity_mismatch")
+
+    metrics = plan.get("metrics")
+    primary = (
+        metrics.get("primary") if isinstance(metrics, Mapping) else None
+    )
+    if primary:
+        scientific = re.sub(r"[^a-z0-9]+", "_", str(primary).lower()).strip("_")
+        required = canonical_metric_name(requirements.metric.name)
+        compatible = canonical_metric_name(scientific) == required or (
+            required and required in scientific.split("_")
+        )
+        if not compatible:
+            raise CapabilityContractError("execution_metric_identity_mismatch")
