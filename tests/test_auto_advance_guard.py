@@ -48,6 +48,11 @@ class AutoAdvanceGuardTests(unittest.TestCase):
             mock.patch.object(auto_advance.db, "describe_backend", return_value={}),
             mock.patch.object(auto_advance.db, "rollback"),
             mock.patch.object(auto_advance, "_guard_spent_delta", return_value=0),
+            mock.patch.object(
+                auto_advance,
+                "retry_exact_deferred_preflight",
+                return_value=False,
+            ),
             mock.patch.object(auto_advance, "advance_agenda") as advance,
             mock.patch.object(
                 auto_advance, "_exact_target_grant_state", return_value=granted
@@ -136,6 +141,119 @@ class AutoAdvanceGuardTests(unittest.TestCase):
                 {**pilot, "job_stage": "unrelated"}
             )
         )
+
+    def test_exact_deferred_preflight_retry_grants_only_named_cpu_job(self):
+        job = {
+            "id": 110,
+            "agenda_id": 2,
+            "deep_insight_id": 115,
+            "status": "deferred",
+            "stage": "capability_preflight_deferred",
+            "resource_grant_id": None,
+            "insight_status": "candidate",
+        }
+        preflight = mock.Mock(
+            passed=True,
+            status="passed",
+            reason_codes=[],
+            selected_backend="cpu",
+            preflight_result_id=272,
+        )
+        args = mock.Mock(
+            spend_limit=72_000,
+            grant_token_cap=40_000,
+            process_spend_baseline={"2": 142_522},
+        )
+        repository = mock.Mock()
+        repository.issue_grant.return_value = 319
+        journal = mock.Mock()
+        with (
+            mock.patch.object(
+                auto_advance.db,
+                "fetchone",
+                side_effect=[
+                    job,
+                    {"backend_allowlist_json": '["cpu","llm"]'},
+                    {"id": 2099},
+                    {"c": 0},
+                ],
+            ),
+            mock.patch.object(auto_advance, "_guard_spent_delta", return_value=22_126),
+            mock.patch.object(
+                auto_advance,
+                "CandidatePreflightRepository",
+            ) as preflight_repository,
+            mock.patch.object(
+                auto_advance,
+                "MetaHarnessRepository",
+                return_value=repository,
+            ),
+            mock.patch.object(
+                auto_advance,
+                "_rebuild_decision",
+                return_value=mock.Mock(),
+            ) as rebuild,
+            mock.patch.object(
+                auto_advance,
+                "issue_resource_grant",
+                return_value=mock.Mock(),
+            ) as sign,
+        ):
+            preflight_repository.return_value.run_candidate.return_value = preflight
+
+            handled = auto_advance.retry_exact_deferred_preflight(
+                2, 110, journal, args
+            )
+
+        self.assertTrue(handled)
+        preflight_repository.return_value.run_candidate.assert_called_once_with(
+            agenda_id=2,
+            idea_id=115,
+            idempotency_key="exact-preflight:110:2:115:v1",
+        )
+        repository.restage_exact_preflight_candidate.assert_called_once_with(
+            agenda_id=2,
+            idea_id=115,
+            target_job_id=110,
+            preflight_result_id=272,
+        )
+        rebuild.assert_called_once_with(2, 115, 2099)
+        self.assertEqual(sign.call_args.kwargs["backend_allowlist"], ["cpu", "llm"])
+        self.assertEqual(sign.call_args.kwargs["token_cap"], 40_000)
+        repository.issue_grant.assert_called_once_with(
+            sign.return_value,
+            target_job_id=110,
+        )
+
+    def test_exact_deferred_retry_stops_before_preflight_when_budget_is_exhausted(self):
+        args = mock.Mock(spend_limit=72_000, grant_token_cap=40_000)
+        journal = mock.Mock()
+        with (
+            mock.patch.object(
+                auto_advance.db,
+                "fetchone",
+                return_value={
+                    "id": 110,
+                    "agenda_id": 2,
+                    "deep_insight_id": 115,
+                    "status": "deferred",
+                    "stage": "capability_preflight_deferred",
+                    "resource_grant_id": None,
+                    "insight_status": "candidate",
+                },
+            ),
+            mock.patch.object(auto_advance, "_guard_spent_delta", return_value=32_001),
+            mock.patch.object(
+                auto_advance,
+                "CandidatePreflightRepository",
+            ) as preflight_repository,
+        ):
+            handled = auto_advance.retry_exact_deferred_preflight(
+                2, 110, journal, args
+            )
+
+        self.assertTrue(handled)
+        preflight_repository.assert_not_called()
 
     def test_exact_job_mode_skips_selection_and_targets_its_problem(self):
         waiting = [

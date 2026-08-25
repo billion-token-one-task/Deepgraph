@@ -1364,6 +1364,172 @@ def _exact_target_grant_state(job_id: int, agenda_id: int) -> dict:
     return dict(row or {})
 
 
+def retry_exact_deferred_preflight(
+    agenda_id: int,
+    job_id: int,
+    journal: Journal,
+    args,
+) -> bool:
+    """Resume only one exact job after a deployed preflight repair.
+
+    The agenda-wide retry path is intentionally forbidden in ``--job`` mode:
+    it may inspect, retire, restage, and grant every deferred candidate in the
+    agenda.  Return False only when the target is not in this recovery state,
+    so the normal exact waiting-job path may proceed.
+    """
+
+    row = db.fetchone(
+        """
+        SELECT arj.id, arj.agenda_id, arj.deep_insight_id,
+               arj.status, arj.stage, arj.resource_grant_id,
+               di.status AS insight_status
+        FROM auto_research_jobs arj
+        JOIN deep_insights di
+          ON di.id=arj.deep_insight_id AND di.agenda_id=arj.agenda_id
+        WHERE arj.id=? AND arj.agenda_id=?
+        """,
+        (int(job_id), int(agenda_id)),
+    )
+    if not row or (
+        str(row.get("status") or ""), str(row.get("stage") or "")
+    ) != ("deferred", "capability_preflight_deferred"):
+        return False
+    idea_id = int(row.get("deep_insight_id") or 0)
+    if (
+        idea_id <= 0
+        or row.get("resource_grant_id") is not None
+        or str(row.get("insight_status") or "") != "candidate"
+    ):
+        journal.log(
+            "exact_preflight_retry_refused",
+            agenda_id=agenda_id,
+            job_id=job_id,
+            idea_id=idea_id,
+            reason="target is not an unbound live candidate",
+        )
+        return True
+    if (
+        args.spend_limit > 0
+        and _guard_spent_delta({}, args) + args.grant_token_cap
+        > args.spend_limit
+    ):
+        journal.log(
+            "spend_limit_reached",
+            agenda_id=agenda_id,
+            job_id=job_id,
+            limit=args.spend_limit,
+        )
+        return True
+    try:
+        preflight = CandidatePreflightRepository().run_candidate(
+            agenda_id=agenda_id,
+            idea_id=idea_id,
+            idempotency_key=f"exact-preflight:{job_id}:{agenda_id}:{idea_id}:v1",
+        )
+    except Exception as exc:
+        db.rollback()
+        journal.log(
+            "exact_preflight_retry_failed",
+            agenda_id=agenda_id,
+            job_id=job_id,
+            idea_id=idea_id,
+            reason=f"{type(exc).__name__}: {exc}",
+        )
+        return True
+    journal.log(
+        "exact_preflight_retry",
+        agenda_id=agenda_id,
+        job_id=job_id,
+        idea_id=idea_id,
+        status=preflight.status,
+        reason_codes=preflight.reason_codes,
+        selected_backend=preflight.selected_backend,
+        preflight_result_id=preflight.preflight_result_id,
+    )
+    if not preflight.passed or preflight.selected_backend != "cpu":
+        return True
+    agenda_backends = set(
+        json.loads(
+            dict(
+                db.fetchone(
+                    "SELECT backend_allowlist_json FROM research_agendas WHERE id=?",
+                    (agenda_id,),
+                )
+            )["backend_allowlist_json"]
+        )
+    )
+    if not {"cpu", "llm"}.issubset(agenda_backends):
+        journal.log(
+            "exact_preflight_backend_refused",
+            agenda_id=agenda_id,
+            job_id=job_id,
+            idea_id=idea_id,
+            reason="bounded executor requires cpu and llm",
+        )
+        return True
+    packet_row = db.fetchone(
+        """
+        SELECT id FROM idea_decision_packets
+        WHERE agenda_id=? AND idea_id=?
+          AND decision IN ('promote','revisit')
+        ORDER BY id DESC LIMIT 1
+        """,
+        (agenda_id, idea_id),
+    )
+    if not packet_row:
+        journal.log(
+            "exact_preflight_retry_no_packet",
+            agenda_id=agenda_id,
+            job_id=job_id,
+            idea_id=idea_id,
+        )
+        return True
+    repo = MetaHarnessRepository()
+    try:
+        repo.restage_exact_preflight_candidate(
+            agenda_id=agenda_id,
+            idea_id=idea_id,
+            target_job_id=job_id,
+            preflight_result_id=int(preflight.preflight_result_id or 0),
+        )
+        decision = _rebuild_decision(
+            agenda_id, idea_id, int(dict(packet_row)["id"])
+        )
+        grant = issue_resource_grant(
+            decision,
+            stage="pilot",
+            token_cap=args.grant_token_cap,
+            gpu_class="none",
+            max_gpu_hours=0.0,
+            backend_allowlist=["cpu", "llm"],
+            artifact_requirements=ARTIFACT_REQUIREMENTS,
+            expires_at=(_now() + timedelta(hours=24)).isoformat(),
+            idempotency_key=_grant_key(agenda_id, idea_id, "preflight"),
+            preflight_result_id=preflight.preflight_result_id,
+        )
+        grant_id = repo.issue_grant(grant, target_job_id=job_id)
+    except Exception as exc:
+        db.rollback()
+        journal.log(
+            "exact_preflight_grant_refused",
+            agenda_id=agenda_id,
+            job_id=job_id,
+            idea_id=idea_id,
+            reason=f"{type(exc).__name__}: {exc}",
+        )
+        return True
+    journal.log(
+        "exact_preflight_granted",
+        agenda_id=agenda_id,
+        job_id=job_id,
+        idea_id=idea_id,
+        resource_grant_id=grant_id,
+        token_cap=args.grant_token_cap,
+        backends=["cpu", "llm"],
+    )
+    return True
+
+
 def _exact_target_was_granted(state: dict) -> bool:
     if (
         str(state.get("grant_status") or "") != "active"
@@ -2224,13 +2390,20 @@ def main() -> int:
         # ResourceGrant repositories inside advance_agenda.
         exact_state: dict = {}
         try:
-            advance_agenda(
+            handled_deferred = retry_exact_deferred_preflight(
                 int(args.agenda[0]),
-                state,
+                int(args.job),
                 journal,
                 args,
-                target_job_id=int(args.job),
             )
+            if not handled_deferred:
+                advance_agenda(
+                    int(args.agenda[0]),
+                    state,
+                    journal,
+                    args,
+                    target_job_id=int(args.job),
+                )
             exact_state = _exact_target_grant_state(
                 int(args.job), int(args.agenda[0])
             )

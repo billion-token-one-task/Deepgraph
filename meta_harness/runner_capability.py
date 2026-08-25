@@ -29,6 +29,20 @@ class CapabilityContractError(ValueError):
     pass
 
 
+# Hugging Face moved a small number of legacy top-level dataset scripts into
+# namespaced repositories. Normalize only identities whose canonical target
+# is externally fixed and regression-covered. Unknown bare names remain a
+# hard failure, preserving the guard that stopped invalid ``gsm8k`` grants.
+_CANONICAL_DATASET_REPOSITORY_ALIASES: Mapping[str, str] = {
+    "glue": "nyu-mll/glue",
+}
+
+
+def canonical_dataset_repository_id(value: Any) -> str:
+    selected = str(value or "").strip()
+    return _CANONICAL_DATASET_REPOSITORY_ALIASES.get(selected, selected)
+
+
 # Plan generators and the runner registry grew their metric vocabularies
 # independently, so a candidate that is fully inside a runner's capabilities
 # gets refused over spelling alone. Only exact synonyms belong here: each key
@@ -288,7 +302,9 @@ class ExperimentRequirements:
         result = cls(
             task_protocol=str(value.get("task_protocol") or ""),
             dataset=DatasetRequirement(
-                repository_id=str(dataset.get("repository_id") or ""),
+                repository_id=canonical_dataset_repository_id(
+                    dataset.get("repository_id")
+                ),
                 revision=str(dataset.get("revision") or "main"),
                 config=str(dataset.get("config") or ""),
                 split=str(dataset.get("split") or "test"),

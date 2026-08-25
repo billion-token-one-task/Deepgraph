@@ -224,6 +224,116 @@ class ExactJobGrantBindingTests(unittest.TestCase):
         database.commit.assert_not_called()
         database.rollback.assert_called_once_with()
 
+    def test_exact_passing_cpu_preflight_restages_only_named_job(self):
+        with mock.patch("meta_harness.repository.db") as database:
+            database._use_pg.return_value = True
+            database.fetchone.side_effect = [
+                {
+                    "agenda_id": 2,
+                    "idea_id": 115,
+                    "status": "passed",
+                    "selected_backend": "cpu",
+                },
+                {
+                    "id": 110,
+                    "agenda_id": 2,
+                    "deep_insight_id": 115,
+                    "status": "deferred",
+                    "stage": "capability_preflight_deferred",
+                    "resource_grant_id": None,
+                },
+            ]
+            database.execute.return_value = SimpleNamespace(rowcount=1)
+
+            changed = MetaHarnessRepository().restage_exact_preflight_candidate(
+                agenda_id=2,
+                idea_id=115,
+                target_job_id=110,
+                preflight_result_id=272,
+            )
+
+        self.assertTrue(changed)
+        sql, params = database.execute.call_args.args
+        self.assertIn("WHERE id=?", sql)
+        self.assertIn("status='deferred'", sql)
+        self.assertEqual(params, (110, 2, 115))
+        database.commit.assert_called_once_with()
+        database.rollback.assert_not_called()
+
+    def test_exact_preflight_restage_replay_is_read_only(self):
+        with mock.patch("meta_harness.repository.db") as database:
+            database._use_pg.return_value = True
+            database.fetchone.side_effect = [
+                {
+                    "agenda_id": 2,
+                    "idea_id": 115,
+                    "status": "passed",
+                    "selected_backend": "cpu",
+                },
+                {
+                    "id": 110,
+                    "agenda_id": 2,
+                    "deep_insight_id": 115,
+                    "status": "queued",
+                    "stage": "awaiting_portfolio_decision",
+                    "resource_grant_id": None,
+                },
+            ]
+
+            changed = MetaHarnessRepository().restage_exact_preflight_candidate(
+                agenda_id=2,
+                idea_id=115,
+                target_job_id=110,
+                preflight_result_id=272,
+            )
+
+        self.assertFalse(changed)
+        database.execute.assert_not_called()
+        database.commit.assert_called_once_with()
+        database.rollback.assert_not_called()
+
+    def test_exact_preflight_restage_rejects_foreign_or_non_cpu_result(self):
+        for preflight in (
+            {
+                "agenda_id": 2,
+                "idea_id": 999,
+                "status": "passed",
+                "selected_backend": "cpu",
+            },
+            {
+                "agenda_id": 2,
+                "idea_id": 115,
+                "status": "failed",
+                "selected_backend": "cpu",
+            },
+            {
+                "agenda_id": 2,
+                "idea_id": 115,
+                "status": "passed",
+                "selected_backend": "ssh_gpu",
+            },
+        ):
+            with self.subTest(preflight=preflight), mock.patch(
+                "meta_harness.repository.db"
+            ) as database:
+                database._use_pg.return_value = True
+                database.fetchone.return_value = preflight
+
+                with self.assertRaisesRegex(
+                    MetaHarnessPersistenceError,
+                    "scoped passing CPU result",
+                ):
+                    MetaHarnessRepository().restage_exact_preflight_candidate(
+                        agenda_id=2,
+                        idea_id=115,
+                        target_job_id=110,
+                        preflight_result_id=272,
+                    )
+
+                database.execute.assert_not_called()
+                database.commit.assert_not_called()
+                database.rollback.assert_called_once_with()
+
     def test_exact_proposal_completion_cas_closes_grant_and_named_job(self):
         grant = {
             "id": 193,

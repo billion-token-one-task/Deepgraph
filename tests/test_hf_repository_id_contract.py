@@ -75,6 +75,48 @@ class HfRepositoryIdTests(unittest.TestCase):
     def test_a_correct_plan_still_validates(self):
         _requirements().validate()
 
+    def test_verified_legacy_glue_alias_is_canonicalized_on_ingress(self):
+        payload = {
+            "task_protocol": "sequence_classification",
+            "dataset": {
+                "repository_id": "glue",
+                "revision": "main",
+                "config": "mrpc",
+                "split": "validation",
+                "field_mapping": {
+                    "text": "sentence1",
+                    "text_pair": "sentence2",
+                    "label": "label",
+                },
+            },
+            "model": {
+                "repository_id": "prajjwal1/bert-tiny",
+                "revision": "main",
+                "framework": "transformers",
+                "task": "sequence_classification",
+            },
+            "metric": {"name": "accuracy"},
+            "candidate_hook": "candidate_text",
+            "preferred_backends": ["cpu"],
+        }
+
+        requirements = ExperimentRequirements.from_dict(payload)
+
+        self.assertEqual(
+            requirements.dataset.repository_id,
+            "nyu-mll/glue",
+        )
+        requirements.validate()
+
+    def test_unknown_bare_alias_is_still_refused_on_ingress(self):
+        payload = _requirements().to_dict()
+        payload["dataset"]["repository_id"] = "unknown_dataset"
+
+        with self.assertRaisesRegex(
+            CapabilityContractError, "dataset_repository_id_malformed"
+        ):
+            ExperimentRequirements.from_dict(payload)
+
 
 if __name__ == "__main__":
     unittest.main()

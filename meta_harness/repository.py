@@ -1266,6 +1266,106 @@ class MetaHarnessRepository:
             db.rollback()
             raise
 
+    def restage_exact_preflight_candidate(
+        self,
+        *,
+        agenda_id: int,
+        idea_id: int,
+        target_job_id: int,
+        preflight_result_id: int,
+    ) -> bool:
+        """CAS one exact deferred job back to grant admission.
+
+        Controlled recovery must not call the agenda-wide deferred-preflight
+        sweep: that can retire or grant unrelated candidates.  This narrow
+        transition is authorized only by a persisted, passing CPU preflight
+        for the same agenda/idea.  Replays are harmless while the job remains
+        unbound and queued; every other state fails closed.
+        """
+
+        for name, value in (
+            ("agenda_id", agenda_id),
+            ("idea_id", idea_id),
+            ("target_job_id", target_job_id),
+            ("preflight_result_id", preflight_result_id),
+        ):
+            if int(value) <= 0:
+                raise MetaHarnessPersistenceError(f"{name} must be positive")
+        try:
+            lock = " FOR UPDATE" if db._use_pg() else ""  # noqa: SLF001
+            preflight = db.fetchone(
+                f"""
+                SELECT agenda_id, idea_id, status, selected_backend
+                FROM candidate_preflight_results_v1
+                WHERE id=?{lock}
+                """,
+                (int(preflight_result_id),),
+            )
+            if (
+                not preflight
+                or int(preflight.get("agenda_id") or 0) != int(agenda_id)
+                or int(preflight.get("idea_id") or 0) != int(idea_id)
+                or str(preflight.get("status") or "") != "passed"
+                or str(preflight.get("selected_backend") or "") != "cpu"
+            ):
+                raise MetaHarnessPersistenceError(
+                    "exact preflight restage requires a scoped passing CPU result"
+                )
+            job = db.fetchone(
+                f"""
+                SELECT id, agenda_id, deep_insight_id, status, stage,
+                       resource_grant_id
+                FROM auto_research_jobs
+                WHERE id=?{lock}
+                """,
+                (int(target_job_id),),
+            )
+            if (
+                not job
+                or int(job.get("agenda_id") or 0) != int(agenda_id)
+                or int(job.get("deep_insight_id") or 0) != int(idea_id)
+            ):
+                raise MetaHarnessPersistenceError(
+                    "exact preflight job does not match agenda/idea scope"
+                )
+            if (
+                str(job.get("status") or "") == "queued"
+                and str(job.get("stage") or "")
+                == "awaiting_portfolio_decision"
+                and job.get("resource_grant_id") is None
+            ):
+                db.commit()
+                return False
+            if (
+                str(job.get("status") or "") != "deferred"
+                or str(job.get("stage") or "")
+                != "capability_preflight_deferred"
+                or job.get("resource_grant_id") is not None
+            ):
+                raise MetaHarnessPersistenceError(
+                    "exact preflight job is not deferred and unbound"
+                )
+            cursor = db.execute(
+                """
+                UPDATE auto_research_jobs
+                SET status='queued', stage='awaiting_portfolio_decision',
+                    assigned_worker=NULL, last_error=NULL,
+                    last_note='exact preflight retry passed; restaged for grant binding',
+                    updated_at=CURRENT_TIMESTAMP
+                WHERE id=? AND agenda_id=? AND deep_insight_id=?
+                  AND status='deferred'
+                  AND stage='capability_preflight_deferred'
+                  AND resource_grant_id IS NULL
+                """,
+                (int(target_job_id), int(agenda_id), int(idea_id)),
+            )
+            _expect_one(cursor, operation="restage_exact_preflight_candidate")
+            db.commit()
+            return True
+        except Exception:
+            db.rollback()
+            raise
+
     def complete_proposal_generation(
         self,
         *,
