@@ -1,0 +1,68 @@
+{
+  "name": "acceptance-rule-benchmark-20260825",
+  "description": "Which rule for accepting a candidate change actually generalises? The 2026 self-evolution line searches scaffold space and reports the best score it found; Evo-Bench (2608.09096) reports gains above sixteen points from a single run with no confidence intervals, and the harness-engineering survey states the difficulty directly: the hard part is not generating changes but knowing which one truly helped, because a single evaluation swings several points on borderline tasks and an apparent gain can be a measurement artifact. Here the candidate pool is held fixed and the acceptance rule is the variable. Greedy best-on-search-split, held-out gating, and a sequential rule that controls error under repeated looks are compared on the same pool, and the quantity reported is not the accepted candidate's search score but its score on an untouched split -- the generalisation gap the accepting rule leaves behind. A rule that accepts more is not better if what it accepts does not survive.",
+  "focus": [
+    "acceptance rule",
+    "generalisation gap",
+    "held-out gating",
+    "anytime-valid sequential testing",
+    "selection under repeated looks",
+    "search-split overfitting"
+  ],
+  "prefer": {
+    "keywords": [
+      "same candidate pool across rules",
+      "score on an untouched split",
+      "generalisation gap",
+      "greedy best-on-search-split",
+      "held-out gate",
+      "sequential rule controlling error under repeated looks",
+      "measured baseline below 0.55",
+      "numeric_accuracy",
+      "exact_match",
+      "macro_f1",
+      "paired permutation test"
+    ],
+    "anchor_claims": [
+      "2608.09096: harness search gains above sixteen points, reported from one run without intervals",
+      "harness-engineering survey 2026-07: an apparent gain can be a measurement artifact; a single evaluation swings several points on borderline tasks",
+      "internal: 26 completed scaffold runs on 0.67-0.82 baselines yielded at most +1.5 points, while one intervention on a 0.32 baseline yielded +31"
+    ]
+  },
+  "reject": {
+    "keywords": [
+      "weight update",
+      "fine-tuning",
+      "architecture change",
+      "propose a new scaffold",
+      "beat a published benchmark score",
+      "code execution benchmark",
+      "web browsing benchmark",
+      "inference engine scheduling"
+    ],
+    "reason": "The object of study is the acceptance rule, not the candidate. A proposal that invents a better scaffold has changed the variable under test. V1 also registers only generative_qa and sequence_classification runners, whose candidate hook is the prompt or the input text."
+  },
+  "required_output": {
+    "candidate_count": 8,
+    "terminal_rule": "first supported => T1; eight scientifically decided without supported => T2",
+    "truth_sources": [
+      "artifact bytes and hashes",
+      "evidence_state_transitions actor=evidence_audit_v1",
+      "scientific_decision_records joined to evidence_audit_records"
+    ],
+    "measurement_requirements": [
+      "hold the candidate pool identical across the rules being compared",
+      "report the accepted candidate's score on a split no rule was allowed to see",
+      "report the generalisation gap, not only the accepted score",
+      "equal generation budget across arms, with per-method max_new_tokens reported",
+      "at least 200 evaluation samples",
+      "a paired significance test with its permutation count",
+      "retain raw predictions so an arm that generated nothing cannot pass as a result"
+    ]
+  },
+  "submitter": "operator:2026-08-25-acceptance-rule-benchmark",
+  "token_budget": 2000000,
+  "gpu_hours_budget": 6.0,
+  "max_concurrency": 1,
+  "backend_allowlist": ["cpu", "llm", "ssh_gpu", "colab_gpu"]
+}

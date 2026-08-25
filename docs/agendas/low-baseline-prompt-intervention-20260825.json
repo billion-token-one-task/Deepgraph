@@ -1,0 +1,60 @@
+{
+  "name": "low-baseline-prompt-intervention-20260825",
+  "description": "Prompt and scaffold interventions on tasks where the model under test is measurably weak. Derived from the only supported result the system has produced: on BIG-Bench object_counting an explicit counting algorithm with three demonstrations took numeric_accuracy from 0.32 to 0.63 (paired permutation p=0.000999). The 26 completed runs of the scaffold agenda that found at most +1.5 points all sat on baselines between 0.67 and 0.82, so headroom -- not intervention cleverness -- is what separated them. Candidates must therefore target a task whose measured baseline leaves room to move, and must be executable by a registered runner: the intervention is the prompt or the input text, never the weights, the architecture or the inference engine.",
+  "focus": [
+    "low-baseline task selection",
+    "prompt intervention",
+    "scaffold structure",
+    "current-generation small models",
+    "revision-pinned public benchmarks",
+    "held-out generalisation"
+  ],
+  "prefer": {
+    "keywords": [
+      "measured baseline below 0.55",
+      "numeric_accuracy",
+      "exact_match",
+      "macro_f1",
+      "algorithmic decomposition prompt",
+      "few-shot demonstration",
+      "self-verification",
+      "input perturbation robustness"
+    ],
+    "baseline_headroom_rule": "report the unmodified-input baseline first; a task whose baseline exceeds 0.6 needs an explicit argument for why headroom remains",
+    "derived_from": "experiment_run 246 / scientific_decision_record 98"
+  },
+  "reject": {
+    "keywords": [
+      "weight update",
+      "fine-tuning",
+      "architecture change",
+      "quantisation kernel",
+      "inference engine scheduling",
+      "structure-from-motion",
+      "3D reconstruction",
+      "mixture-of-experts pruning",
+      "speculative decoding"
+    ],
+    "reason": "V1 registers two runners, generative_qa and sequence_classification, whose candidate hook is the prompt or the input text; anything else cannot be executed and is refused at preflight"
+  },
+  "required_output": {
+    "candidate_count": 10,
+    "terminal_rule": "first supported => T1; ten scientifically decided without supported => T2",
+    "truth_sources": [
+      "artifact bytes and hashes",
+      "evidence_state_transitions actor=evidence_audit_v1",
+      "scientific_decision_records joined to evidence_audit_records"
+    ],
+    "measurement_requirements": [
+      "report the unmodified-input baseline and the candidate under an equal generation budget",
+      "at least 200 evaluation samples",
+      "a paired significance test with its permutation count",
+      "raw predictions retained so an arm that generated nothing cannot pass as a refutation"
+    ]
+  },
+  "submitter": "operator:2026-08-25-low-baseline-line",
+  "token_budget": 3000000,
+  "gpu_hours_budget": 8.0,
+  "max_concurrency": 1,
+  "backend_allowlist": ["cpu", "llm", "ssh_gpu", "colab_gpu"]
+}

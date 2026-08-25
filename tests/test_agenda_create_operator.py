@@ -14,8 +14,8 @@ from pathlib import Path
 from contracts.agenda import ResearchAgenda
 from contracts.base import ContractValidationError
 
-SPEC = Path("/home/ec2-user/scratch/deepgraph-lanes-20260825/"
-            "agenda-low-baseline-20260825.json")
+SPEC = (Path(__file__).resolve().parent.parent / "docs" / "agendas"
+        / "low-baseline-prompt-intervention-20260825.json")
 
 
 class AgendaSpecContractTest(unittest.TestCase):
@@ -59,7 +59,7 @@ class LowBaselineSpecTest(unittest.TestCase):
 
     def setUp(self):
         if not SPEC.exists():
-            self.skipTest("task-local agenda spec is not present on this host")
+            self.skipTest("agenda spec is not present in this checkout")
         self.spec = json.loads(SPEC.read_text(encoding="utf-8"))
 
     def test_it_validates(self):

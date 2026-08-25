@@ -1,0 +1,70 @@
+{
+  "name": "scaffold-gain-audit-20260825",
+  "description": "Measure whether reported scaffold and prompt-level improvements survive a standard strict enough to refuse a result. The 2026 self-evolution line (Evo-Bench 2608.09096, EvoAgentBench 2607.05202, Gated Semantic Quality-Diversity 2607.13683, SIA 2605.27276) has settled that a search loop can improve an agent harness, and Evo-Bench reports gains above sixteen points from a single run with no statistical testing and no confidence intervals. The unified-evaluation line (2605.27898) holds the scaffold constant to remove it as a confounder. Neither occupies the intersection: a searched scaffold change, measured to a standard that can withhold a verdict. Each candidate here re-measures one specific published or self-generated scaffold claim under equal generation budgets, at or above the 200-sample floor, with a paired permutation test, and reports accuracy per metered token rather than accuracy alone. A candidate that cannot name the claim it is re-measuring does not belong in this agenda.",
+  "focus": [
+    "scaffold gain replication",
+    "measurement validity",
+    "equal generation budget",
+    "accuracy per metered token",
+    "paired permutation testing",
+    "low-baseline task selection",
+    "prompt intervention"
+  ],
+  "prefer": {
+    "keywords": [
+      "re-measure a named published claim",
+      "measured baseline below 0.55",
+      "numeric_accuracy",
+      "exact_match",
+      "macro_f1",
+      "equal max_new_tokens across arms",
+      "paired permutation test",
+      "accuracy per token",
+      "self-verification step",
+      "algorithmic decomposition prompt",
+      "held-out split"
+    ],
+    "anchor_claims": [
+      "2605.08478: repeated independent sampling beats agent-based reasoning on accuracy per dollar and per call; agent frameworks show lower per-call effectiveness",
+      "2608.09096: a search loop improves a seed harness by more than sixteen points, reported from one run without intervals",
+      "internal: prompt interventions moved numeric_accuracy 0.32 to 0.63 on a 0.32-baseline task, and produced at most +1.5 points across 26 runs on 0.67-0.82 baselines"
+    ],
+    "derived_from": "experiment_run 246 / scientific_decision_record 98, and the 2026-08-25 external survey"
+  },
+  "reject": {
+    "keywords": [
+      "weight update",
+      "fine-tuning",
+      "architecture change",
+      "quantisation kernel",
+      "inference engine scheduling",
+      "build a new scaffold search loop",
+      "demonstrate that search improves a harness",
+      "code execution benchmark",
+      "web browsing benchmark"
+    ],
+    "reason": "V1 registers two runners, generative_qa and sequence_classification, whose candidate hook is the prompt or the input text. Demonstrating that scaffold search works is also already settled by four 2026 papers; repeating it is not a contribution, and tasks needing code execution or web navigation cannot be run here at all."
+  },
+  "required_output": {
+    "candidate_count": 10,
+    "terminal_rule": "first supported => T1; ten scientifically decided without supported => T2",
+    "truth_sources": [
+      "artifact bytes and hashes",
+      "evidence_state_transitions actor=evidence_audit_v1",
+      "scientific_decision_records joined to evidence_audit_records"
+    ],
+    "measurement_requirements": [
+      "name the specific claim being re-measured, with its source",
+      "report the unmodified-input baseline and the candidate under an equal generation budget, and report per-method max_new_tokens",
+      "at least 200 evaluation samples",
+      "a paired significance test with its permutation count",
+      "report metered tokens per arm so accuracy per token is computable",
+      "retain raw predictions so an arm that generated nothing cannot pass as a refutation"
+    ]
+  },
+  "submitter": "operator:2026-08-25-scaffold-gain-audit",
+  "token_budget": 3000000,
+  "gpu_hours_budget": 8.0,
+  "max_concurrency": 1,
+  "backend_allowlist": ["cpu", "llm", "ssh_gpu", "colab_gpu"]
+}
