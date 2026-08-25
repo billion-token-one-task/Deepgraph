@@ -796,6 +796,7 @@ async function loadProcessingPapers() {
                 .replace('{working}', fmt(summary.working || 0))
                 .replace('{modules}', fmt(summary.sub_agents || 0)));
         }
+        renderRuntimeStageStates(officeSnapshot());
         updateLiveBadge();
     } catch (e) {
         processingSnapshot = null;
@@ -863,6 +864,18 @@ function officeStatusLabel(status) {
     if (status === "blocked") return tr('office.status.blocked', 'needs attention');
     if (status === "working") return tr('office.status.active', 'active');
     return tr('office.status.idle', 'idle');
+}
+
+function renderRuntimeStageStates(snapshot) {
+    const statuses = new Map((snapshot && Array.isArray(snapshot.departments) ? snapshot.departments : [])
+        .map(dep => [dep.key, dep.status === 'blocked' ? 'blocked' : dep.status === 'working' ? 'working' : 'idle']));
+    $$('[data-stage-status]').forEach(node => {
+        const state = statuses.get(node.dataset.stageStatus) || 'idle';
+        node.dataset.stageState = state;
+        node.textContent = officeStatusLabel(state);
+        const stage = node.closest('[data-stage]');
+        if (stage) stage.dataset.stageState = state;
+    });
 }
 
 function officeLeadText(dep) {
@@ -1513,12 +1526,17 @@ AgentOfficeCanvas.prototype.drawRoomBase = function(ctx, room) {
     ctx.font = "800 28px Source Sans 3, system-ui, sans-serif";
     ctx.fillStyle = "#2b2520";
     canvasTextFit(ctx, officeDepartmentTitle(dep), room.x + 48, room.y + 42, room.w - 250);
+    const status = dep.status === "blocked" ? "blocked" : dep.status === "working" ? "working" : "idle";
     ctx.font = "800 12px Source Code Pro, monospace";
-    ctx.fillStyle = room.accent;
-    const label = officeStatusLabel(dep.status || "idle").toUpperCase();
+    const label = officeStatusLabel(status).toUpperCase();
     const labelW = Math.min(180, Math.max(78, ctx.measureText(label).width + 24));
-    canvasFillRoundRect(ctx, room.x + room.w - labelW - 18, room.y + 18, labelW, 32, 6, "rgba(255,255,255,0.92)", "rgba(67,55,45,0.12)", 1);
-    ctx.fillText(label, room.x + room.w - labelW - 6, room.y + 39);
+    const labelX = room.x + room.w - labelW - 18;
+    const labelColor = status === "blocked" ? "#c4453a" : status === "working" ? room.accent : "#6f6256";
+    canvasFillRoundRect(ctx, labelX, room.y + 18, labelW, 32, 6, labelColor, "rgba(255,253,248,0.92)", 2);
+    ctx.fillStyle = "#fffdf8";
+    ctx.textAlign = "center";
+    ctx.fillText(label, labelX + labelW / 2, room.y + 39);
+    ctx.textAlign = "left";
     ctx.font = "700 15px Source Sans 3, system-ui, sans-serif";
     ctx.fillStyle = "#8d8177";
     canvasWrapText(ctx, officeDepartmentResponsibility(dep), room.x + 48, room.y + 66, room.w - 96, 17, 2);
@@ -4385,6 +4403,7 @@ function init() {
         if (processingSnapshot) renderV3StatusDomains(processingSnapshot);
         else updateLiveBadge();
         renderProcessingList();
+        renderRuntimeStageStates(officeSnapshot());
         if (agentOfficeRenderer) agentOfficeRenderer.rebuildForCurrentSize();
         onTabActivated(activeTab);
     });
