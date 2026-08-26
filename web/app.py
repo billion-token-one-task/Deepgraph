@@ -2070,6 +2070,33 @@ def _clean_insight_title(raw: Any) -> str | None:
     return text or None
 
 
+def _conclusion_headline(row: dict) -> str | None:
+    """The sentence a reader came for, not the name the system files it under.
+
+    `deep_insights.title` is an internal identifier -- batch tag, candidate
+    number, snake_case method -- and it reads like one on screen. The same
+    record carries a written description of what the method actually does:
+    `proposed_method.one_line` on 62 of 64 decisions, and `evidence_summary`
+    on all 64. Those are the headline; the identifier is the last resort.
+    """
+    method = row.get("proposed_method")
+    if isinstance(method, str):
+        try:
+            method = json.loads(method)
+        except (TypeError, ValueError):
+            method = None
+    if isinstance(method, dict):
+        one_line = str(method.get("one_line") or "").strip()
+        if one_line:
+            return one_line
+
+    summary = str(row.get("evidence_summary") or "").strip()
+    if summary:
+        return summary
+
+    return _clean_insight_title(row.get("insight_title"))
+
+
 def _clean_problem_statement(raw: Any) -> str | None:
     text = str(raw or "").strip()
     if not text:
@@ -2122,6 +2149,7 @@ def _homepage_latest_conclusion() -> dict | None:
                   er.baseline_metric_name, er.baseline_metric_value,
                   er.best_metric_value, er.effect_pct, er.deep_insight_id,
                   di.title AS insight_title, di.problem_statement,
+                  di.proposed_method, di.evidence_summary,
                   EXISTS (
                     SELECT 1 FROM evidence_state_transitions est
                     WHERE est.experiment_run_id = sdr.experiment_run_id
@@ -2175,7 +2203,7 @@ def _homepage_latest_conclusion() -> dict | None:
     return {
         "id": row.get("id"),
         "verdict": row.get("verdict"),
-        "title": _clean_insight_title(row.get("insight_title")),
+        "title": _conclusion_headline(row),
         "hypothesis": _clean_problem_statement(row.get("problem_statement")),
         "metric": metric,
         "experiment": {"runs": runs, "datasets": datasets},

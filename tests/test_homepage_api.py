@@ -194,6 +194,58 @@ class TextCleaningTest(unittest.TestCase):
         self.assertIsNone(web_app._homepage_dataset_label(""))
 
 
+class ConclusionHeadlineTest(unittest.TestCase):
+    """The headline is a sentence; the identifier is what you fall back to."""
+
+    def test_the_written_one_line_wins(self):
+        row = {
+            "proposed_method": json.dumps({
+                "name": "algorithmic_filter_sum_3shot",
+                "one_line": "Externalize category filtering, quantity normalization and summation.",
+            }),
+            "evidence_summary": "something else",
+            "insight_title": "[batch-20260820] C01 algorithmic_filter_sum_3shot for object counting",
+        }
+        self.assertEqual(
+            web_app._conclusion_headline(row),
+            "Externalize category filtering, quantity normalization and summation.",
+        )
+
+    def test_a_dict_column_is_read_without_json_decoding(self):
+        row = {"proposed_method": {"one_line": "Rephrase, then filter and sum."}}
+        self.assertEqual(web_app._conclusion_headline(row), "Rephrase, then filter and sum.")
+
+    def test_the_summary_covers_the_records_without_a_one_line(self):
+        row = {
+            "proposed_method": json.dumps({"name": "x"}),
+            "evidence_summary": "Balanced demonstrations teach category and quantity mapping.",
+            "insight_title": "[batch] C02 x for y",
+        }
+        self.assertEqual(
+            web_app._conclusion_headline(row),
+            "Balanced demonstrations teach category and quantity mapping.",
+        )
+
+    def test_a_malformed_method_column_does_not_lose_the_headline(self):
+        row = {"proposed_method": "{not json", "evidence_summary": "A readable summary."}
+        self.assertEqual(web_app._conclusion_headline(row), "A readable summary.")
+
+    def test_the_identifier_is_the_last_resort_and_still_gets_cleaned(self):
+        row = {
+            "proposed_method": None,
+            "evidence_summary": "",
+            "insight_title": "[m3-batch-20260820] C01 algorithmic_filter_sum_3shot for object counting",
+        }
+        self.assertEqual(
+            web_app._conclusion_headline(row),
+            "algorithmic_filter_sum_3shot for object counting",
+        )
+
+    def test_nothing_readable_anywhere_yields_nothing_rather_than_a_tag(self):
+        self.assertIsNone(web_app._conclusion_headline(
+            {"proposed_method": None, "evidence_summary": None, "insight_title": "[batch-only]"}))
+
+
 class MapTest(unittest.TestCase):
     ROWS = [
         {"id": "ml.dl", "name": "Deep Learning", "paper_count": 5186, "gap_count": 3},
