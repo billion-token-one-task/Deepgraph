@@ -58,26 +58,49 @@ function zeroSafeValue(value) {
     return Number(value || 0) === 0 ? '—' : fmt(value);
 }
 
-function updateHeroProof(s) {
-    const counts = ['supported', 'refuted', 'inconclusive'].map(kind => Number(s[`decisions_${kind}`] || 0));
-    const total = counts.reduce((sum, value) => sum + value, 0);
-    setText('heroEvidenceLabel', tr('overview.heroProofEvidence', '').replace('{total}', fmt(total)));
-    setText('heroSupported', zeroSafeValue(counts[0]));
-    setText('heroRefuted', zeroSafeValue(counts[1]));
-    setText('heroInconclusive', zeroSafeValue(counts[2]));
-    ['Supported', 'Refuted', 'Inconclusive'].forEach((suffix, index) => {
-        setText(`hero${suffix}Zero`, counts[index] === 0 ? tr('overview.zeroVerdict', 'No verdicts yet') : '');
-    });
-    setText('heroGraphEntities', zeroSafeValue(s.graph_entities_total));
-    setText('heroGraphRelations', zeroSafeValue(s.graph_relations_total));
+// The hero chain. Every figure comes from the public aggregate rather than
+// from /api/stats directly, so the page cannot drift from the endpoint that
+// pins each number to its source field.
+function renderHeroChain() {
+    const chain = (homepageData && homepageData.chain) || null;
+    if (!chain) return;
 
-    const segments = $$('[data-testid="evidence-bar-segment"]');
-    segments.forEach((segment, index) => {
-        segment.style.flexGrow = String(total ? counts[index] : 1);
+    setText('chainReadValue', fmt(chain.papers_total || 0));
+    setText('chainTopicValue', fmt(chain.topics_total || 0));
+    setText('chainRunValue', fmt(chain.experiments_completed || 0));
+    setText('chainConclusionValue', fmt(chain.conclusions_total || 0));
+
+    // Step 01 carries the only progress on the page: how much of the corpus
+    // has actually been turned into evidence. The total is what has been
+    // collected; this is what has been read.
+    const total = Number(chain.papers_total || 0);
+    const processed = Number(chain.papers_processed || 0);
+    setText('chainReadNote', tr('chain.graphBuilt', '{n} built into the evidence graph')
+        .replace('{n}', fmt(processed)));
+    const bar = el('chainReadProgress');
+    if (bar) bar.style.width = total > 0 ? `${Math.min(100, (processed / total) * 100)}%` : '0%';
+
+    const counts = [
+        Number(chain.conclusions_supported || 0),
+        Number(chain.conclusions_refuted || 0),
+        Number(chain.conclusions_inconclusive || 0),
+    ];
+    const decided = counts.reduce((sum, value) => sum + value, 0);
+    setText('chainVerdictLine', decided === 0
+        ? tr('overview.zeroVerdict', 'No conclusions yet')
+        : `${fmt(counts[0])} ${tr('verdict.supported', 'supported')} · `
+          + `${fmt(counts[1])} ${tr('verdict.refuted', 'refuted')} · `
+          + `${fmt(counts[2])} ${tr('verdict.inconclusive', 'inconclusive')}`);
+
+    // Segment widths are the real proportions. A refuted-heavy bar is the
+    // honest picture of a system that publishes what its experiments killed.
+    $$('[data-testid="evidence-bar-segment"]').forEach((segment, index) => {
+        segment.style.flexGrow = String(decided ? counts[index] : 1);
         segment.hidden = false;
-        segment.classList.toggle('is-empty', total === 0);
+        segment.classList.toggle('is-empty', decided === 0);
     });
 }
+
 
 function isKnownCount(value) {
     return Number.isInteger(value) && value >= 0;
@@ -215,6 +238,7 @@ async function loadHomepage() {
         console.error('Homepage aggregate failed:', e);
     }
     updateStatusPill();
+    renderHeroChain();
 }
 
 // i18n bridge: translate via window.t (from i18n.js) with an English
@@ -674,7 +698,6 @@ async function refreshStats() {
             generatedAt.dateTime = new Date(Number(s.generated_at) * 1000).toISOString();
         }
         applyMetricTips();
-        updateHeroProof(s);
     } catch (e) {
         console.error('Stats error:', e);
     }
@@ -4528,7 +4551,7 @@ function init() {
     // static chrome is re-applied by i18n.js itself.
     document.addEventListener('deepgraph:languagechange', () => {
         applyMetricTips();
-        if (statsCache) updateHeroProof(statsCache);
+        renderHeroChain();
         updateStatusPill();
         renderProcessingList();
         renderRuntimeStageStates(officeSnapshot());

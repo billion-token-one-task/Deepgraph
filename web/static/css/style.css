@@ -861,10 +861,43 @@ header#topBar {
 .homepage-hierarchy-v2 .hero-runtime-bg { position: absolute; inset: 0; opacity: .6; filter: saturate(.76) contrast(.93); pointer-events: none; }
 .homepage-hierarchy-v2 .hero-runtime-bg .overview-office-slot, .homepage-hierarchy-v2 .hero-runtime-bg #officeProcessing, .homepage-hierarchy-v2 .hero-runtime-bg .processing-list, .homepage-hierarchy-v2 .hero-runtime-bg .agent-office-map, .homepage-hierarchy-v2 .hero-runtime-bg .office-stage { width: 100%; height: 100%; min-height: 700px; margin: 0; padding: 0; border: 0; background: transparent; box-shadow: none; }
 .homepage-hierarchy-v2 .hero-runtime-bg .office-hud, .homepage-hierarchy-v2 .hero-runtime-bg .office-nowline { display: none; }
-.homepage-hierarchy-v2 .hero-copy { position: relative; z-index: 2; width: min(820px, calc(100% - 64px)); }
+.homepage-hierarchy-v2 .hero-copy { position: relative; z-index: 2; width: min(820px, calc(100% - 64px)); padding-bottom: 210px; }
 .homepage-hierarchy-v2 .section-kicker, .homepage-hierarchy-v2 .credibility-copy > span { color: #8a8377; font-size: 11.5px; letter-spacing: .18em; }
 .homepage-hierarchy-v2 .research-hero h1 { max-width: 820px; margin: 18px 0 0; color: #fbf8f3; font-family: var(--font-serif); font-size: 46px; font-weight: 700; line-height: 1.18; letter-spacing: -.015em; }
 .homepage-hierarchy-v2 .research-hero .hero-sub { max-width: 640px; margin-top: 16px; color: #b7b0a4; font-size: 17px; line-height: 1.72; }
+/* The four-step chain under the hero copy.
+   All three rows are the same four-column grid with the same gap, so a step's
+   number, node and name land on one vertical line. The node sits at the left
+   edge of its cell: centring it puts the dot midway between two steps and the
+   order stops being readable. */
+.homepage-hierarchy-v2 .hero-chain { position: absolute; z-index: 2; right: 52px; bottom: 40px; left: 52px; padding-top: 24px; border-top: 1px solid #3a352f; }
+.homepage-hierarchy-v2 .chain-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0 20px; }
+.homepage-hierarchy-v2 .chain-cell { min-width: 0; }
+.homepage-hierarchy-v2 .chain-index { display: block; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10.5px; letter-spacing: 0.18em; color: #7e776c; }
+.homepage-hierarchy-v2 .chain-values .is-terminal .chain-index { color: var(--accent, #c2562a); }
+.homepage-hierarchy-v2 .chain-figure { display: flex; align-items: baseline; gap: 6px; margin-top: 11px; }
+.homepage-hierarchy-v2 .chain-figure strong { font-family: 'IBM Plex Mono', ui-monospace, monospace; font-variant-numeric: tabular-nums; font-size: clamp(22px, 2vw, 29px); font-weight: 500; line-height: 1; color: #fbf8f3; }
+.homepage-hierarchy-v2 .chain-values .is-terminal .chain-figure strong { color: #e4794a; }
+.homepage-hierarchy-v2 .chain-figure small { font-size: 12.5px; color: #8a8377; }
+.homepage-hierarchy-v2 .chain-values .is-terminal .chain-figure small { color: #b7b0a4; }
+
+.homepage-hierarchy-v2 .chain-track { margin-top: 16px; align-items: center; }
+.homepage-hierarchy-v2 .chain-track .chain-cell { display: flex; align-items: center; }
+.homepage-hierarchy-v2 .chain-dot { flex: none; width: 9px; height: 9px; border-radius: 999px; background: #8a8377; }
+.homepage-hierarchy-v2 .chain-track .is-terminal .chain-dot { width: 11px; height: 11px; margin-left: -1px; background: var(--accent, #c2562a); }
+.homepage-hierarchy-v2 .chain-link { flex: 1; height: 1px; background: #3f3a34; }
+.homepage-hierarchy-v2 .chain-link.is-final { background: #5e483c; }
+
+.homepage-hierarchy-v2 .chain-labels { margin-top: 15px; }
+.homepage-hierarchy-v2 .chain-action { display: block; font-size: 13.5px; color: #b7b0a4; }
+.homepage-hierarchy-v2 .chain-labels .is-terminal .chain-action { color: #d6d0c6; font-weight: 500; }
+.homepage-hierarchy-v2 .chain-note { display: flex; align-items: center; gap: 9px; margin-top: 11px; font-size: 12.5px; color: #8a8377; }
+.homepage-hierarchy-v2 .chain-note i { flex: none; width: 6px; height: 6px; border-radius: 999px; background: var(--accent, #c2562a); }
+.homepage-hierarchy-v2 .chain-progress { display: block; overflow: hidden; height: 3px; margin-top: 10px; border-radius: 999px; background: #33302b; }
+.homepage-hierarchy-v2 .chain-progress i { display: block; height: 100%; background: var(--accent, #c2562a); }
+.homepage-hierarchy-v2 .chain-labels .evidence-bar { height: 5px; margin-top: 12px; border-radius: 999px; background: transparent; }
+.homepage-hierarchy-v2 .chain-verdicts { display: block; margin-top: 10px; font-size: 12.5px; color: #8a8377; }
+
 .homepage-hierarchy-v2 .hero-proof { display: flex; align-items: stretch; gap: 36px; width: min(740px, 100%); margin-top: 30px; padding-top: 24px; border-top: 1px solid #3a352f; }
 .homepage-hierarchy-v2 .hero-evidence-proof { flex: 1.4; min-width: 0; }
 .homepage-hierarchy-v2 .hero-proof-divider { width: 1px; flex: 0 0 1px; background: #3a352f; }

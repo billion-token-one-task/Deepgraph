@@ -136,30 +136,43 @@
                             <p class="section-kicker" data-testid="hero-eyebrow" data-i18n="overview.heroEyebrow">DEEPGRAPH · AI RESEARCH HARNESS</p>
                             <h1 id="heroTitle" data-testid="hero-title" data-i18n="overview.heroTitle">An AI research harness that compounds experience</h1>
                             <p class="hero-sub" data-testid="hero-sub" data-i18n="overview.heroSubtitle">DeepGraph links experiments, knowledge, and evidence into one verifiable loop that keeps improving itself.</p>
-                            <div class="hero-proof" data-testid="hero-proof">
-                                <div class="hero-evidence-proof">
-                                    <p id="heroEvidenceLabel" class="proof-label"></p>
-                                    <div class="evidence-bar" data-testid="evidence-bar">
-                                        <span class="evidence-bar-segment supported" data-testid="evidence-bar-segment"></span><span class="evidence-bar-segment refuted" data-testid="evidence-bar-segment"></span><span class="evidence-bar-segment inconclusive" data-testid="evidence-bar-segment"></span>
-                                    </div>
-                                    <div class="hero-verdict-stats">
-                                        <button class="verdict-stat" data-testid="verdict-stat" type="button" data-tab="evidence" data-verdict="supported"><strong id="heroSupported" data-testid="verdict-value">—</strong><span data-i18n="verdict.supported">supported</span><small id="heroSupportedZero" class="zero-note"></small></button>
-                                        <button class="verdict-stat" data-testid="verdict-stat" type="button" data-tab="evidence" data-verdict="refuted"><strong id="heroRefuted" data-testid="verdict-value">—</strong><span data-i18n="verdict.refuted">refuted</span><small id="heroRefutedZero" class="zero-note"></small></button>
-                                        <button class="verdict-stat" data-testid="verdict-stat" type="button" data-tab="evidence" data-verdict="inconclusive"><strong id="heroInconclusive" data-testid="verdict-value">—</strong><span data-i18n="verdict.inconclusive">inconclusive</span><small id="heroInconclusiveZero" class="zero-note"></small></button>
-                                    </div>
-                                </div>
-                                <i class="hero-proof-divider" aria-hidden="true"></i>
-                                <div class="hero-memory-proof">
-                                    <p class="proof-label" data-i18n="overview.heroProofMemory">RESEARCH MEMORY · REUSABLE</p>
-                                    <div class="hero-memory-stats">
-                                        <div class="memory-stat" data-testid="memory-stat"><strong id="heroGraphEntities" data-testid="memory-value">—</strong><span data-i18n="stat.knowledgeEntities">Knowledge entities</span></div>
-                                        <div class="memory-stat" data-testid="memory-stat"><strong id="heroGraphRelations" data-testid="memory-value">—</strong><span data-i18n="stat.knowledgeRelations">Knowledge relations</span></div>
-                                    </div>
-                                </div>
-                            </div>
                             <div class="hero-actions">
                                 <button class="hero-cta primary" data-testid="cta-runtime" data-tab="office" type="button" data-i18n="overview.ctaRuntime">Open research runtime</button>
                                 <button class="hero-cta secondary" data-testid="cta-map" data-tab="explore" type="button" data-i18n="overview.ctaMap">View research map</button>
+                            </div>
+                        </div>
+                        <!-- The chain the system performs, in order: read, ask,
+                             run, conclude. Three rows share one four-column grid so
+                             a step's number, its node and its name stay in the same
+                             column; the dots sit at the left edge of their cell
+                             rather than centred, because a centred dot reads as
+                             falling between two steps. -->
+                        <div class="hero-chain" data-testid="hero-proof">
+                            <div class="chain-row chain-values">
+                                <div class="chain-cell"><span class="chain-index">01</span><span class="chain-figure"><strong id="chainReadValue" data-testid="chain-value">&mdash;</strong><small data-i18n="chain.unit.papers">papers</small></span></div>
+                                <div class="chain-cell"><span class="chain-index">02</span><span class="chain-figure"><strong id="chainTopicValue" data-testid="chain-value">&mdash;</strong><small data-i18n="chain.unit.topics">raised</small></span></div>
+                                <div class="chain-cell"><span class="chain-index">03</span><span class="chain-figure"><strong id="chainRunValue" data-testid="chain-value">&mdash;</strong><small data-i18n="chain.unit.runs">runs</small></span></div>
+                                <div class="chain-cell is-terminal"><span class="chain-index">04</span><span class="chain-figure"><strong id="chainConclusionValue" data-testid="chain-value">&mdash;</strong><small data-i18n="chain.unit.conclusions">conclusions</small></span></div>
+                            </div>
+                            <div class="chain-row chain-track" aria-hidden="true">
+                                <div class="chain-cell"><i class="chain-dot"></i><i class="chain-link"></i></div>
+                                <div class="chain-cell"><i class="chain-dot"></i><i class="chain-link"></i></div>
+                                <div class="chain-cell"><i class="chain-dot"></i><i class="chain-link is-final"></i></div>
+                                <div class="chain-cell is-terminal"><i class="chain-dot"></i></div>
+                            </div>
+                            <div class="chain-row chain-labels">
+                                <div class="chain-cell">
+                                    <span class="chain-action" data-i18n="chain.step.read">Read literature</span>
+                                    <span class="chain-note"><i></i><span id="chainReadNote">&mdash;</span></span>
+                                    <span class="chain-progress"><i id="chainReadProgress"></i></span>
+                                </div>
+                                <div class="chain-cell"><span class="chain-action" data-i18n="chain.step.ask">Raise questions</span></div>
+                                <div class="chain-cell"><span class="chain-action" data-i18n="chain.step.run">Run experiments</span></div>
+                                <div class="chain-cell is-terminal">
+                                    <span class="chain-action" data-i18n="chain.step.conclude">Reach conclusions</span>
+                                    <span class="evidence-bar" data-testid="evidence-bar"><span class="evidence-bar-segment supported" data-testid="evidence-bar-segment"></span><span class="evidence-bar-segment refuted" data-testid="evidence-bar-segment"></span><span class="evidence-bar-segment inconclusive" data-testid="evidence-bar-segment"></span></span>
+                                    <span class="chain-verdicts" id="chainVerdictLine">&mdash;</span>
+                                </div>
                             </div>
                         </div>
                     </section>
