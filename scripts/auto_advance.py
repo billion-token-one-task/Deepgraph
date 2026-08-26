@@ -90,7 +90,13 @@ ARTIFACT_REQUIREMENTS = list(REQUIRED_ARTIFACTS)
 # every pass until their rations ran out. The matcher now falls back to the
 # corpus and a problem with no evidence is refused at creation, so those
 # rations were spent against a defect, not against the problems.
-RECYCLE_EPOCH = "direction-focus-terms-retrieve-evidence-2026-08-26"
+# Bumped again later on 2026-08-26. Ideas 237 and 241 reached the A10G and
+# spent all three recycles on defects deployed out the same day: the proxy
+# named the deployment's default benchmark instead of the candidate's own
+# contract (2a3bf7d), and the GPU host had no transformers/datasets because
+# the remote auto-install is disabled by default. Three attempts, nothing
+# measured about either idea.
+RECYCLE_EPOCH = "candidate-contract-and-remote-deps-2026-08-26"
 
 # A preflight whose blockers cannot heal on their own (missing requirements,
 # unresolvable declared repos) is retried this many times before the candidate
