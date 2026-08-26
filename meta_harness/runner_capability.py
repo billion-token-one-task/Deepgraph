@@ -770,6 +770,18 @@ class PreflightEngine:
             for backend in requirements.preferred_backends
             if backend in adapter.backends and backend in environment.enabled_backends
         ]
+        if not eligible_backends:
+            # ``preferred_backends`` is a preference, not an authorisation. A
+            # plan asking for "local_gpu" on a deployment that rents "ssh_gpu"
+            # names the same hardware by a different word, and refusing it
+            # strands a candidate every real constraint would admit. Degrade to
+            # what the runner supports and the deployment enables; the CUDA and
+            # VRAM checks below still bind, so nothing unsuitable gets through.
+            eligible_backends = [
+                backend
+                for backend in adapter.backends
+                if backend in environment.enabled_backends
+            ]
         vram_required = max(requirements.model.min_vram_gb, adapter.min_vram_gb)
         if requirements.model.requires_cuda:
             eligible_backends = [

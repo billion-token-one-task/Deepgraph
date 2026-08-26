@@ -55,10 +55,14 @@ def runtime_preflight_environment() -> PreflightEnvironment:
             ("ssh_gpu", "metadata LIKE ?"),
             ("local_gpu", "(metadata IS NULL OR metadata NOT LIKE ?)"),
         ):
+            # A retired worker is hardware that is gone. Taking the maximum
+            # over every row ever registered reported 46GB while the only live
+            # card had 22GB, which admits a job to an accelerator that cannot
+            # hold it. The colab branch below already filters; match it.
             row = db.fetchone(
                 f"""
                 SELECT COALESCE(MAX(total_mem_gb), 0) AS max_vram_gb
-                FROM gpu_workers WHERE {predicate}
+                FROM gpu_workers WHERE {predicate} AND status <> 'retired'
                 """,
                 ('%"backend": "ssh"%',),
             ) or {}
