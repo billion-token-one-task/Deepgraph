@@ -189,16 +189,39 @@ class CandidatePreflightRepository:
         idempotency_key: str,
     ) -> int:
         try:
+            # The default key buckets by the hour, which stops a retry loop
+            # from hammering the metadata probe with the same question. It must
+            # not stop a *different answer* from landing: "deferred:
+            # backend_unavailable" is provisional by design -- it heals when
+            # hardware appears -- and returning that stale row as if it were
+            # the new result handed grant authority a preflight that had not
+            # passed. Ideas 237 and 241 passed at 10:42 and were refused with
+            # passed_candidate_preflight_required against their own 10:32
+            # deferral. Idempotency means the same answer, not the same
+            # question: when the status changes, discriminate the key so the
+            # new row lands and history stays append-only.
             existing = db.fetchone(
                 """
-                SELECT id FROM candidate_preflight_results_v1
+                SELECT id, status FROM candidate_preflight_results_v1
                 WHERE requirement_id=? AND idempotency_key=?
                 """,
                 (requirement_id, idempotency_key),
             )
-            if existing:
+            if existing and str(existing.get("status") or "") == result.status:
                 db.commit()
                 return int(existing["id"])
+            if existing:
+                idempotency_key = f"{idempotency_key}:{result.status}"
+                superseding = db.fetchone(
+                    """
+                    SELECT id FROM candidate_preflight_results_v1
+                    WHERE requirement_id=? AND idempotency_key=?
+                    """,
+                    (requirement_id, idempotency_key),
+                )
+                if superseding:
+                    db.commit()
+                    return int(superseding["id"])
             result_id = db.insert_returning_id(
                 """
                 INSERT INTO candidate_preflight_results_v1
