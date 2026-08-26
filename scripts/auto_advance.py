@@ -90,7 +90,7 @@ ARTIFACT_REQUIREMENTS = list(REQUIRED_ARTIFACTS)
 # every pass until their rations ran out. The matcher now falls back to the
 # corpus and a problem with no evidence is refused at creation, so those
 # rations were spent against a defect, not against the problems.
-RECYCLE_EPOCH = "direction-evidence-corpus-fallback-2026-08-25"
+RECYCLE_EPOCH = "direction-focus-terms-retrieve-evidence-2026-08-26"
 
 # A preflight whose blockers cannot heal on their own (missing requirements,
 # unresolvable declared repos) is retried this many times before the candidate
@@ -1553,6 +1553,81 @@ def _exact_target_was_granted(state: dict) -> bool:
     }
 
 
+
+def realize_funded_proposals(agenda_id: int, journal: Journal, args) -> int:
+    """Spend the proposal authority this agenda already holds.
+
+    A funded proposal parks at (deferred, proposal_generation_granted) and waits
+    for someone to turn it into a plan. `execute_bounded_proposal` is that
+    consumer and it is complete -- but its only caller was
+    scripts/run_bounded_proposal.py, a manual tool, so an ordinary pass signed
+    the authority and then walked past it to generate more candidates. The
+    grants expired four hours later, the slot reopened, and the pass signed
+    another: authority issued, never consumed, reissued. Three agendas sat in
+    that loop from the moment they were first funded.
+
+    Realization runs before discovery on purpose. Money already committed is
+    worth more than another candidate, and while a funded job holds the
+    agenda's concurrency slot no new authority can be signed anyway.
+    """
+    from orchestrator.bounded_proposal import (
+        BoundedProposalError,
+        BoundedProposalRequest,
+        authorize_bounded_proposal,
+        execute_bounded_proposal,
+    )
+
+    realized = 0
+    for row in _rows(
+        """
+        SELECT arj.id AS job_id, arj.deep_insight_id, arj.resource_grant_id
+          FROM auto_research_jobs arj
+          JOIN resource_grants rg ON rg.id = arj.resource_grant_id
+         WHERE arj.agenda_id = ?
+           AND arj.status = 'deferred'
+           AND arj.stage = 'proposal_generation_granted'
+           AND rg.stage = 'proposal'
+           AND rg.status = 'active'
+         ORDER BY rg.expires_at ASC
+        """,
+        (agenda_id,),
+    ):
+        request = BoundedProposalRequest(
+            job_id=int(row["job_id"]),
+            agenda_id=int(agenda_id),
+            idea_id=int(row["deep_insight_id"]),
+            resource_grant_id=int(row["resource_grant_id"]),
+        )
+        try:
+            _scope, already = authorize_bounded_proposal(request)
+            if already:
+                journal.log("bounded_proposal_already_realized",
+                            agenda_id=agenda_id, idea_id=request.idea_id,
+                            resource_grant_id=request.resource_grant_id)
+                continue
+            result = execute_bounded_proposal(request, actor="auto_advance:ordinary_pass")
+        except BoundedProposalError as exc:
+            db.rollback()
+            journal.log("bounded_proposal_refused", agenda_id=agenda_id,
+                        idea_id=request.idea_id,
+                        resource_grant_id=request.resource_grant_id,
+                        reason=str(exc)[:300])
+            continue
+        except Exception as exc:  # noqa: BLE001 - one bad proposal must not end the pass
+            db.rollback()
+            journal.log("bounded_proposal_failed", agenda_id=agenda_id,
+                        idea_id=request.idea_id,
+                        resource_grant_id=request.resource_grant_id,
+                        reason=f"{type(exc).__name__}: {str(exc)[:260]}")
+            continue
+        realized += 1
+        journal.log("bounded_proposal_realized", agenda_id=agenda_id,
+                    idea_id=request.idea_id,
+                    resource_grant_id=request.resource_grant_id,
+                    detail=str(getattr(result, "to_dict", lambda: result)())[:300])
+    return realized
+
+
 def _pilot_arm_that_measured_nothing(run_id: int) -> str:
     """Name the pilot arm that generated nothing, or "" if both produced text.
 
@@ -2501,6 +2576,15 @@ def main() -> int:
             if discovery_agenda_id in discovered_this_pass:
                 continue
             discovered_this_pass.add(discovery_agenda_id)
+            # Authority already signed outranks a new candidate: realize what
+            # this agenda has been funded for before paying to think of more.
+            try:
+                realize_funded_proposals(discovery_agenda_id, journal, args)
+            except Exception as exc:  # noqa: BLE001
+                db.rollback()
+                journal.log("bounded_proposal_sweep_failed",
+                            agenda_id=discovery_agenda_id,
+                            reason=f"{type(exc).__name__}: {str(exc)[:200]}")
             try:
                 from orchestrator.discovery_scheduler import run_tier2_discovery
 
