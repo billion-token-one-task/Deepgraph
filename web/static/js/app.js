@@ -58,6 +58,71 @@ function zeroSafeValue(value) {
     return Number(value || 0) === 0 ? '—' : fmt(value);
 }
 
+// The newest adjudicated conclusion, and the trail behind it. Fields the
+// backend cannot supply are omitted rather than filled with a plausible
+// number: an invented evidence count is indistinguishable from a real one on
+// screen and fatal in a conversation with anyone who checks.
+function renderLatestConclusion() {
+    const chain = (homepageData && homepageData.chain) || {};
+    const latest = (homepageData && homepageData.latest_conclusion) || null;
+
+    setText('latestAllLink', tr('latest.all', 'All {n} conclusions')
+        .replace('{n}', fmt(chain.conclusions_total || 0)));
+
+    const pill = el('latestVerdict');
+    if (!latest) {
+        setText('latestStatement', tr('overview.zeroVerdict', 'No conclusions yet'));
+        setText('latestSupport', '');
+        if (pill) pill.hidden = true;
+        return;
+    }
+
+    setText('latestStatement', latest.title || tr('latest.untitled', 'Conclusion recorded'));
+    if (pill) {
+        pill.hidden = !latest.verdict;
+        pill.dataset.verdict = latest.verdict || '';
+        pill.textContent = tr(`verdict.${latest.verdict}`, latest.verdict || '');
+    }
+
+    // The supporting sentence is the measured effect where there is one. It is
+    // stronger than any adjective and it is checkable.
+    const metric = latest.metric;
+    const support = [];
+    if (metric && metric.baseline != null && metric.best != null) {
+        support.push(tr('latest.metric', '{name}: {from} to {to} ({effect})')
+            .replace('{name}', metric.name || '')
+            .replace('{from}', metric.baseline)
+            .replace('{to}', metric.best)
+            .replace('{effect}', metric.effect_pct == null
+                ? '' : `${metric.effect_pct > 0 ? '+' : ''}${Number(metric.effect_pct).toFixed(1)}%`));
+    }
+    if (latest.evidence && latest.evidence.holdout) {
+        support.push(tr('latest.holdout', 'decided on a frozen holdout'));
+    }
+    setText('latestSupport', support.join(' · '));
+
+    setText('trailOriginMain', tr('trail.originMain', 'Raised from the evidence graph'));
+    setText('trailHypothesisMain', latest.hypothesis
+        ? trunc(latest.hypothesis, 130)
+        : tr('trail.hypothesisMissing', 'Recorded before the run'));
+
+    const runs = latest.experiment && latest.experiment.runs;
+    const datasets = latest.experiment && latest.experiment.datasets;
+    const parts = [];
+    if (runs) parts.push(tr('trail.runs', '{n} runs').replace('{n}', fmt(runs)));
+    if (datasets) parts.push(tr('trail.datasets', '{n} datasets').replace('{n}', fmt(datasets)));
+    setText('trailExperimentMain', parts.length
+        ? parts.join(' · ')
+        : tr('trail.experimentMissing', 'Executed under a scoped grant'));
+
+    // A refuted hypothesis is still published. Saying so is the point.
+    setText('trailConclusionMain', latest.verdict === 'refuted'
+        ? tr('trail.refutedMain', 'Hypothesis overturned, conclusion published anyway')
+        : (latest.evidence && latest.evidence.ladder_walked
+            ? tr('trail.ladderMain', 'Walked the full evidence ladder')
+            : tr('trail.recordedMain', 'Recorded with its audit trail')));
+}
+
 // The hero chain. Every figure comes from the public aggregate rather than
 // from /api/stats directly, so the page cannot drift from the endpoint that
 // pins each number to its source field.
@@ -239,6 +304,7 @@ async function loadHomepage() {
     }
     updateStatusPill();
     renderHeroChain();
+    renderLatestConclusion();
 }
 
 // i18n bridge: translate via window.t (from i18n.js) with an English
@@ -4552,6 +4618,7 @@ function init() {
     document.addEventListener('deepgraph:languagechange', () => {
         applyMetricTips();
         renderHeroChain();
+        renderLatestConclusion();
         updateStatusPill();
         renderProcessingList();
         renderRuntimeStageStates(officeSnapshot());

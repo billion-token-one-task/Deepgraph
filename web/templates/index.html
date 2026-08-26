@@ -177,6 +177,44 @@
                         </div>
                     </section>
 
+                    <!-- The one thing a reader came for. Layout is independent of how
+                         many conclusions exist: at three thousand this still shows the
+                         newest one and only the "all N" count moves. -->
+                    <section class="latest-conclusion" data-testid="latest-conclusion" aria-labelledby="latestConclusionTitle">
+                        <div class="latest-head">
+                            <p class="section-kicker" id="latestConclusionTitle" data-i18n="latest.kicker">LATEST CONCLUSION</p>
+                            <button class="btn-link" type="button" data-tab="evidence" data-testid="link-all-conclusions" id="latestAllLink">&mdash;</button>
+                        </div>
+                        <div class="latest-statement">
+                            <h2 id="latestStatement">&mdash;</h2>
+                            <span class="verdict-pill" id="latestVerdict" data-testid="verdict-pill" hidden></span>
+                        </div>
+                        <p class="latest-support" id="latestSupport"></p>
+                        <!-- Same track language as the hero, so the trail behind one
+                             conclusion reads as the same four steps. No card, no fill:
+                             this is a continuation of the chain, not a new component. -->
+                        <div class="latest-trail" data-testid="latest-trail">
+                            <div class="chain-row trail-heads">
+                                <div class="chain-cell"><span class="chain-index"><b>01</b> <span data-i18n="trail.origin">Where it came from</span></span></div>
+                                <div class="chain-cell"><span class="chain-index"><b>02</b> <span data-i18n="trail.hypothesis">Hypothesis</span></span></div>
+                                <div class="chain-cell"><span class="chain-index"><b>03</b> <span data-i18n="trail.experiment">Experiment</span></span></div>
+                                <div class="chain-cell is-terminal"><span class="chain-index"><b>04</b> <span data-i18n="trail.conclusion">Conclusion</span></span></div>
+                            </div>
+                            <div class="chain-row chain-track" aria-hidden="true">
+                                <div class="chain-cell"><i class="chain-dot"></i><i class="chain-link"></i></div>
+                                <div class="chain-cell"><i class="chain-dot"></i><i class="chain-link"></i></div>
+                                <div class="chain-cell"><i class="chain-dot"></i><i class="chain-link is-final"></i></div>
+                                <div class="chain-cell is-terminal"><i class="chain-dot"></i></div>
+                            </div>
+                            <div class="chain-row trail-bodies">
+                                <div class="chain-cell"><span class="trail-main" id="trailOriginMain">&mdash;</span><span class="trail-note" data-i18n="trail.originNote">Found in the graph, not written by hand</span></div>
+                                <div class="chain-cell"><span class="trail-main" id="trailHypothesisMain">&mdash;</span><span class="trail-note" data-i18n="trail.hypothesisNote">Written in falsifiable form, pre-registered before it ran</span></div>
+                                <div class="chain-cell"><span class="trail-main" id="trailExperimentMain">&mdash;</span><span class="trail-note" data-i18n="trail.experimentNote">Config and random seeds on record, re-runnable</span></div>
+                                <div class="chain-cell is-terminal"><span class="trail-main" id="trailConclusionMain">&mdash;</span><button class="btn-link trail-link" type="button" data-tab="evidence" data-i18n="trail.evidenceLink">See the evidence trail</button></div>
+                            </div>
+                        </div>
+                    </section>
+
                     <section class="card card-graph-preview" id="overviewMapCard" data-testid="map-section">
                         <div class="card-header">
                             <div>
