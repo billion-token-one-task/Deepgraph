@@ -24,6 +24,12 @@ TRANSPORT_CLASS_MARKERS = (
 LANE_MISMATCH_MARKERS = (
     "dependency_install_blocked",
     "experiment_exit_78",
+    # The runner reports a lane without the packages it needs as
+    # "dependency_missing", which is the same event this list was written for
+    # and was never spelled that way here. On 2026-08-26 the aws-g5 host had
+    # torch but no transformers or datasets, and three pilot attempts for
+    # ideas 237/241 were charged to the science budget for it.
+    "dependency_missing",
 )
 
 
