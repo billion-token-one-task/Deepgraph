@@ -1146,13 +1146,17 @@ def _classify_scoped_ingestion(
     return "idle" if worker_running else "stopped"
 
 
+# Both of these live outside the release tree, wherever the operator keeps
+# them. The defaults name a location relative to the deployment rather than a
+# machine: this repository is public, and a checked-in absolute path both
+# describes somebody's filesystem and stops being true on the next host.
 _HARVEST_LOG_PATH = Path(os.getenv(
     "DEEPGRAPH_HARVEST_LOG_PATH",
-    "/home/ec2-user/deepgraph-reports/harvest_log.jsonl",
+    "var/reports/harvest_log.jsonl",
 ))
 _BACKFILL_PROGRESS_PATH = Path(os.getenv(
     "DEEPGRAPH_BACKFILL_PROGRESS_PATH",
-    "/home/ec2-user/ops/deepgraph-paper-backfill/last_progress.txt",
+    "var/backfill/last_progress.txt",
 ))
 _BACKFILL_STALE_SECONDS = 3 * 60 * 60
 

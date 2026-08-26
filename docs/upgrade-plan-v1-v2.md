@@ -38,7 +38,7 @@
    直接回应 "GPU 在烧钱"。执行路径本就按 worker 行 metadata 的 ssh_port 连, 只缺注册环。
    (若想再省, 也可以先只用 32035 的 4 张, 此项挪 V2 -- 默认建议做。)
 6. **观察面落持久盘** (原 P2 原样搬入): observe_agenda_run.py + render 报告挂 timer,
-   JSONL/HTML 落 /home/ec2-user/deepgraph-reports/, 更新 latest.html。
+   JSONL/HTML 落 <REPORTS_DIR>/, 更新 latest.html。
 
 V1 明确容忍的债 (V2 偿还): CPU 分支硬编码模型; 新颖性闸漏 (partially_exists 不拦);
 语料 84 天陈旧; timer 轮询而非事件驱动; 无学习回路; auto_advance.py 本身是脚手架。
