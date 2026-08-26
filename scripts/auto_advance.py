@@ -1146,6 +1146,20 @@ def advance_agenda(
             db.rollback()
             journal.log("decision_refused", agenda_id=agenda_id, idea_id=idea_id,
                         reason=f"{type(exc).__name__}: {exc}")
+            # The waiting queue is ordered by updated_at and the pass takes
+            # only max_new_grants of it. A refusal leaves updated_at untouched,
+            # so the same refused job holds the head of the queue on every
+            # pass and nothing behind it is ever considered -- ideas 237 and
+            # 241 sat sixth and fifth with the best scores in their agendas
+            # while two permanently gate-refused candidates took both slots,
+            # pass after pass. This is also the mechanism behind agenda 14's
+            # candidate resubmitted 44 times. A refusal must yield the slot.
+            db.execute(
+                "UPDATE auto_research_jobs SET updated_at=CURRENT_TIMESTAMP"
+                " WHERE agenda_id=? AND deep_insight_id=?",
+                (agenda_id, idea_id),
+            )
+            db.commit()
             continue
         journal.log("decided", agenda_id=agenda_id, idea_id=idea_id,
                     decision=decision.decision, reason_codes=decision.reason_codes,
