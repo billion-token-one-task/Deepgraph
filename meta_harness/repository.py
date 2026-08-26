@@ -2777,9 +2777,23 @@ class MetaHarnessRepository:
                   AND (
                         stage IN ('proposal', 'evidence_audit')
                         OR (
+                            -- "no run" was the only execution-stage case, on
+                            -- the reasoning that a run means the outcome
+                            -- finalizer will settle the grant. It settles
+                            -- AGAINST a run that produced something. Grants
+                            -- 350/351 held six runs on 2026-08-26, every one
+                            -- terminally failed with no measurement, their
+                            -- forge attempts exhausted and their jobs long
+                            -- since rebound elsewhere: nothing would ever
+                            -- close them, and each pinned its agenda's only
+                            -- concurrency slot for the rest of a 12-hour TTL
+                            -- while the candidate waited to be retried. A run
+                            -- that failed terminally is the same evidential
+                            -- state as no run at all.
                             NOT EXISTS (
                                 SELECT 1 FROM experiment_runs er
                                 WHERE er.resource_grant_id=resource_grants.id
+                                  AND COALESCE(er.status, '') <> 'failed'
                             )
                             AND NOT EXISTS (
                                 SELECT 1 FROM compute_jobs_v1 cj

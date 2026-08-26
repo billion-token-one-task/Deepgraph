@@ -55,7 +55,20 @@ def main() -> int:
         done = MetaHarnessRepository().expire_grant_now(
             args.grant, agenda_id=args.agenda, reason=args.reason
         )
-        print(f"grant {args.grant}: {'expired+reconciled' if done else 'not eligible (must be active proposal-stage)'}")
+        # The stage list stopped being the whole rule when expire_grant_now
+        # widened to execution-stage grants with nothing live attached; an
+        # operator reading "must be proposal-stage" concludes the tool is
+        # wrong for their grant when the API simply found live work.
+        print(
+            f"grant {args.grant}: "
+            + (
+                "expired+reconciled"
+                if done
+                else "not eligible (must be active, and either a proposal or"
+                " evidence_audit grant, or an execution grant with no"
+                " unfinished run, compute job or colab request)"
+            )
+        )
         return 0 if done else 1
 
     if args.cmd == "create":
