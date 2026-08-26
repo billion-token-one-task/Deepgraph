@@ -53,6 +53,7 @@ from meta_harness.failure_policy import measured_nothing  # noqa: E402
 from meta_harness.frontier_authority import FrontierAuthorityRepository  # noqa: E402
 from meta_harness.frontier_bootstrap import run_bootstrap_evaluation  # noqa: E402
 from meta_harness.job_states import RECYCLABLE  # noqa: E402
+from meta_harness import topic_gate_admission  # noqa: E402
 from meta_harness.outcome_finalizer import finalize_terminal_outcomes  # noqa: E402
 from meta_harness.portfolio import decide_portfolio, issue_resource_grant  # noqa: E402
 from meta_harness.preflight_repository import CandidatePreflightRepository  # noqa: E402
@@ -1097,6 +1098,45 @@ def advance_agenda(
         journal.log("no_frontier_packet", agenda_id=agenda_id)
         return
     repo = MetaHarnessRepository()
+    # The promote slot is scarce -- promote_count is 1 per agenda per pass --
+    # and save_decision consults the topic gate only after the portfolio has
+    # already awarded it. A candidate the gate refuses therefore wins the slot,
+    # fails to save, and the slot is spent on nothing, while a candidate that
+    # could proceed is parked with opportunity_cost. On 2026-08-26 ideas 237,
+    # 241 and 255 were parked on every pass in three agendas behind three
+    # candidates the gate refuses deterministically for the same two reasons.
+    # The gate is cheap and deterministic, so ask it before allocating rather
+    # than discovering the answer after the budget is committed.
+    admissible = []
+    for job in waiting:
+        idea_id = int(job["deep_insight_id"])
+        try:
+            gate = topic_gate_admission.evaluate(agenda_id=agenda_id, idea_id=idea_id)
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            # An unreadable gate is not a refusal. Leave save_decision as the
+            # authority so a probe failure cannot silently drop a candidate.
+            journal.log("gate_precheck_failed", agenda_id=agenda_id,
+                        idea_id=idea_id, reason=f"{type(exc).__name__}: {exc}")
+            admissible.append(job)
+            continue
+        if gate.passed:
+            admissible.append(job)
+            continue
+        journal.log("gate_precheck_refused", agenda_id=agenda_id, idea_id=idea_id,
+                    reason_codes=list(gate.reason_codes))
+        # Yield the queue slot as a refused decision would, so the next pass
+        # reaches the candidates behind this one.
+        db.execute(
+            "UPDATE auto_research_jobs SET updated_at=CURRENT_TIMESTAMP"
+            " WHERE agenda_id=? AND deep_insight_id=?",
+            (agenda_id, idea_id),
+        )
+        db.commit()
+    if not admissible:
+        journal.log("no_admissible_jobs", agenda_id=agenda_id,
+                    considered=[int(job["deep_insight_id"]) for job in waiting])
+        return
     try:
         portfolio = decide_portfolio(
             [
@@ -1105,7 +1145,7 @@ def advance_agenda(
                     int(job["deep_insight_id"]),
                     packet_id,
                 )
-                for job in waiting
+                for job in admissible
             ]
         )
     except Exception as exc:
@@ -1113,12 +1153,12 @@ def advance_agenda(
         journal.log(
             "portfolio_refused",
             agenda_id=agenda_id,
-            candidate_ids=[int(job["deep_insight_id"]) for job in waiting],
+            candidate_ids=[int(job["deep_insight_id"]) for job in admissible],
             reason=f"{type(exc).__name__}: {exc}",
         )
         return
     decision_by_idea = {int(item.idea_id): item for item in portfolio}
-    for job in waiting:
+    for job in admissible:
         proposal_pending = str(job.get("insight_status") or "") == "proposal_pending"
         requested_token_cap = (
             int(args.proposal_token_cap)
