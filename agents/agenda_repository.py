@@ -313,9 +313,23 @@ class AgendaRepository:
             WHERE agenda_id=?
               AND COALESCE(status, 'candidate') NOT IN ('exists', 'archived')
               AND COALESCE(outcome, 'pending') NOT IN ('cleaned', 'archived')
+              -- A job hides its candidate because work in flight must not be
+              -- selected twice. "Ever had a job" is not "in flight":
+              -- requeue_withdrawn_candidate parks a candidate whose grant was
+              -- expired or revoked back at awaiting_portfolio_decision
+              -- precisely so a fresh grant can bind to it, and this clause
+              -- made that queue invisible to the only selector that grants
+              -- from it. Ideas 237 and 241 sat there on 2026-08-26 while
+              -- every pass logged select_next_empty. A job parked awaiting a
+              -- portfolio decision holds no authority, so it is a candidate
+              -- waiting to be chosen, not work under way.
               AND NOT EXISTS (
                   SELECT 1 FROM auto_research_jobs arj
                   WHERE arj.deep_insight_id=deep_insights.id
+                    AND NOT (
+                          arj.stage='awaiting_portfolio_decision'
+                          AND arj.resource_grant_id IS NULL
+                    )
               )
             ORDER BY tier DESC, created_at ASC, id ASC
             LIMIT ?
