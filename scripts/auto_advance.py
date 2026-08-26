@@ -2345,6 +2345,19 @@ def retry_deferred_preflights(agenda_id: int, state: dict, journal: Journal, arg
             journal.log("grant_refused", agenda_id=agenda_id, idea_id=idea_id,
                         variant="preflight_retry",
                         reason=f"{type(exc).__name__}: {exc}")
+            # The job was restaged to awaiting_portfolio_decision above so the
+            # grant's binding UPDATE could match it. A refused grant leaves it
+            # there with no authority and outside this loop's queue, which
+            # selects on the deferred stage -- ideas 237 and 241 stranded
+            # exactly so. Put it back where the retry can find it again.
+            _upsert_job(
+                idea_id,
+                status="deferred",
+                stage="capability_preflight_deferred",
+                assigned_worker=None,
+                last_error=f"grant_refused:{type(exc).__name__}",
+                last_note=str(row.get("last_note") or ""),
+            )
             continue
         journal.log("granted", agenda_id=agenda_id, idea_id=idea_id,
                     resource_grant_id=grant_id, variant="preflight_retry",
