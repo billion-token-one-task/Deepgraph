@@ -362,6 +362,12 @@ def recover_stale_local_running_jobs(workers: list[dict] | None = None) -> int:
     return recovered
 
 
+# How long a remote run may go without a process before it counts as dead.
+# Long enough to cover the local LLM turn between hypothesis-test iterations,
+# short enough that a genuinely lost controller is still reclaimed promptly.
+SSH_RUN_LOG_GRACE_SECONDS = 900
+
+
 def _ssh_run_has_live_process(worker: dict, run_id: int) -> bool:
     metadata = {}
     raw_metadata = worker.get("metadata")
@@ -391,7 +397,30 @@ def _ssh_run_has_live_process(worker: dict, run_id: int) -> bool:
         proc = ssh_gpu_backend._run_ssh(worker, cmd, timeout=20)
     except Exception:
         return True
-    return bool((proc.stdout or "").strip())
+    if (proc.stdout or "").strip():
+        return True
+    # No process right now does not mean the run ended. Hypothesis testing
+    # launches a fresh train.py per iteration and does its LLM work locally in
+    # between, so a sweep landing in that gap sees nothing and declares the
+    # controller lost: run 266 was killed that way on 2026-08-26 at iteration
+    # 4 of 4, after 1.44 GPU hours, while it was measuring normally. A log the
+    # remote wrote to seconds ago is a live run whatever the process table
+    # says; only silence on both counts is evidence of death.
+    freshness = "\n".join(
+        [
+            f"remote_run={shlex.quote(remote_run)}",
+            'log="$remote_run/run.log"',
+            '[ -f "$log" ] || exit 1',
+            'now=$(date +%s)',
+            'mtime=$(stat -c %Y "$log" 2>/dev/null || echo 0)',
+            f'[ $((now - mtime)) -le {int(SSH_RUN_LOG_GRACE_SECONDS)} ] && echo alive',
+        ]
+    )
+    try:
+        probe = ssh_gpu_backend._run_ssh(worker, freshness, timeout=20)
+    except Exception:
+        return True
+    return bool((probe.stdout or "").strip())
 
 
 _FALSE_UNBOUND_BLOCKER = "experiment run is not bound to a ResourceGrant"
