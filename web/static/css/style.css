@@ -1071,6 +1071,108 @@ header#topBar {
 .homepage-hierarchy-v2 #overviewGraphSvg .taxonomy-child { cursor: pointer; }
 @media (max-width: 900px) { .homepage-hierarchy-v2 .overview-details .stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .homepage-hierarchy-v2 .overview-details .stat-card:nth-child(5n) { border-right: 1px solid var(--border); } .homepage-hierarchy-v2 .overview-details .stat-card:nth-child(2n) { border-right: 0; } }
 
+/* Phone. Four columns of a track do not survive 390px -- the numbers collide
+   with their own units. The track turns on its side: one vertical line, nodes
+   down the left, each step's content to its right, which is how the same
+   sequence reads in a narrow column. The three source rows stay as they are
+   and are re-ordered here, so there is one DOM for both layouts. */
+@media (max-width: 700px) {
+  .homepage-hierarchy-v2 .hero-chain,
+  .homepage-hierarchy-v2 .latest-trail .chain-row:first-child { }
+  .homepage-hierarchy-v2 .hero-chain,
+  .homepage-hierarchy-v2 .latest-trail-grid { display: grid; grid-template-columns: 11px minmax(0, 1fr); column-gap: 14px; }
+  .homepage-hierarchy-v2 .hero-chain .chain-row,
+  .homepage-hierarchy-v2 .latest-trail-grid .chain-row { display: contents; }
+  .homepage-hierarchy-v2 .hero-chain .chain-track .chain-cell,
+  .homepage-hierarchy-v2 .latest-trail-grid .chain-track .chain-cell { flex-direction: column; grid-row: span 2; align-items: center; }
+  .homepage-hierarchy-v2 .hero-chain .chain-track .chain-link,
+  .homepage-hierarchy-v2 .latest-trail-grid .chain-track .chain-link { flex: 1; width: 1px; height: auto; min-height: 18px; }
+  .homepage-hierarchy-v2 .hero-chain .chain-track .chain-dot,
+  .homepage-hierarchy-v2 .latest-trail-grid .chain-track .chain-dot { margin-top: 5px; }
+  .homepage-hierarchy-v2 .hero-chain .chain-values .chain-cell:nth-child(1),
+  .homepage-hierarchy-v2 .latest-trail-grid .trail-heads .chain-cell:nth-child(1) { order: 2; }
+  .homepage-hierarchy-v2 .hero-chain .chain-track .chain-cell:nth-child(1),
+  .homepage-hierarchy-v2 .latest-trail-grid .chain-track .chain-cell:nth-child(1) { order: 1; }
+  .homepage-hierarchy-v2 .hero-chain .chain-labels .chain-cell:nth-child(1),
+  .homepage-hierarchy-v2 .latest-trail-grid .trail-bodies .chain-cell:nth-child(1) { order: 3; }
+  .homepage-hierarchy-v2 .hero-chain .chain-values .chain-cell:nth-child(2),
+  .homepage-hierarchy-v2 .latest-trail-grid .trail-heads .chain-cell:nth-child(2) { order: 5; }
+  .homepage-hierarchy-v2 .hero-chain .chain-track .chain-cell:nth-child(2),
+  .homepage-hierarchy-v2 .latest-trail-grid .chain-track .chain-cell:nth-child(2) { order: 4; }
+  .homepage-hierarchy-v2 .hero-chain .chain-labels .chain-cell:nth-child(2),
+  .homepage-hierarchy-v2 .latest-trail-grid .trail-bodies .chain-cell:nth-child(2) { order: 6; }
+  .homepage-hierarchy-v2 .hero-chain .chain-values .chain-cell:nth-child(3),
+  .homepage-hierarchy-v2 .latest-trail-grid .trail-heads .chain-cell:nth-child(3) { order: 8; }
+  .homepage-hierarchy-v2 .hero-chain .chain-track .chain-cell:nth-child(3),
+  .homepage-hierarchy-v2 .latest-trail-grid .chain-track .chain-cell:nth-child(3) { order: 7; }
+  .homepage-hierarchy-v2 .hero-chain .chain-labels .chain-cell:nth-child(3),
+  .homepage-hierarchy-v2 .latest-trail-grid .trail-bodies .chain-cell:nth-child(3) { order: 9; }
+  .homepage-hierarchy-v2 .hero-chain .chain-values .chain-cell:nth-child(4),
+  .homepage-hierarchy-v2 .latest-trail-grid .trail-heads .chain-cell:nth-child(4) { order: 11; }
+  .homepage-hierarchy-v2 .hero-chain .chain-track .chain-cell:nth-child(4),
+  .homepage-hierarchy-v2 .latest-trail-grid .chain-track .chain-cell:nth-child(4) { order: 10; grid-row: span 2; }
+  .homepage-hierarchy-v2 .hero-chain .chain-labels .chain-cell:nth-child(4),
+  .homepage-hierarchy-v2 .latest-trail-grid .trail-bodies .chain-cell:nth-child(4) { order: 12; }
+  .homepage-hierarchy-v2 .hero-chain .chain-figure { margin-top: 7px; }
+  .homepage-hierarchy-v2 .hero-chain .chain-labels .chain-cell { padding-bottom: 22px; }
+  .homepage-hierarchy-v2 .hero-chain .chain-action { margin-top: 7px; }
+  .homepage-hierarchy-v2 .latest-trail-grid .trail-bodies .chain-cell { padding-bottom: 20px; }
+  .homepage-hierarchy-v2 .latest-trail-grid .trail-heads .chain-cell { padding-top: 2px; }
+
+  /* The hero stops being a fixed-height stage; the chain follows the copy. */
+  .homepage-hierarchy-v2 .research-hero { height: auto; min-height: 0; padding: 36px 22px 30px; }
+  .homepage-hierarchy-v2 .hero-chain { position: static; margin-top: 32px; padding-top: 24px; }
+  .homepage-hierarchy-v2 .hero-copy { padding-bottom: 0; }
+  .homepage-hierarchy-v2 .hero-actions { flex-direction: column; }
+  .homepage-hierarchy-v2 .hero-actions .hero-cta { min-height: 48px; }
+  /* Crop the office scene rather than shrinking it, and lay a scrim over the
+     lower half so the chain stays readable against a busy, bright tileset.
+     Scaling the whole scene down instead would turn it into noise. */
+  .homepage-hierarchy-v2 .hero-runtime-bg { opacity: .18; filter: saturate(.5) brightness(.55); }
+  /* The desktop scrim runs left-to-right and leaves the right edge bright,
+     which is fine when the copy is a 740px column and wrong when the chain
+     spans the width. This one runs top-to-bottom. It is display:none by
+     default, so the display has to be restored, not just the background. */
+  .homepage-hierarchy-v2 .research-hero::after { display: block; position: absolute; z-index: 1; inset: 0; background: linear-gradient(170deg, rgba(20, 18, 16, .88) 0%, rgba(20, 18, 16, .94) 46%, rgba(20, 18, 16, .97) 100%); content: ""; pointer-events: none; }
+  /* The pill carries a state and a reason; breaking it across lines makes it
+     unreadable, so it keeps one line and the topbar gives it the room. */
+  .homepage-hierarchy-v2 .status-pill { white-space: nowrap; font-size: 11px; }
+
+  .homepage-hierarchy-v2 .latest-conclusion { padding: 32px 22px; }
+  .homepage-hierarchy-v2 .latest-statement { flex-direction: column; gap: 14px; }
+  .homepage-hierarchy-v2 .latest-statement h2 { font-size: 22px; line-height: 1.5; }
+  .homepage-hierarchy-v2 .verdict-pill { align-self: flex-start; margin-top: 0; }
+  .homepage-hierarchy-v2 .latest-trail { margin-top: 28px; padding-top: 22px; }
+
+  .homepage-hierarchy-v2 .research-map-section { padding: 0 22px 28px; }
+  .homepage-hierarchy-v2 .map-bar { flex-direction: column; align-items: stretch; gap: 16px; padding: 20px; }
+  .homepage-hierarchy-v2 .btn-expand { justify-content: center; min-height: 48px; }
+  .homepage-hierarchy-v2 .map-layout { flex-direction: column; gap: 24px; }
+  .homepage-hierarchy-v2 .map-canvas-panel { width: 100%; }
+  /* Four columns of small numbers are unreadable at this width; the map keeps
+     the shape and the full table stays behind "open map". */
+  .homepage-hierarchy-v2 .map-table-panel { display: none; }
+  .homepage-hierarchy-v2 .full-counts-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 20px; }
+  .homepage-hierarchy-v2 .btn-collapse { min-height: 44px; }
+
+  /* Touch targets. 44px is the floor, and the only way to hit it without
+     re-laying-out the chrome is to give the small controls a minimum height
+     and let the two-row topbar absorb it. */
+  .homepage-hierarchy-v2 .latest-head .btn-link,
+  .homepage-hierarchy-v2 .trail-link,
+  .homepage-hierarchy-v2 .map-legend .btn-link,
+  .homepage-hierarchy-v2 .sidebar-toggle,
+  .homepage-hierarchy-v2 .lang-btn,
+  .homepage-hierarchy-v2 .status-pill,
+  .homepage-hierarchy-v2 .nav-item { min-height: 44px; }
+  .homepage-hierarchy-v2 .sidebar-toggle,
+  .homepage-hierarchy-v2 .lang-btn { display: inline-flex; align-items: center; justify-content: center; }
+  /* The topbar counters repeated papers, ideas, verdicts and runs -- the exact
+     four figures the hero chain now shows. On a phone they are duplication in
+     the most expensive place on the page. */
+  .homepage-hierarchy-v2 .topbar-stats { display: none; }
+}
+
 /* ── 2026-08-23 release candidate: approved scale-first hierarchy ── */
 
 .candidate-badge {

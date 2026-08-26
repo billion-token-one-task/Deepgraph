@@ -917,9 +917,6 @@ function startSSE() {
     };
 }
 
-let pipelineState = 'unknown';
-let staleProcessingCount = null;
-let processingSnapshot = null;
 
 function updateLiveBadge() {
     updateStatusPill();
@@ -947,28 +944,35 @@ function trackPaperEvent(ev) {
     renderProcessingList();
 }
 
+// The office scene, driven by the activity snapshot alone.
+//
+// It used to read /api/processing on load and every three seconds after, which
+// is the endpoint carrying scheduler tuning, grant bookkeeping and controller
+// counters. The scene only ever needed which departments are busy and what
+// they are holding, and /api/agent_office answers exactly that -- so the
+// public page no longer touches the operational endpoint at all. That is what
+// lets access to it be closed without the front page erroring.
 async function loadProcessingPapers() {
     try {
-        const [data, office] = await Promise.all([api("/api/processing"), api("/api/agent_office").catch(() => null)]);
-        if (data.contract_version !== 'processing-status-v3') {
-            throw new Error('processing-status-v3 contract is required');
+        const office = await api("/api/agent_office");
+        if (!office || !Array.isArray(office.departments)) return;
+        agentOfficeData = office;
+
+        const rows = [];
+        for (const department of office.departments) {
+            for (const item of (department.items || [])) {
+                if (item.kind !== 'paper') continue;
+                // `detail` is "<paper id> | <stage>"; the id is the stable key.
+                const id = String(item.detail || item.title || '').split('|')[0].trim();
+                if (id) rows.push({ id, title: item.title || id, status: item.status || 'processing' });
+            }
         }
-        if (office && Array.isArray(office.departments)) agentOfficeData = office;
-        const rows = Array.isArray(data.papers) ? data.papers : [];
-        const researchRuntime = data.research_runtime || {};
-        const legacyIngestion = data.legacy_paper_ingestion || {};
-        processingSnapshot = data;
-        pipelineState = researchRuntime.state || data.pipeline_state || 'error';
-        staleProcessingCount = legacyIngestion.available === false
-            ? null
-            : (legacyIngestion.stale_processing_count ?? data.stale_processing_count ?? null);
-        setText('statStaleProcessing', zeroSafeValue(staleProcessingCount));
 
         for (const r of rows) {
             const isDone = r.status === 'reasoned' || r.status === 'error';
             if (!activePapers[r.id]) {
                 activePapers[r.id] = {
-                    title: r.title || r.id,
+                    title: r.title,
                     step: isDone ? (r.status === 'error' ? 'error' : 'done') : (r.status || 'processing'),
                     startTime: Date.now(),
                     done: isDone,
@@ -982,7 +986,8 @@ async function loadProcessingPapers() {
                 activePapers[r.id].step = r.status || 'processing';
             }
         }
-        // Remove papers no longer in the API response and already done for > 10s
+        // Drop papers the snapshot no longer lists once they have been shown
+        // as finished for long enough to read.
         const activeIds = new Set(rows.map(r => r.id));
         const now = Date.now();
         for (const [pid, info] of Object.entries(activePapers)) {
@@ -995,19 +1000,9 @@ async function loadProcessingPapers() {
             }
         }
         renderProcessingList();
-        const summary = agentOfficeData && agentOfficeData.summary;
-        if (summary) {
-            setText('runtimeStageSummary', tr('office.countSummary', '{working} active stages / {modules} runtime modules')
-                .replace('{working}', fmt(summary.working || 0))
-                .replace('{modules}', fmt(summary.sub_agents || 0)));
-        }
         renderRuntimeStageStates(officeSnapshot());
-        updateLiveBadge();
     } catch (e) {
-        processingSnapshot = null;
-        pipelineState = 'error';
-        staleProcessingCount = null;
-        setText('statStaleProcessing', '—');
+        console.error('Activity snapshot failed:', e);
     }
 }
 
@@ -4744,8 +4739,11 @@ function init() {
     // Stats refresh every 15s
     statsTimer = setInterval(() => { refreshStats(); loadHomepage(); }, 15000);
 
-    // Processing panel refresh every 3s (also fetches from API)
-    setInterval(loadProcessingPapers, 3000);
+    // The office scene animates continuously; only its underlying snapshot has
+    // to be refetched, and departments do not change state twenty times a
+    // minute. Three seconds was a cost paid by every open tab for motion the
+    // page produces on its own.
+    setInterval(loadProcessingPapers, 15000);
 
 
     // Historical idea and experiment payloads are large and do not need to be

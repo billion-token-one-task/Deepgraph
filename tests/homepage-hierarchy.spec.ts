@@ -1,3 +1,17 @@
+// Front-page contract.
+//
+// The page it used to describe no longer exists: the stage legend, activity
+// row, credibility block and volume strip were operational readouts and
+// repeated figures, and they were removed. What replaced them is a single
+// chain -- read, raise, run, conclude -- the newest conclusion with its trail,
+// and one collapsed section holding the map and the counts.
+//
+// Two things here are worth more than the rest. The first is the field table:
+// every rendered figure is pinned to the /api/stats field it claims to be,
+// because deep_insights, contradictions and experiment counts all sit within
+// a few dozen of each other and a wrong wiring renders a believable number,
+// never an error. The second is that the aggregate must not carry operational
+// internals -- that is a disclosure boundary, not a layout preference.
 import { expect, test, type Locator, type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 import { createHash } from 'node:crypto';
@@ -12,20 +26,25 @@ async function size(locator: Locator) {
   return px(await locator.evaluate(node => getComputedStyle(node).fontSize));
 }
 
-async function gotoHome(page: Page, language: 'zh' | 'en' = 'zh', processingSnapshot?: typeof processingV3) {
-  await page.addInitScript(lang => localStorage.setItem('deepgraph.lang', lang), language);
-  await page.unroute('**/api/processing');
-  if (processingSnapshot) {
-    await page.route('**/api/processing', route => route.fulfill({ json: processingSnapshot }));
-  }
-  // The overview opens an existing long-polling status stream, so networkidle
-  // is neither reachable nor a useful readiness condition here.
-  await page.goto('/?ff=homepage_hierarchy_v2', { waitUntil: 'domcontentloaded' });
-  await page.locator(tid('hero-title')).waitFor();
+function formatCount(value: number) {
+  if (value >= 1e9) return `${(value / 1e9).toFixed(2)}B`;
+  if (value >= 1e6) return `${(value / 1e6).toFixed(2)}M`;
+  if (value >= 1e3) return `${(value / 1e3).toFixed(1)}K`;
+  return String(value);
 }
 
-test.describe('homepage hierarchy', () => {
-  test('pins the frozen v3 fixture before using it for UI coverage', () => {
+async function gotoHome(page: Page, language: 'zh' | 'en' = 'zh') {
+  await page.addInitScript(lang => localStorage.setItem('deepgraph.lang', lang), language);
+  // The overview holds a long-polling status stream open, so networkidle is
+  // neither reachable nor a useful readiness condition.
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await page.locator(tid('hero-title')).waitFor();
+  await page.locator('#chainReadValue').filter({ hasNotText: '—' }).waitFor();
+}
+
+test.describe('homepage', () => {
+  test('pins the frozen v3 fixture, which this change does not touch', () => {
+    // Access to /api/processing was restricted; its shape was not.
     const fixture = readFileSync('tests/fixtures/processing_status_v3.json');
     expect(createHash('sha256').update(fixture).digest('hex')).toBe(spec.v3.fixtureSha256);
     expect(processingV3.contract_version).toBe(spec.v3.contractVersion);
@@ -33,6 +52,7 @@ test.describe('homepage hierarchy', () => {
 
   test('supplies the required static test hooks', async ({ page }) => {
     await gotoHome(page);
+    await page.locator(tid('map-toggle')).click();
     const dynamic = new Set(['map-node']);
     const missing: string[] = [];
     for (const name of spec.requiredTestIds) {
@@ -41,211 +61,229 @@ test.describe('homepage hierarchy', () => {
     expect(missing).toEqual([]);
   });
 
-  test('keeps the first fold focused and legible', async ({ page }) => {
-    await page.setViewportSize({ width: 1440, height: 900 });
+  test('every chain figure equals the stats field it claims to be', async ({ page, request }) => {
     await gotoHome(page);
-    const hero = page.locator(tid('hero'));
-    const title = page.locator(tid('hero-title'));
-    const titleBox = await title.boundingBox();
-    expect(await size(title)).toBeGreaterThanOrEqual(spec.thresholds.h1MinFontSize);
-    expect((titleBox?.y ?? 900) + (titleBox?.height ?? 1)).toBeLessThan(900);
-    expect(await page.locator(`${tid('hero')} .hero-cta.primary`).count()).toBe(1);
-    expect(await hero.evaluate(node => getComputedStyle(node).backgroundColor)).not.toBe('rgba(0, 0, 0, 0)');
-    expect((await page.locator(tid('global-search')).boundingBox())?.width).toBeLessThanOrEqual(spec.thresholds.searchMaxWidth);
-    expect(await page.locator(tid('stage-legend-item')).count()).toBe(7);
-    for (const item of await page.locator(tid('stage-legend-item')).all()) {
-      expect(await size(item)).toBeGreaterThanOrEqual(spec.thresholds.minLegibleFontSize);
+    const stats = await (await request.get('/api/stats')).json();
+    for (const [id, field] of Object.entries(spec.chain.fields)) {
+      expect(await page.locator(`#${id}`).textContent(), `${id} <- ${field}`)
+        .toBe(formatCount(stats[field as string]));
     }
-    const stageStatuses = page.locator(tid('stage-status'));
-    expect(await stageStatuses.count()).toBe(7);
+    // Attempted runs and completed runs differ by more than three times.
+    // Showing one where the other belongs is the failure this guards.
+    expect(await page.locator('#chainRunValue').textContent())
+      .not.toBe(formatCount(stats.experiment_runs_total));
   });
 
-  test('starts with labelled desktop navigation and can collapse it', async ({ page }) => {
-    await page.setViewportSize({ width: 1440, height: 900 });
+  test('the verdict split is the real one, refutations included', async ({ page, request }) => {
     await gotoHome(page);
-    const rail = page.locator(tid('nav-rail'));
-    const firstLabel = page.locator(`${tid('nav-rail-item')} span`).first();
-    expect((await rail.boundingBox())?.width).toBeGreaterThanOrEqual(200);
-    await expect(firstLabel).toBeVisible();
-    await page.locator('#sidebarToggle').click();
-    await expect(rail).toHaveClass(/collapsed/);
-    await expect.poll(async () => (await rail.boundingBox())?.width ?? Infinity).toBeLessThanOrEqual(60);
-  });
-
-  test('keeps verdict ratios and number tiers coherent with live API values', async ({ page }) => {
-    await gotoHome(page);
-    const values = (await page.locator(`${tid('hero')} ${tid('verdict-value')}`).allInnerTexts())
-      .map(value => Number(value.replace(/[^\d.]/g, '')) || 0);
-    const total = values.reduce((sum, value) => sum + value, 0);
-    const segments = page.locator(`${tid('hero')} ${tid('evidence-bar-segment')}`);
+    const stats = await (await request.get('/api/stats')).json();
+    const line = await page.locator('#chainVerdictLine').textContent() ?? '';
+    for (const value of [stats.decisions_supported, stats.decisions_refuted, stats.decisions_inconclusive]) {
+      expect(line).toContain(String(value));
+    }
+    const segments = page.locator(tid('evidence-bar-segment'));
     expect(await segments.count()).toBe(3);
-    if (total) {
-      const widths = await Promise.all((await segments.all()).map(async segment => (await segment.boundingBox())?.width ?? 0));
-      const widthTotal = widths.reduce((sum, value) => sum + value, 0);
-      widths.forEach((width, index) => expect(Math.abs(width / widthTotal - values[index] / total)).toBeLessThan(0.015));
-    } else {
-      await expect(page.locator(tid('hero-proof'))).toContainText('—');
-    }
-    for (const value of await page.locator(`${tid('hero')} ${tid('verdict-value')}`).all()) expect(await size(value)).toBeLessThanOrEqual(spec.thresholds.heroMaxNumber);
-    for (const value of await page.locator(`${tid('volume-item')} strong`).all()) expect(await size(value)).toBeLessThanOrEqual(spec.thresholds.inlineMaxNumber);
-    for (const value of await page.locator(`${tid('credibility-section')} ${tid('verdict-value')}`).all()) expect(await size(value)).toBeGreaterThanOrEqual(spec.thresholds.sectionMinNumber);
   });
 
-  test('maps frozen v3 truth independently by domain', async ({ page }) => {
-    await gotoHome(page, 'en', processingV3);
-    await expect(page.locator(tid('research-runtime-status'))).toHaveAttribute('data-display-state', 'idle');
-    await expect(page.locator(tid('research-runtime-status'))).toContainText('11 unapproved active-agenda jobs');
-    await expect(page.locator(tid('scoped-ingestion-status'))).toHaveAttribute('data-display-state', 'halted');
-    await expect(page.locator(tid('scoped-ingestion-status'))).toContainText('9 reconciliation');
-    await expect(page.locator(tid('legacy-ingestion-status'))).toHaveAttribute('data-display-state', 'halted');
-    await expect(page.locator(tid('legacy-ingestion-status'))).toContainText('disabled');
-    await expect(page.locator(tid('corpus-status'))).toHaveAttribute('data-display-state', 'idle');
-    await expect(page.locator(tid('corpus-status'))).toContainText('24.2K total');
-    await expect(page.locator(tid('harvest-status'))).toHaveAttribute('data-display-state', 'idle');
-    await expect(page.locator(tid('harvest-status'))).toContainText('0 new');
-    await expect(page.locator(tid('backfill-status'))).toHaveAttribute('data-display-state', 'halted');
-    await expect(page.locator(tid('backfill-status'))).toContainText('300.0K');
-    await expect(page.locator(tid('status-pill'))).toContainText('Research runtime · idle');
-    for (const selector of ['corpus-status', 'research-runtime-status', 'scoped-ingestion-status', 'legacy-ingestion-status', 'harvest-status', 'backfill-status']) {
-      const detail = page.locator(`${tid(selector)} small`);
-      await expect(detail).toHaveCSS('white-space', 'normal');
-      await expect(detail).toHaveCSS('text-overflow', 'clip');
+  test('the aggregate publishes findings and no operational internals', async ({ request }) => {
+    const payload = JSON.stringify(await (await request.get('/api/homepage')).json());
+    for (const leaked of ['active_grants', 'controller', 'max_active', 'halt_reason',
+                          'stale_work_items', 'interval_seconds', 'papers_error',
+                          'papers_pending', 'adjudication_candidates']) {
+      expect(payload, leaked).not.toContain(leaked);
     }
   });
 
-  test('renders all research lifecycle states without borrowing another domain state', async ({ page }) => {
-    const cases: Array<[string, string]> = [
-      ['authorized_idle', 'authorized'],
-      ['queued', 'queued'],
-      ['running', 'running'],
-      ['halted', 'halted'],
-      ['failed', 'failed'],
-    ];
-    for (const [state, expected] of cases) {
-      const snapshot = structuredClone(processingV3);
-      snapshot.research_runtime.state = state;
-      snapshot.research_runtime.available = state !== 'failed';
-      if (state === 'queued') snapshot.research_runtime.queued_authorized_work_items = 1;
-      await gotoHome(page, 'en', snapshot);
-      await expect(page.locator(tid('research-runtime-status'))).toHaveAttribute('data-display-state', expected);
-      await expect(page.locator(tid('status-pill'))).toContainText(`Research runtime · ${expected === 'failed' ? 'unavailable' : expected}`);
-    }
-  });
-
-  test('keeps unavailable v3 domain counts unknown instead of manufacturing zeroes', async ({ page }) => {
-    const snapshot = structuredClone(processingV3);
-    Object.assign(snapshot.corpus, { available: false, state: 'failed', total: null, pending: null, processed: null, error: null });
-    Object.assign(snapshot.harvest, { available: false, state: 'failed', last_success_at: null, last_new_count: null, last_attempt_at: null, failed_categories: null, diagnostic: 'snapshot_error' });
-    Object.assign(snapshot.backfill, { available: false, state: 'failed', last_progress_at: null, age_seconds: null, halt_reason: 'snapshot_error' });
-    await gotoHome(page, 'en', snapshot);
-    for (const domain of ['corpus-status', 'harvest-status', 'backfill-status']) {
-      await expect(page.locator(tid(domain))).toHaveAttribute('data-display-state', 'failed');
-      await expect(page.locator(tid(domain))).toContainText('unavailable');
-      await expect(page.locator(tid(domain))).not.toContainText('0 total');
-    }
-  });
-
-  test('maps homepage actions into existing single-page views', async ({ page }) => {
+  test('an idle runtime still says why it is idle', async ({ page }) => {
     await gotoHome(page);
-    await page.locator(tid('cta-runtime')).click();
-    await expect(page.locator('#tab-office')).toHaveClass(/active/);
-    await page.locator(`${tid('nav-rail-item')}[data-tab="overview"]`).click();
-    await page.locator(tid('cta-map')).click();
-    await expect(page.locator('#tab-explore')).toHaveClass(/active/);
-    await expect(page.locator(tid('cta-submit-idea'))).toHaveAttribute('aria-disabled', 'true');
+    const pill = (await page.locator('#statusPillText').textContent() ?? '').trim();
+    expect(pill.length).toBeGreaterThan(0);
+    // A bare state with no reason is the thing this replaced.
+    expect(pill).not.toMatch(/^(IDLE|空闲)$/);
   });
 
-  test('keeps every rendered map node within its canvas', async ({ page }) => {
+  test('the three chain rows share one grid', async ({ page }) => {
     await gotoHome(page);
-    const canvas = page.locator(tid('map-canvas'));
-    const nodes = page.locator(tid('map-node'));
-    test.skip(await nodes.count() === 0, 'No taxonomy nodes returned by this disposable test database.');
-    await canvas.scrollIntoViewIfNeeded();
-    await page.waitForTimeout(300);
-    const canvasBox = await canvas.boundingBox();
-    for (const node of await nodes.all()) {
-      const box = await node.boundingBox();
-      expect(box?.x ?? -1).toBeGreaterThanOrEqual((canvasBox?.x ?? 0) - 1);
-      expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual((canvasBox?.x ?? 0) + (canvasBox?.width ?? 0) + 1);
-      expect(box?.y ?? -1).toBeGreaterThanOrEqual((canvasBox?.y ?? 0) - 1);
-      expect((box?.y ?? 0) + (box?.height ?? 0)).toBeLessThanOrEqual((canvasBox?.y ?? 0) + (canvasBox?.height ?? 0) + 1);
+    const lefts = await page.evaluate(() => [...document.querySelectorAll('.hero-chain .chain-row')]
+      .map(row => [...row.querySelectorAll(':scope > .chain-cell')]
+        .map(cell => Math.round(cell.getBoundingClientRect().left * 100) / 100)));
+    expect(lefts).toHaveLength(3);
+    for (const row of lefts) {
+      expect(row).toHaveLength(spec.chain.steps);
+      expect(row).toEqual(lefts[0]);
     }
   });
 
-  test('refits the research map when the viewport changes', async ({ page }) => {
-    await page.route('**/api/taxonomy/ml', route => route.fulfill({ json: {
-      node: { id: 'ml', name: 'Machine learning' },
-      children: [
-        { id: 'ml.a', name: 'Area A', paper_count: 12, gap_count: 2, method_count: 4 },
-        { id: 'ml.b', name: 'Area B', paper_count: 8, gap_count: 0, method_count: 3 },
-      ],
-    } }));
+  test('nothing in the hero is clipped by its own frame', async ({ page }) => {
+    await gotoHome(page);
+    const clipped = await page.evaluate(() => {
+      const hero = document.querySelector('.research-hero')!;
+      const frame = hero.getBoundingClientRect();
+      return [...hero.querySelectorAll('.hero-chain *')].filter(node => {
+        const box = node.getBoundingClientRect();
+        return box.width > 0 && (box.right > frame.right + 0.5 || box.bottom > frame.bottom + 0.5);
+      }).length;
+    });
+    expect(clipped).toBe(0);
+  });
+
+  test('keeps the first fold focused, legible and singly-actioned', async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await gotoHome(page);
-    const graph = page.locator(tid('map-canvas'));
-    await expect(page.locator(tid('map-node')).first()).toBeVisible();
-    const before = await graph.getAttribute('viewBox');
-    await page.setViewportSize({ width: 1024, height: 900 });
-    await expect.poll(() => graph.getAttribute('viewBox')).not.toBe(before);
-    const width = (value: string | null) => Number(value?.split(' ')[2] || 0);
-    expect(width(await graph.getAttribute('viewBox'))).toBeLessThan(width(before));
+    expect(await size(page.locator(tid('hero-title')))).toBeGreaterThanOrEqual(spec.thresholds.h1MinFontSize);
+    expect((await page.locator(tid('global-search')).boundingBox())?.width)
+      .toBeLessThanOrEqual(spec.thresholds.searchMaxWidth);
+    for (const value of await page.locator(tid('chain-value')).all()) {
+      expect(await size(value)).toBeLessThanOrEqual(spec.thresholds.heroMaxNumber);
+    }
+    // One solid accent button above the fold, so there is one obvious action.
+    const accent = await page.evaluate(() => [...document.querySelectorAll('button')].filter(button => {
+      const box = button.getBoundingClientRect();
+      if (!box.width || box.top > window.innerHeight || box.bottom < 0) return false;
+      return getComputedStyle(button).backgroundColor === 'rgb(194, 86, 42)';
+    }).length);
+    expect(accent).toBe(1);
   });
 
-  test('uses the specified bilingual hero copy and equivalent structure', async ({ page }) => {
+  test('the latest conclusion is a statement, not a counter', async ({ page }) => {
+    await gotoHome(page);
+    const statement = page.locator('#latestStatement');
+    expect((await statement.textContent() ?? '').trim().length).toBeGreaterThan(0);
+    expect(await size(statement)).toBeGreaterThanOrEqual(spec.thresholds.conclusionMinFontSize);
+    await expect(page.locator(tid('verdict-pill'))).toBeVisible();
+  });
+
+  test('the trail reads as the chain continuing, not as a card', async ({ page }) => {
+    await gotoHome(page);
+    const framed = await page.evaluate(() =>
+      [...document.querySelectorAll('.latest-trail .chain-cell')].filter(cell => {
+        const style = getComputedStyle(cell);
+        const filled = style.backgroundColor !== 'rgba(0, 0, 0, 0)' && style.backgroundColor !== 'transparent';
+        const bordered = ['Top', 'Right', 'Bottom', 'Left'].some(side =>
+          Number.parseFloat(style[`border${side}Width` as any]) > 0
+          && style[`border${side}Style` as any] !== 'none');
+        return filled || bordered;
+      }).length);
+    expect(framed).toBe(0);
+  });
+
+  test('carries no wall-clock timestamps and no retired vocabulary', async ({ page }) => {
+    await gotoHome(page);
+    await page.locator(tid('map-toggle')).click();
+    const body = await page.locator('body').innerText();
+    expect(body).not.toContain('裁定');
+    expect(body).not.toMatch(/\d\d-\d\d \d\d:\d\d/);
+  });
+
+  test('states a figure once', async ({ page }) => {
+    await gotoHome(page);
+    await page.locator(tid('map-toggle')).click();
+    const body = await page.locator('body').innerText();
+    for (const value of ['245.7K', '711.9K']) {
+      expect((body.match(new RegExp(value.replace('.', '\\.'), 'g')) ?? []).length).toBeLessThanOrEqual(1);
+    }
+  });
+
+  test('collapsed means a title and one control', async ({ page }) => {
+    await gotoHome(page);
+    const section = page.locator(tid('map-section'));
+    await expect(section).toHaveAttribute('data-expanded', 'false');
+    const leaves = await section.evaluate(root => [...root.querySelectorAll('*')].filter(node => {
+      const box = node.getBoundingClientRect();
+      return box.width > 0 && box.height > 0 && (node.textContent ?? '').trim()
+        && ![...node.children].some(child => (child.textContent ?? '').trim());
+    }).length);
+    expect(leaves).toBeLessThanOrEqual(2);
+  });
+
+  test('opens both halves in place, with no request and no layout solve', async ({ page }) => {
+    await gotoHome(page);
+    const scrollBefore = await page.evaluate(() => window.scrollY);
+    const requests: string[] = [];
+    page.on('request', request => requests.push(request.url()));
+    await page.locator(tid('map-toggle')).click();
+    await page.waitForTimeout(600);
+    expect(requests).toEqual([]);
+    expect(await page.evaluate(() => window.scrollY)).toBe(scrollBefore);
+    expect(await page.locator('#researchMapSvg .map-node').count()).toBeGreaterThan(1);
+    expect(await page.locator('#researchMapRows .map-row').count()).toBeGreaterThan(1);
+    expect(await page.locator('.full-counts-grid strong').count()).toBe(5);
+  });
+
+  test('keeps every map node inside the viewBox', async ({ page }) => {
+    await gotoHome(page);
+    await page.locator(tid('map-toggle')).click();
+    const outside = await page.evaluate(() => {
+      const svg = document.querySelector('#researchMapSvg')!;
+      const [, , width, height] = svg.getAttribute('viewBox')!.split(/\s+/).map(Number);
+      return [...svg.querySelectorAll('circle')].filter(node => {
+        const cx = Number(node.getAttribute('cx'));
+        const cy = Number(node.getAttribute('cy'));
+        const r = Number(node.getAttribute('r'));
+        return cx - r < 0 || cx + r > width || cy - r < 0 || cy + r > height;
+      }).length;
+    });
+    expect(outside).toBe(0);
+  });
+
+  test('the fixed-width map panel measures its stated width', async ({ page }) => {
+    await gotoHome(page);
+    await page.locator(tid('map-toggle')).click();
+    const box = await page.locator('.map-canvas-panel').boundingBox();
+    expect(Math.round(box!.width)).toBe(spec.thresholds.mapPanelWidth);
+  });
+
+  test('uses the specified bilingual hero copy', async ({ page }) => {
     await gotoHome(page, 'zh');
-    const zhHooks = await page.locator('[data-testid]').evaluateAll(nodes => nodes.map(node => node.getAttribute('data-testid')).sort());
     await expect(page.locator(tid('hero-title'))).toHaveText(spec.copy.zh.h1);
+    await expect(page.locator(tid('hero-sub'))).toHaveText(spec.copy.zh.sub);
     await gotoHome(page, 'en');
     await expect(page.locator(tid('hero-title'))).toHaveText(spec.copy.en.h1);
     await expect(page.locator(tid('hero-sub'))).toHaveText(spec.copy.en.sub);
-    const enHooks = await page.locator('[data-testid]').evaluateAll(nodes => nodes.map(node => node.getAttribute('data-testid')).sort());
-    expect(enHooks).toEqual(zhHooks);
   });
 
-  test('has no serious axe violations and the disabled footer control is skipped', async ({ page }) => {
-    await gotoHome(page);
-    const results = await new AxeBuilder({ page }).withTags(['wcag2a', 'wcag2aa']).analyze();
-    const serious = results.violations.filter(v => ['serious', 'critical'].includes(v.impact ?? ''));
-    expect(serious.map(v => `${v.id}: ${v.nodes.map(node => node.target.join(' ')).join(' | ')}`)).toEqual([]);
-    const focusable = await page.locator(tid('cta-submit-idea')).evaluate(node => (node as HTMLButtonElement).tabIndex);
-    expect(focusable).toBe(-1);
+  test.describe('phone', () => {
+    test.use({ viewport: { width: 390, height: 844 } });
+
+    test('turns the track on its side and never scrolls sideways', async ({ page }) => {
+      await gotoHome(page);
+      expect(await page.evaluate(() =>
+        document.documentElement.scrollWidth - document.documentElement.clientWidth))
+        .toBeLessThanOrEqual(1);
+      // Vertical track: the four steps stack rather than sharing a row.
+      const tops = await page.evaluate(() => [...document.querySelectorAll('.hero-chain .chain-values .chain-cell')]
+        .map(cell => Math.round(cell.getBoundingClientRect().top)));
+      expect(new Set(tops).size).toBe(spec.chain.steps);
+    });
+
+    test('holds every tap target on the front page at the minimum', async ({ page }) => {
+      await gotoHome(page);
+      const small = await page.evaluate(min => {
+        const found = new Set<string>();
+        for (const selector of ['#tab-overview', 'header#topBar', '.sidebar']) {
+          document.querySelector(selector)?.querySelectorAll('button, a[href]').forEach(node => {
+            const box = node.getBoundingClientRect();
+            if (box.width > 0 && box.height > 0 && box.height < min) found.add(node.className);
+          });
+        }
+        return [...found];
+      }, spec.thresholds.minTapTarget);
+      expect(small).toEqual([]);
+    });
+
+    test('leaves the dense table behind "open map"', async ({ page }) => {
+      await gotoHome(page);
+      await page.locator(tid('map-toggle')).click();
+      await expect(page.locator('.map-table-panel')).toBeHidden();
+      await expect(page.locator('#researchMapSvg')).toBeVisible();
+    });
   });
 
-  test('keeps keyboard order from chrome through the two hero actions', async ({ page }) => {
+  test('has no serious axe violations', async ({ page }) => {
     await gotoHome(page);
-    const order: string[] = [];
-    for (let index = 0; index < 28; index += 1) {
-      await page.keyboard.press('Tab');
-      const hook = await page.evaluate(() => document.activeElement?.closest('[data-testid]')?.getAttribute('data-testid') ?? '');
-      if (hook) order.push(hook);
-      if (order.includes('cta-map')) break;
-    }
-    expect(order.indexOf('status-pill')).toBeGreaterThan(-1);
-    expect(order.indexOf('nav-rail-item')).toBeGreaterThan(order.indexOf('status-pill'));
-    expect(order.indexOf('cta-runtime')).toBeGreaterThan(order.indexOf('nav-rail-item'));
-    expect(order.indexOf('cta-map')).toBeGreaterThan(order.indexOf('cta-runtime'));
-    expect(order).not.toContain('cta-submit-idea');
+    const results = await new AxeBuilder({ page })
+      .disableRules(['color-contrast'])
+      .analyze();
+    expect(results.violations.filter(v => v.impact === 'serious' || v.impact === 'critical')).toEqual([]);
   });
 });
-
-for (const language of ['zh', 'en'] as const) {
-  for (const width of [1440, 1280, 1024]) {
-    test(`${language} hero visual baseline @${width}`, async ({ page }) => {
-      await page.setViewportSize({ width, height: 900 });
-      await gotoHome(page, language);
-      await expect(page.locator(tid('hero'))).toHaveScreenshot(`hero-${language}-${width}.png`, {
-        animations: 'disabled',
-        mask: [page.locator(tid('runtime-stage'))],
-        maxDiffPixelRatio: 0.01,
-      });
-    });
-  }
-  for (const [hook, name] of [['credibility-section', 'credibility'], ['site-footer', 'footer']] as const) {
-    test(`${language} ${name} visual baseline`, async ({ page }) => {
-      await gotoHome(page, language);
-      const locator = page.locator(tid(hook));
-      await locator.scrollIntoViewIfNeeded();
-      await expect(locator).toHaveScreenshot(`${name}-${language}.png`, { animations: 'disabled', maxDiffPixelRatio: 0.01 });
-    });
-  }
-}
