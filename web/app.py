@@ -1975,6 +1975,21 @@ def _load_experiment_groups(
     return groups
 
 
+# Node positions are static by design (see scripts/build_research_map_layout.py)
+# and a few hundred bytes, so they are inlined into the first response. That is
+# what makes expanding the map cost nothing: no request, no layout solve.
+def _load_map_layout() -> dict:
+    layout_path = Path(__file__).resolve().parent / "static" / "data" / "research-map-layout.json"
+    try:
+        return json.loads(layout_path.read_text(encoding="utf-8"))
+    except Exception:
+        app.logger.exception("research map layout unreadable")
+        return {}
+
+
+MAP_LAYOUT = _load_map_layout()
+
+
 @app.route("/")
 def index():
     return render_template(
@@ -1984,6 +1999,7 @@ def index():
         root_node_id=ROOT_NODE_ID,
         profile=PROFILE,
         asset_version=ASSET_VERSION,
+        map_layout=MAP_LAYOUT,
     )
 
 

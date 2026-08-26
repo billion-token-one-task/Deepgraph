@@ -865,6 +865,50 @@ header#topBar {
 .homepage-hierarchy-v2 .section-kicker, .homepage-hierarchy-v2 .credibility-copy > span { color: #8a8377; font-size: 11.5px; letter-spacing: .18em; }
 .homepage-hierarchy-v2 .research-hero h1 { max-width: 820px; margin: 18px 0 0; color: #fbf8f3; font-family: var(--font-serif); font-size: 46px; font-weight: 700; line-height: 1.18; letter-spacing: -.015em; }
 .homepage-hierarchy-v2 .research-hero .hero-sub { max-width: 640px; margin-top: 16px; color: #b7b0a4; font-size: 17px; line-height: 1.72; }
+/* Research map and full counts. Collapsed is the default and collapsed shows
+   one control -- teaser figures here would repeat the hero and re-create the
+   duplication this layout exists to remove. */
+.homepage-hierarchy-v2 .research-map-section { padding: 0 52px 44px; }
+.homepage-hierarchy-v2 .map-bar { display: flex; align-items: center; gap: 24px; padding: 22px 28px; border: 1px solid var(--border, #ddd6c9); border-radius: 12px; background: var(--surface-2, #fffdf9); }
+.homepage-hierarchy-v2 .map-bar-title { flex: 1; min-width: 0; margin: 0; font-size: 19px; font-weight: 700; color: var(--ink, #1c1917); }
+.homepage-hierarchy-v2 .btn-expand { display: flex; flex: none; align-items: center; gap: 10px; min-height: 44px; padding: 12px 20px; border: 0; border-radius: 6px; background: var(--accent, #c2562a); font: inherit; font-size: 14.5px; font-weight: 500; color: #fff8f2; cursor: pointer; }
+.homepage-hierarchy-v2 .btn-expand i { width: 0; height: 0; border-top: 6px solid #fff8f2; border-right: 5px solid transparent; border-left: 5px solid transparent; }
+.homepage-hierarchy-v2 .research-map-section[data-expanded="true"] .map-bar { display: none; }
+.homepage-hierarchy-v2 .map-body { padding: 34px 0 0; }
+.homepage-hierarchy-v2 .map-body-head { display: flex; align-items: flex-end; gap: 20px; }
+.homepage-hierarchy-v2 .map-body-head > div { flex: 1; min-width: 0; }
+.homepage-hierarchy-v2 .map-body-title { display: flex; align-items: center; gap: 12px; }
+.homepage-hierarchy-v2 .map-body-title h3 { margin: 0; font-size: 21px; font-weight: 700; color: var(--ink, #1c1917); }
+.homepage-hierarchy-v2 .btn-collapse { display: flex; align-items: center; gap: 8px; min-height: 44px; padding: 5px 12px; border: 1px solid var(--border, #ddd6c9); border-radius: 6px; background: var(--surface-2, #fffdf9); font: inherit; font-size: 12.5px; color: var(--ink-2, #57534e); cursor: pointer; }
+.homepage-hierarchy-v2 .btn-collapse i { width: 0; height: 0; border-right: 4.5px solid transparent; border-bottom: 5.5px solid #8a8377; border-left: 4.5px solid transparent; }
+.homepage-hierarchy-v2 .map-body-note { max-width: 760px; margin: 9px 0 0; font-size: 13.5px; line-height: 1.7; color: var(--ink-2, #57534e); }
+.homepage-hierarchy-v2 .map-layout { display: flex; align-items: stretch; gap: 40px; margin-top: 26px; }
+.homepage-hierarchy-v2 .map-canvas-panel { display: flex; flex: none; box-sizing: border-box; flex-direction: column; width: 562px; padding: 20px; border: 1px solid var(--border-soft, #e7e1d6); border-radius: 12px; background: var(--surface-2, #fffdf9); }
+.homepage-hierarchy-v2 #researchMapSvg { display: block; width: 100%; height: auto; }
+.homepage-hierarchy-v2 .map-edges line { stroke: #e8cfc1; stroke-width: 1.3; }
+.homepage-hierarchy-v2 .map-centre { fill: var(--accent, #c2562a); }
+.homepage-hierarchy-v2 .map-centre-label { font-size: 12px; font-weight: 700; fill: #fff8f2; text-anchor: middle; }
+.homepage-hierarchy-v2 .map-node { fill: var(--surface, #faf7f1); stroke: var(--accent, #c2562a); stroke-width: 2; }
+.homepage-hierarchy-v2 .map-node.is-other { fill: #f5f1e7; stroke: var(--border, #ddd6c9); stroke-width: 1.5; stroke-dasharray: 4 4; }
+.homepage-hierarchy-v2 .map-node-label { font-size: 11.5px; font-weight: 600; fill: var(--ink-2, #57534e); text-anchor: middle; }
+.homepage-hierarchy-v2 .map-node-label.is-other { font-weight: 500; fill: #8a8377; }
+.homepage-hierarchy-v2 .map-canvas-note { margin: auto 0 0; padding-top: 16px; border-top: 1px solid var(--border-soft, #e7e1d6); font-size: 12.5px; line-height: 1.7; color: #8a8377; }
+.homepage-hierarchy-v2 .map-table-panel { display: flex; flex: 1; min-width: 0; flex-direction: column; }
+.homepage-hierarchy-v2 .map-table-head, .homepage-hierarchy-v2 .map-row { display: grid; grid-template-columns: minmax(0, 1fr) 116px 116px 76px; gap: 14px; align-items: center; }
+.homepage-hierarchy-v2 .map-table-head { padding-bottom: 12px; border-bottom: 1px solid var(--border, #ddd6c9); font-family: 'IBM Plex Mono', ui-monospace, monospace; font-size: 10.5px; letter-spacing: 0.16em; color: #a8a29a; }
+.homepage-hierarchy-v2 .map-table-head span:nth-child(2), .homepage-hierarchy-v2 .map-table-head span:nth-child(4) { text-align: right; }
+.homepage-hierarchy-v2 .map-row { padding: 14px 0; border-bottom: 1px solid var(--border-soft, #e7e1d6); font-size: 14.5px; font-weight: 500; color: var(--ink, #1c1917); }
+.homepage-hierarchy-v2 .map-row.is-other { font-weight: 400; color: var(--ink-2, #57534e); }
+.homepage-hierarchy-v2 .map-num { font-family: 'IBM Plex Mono', ui-monospace, monospace; font-variant-numeric: tabular-nums; text-align: right; }
+.homepage-hierarchy-v2 .map-share { overflow: hidden; height: 6px; border-radius: 999px; background: #efe9dc; }
+.homepage-hierarchy-v2 .map-share i { display: block; height: 100%; border-radius: 999px; background: var(--accent, #c2562a); }
+.homepage-hierarchy-v2 .map-legend { display: flex; align-items: center; margin-top: auto; padding-top: 18px; font-size: 12.5px; color: #8a8377; }
+.homepage-hierarchy-v2 .map-legend .btn-link { margin-left: auto; }
+.homepage-hierarchy-v2 .full-counts { margin-top: 44px; padding-top: 32px; border-top: 1px solid var(--border, #ddd6c9); }
+.homepage-hierarchy-v2 .full-counts-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 28px; margin-top: 22px; }
+.homepage-hierarchy-v2 .full-counts-grid strong { display: block; font-family: 'IBM Plex Mono', ui-monospace, monospace; font-variant-numeric: tabular-nums; font-size: 17px; font-weight: 500; color: var(--ink, #1c1917); }
+.homepage-hierarchy-v2 .full-counts-grid span { display: block; margin-top: 5px; font-size: 12.5px; color: #8a8377; }
+
 /* Latest conclusion. The trail below it reuses the hero's grid and track so
    the four steps read as the same four steps -- deliberately no card border
    and no fill, because a boxed panel would make it look like a separate

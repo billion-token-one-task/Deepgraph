@@ -58,6 +58,121 @@ function zeroSafeValue(value) {
     return Number(value || 0) === 0 ? '—' : fmt(value);
 }
 
+// Research map. Positions come from the inlined static layout, sizes from the
+// live paper counts -- so the picture is stable between loads (it used to be
+// a different shape every time) and still current.
+function mapLayout() {
+    const node = el('researchMapLayout');
+    if (!node) return null;
+    try { return JSON.parse(node.textContent); } catch (e) { return null; }
+}
+
+function mapNodeRadius(papers, maxPapers, radius) {
+    if (!papers || !maxPapers) return radius.min;
+    // Area proportional to the paper count, so a direction twice the size
+    // looks twice the size rather than twice as wide.
+    const scale = Math.sqrt(papers) / Math.sqrt(maxPapers);
+    return radius.min + (radius.max - radius.min) * scale;
+}
+
+function renderResearchMap() {
+    const layout = mapLayout();
+    const data = (homepageData && homepageData.map) || null;
+    const svg = el('researchMapSvg');
+    if (!layout || !layout.slots || !data || !svg) return;
+
+    const domains = (data.domains || []).slice(0, layout.slots.length);
+    const maxPapers = domains.reduce((top, d) => Math.max(top, d.papers || 0), 0);
+    const centre = layout.center;
+    const seats = domains.map((domain, index) => ({
+        domain,
+        point: layout.slots[index],
+        r: mapNodeRadius(domain.papers, maxPapers, layout.radius),
+    }));
+
+    const edges = seats.map(seat =>
+        `<line x1="${centre.x}" y1="${centre.y}" x2="${seat.point.x}" y2="${seat.point.y}"></line>`);
+    const nodes = seats.map(seat => {
+        const above = seat.point.y < centre.y;
+        const labelY = above ? seat.point.y - seat.r - 9 : seat.point.y + seat.r + 17;
+        return `<circle class="map-node" cx="${seat.point.x}" cy="${seat.point.y}" r="${seat.r.toFixed(1)}"></circle>`
+            + `<text class="map-node-label" x="${seat.point.x}" y="${labelY}">${esc(trunc(seat.domain.label || '', 17))}</text>`;
+    });
+
+    if (data.other && layout.other) {
+        const point = layout.other;
+        const above = point.y < centre.y;
+        const r = layout.radius.min;
+        nodes.push(`<circle class="map-node is-other" cx="${point.x}" cy="${point.y}" r="${r}"></circle>`
+            + `<text class="map-node-label is-other" x="${point.x}" y="${above ? point.y - r - 9 : point.y + r + 17}">`
+            + `${esc(tr('map.otherNode', '{n} more').replace('{n}', fmt(data.other.count)))}</text>`);
+    }
+
+    const centreLabel = (data.center && data.center.label) || '';
+    const words = centreLabel.split(' ');
+    const centreText = words.length > 1
+        ? `<text class="map-centre-label" x="${centre.x}" y="${centre.y - 4}">${esc(words[0])}</text>`
+          + `<text class="map-centre-label" x="${centre.x}" y="${centre.y + 12}">${esc(words.slice(1).join(' '))}</text>`
+        : `<text class="map-centre-label" x="${centre.x}" y="${centre.y + 4}">${esc(centreLabel)}</text>`;
+
+    svg.setAttribute('viewBox', layout.viewBox || '0 0 480 320');
+    svg.innerHTML = `<g class="map-edges">${edges.join('')}</g>`
+        + `<circle class="map-centre" cx="${centre.x}" cy="${centre.y}" r="${centre.r}"></circle>`
+        + centreText + nodes.join('');
+
+    // Table beside the map: a picture blurs into a hairball past twenty
+    // directions, a list does not.
+    const rows = el('researchMapRows');
+    if (rows) {
+        const corpus = domains.reduce((sum, d) => sum + (d.papers || 0), 0)
+            + ((data.other && data.other.papers) || 0);
+        const share = value => corpus > 0 ? Math.max(1, Math.round((value / corpus) * 100)) : 0;
+        const body = domains.map(domain => `<div class="map-row" role="row">`
+            + `<span role="cell">${esc(domain.label || '')}</span>`
+            + `<span class="map-num" role="cell">${Number(domain.papers || 0).toLocaleString('en-US')}</span>`
+            + `<span class="map-share" role="cell"><i style="width:${share(domain.papers || 0)}%"></i></span>`
+            + `<span class="map-num" role="cell">${fmt(domain.open_questions || 0)}</span>`
+            + `</div>`).join('');
+        const tail = data.other
+            ? `<div class="map-row is-other" role="row">`
+              + `<span role="cell">${esc(tr('map.otherRow', '{n} more directions').replace('{n}', fmt(data.other.count)))}</span>`
+              + `<span class="map-num" role="cell">${Number(data.other.papers || 0).toLocaleString('en-US')}</span>`
+              + `<span class="map-share" role="cell"><i style="width:${share(data.other.papers || 0)}%"></i></span>`
+              + `<span class="map-num" role="cell">&mdash;</span></div>`
+            : '';
+        rows.innerHTML = body + tail;
+    }
+
+    setText('mapAllDirections', tr('map.allDirections', 'All {n} directions')
+        .replace('{n}', fmt(data.domains_total || 0)));
+
+    const counts = (homepageData && homepageData.counts) || {};
+    setText('countPapers', fmt(counts.papers_total || 0));
+    setText('countEntities', fmt(counts.graph_entities_total || 0));
+    setText('countRelations', fmt(counts.graph_relations_total || 0));
+    setText('countContradictions', fmt(counts.contradictions_total || 0));
+    setText('countRuns', fmt(counts.experiment_runs_total || 0));
+
+    // Planner estimates are labelled rather than presented as exact counts.
+    const estimated = new Set(counts.estimated || []);
+    [['countEntities', 'graph_entities_total'], ['countRelations', 'graph_relations_total'],
+     ['countContradictions', 'contradictions_total']].forEach(([id, field]) => {
+        const node = el(id);
+        if (node) node.title = estimated.has(field) ? tr('count.estimated', 'Estimated') : '';
+    });
+}
+
+function setMapExpanded(expanded) {
+    const section = el('researchMapSection');
+    const body = el('researchMapBody');
+    const toggle = el('mapToggle');
+    if (!section || !body) return;
+    section.dataset.expanded = String(expanded);
+    body.hidden = !expanded;
+    if (toggle) toggle.setAttribute('aria-expanded', String(expanded));
+    if (expanded) renderResearchMap();
+}
+
 // The newest adjudicated conclusion, and the trail behind it. Fields the
 // backend cannot supply are omitted rather than filled with a plausible
 // number: an invented evidence count is indistinguishable from a real one on
@@ -305,6 +420,7 @@ async function loadHomepage() {
     updateStatusPill();
     renderHeroChain();
     renderLatestConclusion();
+    if (el('researchMapSection') && el('researchMapSection').dataset.expanded === 'true') renderResearchMap();
 }
 
 // i18n bridge: translate via window.t (from i18n.js) with an English
@@ -743,18 +859,6 @@ async function refreshStats() {
         el('statExperimentsSuperseded').textContent = fmt(s.experiments_superseded || 0);
         el('statExperimentsCanceled').textContent = fmt(s.experiments_canceled || 0);
 
-        // Detail stat cards (collapsed section). Corpus backlog, pending
-        // analysis and processing errors are how the deployment is running,
-        // not what it found; they live in scripts/ops_digest.py now.
-        el('statPapersWithText').textContent = fmt(s.papers_with_text || 0);
-        el('statResults').textContent       = publicCount('results_total');
-        el('statTaxonomy').textContent = fmt(s.taxonomy_nodes_total || 0);
-        el('statContradictions').textContent = fmt(s.contradictions_total || 0);
-        el('statInsights').textContent      = publicCount('insights_total');
-        setText('statGraphEntities', zeroSafeValue(s.graph_entities_total));
-        setText('statGraphRelations', zeroSafeValue(s.graph_relations_total));
-        el('statAgendaTokens').textContent  = fmt(s.agenda_tokens_total || 0);
-        el('statCompletePapers').textContent = fmt(s.submission_bundles_total || 0);
         const generatedAt = el('statsGeneratedAt');
         if (generatedAt && s.generated_at) {
             const locale = window.dgI18n && window.dgI18n.getLanguage() === 'zh' ? 'zh-CN' : 'en-US';
@@ -1918,24 +2022,6 @@ async function loadRecentlyDiscovered() {
     }
 }
 
-async function loadOverviewResearchMap() {
-    const graph = el('overviewGraphSvg');
-    if (!graph || graph.dataset.loaded === 'true') return;
-    const loading = el('overviewGraphLoading');
-    graph.dataset.loaded = 'true';
-    if (loading) loading.hidden = false;
-    try {
-        const data = await taxonomyNode(ROOT_NODE);
-        renderRadialGraph('overviewGraphSvg', data.node, (data.children || []).slice(0, 8), 330, true);
-    } catch (e) {
-        graph.dataset.loaded = '';
-        const card = el('overviewMapCard');
-        if (card) card.style.display = 'none';
-        console.error('Overview research map error:', e);
-    } finally {
-        if (loading) loading.hidden = true;
-    }
-}
 
 function renderRecentlyDiscovered(data, insights) {
     const grid = el('recentlyGrid');
@@ -4619,6 +4705,7 @@ function init() {
         applyMetricTips();
         renderHeroChain();
         renderLatestConclusion();
+        if (el('researchMapSection') && el('researchMapSection').dataset.expanded === 'true') renderResearchMap();
         updateStatusPill();
         renderProcessingList();
         renderRuntimeStageStates(officeSnapshot());
@@ -4637,18 +4724,17 @@ function init() {
         loadRecentlyDiscovered();
         loadProcessingPapers();
         startSSE();
-        const loadMapWhenReady = () => loadOverviewResearchMap();
-        if ('requestIdleCallback' in window) {
-            window.requestIdleCallback(loadMapWhenReady, { timeout: 1500 });
-        } else {
-            window.setTimeout(loadMapWhenReady, 400);
-        }
     });
 
     const openDiscoveries = el('btnOpenDiscoveries');
     if (openDiscoveries) {
         openDiscoveries.addEventListener('click', () => switchTab('discoveries'));
     }
+    const mapToggle = el('mapToggle');
+    if (mapToggle) mapToggle.addEventListener('click', () => setMapExpanded(true));
+    const mapCollapse = el('mapCollapse');
+    if (mapCollapse) mapCollapse.addEventListener('click', () => setMapExpanded(false));
+
     const openMap = el('btnJumpExplore');
     if (openMap) openMap.addEventListener('click', () => switchTab('explore'));
     const openOffice = el('btnOpenOffice');
