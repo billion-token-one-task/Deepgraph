@@ -296,6 +296,64 @@ class ExplicitRequirementsAlignmentTests(unittest.TestCase):
                     validate_explicit_requirements_alignment(plan, requirements)
 
 
+    def test_identities_written_the_way_a_plan_generator_writes_them(self):
+        """A well-formed plan was refused for want of fields nobody writes.
+
+        The generator names the dataset in ``datasets[].name`` with the config
+        in parentheses, puts the model on ``baselines[].model``, and follows the
+        metric with a parenthetical gloss. Every identity is present and
+        correct; only the reader was looking elsewhere.
+        """
+
+        requirements = classification_requirements()
+        plan = {
+            "datasets": [
+                {
+                    "name": (
+                        f"{requirements.dataset.repository_id} (subset-a)"
+                    ),
+                    "split": "validation: 100 samples",
+                }
+            ],
+            "baselines": [
+                {
+                    "name": "Zero-Shot Direct Query",
+                    "model": requirements.model.repository_id,
+                }
+            ],
+            "metrics": {
+                "primary": (
+                    f"{requirements.metric.name} (parsed from the terminal"
+                    " output token sequence)"
+                )
+            },
+            "execution_requirements": requirements.to_dict(),
+        }
+
+        validate_explicit_requirements_alignment(plan, requirements)
+
+    def test_prose_is_never_promoted_to_an_identity(self):
+        """Reading the prose keys must not let free text bind a run."""
+
+        requirements = classification_requirements()
+        base = {
+            "baselines": [{"model": requirements.model.repository_id}],
+            "metrics": {"primary": requirements.metric.name},
+            "execution_requirements": requirements.to_dict(),
+        }
+        for label, datasets in (
+            ("bare prose", [{"name": "Zero-Shot Direct Query"}]),
+            ("prose with a config", [{"name": "our internal set (hard)"}]),
+        ):
+            with self.subTest(label=label):
+                plan = dict(base, datasets=datasets)
+                with self.assertRaisesRegex(
+                    CapabilityContractError,
+                    "execution_dataset_identity_unbound",
+                ):
+                    validate_explicit_requirements_alignment(plan, requirements)
+
+
 class ComputePreflightGuardTests(unittest.TestCase):
     def test_production_guard_requires_passed_revision_bound_adapter(self):
         run = {"agenda_id": 2, "deep_insight_id": 3, "resource_grant_id": 5}

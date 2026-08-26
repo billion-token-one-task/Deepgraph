@@ -1000,6 +1000,58 @@ def requirements_from_plan(plan: Mapping[str, Any]) -> ExperimentRequirements:
     return result
 
 
+# A plan generator names the dataset and the model where a reader would expect
+# prose: ``datasets[].name`` carries "tasksource/bigbench (object_counting)"
+# and the model lives on ``baselines[].model``. The alignment check only read
+# the explicit id keys, so a fully-formed plan was refused for want of a field
+# nobody writes. Read the prose keys too, but only accept a value shaped like a
+# repository id -- "Zero-Shot Direct Query" must never become a dataset.
+_REPOSITORY_ID_RE = re.compile(r"^[A-Za-z0-9][\w.-]*/[A-Za-z0-9][\w.-]*$")
+
+
+def _repository_id_from_prose(value: Any) -> str:
+    """Return a repository id from a human-facing label, or "" if it is prose.
+
+    A trailing parenthetical is the dataset *config* ("repo (subset)"), which
+    lives in its own requirements field; strip it before matching.
+    """
+
+    text = str(value or "").strip()
+    if "(" in text:
+        text = text.split("(", 1)[0].strip()
+    return text if _REPOSITORY_ID_RE.match(text) else ""
+
+
+def _plan_repository_ids(
+    plan: Mapping[str, Any],
+    fields: Sequence[str],
+    explicit_keys: Sequence[str],
+    prose_keys: Sequence[str] = (),
+) -> set[str]:
+    found: set[str] = set()
+    for field_name in fields:
+        values = plan.get(field_name)
+        if not isinstance(values, Sequence) or isinstance(values, (str, bytes)):
+            continue
+        for item in values:
+            if not isinstance(item, Mapping):
+                continue
+            explicit = ""
+            for key in explicit_keys:
+                explicit = str(item.get(key) or "").strip()
+                if explicit:
+                    break
+            if explicit:
+                found.add(canonical_dataset_repository_id(explicit))
+                continue
+            for key in prose_keys:
+                inferred = _repository_id_from_prose(item.get(key))
+                if inferred:
+                    found.add(canonical_dataset_repository_id(inferred))
+                    break
+    return found
+
+
 def validate_explicit_requirements_alignment(
     plan: Mapping[str, Any],
     requirements: ExperimentRequirements,
@@ -1017,40 +1069,23 @@ def validate_explicit_requirements_alignment(
     if not isinstance(plan.get("execution_requirements"), Mapping):
         return
 
-    dataset_ids: set[str] = set()
-    for field in ("benchmark_targets", "datasets"):
-        values = plan.get(field)
-        if not isinstance(values, Sequence) or isinstance(values, (str, bytes)):
-            continue
-        for item in values:
-            if not isinstance(item, Mapping):
-                continue
-            selected = canonical_dataset_repository_id(
-                item.get("hf_dataset")
-                or item.get("dataset_id")
-                or item.get("repository_id")
-            )
-            if selected:
-                dataset_ids.add(selected)
+    dataset_ids = _plan_repository_ids(
+        plan,
+        ("benchmark_targets", "datasets"),
+        ("hf_dataset", "dataset_id", "repository_id"),
+        ("name",),
+    )
     if not dataset_ids:
         raise CapabilityContractError("execution_dataset_identity_unbound")
     if requirements.dataset.repository_id not in dataset_ids:
         raise CapabilityContractError("execution_dataset_identity_mismatch")
 
-    model_ids: set[str] = set()
-    values = plan.get("model_targets")
-    if isinstance(values, Sequence) and not isinstance(values, (str, bytes)):
-        for item in values:
-            if not isinstance(item, Mapping):
-                continue
-            selected = str(
-                item.get("hf_model")
-                or item.get("model_id")
-                or item.get("repository_id")
-                or ""
-            ).strip()
-            if selected:
-                model_ids.add(selected)
+    model_ids = _plan_repository_ids(
+        plan,
+        ("model_targets", "baselines"),
+        ("hf_model", "model_id", "repository_id", "model"),
+        ("name",),
+    )
     if not model_ids:
         raise CapabilityContractError("execution_model_identity_unbound")
     if requirements.model.repository_id not in model_ids:
@@ -1063,8 +1098,13 @@ def validate_explicit_requirements_alignment(
     if primary:
         scientific = re.sub(r"[^a-z0-9]+", "_", str(primary).lower()).strip("_")
         required = canonical_metric_name(requirements.metric.name)
-        compatible = canonical_metric_name(scientific) == required or (
-            required and required in scientific.split("_")
+        # ``required`` is often multi-word (numeric_accuracy, exact_match), so
+        # testing membership in split("_") could never match one; a plan that
+        # named the right metric and then explained it in the same string was
+        # refused. Match the required name as a whole token run instead.
+        compatible = canonical_metric_name(scientific) == required or bool(
+            required
+            and re.search(rf"(?:^|_){re.escape(required)}(?:_|$)", scientific)
         )
         if not compatible:
             raise CapabilityContractError("execution_metric_identity_mismatch")
