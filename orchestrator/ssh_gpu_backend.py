@@ -346,6 +346,13 @@ def _ensure_remote_directory(worker: Mapping[str, Any], remote_dir: str) -> None
         raise RuntimeError(result.stderr.strip() or result.stdout.strip() or f"failed to create remote dir {remote_dir}")
 
 
+# The tar path already refuses to ship these; rsync shipped them anyway. A
+# .git directory the local validation loop is committing into while rsync
+# reads it produces vanishing temp objects on the receiver -- run 265 died in
+# 1.4 seconds on exactly that, and none of it is needed to run an experiment.
+_TRANSFER_EXCLUDES = (".git/", "__pycache__/", ".mypy_cache/", ".pytest_cache/")
+
+
 def _rsync(worker: Mapping[str, Any], source: str, dest: str, *, delete: bool = False, timeout: int | None = None) -> None:
     cmd = [
         "rsync",
@@ -354,6 +361,8 @@ def _rsync(worker: Mapping[str, Any], source: str, dest: str, *, delete: bool = 
         "-e",
         _rsync_ssh_command(worker),
     ]
+    for pattern in _TRANSFER_EXCLUDES:
+        cmd.extend(["--exclude", pattern])
     if delete:
         cmd.append("--delete")
     cmd.extend([source, dest])
