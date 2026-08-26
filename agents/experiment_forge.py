@@ -4219,8 +4219,35 @@ def _fallback_scaffold(method: dict, plan: dict, codebase: dict) -> dict:
     }
 
 
+def _contracted_identities(plan: dict) -> dict[str, str]:
+    """The dataset/model this candidate was actually granted authority to run.
+
+    ``benchmark_model``/``benchmark_dataset`` began as deployment-wide defaults
+    naming what "the real benchmark" is, and the validation loop reads them as
+    the experiment's contract: a materialized runner pinned to anything else is
+    refused before it can produce a metric. Once a plan carries an explicit
+    ``execution_requirements`` block -- resolved to revisions by preflight and
+    bound to the grant -- that block *is* the contract, and taking the global
+    default instead fails every candidate whose science is not the default's.
+    Fall back to the deployment values only when the plan declares nothing.
+    """
+
+    explicit = plan.get("execution_requirements") if isinstance(plan, dict) else None
+    if not isinstance(explicit, dict):
+        return {}
+    dataset = explicit.get("dataset") if isinstance(explicit.get("dataset"), dict) else {}
+    model = explicit.get("model") if isinstance(explicit.get("model"), dict) else {}
+    contracted = {
+        "benchmark_model": str(model.get("repository_id") or "").strip(),
+        "benchmark_dataset": str(dataset.get("repository_id") or "").strip(),
+        "benchmark_dataset_config": str(dataset.get("config") or "").strip(),
+    }
+    return {key: value for key, value in contracted.items() if value}
+
+
 def build_proxy_config(plan: dict, codebase: dict | None = None, *, judgement=None) -> dict:
     """Build proxy task configuration for time-budgeted experiments."""
+    _contracted = _contracted_identities(plan)
     compute = plan.get("compute_budget", {}) if isinstance(plan, dict) else {}
     codebase = codebase or {}
     real_benchmark = bool(plan.get("real_benchmark_required") or plan.get("benchmark_targets"))
@@ -4257,9 +4284,15 @@ def build_proxy_config(plan: dict, codebase: dict | None = None, *, judgement=No
             "gpu_model": GPU_DEFAULT_MODEL,
             "gpu_vram_gb": GPU_DEFAULT_VRAM_GB,
         },
-        "benchmark_model": EXPERIMENT_REAL_LLM_MODEL,
-        "benchmark_dataset": EXPERIMENT_REAL_BENCHMARK_DATASET,
-        "benchmark_dataset_config": EXPERIMENT_REAL_BENCHMARK_DATASET_CONFIG,
+        "benchmark_model": _contracted.get(
+            "benchmark_model", EXPERIMENT_REAL_LLM_MODEL
+        ),
+        "benchmark_dataset": _contracted.get(
+            "benchmark_dataset", EXPERIMENT_REAL_BENCHMARK_DATASET
+        ),
+        "benchmark_dataset_config": _contracted.get(
+            "benchmark_dataset_config", EXPERIMENT_REAL_BENCHMARK_DATASET_CONFIG
+        ),
         "benchmark_max_examples_per_seed": _optional_nonnegative_int(plan.get("max_eval_examples"), EXPERIMENT_REAL_BENCHMARK_MAX_EXAMPLES),
         "benchmark_seeds": (
             1
