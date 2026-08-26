@@ -175,87 +175,46 @@ function v3DetailBackfill(domain) {
         .replace('{age}', processingCount(domain.age_seconds));
 }
 
-function renderV3StatusDomains(snapshot) {
-    // Same five tiles, same container, different question. The old ones named
-    // internal queues -- scoped ingestion, legacy ingestion, reconciliation
-    // counts -- which is what an operator debugs with and jargon to everyone
-    // else, and two of them read as failures while the work was succeeding.
-    // These five are the chain the system actually performs, end to end. The
-    // per-domain truth is unchanged and still served by /api/processing.
-    const stats = latestStats || {};
-    const corpus = (snapshot && snapshot.corpus) || {};
-
-    const total = isKnownCount(corpus.total) ? corpus.total : stats.papers_total;
-    const processed = isKnownCount(corpus.processed) ? corpus.processed : stats.papers_processed;
-
-    setText('chainLiteratureText', `${tr('chain.literature', 'Literature read')} · ${fmt(total || 0)}`);
-    setText('chainLiteratureDetail',
-        `${fmt(processed || 0)} ${tr('chain.intoGraph', 'built into the evidence graph')}`);
-
-    setText('chainGraphText',
-        `${tr('chain.graph', 'Evidence graph')} · ${fmt(stats.graph_entities_total || 0)}`);
-    setText('chainGraphDetail',
-        `${fmt(stats.graph_relations_total || 0)} ${tr('chain.relations', 'relations')}`);
-
-    setText('chainIdeasText',
-        `${tr('chain.ideas', 'Research questions raised')} · ${fmt(stats.deep_insights_total || 0)}`);
-    setText('chainIdeasDetail', tr('chain.ideasNote', 'found in the graph, not written by hand'));
-
-    setText('chainExperimentsText',
-        `${tr('chain.experiments', 'Experiments run')} · ${fmt(stats.experiment_runs_total || 0)}`);
-    setText('chainExperimentsDetail',
-        `${fmt(stats.experiments_completed || 0)} ${tr('chain.completed', 'completed')}`);
-
-    setText('chainSupportedText',
-        `${tr('chain.supported', 'Findings that survived')} · ${fmt(stats.decisions_supported || 0)}`);
-    setText('chainSupportedDetail',
-        `${fmt(stats.scientific_decisions_total || 0)} ${tr('chain.adjudicated', 'adjudicated')}`);
-
-    setText('systemNowLine', plainLanguageNow(stats, snapshot));
-    updateStatusPill();
-}
-
-// One sentence a reader can act on. Idleness is only alarming when its reason
-// is hidden, so the reason is the sentence.
-function plainLanguageNow(stats, snapshot) {
-    const corpus = (snapshot && snapshot.corpus) || {};
-    const runtime = (snapshot && snapshot.research_runtime) || {};
-    const parts = [];
-
-    const total = isKnownCount(corpus.total) ? corpus.total : (stats.papers_total || 0);
-    const processed = isKnownCount(corpus.processed) ? corpus.processed : (stats.papers_processed || 0);
-    const pending = isKnownCount(corpus.pending) ? corpus.pending : null;
-    if (pending === null || pending > 0) {
-        parts.push(`${tr('now.reading', 'Reading paper')} ${fmt(processed + 1)}`
-            + ` ${tr('now.of', 'of')} ${fmt(total)}`);
-    } else {
-        parts.push(tr('now.corpusDrained', 'every collected paper has been read'));
-    }
-
-    const work = processingCount(runtime.active_work_items);
-    const grants = processingCount(runtime.active_grants);
-    if (Number(work) > 0) {
-        parts.push(`${fmt(work)} ${tr('now.experimentsRunning', 'research tasks are in the experiment queue')}`);
-    } else if (Number(grants) > 0) {
-        parts.push(`${fmt(grants)} ${tr('now.authorised', 'research tasks are authorised and starting')}`);
-    } else {
-        parts.push(tr('now.awaitingBudget',
-            'no research task is authorised right now -- the next one starts when budget is granted'));
-    }
-    return parts.join(' · ');
-}
-
+// "Idle" on its own is the least useful thing this pill could say: a reader
+// cannot tell a system waiting for budget from one that has fallen over. The
+// reason travels with the state, and it comes from the public aggregate --
+// the pill never needed the runtime internals it used to read.
 function updateStatusPill() {
-    const research = processingSnapshot && processingSnapshot.research_runtime;
-    const state = v3DisplayState(research, 'research');
-    const label = `${tr('overview.domainResearchRuntime', 'Research runtime')} · ${v3StateLabel(research, state)}`;
-    setText('statusPillText', label);
+    const runtime = (homepageData && homepageData.runtime) || null;
+    const state = (runtime && runtime.state) || 'unknown';
+    const reason = (runtime && runtime.reason) || 'unavailable';
+    setText('statusPillText', tr(`runtime.${reason}`, RUNTIME_REASON_FALLBACK[reason] || 'Status unavailable'));
     const pill = el('liveBadge');
     if (pill) {
         pill.classList.toggle('running', state === 'running');
-        pill.classList.toggle('stalled', state === 'halted');
-        pill.classList.toggle('failed', state === 'failed');
+        pill.classList.toggle('stalled', state === 'attention');
+        pill.classList.toggle('failed', state === 'unknown');
     }
+}
+
+// The front page reads one endpoint. It carries the four-step chain, the
+// runtime state, the latest verdict and the research map -- and nothing about
+// how the deployment is run.
+let homepageData = null;
+
+const RUNTIME_REASON_FALLBACK = {
+    running: 'Running',
+    queued: 'Idle - authorised work queued',
+    authorized_idle: 'Idle - authorised, awaiting work',
+    awaiting_grant: 'Idle - awaiting grant',
+    halted: 'Needs attention - work stalled',
+    attention: 'Needs attention',
+    unavailable: 'Status unavailable',
+};
+
+async function loadHomepage() {
+    try {
+        homepageData = await api('/api/homepage');
+    } catch (e) {
+        homepageData = null;
+        console.error('Homepage aggregate failed:', e);
+    }
+    updateStatusPill();
 }
 
 // i18n bridge: translate via window.t (from i18n.js) with an English
@@ -645,7 +604,6 @@ async function refreshStats() {
     try {
         const s = await api('/api/stats');
         latestStats = s;
-        renderV3StatusDomains(processingSnapshot);
         // Cold-start marker from the server-side stats cache: keep whatever is
         // on screen instead of overwriting real numbers with zeros.
         if (s && s.warming) return;
@@ -695,11 +653,10 @@ async function refreshStats() {
         el('statExperimentsSuperseded').textContent = fmt(s.experiments_superseded || 0);
         el('statExperimentsCanceled').textContent = fmt(s.experiments_canceled || 0);
 
-        // Detail stat cards (collapsed section)
-        el('statCorpusPapers').textContent  = publicCount('papers_total');
+        // Detail stat cards (collapsed section). Corpus backlog, pending
+        // analysis and processing errors are how the deployment is running,
+        // not what it found; they live in scripts/ops_digest.py now.
         el('statPapersWithText').textContent = fmt(s.papers_with_text || 0);
-        el('statPendingPapers').textContent = publicCount('papers_pending');
-        el('statErrorPapers').textContent   = publicCount('papers_error');
         el('statResults').textContent       = publicCount('results_total');
         el('statTaxonomy').textContent = fmt(s.taxonomy_nodes_total || 0);
         el('statContradictions').textContent = fmt(s.contradictions_total || 0);
@@ -715,7 +672,6 @@ async function refreshStats() {
                 month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit'
             });
             generatedAt.dateTime = new Date(Number(s.generated_at) * 1000).toISOString();
-            setText('statusPillTime', generatedAt.textContent);
         }
         applyMetricTips();
         updateHeroProof(s);
@@ -814,7 +770,6 @@ async function loadProcessingPapers() {
             ? null
             : (legacyIngestion.stale_processing_count ?? data.stale_processing_count ?? null);
         setText('statStaleProcessing', zeroSafeValue(staleProcessingCount));
-        renderV3StatusDomains(processingSnapshot);
 
         for (const r of rows) {
             const isDone = r.status === 'reasoned' || r.status === 'error';
@@ -860,7 +815,6 @@ async function loadProcessingPapers() {
         pipelineState = 'error';
         staleProcessingCount = null;
         setText('statStaleProcessing', '—');
-        renderV3StatusDomains(null);
     }
 }
 
@@ -4575,8 +4529,7 @@ function init() {
     document.addEventListener('deepgraph:languagechange', () => {
         applyMetricTips();
         if (statsCache) updateHeroProof(statsCache);
-        if (processingSnapshot) renderV3StatusDomains(processingSnapshot);
-        else updateLiveBadge();
+        updateStatusPill();
         renderProcessingList();
         renderRuntimeStageStates(officeSnapshot());
         if (agentOfficeRenderer) agentOfficeRenderer.rebuildForCurrentSize();
@@ -4589,6 +4542,7 @@ function init() {
     // during API startup. The next processing snapshot replaces this fallback.
     renderProcessingList();
     initAgendaScope().finally(() => {
+        loadHomepage();
         refreshStats();
         loadRecentlyDiscovered();
         loadProcessingPapers();
@@ -4612,7 +4566,7 @@ function init() {
     applyMetricTips();
 
     // Stats refresh every 15s
-    statsTimer = setInterval(refreshStats, 15000);
+    statsTimer = setInterval(() => { refreshStats(); loadHomepage(); }, 15000);
 
     // Processing panel refresh every 3s (also fetches from API)
     setInterval(loadProcessingPapers, 3000);
