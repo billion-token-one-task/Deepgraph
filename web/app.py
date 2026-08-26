@@ -2015,6 +2015,291 @@ def api_stats():
     return jsonify(stats)
 
 
+# ---------------------------------------------------------------------------
+# Homepage aggregate (/api/homepage)
+#
+# The front page used to assemble itself from five separate calls -- agendas,
+# stats, recent discoveries, processing, and a runtime force-directed map --
+# and two of those (processing, automation) carry operational internals that
+# have no business on a public page.  This single read-only aggregate serves
+# exactly what the page renders and nothing else: no reason codes, no grant
+# ids, no controller counters, no in-flight paper titles.
+#
+# Every number here traces to a named source.  Where the data does not exist
+# the field is null and the page omits that line -- it is never invented.
+# ---------------------------------------------------------------------------
+
+_HOMEPAGE_TTL = 60.0
+_homepage_lock = threading.Lock()
+_homepage_cache: dict[str, Any] = {"payload": None, "stamp": 0.0}
+
+# `[m3-object-counting-literature-v3-20260820] C01 foo_bar [remove-eos-v1]`
+# is a batch-tagged internal name, not a sentence a reader should meet.
+_BATCH_TAG_RE = re.compile(r"\[[^\]]*\]")
+_CANDIDATE_PREFIX_RE = re.compile(r"^[A-Z]\d{1,3}\s+")
+_WITHIN_BATCH_RE = re.compile(r"^Within\s+[^,]+,\s*")
+
+
+def _clean_insight_title(raw: Any) -> str | None:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    text = _BATCH_TAG_RE.sub(" ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    text = _CANDIDATE_PREFIX_RE.sub("", text).strip()
+    return text or None
+
+
+def _clean_problem_statement(raw: Any) -> str | None:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    text = _WITHIN_BATCH_RE.sub("", text)
+    text = _BATCH_TAG_RE.sub(" ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    if not text:
+        return None
+    return text[0].upper() + text[1:]
+
+
+# The runtime vocabulary the classifier produces is operational.  The page gets
+# a two-value state and a reason key it can translate -- an idle system must
+# still say *why* it is idle, which was the whole point of the status pill.
+_RUNTIME_PUBLIC_STATE = {
+    "running": ("running", "running"),
+    "queued": ("running", "queued"),
+    "authorized_idle": ("idle", "authorized_idle"),
+    "idle_no_authorized_work": ("idle", "awaiting_grant"),
+    "halted": ("attention", "halted"),
+    "error": ("attention", "attention"),
+}
+
+
+def _homepage_runtime() -> dict:
+    try:
+        snapshot = _research_runtime_snapshot()
+        raw_state = str(snapshot.get("state") or "")
+    except Exception:
+        app.logger.exception("homepage runtime snapshot failed")
+        return {"state": "unknown", "reason": "unavailable"}
+    state, reason = _RUNTIME_PUBLIC_STATE.get(raw_state, ("unknown", "unavailable"))
+    return {"state": state, "reason": reason}
+
+
+def _homepage_dataset_label(holdout_ref: Any) -> str | None:
+    """`tasksource/bigbench:<sha>:test[200:400]` -> `tasksource/bigbench`."""
+    text = str(holdout_ref or "").strip()
+    if not text:
+        return None
+    return text.split(":", 1)[0].strip() or None
+
+
+def _homepage_latest_conclusion() -> dict | None:
+    """The newest adjudicated verdict, with the trail that produced it."""
+    row = db.fetchone(
+        """SELECT sdr.id, sdr.verdict, sdr.experiment_run_id, sdr.agenda_id,
+                  ear.holdout_ref, ear.claim_ledger_hash, ear.raw_artifacts_hash,
+                  er.baseline_metric_name, er.baseline_metric_value,
+                  er.best_metric_value, er.effect_pct, er.deep_insight_id,
+                  di.title AS insight_title, di.problem_statement,
+                  EXISTS (
+                    SELECT 1 FROM evidence_state_transitions est
+                    WHERE est.experiment_run_id = sdr.experiment_run_id
+                      AND est.actor = 'evidence_audit_v1'
+                      AND est.to_state = 'scientifically_decided'
+                  ) AS walked_ladder
+             FROM scientific_decision_records sdr
+             LEFT JOIN evidence_audit_records ear
+               ON ear.id = sdr.evidence_audit_record_id
+             LEFT JOIN experiment_runs er
+               ON er.id = sdr.experiment_run_id AND er.agenda_id = sdr.agenda_id
+             LEFT JOIN deep_insights di
+               ON di.id = er.deep_insight_id AND di.agenda_id = er.agenda_id
+            ORDER BY sdr.created_at DESC, sdr.id DESC
+            LIMIT 1"""
+    )
+    if not row:
+        return None
+
+    insight_id = row.get("deep_insight_id")
+    runs = datasets = None
+    if insight_id is not None:
+        try:
+            agg = db.fetchall(
+                """SELECT er.id, ear.holdout_ref
+                     FROM experiment_runs er
+                     LEFT JOIN evidence_audit_records ear
+                       ON ear.experiment_run_id = er.id
+                    WHERE er.deep_insight_id=?""",
+                (insight_id,),
+            )
+            runs = len(agg)
+            labels = {
+                label for label in (
+                    _homepage_dataset_label(item.get("holdout_ref")) for item in agg
+                ) if label
+            }
+            datasets = len(labels) or None
+        except Exception:
+            app.logger.exception("homepage experiment aggregate failed")
+
+    metric = None
+    if row.get("baseline_metric_name") and row.get("best_metric_value") is not None:
+        metric = {
+            "name": row.get("baseline_metric_name"),
+            "baseline": row.get("baseline_metric_value"),
+            "best": row.get("best_metric_value"),
+            "effect_pct": row.get("effect_pct"),
+        }
+
+    return {
+        "id": row.get("id"),
+        "verdict": row.get("verdict"),
+        "title": _clean_insight_title(row.get("insight_title")),
+        "hypothesis": _clean_problem_statement(row.get("problem_statement")),
+        "metric": metric,
+        "experiment": {"runs": runs, "datasets": datasets},
+        "evidence": {
+            "ladder_walked": bool(row.get("walked_ladder")),
+            "ledger": bool(row.get("claim_ledger_hash")),
+            "artifacts": bool(row.get("raw_artifacts_hash")),
+            "holdout": bool(row.get("holdout_ref")),
+        },
+    }
+
+
+# Directions carrying no papers are not a research map, they are schema noise
+# (`ml.test` among them).  They are excluded rather than name-filtered so a
+# future stray node needs no code change.
+_HOMEPAGE_MAP_VISIBLE = 7
+
+
+def _homepage_map() -> dict:
+    rows = db.fetchall(
+        """SELECT t.id, t.name,
+                  (SELECT COUNT(DISTINCT pt.paper_id)
+                     FROM paper_taxonomy pt
+                     JOIN taxonomy_nodes sub ON pt.node_id = sub.id
+                    WHERE sub.id = t.id OR sub.id LIKE t.id || '.%') AS paper_count,
+                  (SELECT COUNT(*)
+                     FROM matrix_gaps mg
+                     JOIN taxonomy_nodes sub ON mg.node_id = sub.id
+                    WHERE sub.id = t.id OR sub.id LIKE t.id || '.%') AS gap_count
+             FROM taxonomy_nodes t
+            WHERE t.depth = 1"""
+    )
+    domains = []
+    for row in rows:
+        papers = int(row.get("paper_count") or 0)
+        if papers <= 0:
+            continue
+        node_id = row.get("id")
+        # `matrix_gaps` only covers gaps the matrix builder reached; the node
+        # summary carries the rest.  Taking the larger of the two is what the
+        # taxonomy view already does, so the map and that view agree.
+        open_questions = int(row.get("gap_count") or 0)
+        try:
+            summary = tax.get_node_summary(node_id)
+        except Exception:
+            summary = None
+        if summary:
+            open_questions = max(open_questions, len(summary.get("current_gaps") or []))
+        domains.append({
+            "id": node_id,
+            "label": row.get("name"),
+            "papers": papers,
+            "open_questions": open_questions,
+        })
+    domains.sort(key=lambda item: (-item["papers"], item["label"] or ""))
+
+    shown = domains[:_HOMEPAGE_MAP_VISIBLE]
+    rest = domains[_HOMEPAGE_MAP_VISIBLE:]
+    other = None
+    if rest:
+        other = {
+            "count": len(rest),
+            "papers": sum(item["papers"] for item in rest),
+        }
+
+    center = None
+    try:
+        root = tax.get_node(ROOT_NODE_ID)
+        if root:
+            center = {"id": root.get("id"), "label": root.get("name")}
+    except Exception:
+        app.logger.exception("homepage map root lookup failed")
+
+    return {
+        "center": center,
+        "domains": shown,
+        "other": other,
+        "domains_total": len(domains),
+    }
+
+
+def _build_homepage_payload() -> dict:
+    stats = _stats_cache.get() or {}
+
+    def _count(key: str) -> int:
+        return int(stats.get(key) or 0)
+
+    try:
+        map_data = _homepage_map()
+    except Exception:
+        app.logger.exception("homepage map failed")
+        map_data = {"center": None, "domains": [], "other": None, "domains_total": 0}
+
+    try:
+        latest = _homepage_latest_conclusion()
+    except Exception:
+        app.logger.exception("homepage latest conclusion failed")
+        latest = None
+
+    return {
+        "generated_at": time.time(),
+        "ready": bool(stats),
+        # The four-step research chain the hero renders, in chain order.
+        "chain": {
+            "papers_total": _count("papers_total"),
+            "papers_processed": _count("papers_processed"),
+            "topics_total": _count("deep_insights_total"),
+            "experiments_completed": _count("experiments_completed"),
+            "conclusions_total": _count("scientific_decisions_total"),
+            "conclusions_supported": _count("decisions_supported"),
+            "conclusions_refuted": _count("decisions_refuted"),
+            "conclusions_inconclusive": _count("decisions_inconclusive"),
+        },
+        "runtime": _homepage_runtime(),
+        "counts": {
+            "papers_total": _count("papers_total"),
+            "graph_entities_total": _count("graph_entities_total"),
+            "graph_relations_total": _count("graph_relations_total"),
+            "contradictions_total": _count("contradictions_total"),
+            "experiment_runs_total": _count("experiment_runs_total"),
+            # Planner estimates are labelled so the page can say so rather than
+            # presenting a reltuples figure as an exact count.
+            "estimated": list(stats.get("estimated_fields") or []),
+        },
+        "latest_conclusion": latest,
+        "map": map_data,
+    }
+
+
+@app.route("/api/homepage")
+def api_homepage():
+    """Everything the public front page renders, in one cached read."""
+    now = time.monotonic()
+    with _homepage_lock:
+        payload = _homepage_cache["payload"]
+        if payload is not None and now - _homepage_cache["stamp"] < _HOMEPAGE_TTL:
+            return jsonify(payload)
+    payload = _build_homepage_payload()
+    with _homepage_lock:
+        _homepage_cache["payload"] = payload
+        _homepage_cache["stamp"] = time.monotonic()
+    return jsonify(payload)
+
+
 @app.route("/api/health/data")
 def api_data_health():
     """Fail closed unless the database and cached dashboard data are usable."""
@@ -2225,9 +2510,12 @@ def api_agent_office():
         for index, boundary in enumerate(iter_agent_boundaries()):
             sub_agents = []
             for module in boundary.modules:
-                sub_agents.append({"name": _office_leaf(module), "path": module, "kind": "module"})
+                # The dotted import path names an internal source layout; the
+                # office view only ever renders the leaf, so publishing the
+                # path just handed readers a map of the codebase.
+                sub_agents.append({"name": _office_leaf(module), "kind": "module"})
             for script in boundary.scripts:
-                sub_agents.append({"name": _office_leaf(script), "path": script, "kind": "script"})
+                sub_agents.append({"name": _office_leaf(script), "kind": "script"})
             total_sub_agents += len(sub_agents)
             items = items_by_key.get(boundary.key, [])[:8]
             departments.append({
@@ -2429,11 +2717,37 @@ def api_processing():
         return _api_failure("processing", exc, status=503)
 
 
+# Scheduler tuning and raw operator notes describe how the deployment is run,
+# not what the research found.  The process view needs neither, and publishing
+# them handed a reader the controller's concurrency limits and internal
+# selection notes (`agenda_selection:3432`) verbatim.
+_AUTOMATION_PRIVATE_KEYS = frozenset({
+    "interval_seconds", "max_active", "max_parallel_repairs", "max_parallel_reviews",
+})
+_AUTOMATION_PRIVATE_ITEM_KEYS = frozenset({
+    "last_error", "last_note", "stage_last_error",
+})
+
+
+def _public_automation(snapshot: Any) -> Any:
+    """Drop operational internals from the automation snapshot."""
+    if isinstance(snapshot, dict):
+        return {
+            key: _public_automation(value)
+            for key, value in snapshot.items()
+            if key not in _AUTOMATION_PRIVATE_KEYS
+            and key not in _AUTOMATION_PRIVATE_ITEM_KEYS
+        }
+    if isinstance(snapshot, list):
+        return [_public_automation(item) for item in snapshot]
+    return snapshot
+
+
 @app.route("/api/automation")
 def api_automation():
     """Read-only status for background automation workers."""
     try:
-        return jsonify(_automation_snapshot())
+        return jsonify(_public_automation(_automation_snapshot()))
     except Exception as exc:
         return _api_failure("automation", exc)
 
