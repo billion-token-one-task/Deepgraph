@@ -333,9 +333,12 @@ class TheAgendaKeywordRuleIsAskedBeforeTheRowExists(unittest.TestCase):
         reject = {"keywords": ["fine-tuning", "weight update"]}
 
     def test_the_matched_phrase_is_named(self):
-        plan = executable_plan()
-        plan["proposed_method"] = "A prompt-only intervention, with no fine-tuning."
-        review = review_candidate_plan(plan, agenda=self.Agenda(), check_remote=False)
+        review = review_candidate_plan(
+            executable_plan(),
+            agenda=self.Agenda(),
+            claim_text="A prompt-only intervention, with no fine-tuning.",
+            check_remote=False,
+        )
         self.assertIn("topic_gate_agenda_reject_keyword", review.codes)
         detail = next(
             item.detail
@@ -344,16 +347,36 @@ class TheAgendaKeywordRuleIsAskedBeforeTheRowExists(unittest.TestCase):
         )
         self.assertIn("fine-tuning", detail)
 
-    def test_a_clean_candidate_is_not_flagged(self):
+    def test_a_clean_claim_is_not_flagged(self):
+        review = review_candidate_plan(
+            executable_plan(),
+            agenda=self.Agenda(),
+            claim_text="A prompt-only intervention with frozen weights.",
+            check_remote=False,
+        )
+        self.assertEqual(review.codes, ())
+
+    def test_the_plan_prose_is_not_searched(self):
+        """The pre-check must look exactly where the gate looks, or it refuses
+        plans the gate would admit -- a risk register that disclaims weight
+        updates is not a claim to perform them."""
         plan = executable_plan()
-        plan["proposed_method"] = "A prompt-only intervention with frozen weights."
-        review = review_candidate_plan(plan, agenda=self.Agenda(), check_remote=False)
+        plan["risks"] = [{"risk": "may need fine-tuning to converge"}]
+        review = review_candidate_plan(
+            plan,
+            agenda=self.Agenda(),
+            claim_text="A prompt-only intervention with frozen weights.",
+            check_remote=False,
+        )
         self.assertEqual(review.codes, ())
 
     def test_no_agenda_means_no_opinion(self):
-        plan = executable_plan()
-        plan["proposed_method"] = "We do no fine-tuning."
-        self.assertEqual(review_candidate_plan(plan, check_remote=False).codes, ())
+        review = review_candidate_plan(
+            executable_plan(),
+            claim_text="We do no fine-tuning.",
+            check_remote=False,
+        )
+        self.assertEqual(review.codes, ())
 
 
 class DeploymentWeatherIsNotAPlanDefect(unittest.TestCase):

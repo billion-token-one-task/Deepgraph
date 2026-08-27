@@ -277,6 +277,7 @@ def review_candidate_plan(
     environment: PreflightEnvironment | None = None,
     resolver: RepositoryResolver | None = None,
     registry: RunnerRegistry | None = None,
+    claim_text: str = "",
     check_remote: bool = True,
 ) -> ContractReview:
     """Return every reason this plan could not be executed as written.
@@ -328,7 +329,7 @@ def review_candidate_plan(
     for code in sorted(capability.structural_blockers(requirements)):
         violations.append(_describe(code, requirements, capability, plan, registry))
 
-    violations.extend(_agenda_scope_violations(plan, agenda))
+    violations.extend(_agenda_scope_violations(claim_text, agenda))
 
     if violations or not check_remote:
         return ContractReview(tuple(violations), plan, tuple(normalizations))
@@ -360,7 +361,9 @@ def _nearest_capability(
     )[0]
 
 
-def _agenda_scope_violations(plan: Mapping[str, Any], agenda: Any) -> list[ContractViolation]:
+def _agenda_scope_violations(
+    claim_text: str, agenda: Any
+) -> list[ContractViolation]:
     """Run the topic gate's keyword rule here, where a rewrite is still free.
 
     The gate is deterministic and runs on the stored row, so a candidate that
@@ -369,6 +372,10 @@ def _agenda_scope_violations(plan: Mapping[str, Any], agenda: Any) -> list[Contr
     the same question before the row exists costs nothing and gives the
     generator the one fact it needs. The gate itself is untouched: this reads
     the agenda's own reject list and reports, it does not decide.
+
+    ``claim_text`` is the same text the gate now matches: what the candidate
+    says it will do, not its risk register. A pre-check that looked wider than
+    the gate would refuse plans the gate would admit.
     """
     if agenda is None:
         return []
@@ -378,14 +385,7 @@ def _agenda_scope_violations(plan: Mapping[str, Any], agenda: Any) -> list[Contr
         return []
     if not phrases:
         return []
-    text = " ".join(
-        str(plan.get(field) or "")
-        for field in ("problem_statement", "proposed_method", "experimental_plan")
-    ).lower()
-    if not text.strip():
-        import json as _json
-
-        text = _json.dumps(plan, ensure_ascii=False, default=str).lower()
+    text = str(claim_text or "").lower()
     found = sorted({phrase for phrase in phrases if phrase.lower() in text})
     if not found:
         return []

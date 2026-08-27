@@ -1453,6 +1453,15 @@ def _discover_exact_bounded_proposal(
     # genuinely new input rather than replaying the answer that was refused.
     base_experiment_prompt = _build_exact_experiment_prompt(problem, method)
     agenda_rule = _agenda_scope_rule(agenda_id)
+    # The same text the topic gate will match this candidate's claim against.
+    claim_text = " ".join(
+        str(value or "")
+        for value in (
+            problem["title"],
+            problem["problem_statement"],
+            json.dumps(method, ensure_ascii=False),
+        )
+    )
     resolver = RepositoryResolver()
     experiment_tokens = 0
     experiment_calls = 0
@@ -1486,6 +1495,7 @@ def _discover_exact_bounded_proposal(
             _experimental_plan_payload(experiment),
             agenda=agenda_rule,
             resolver=resolver,
+            claim_text=claim_text,
         )
         _fold_resolved_identities(experiment, review)
         if review.ok:
@@ -1898,6 +1908,14 @@ def _design_experiment_within_contract(
     from meta_harness.grant_usage import GrantUsageError
 
     base_prompt = _build_experiment_prompt(problem, method)
+    claim_text = " ".join(
+        str(value or "")
+        for value in (
+            problem.get("title"),
+            problem.get("problem_statement") or problem.get("formal_statement"),
+            json.dumps(method, ensure_ascii=False),
+        )
+    )
     base_key = f"proposal-experiment:{agenda_id}:{proposal_candidate_id}"
     result3: dict = {}
     experiment_route: dict = {}
@@ -1957,6 +1975,7 @@ def _design_experiment_within_contract(
             _experimental_plan_payload(result3),
             agenda=agenda,
             resolver=resolver,
+            claim_text=claim_text,
         )
         # Carry the identities the hub resolved for us into what gets stored,
         # so the correction is not re-derived (or lost) downstream.

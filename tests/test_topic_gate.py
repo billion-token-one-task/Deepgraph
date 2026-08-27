@@ -209,6 +209,54 @@ class NoveltyAndFalsifiabilityTests(unittest.TestCase):
             screen_candidate(_candidate(), agenda).reason_codes,
         )
 
+    def test_a_disclaimer_in_the_plan_is_not_a_claim_to_do_it(self):
+        """Idea 238 was refused 197 times in one day for saying it would not.
+
+        Its method text read "rejects sub-states without requiring weight
+        updates or fine-tuning", and the matcher sees a phrase, not a negation.
+        Refusal reads the candidate's claim; the risk register and the
+        expected-result prose are not claims, and scope still reads everything.
+        """
+        agenda = _agenda(reject={"keywords": ["fine-tuning"]})
+        candidate = _candidate(
+            experimental_plan=json.dumps(
+                {"risks": [{"risk": "may need fine-tuning to converge"}]}
+            ),
+        )
+        self.assertNotIn(
+            REASON_REJECT_KEYWORD,
+            screen_candidate(candidate, agenda).reason_codes,
+        )
+
+    def test_a_claim_to_do_the_forbidden_thing_is_still_refused(self):
+        agenda = _agenda(reject={"keywords": ["fine-tuning"]})
+        candidate = _candidate(
+            problem_statement=(
+                "Does fine-tuning sparse attention preserve robustness under "
+                "input noise at the same parameter count as dense attention?"
+            ),
+        )
+        self.assertIn(
+            REASON_REJECT_KEYWORD,
+            screen_candidate(candidate, agenda).reason_codes,
+        )
+
+    def test_scope_is_still_earned_from_the_whole_candidate(self):
+        """A candidate that names its agenda's terms only in the plan stays in
+        scope: narrowing applies to refusal, not to admission."""
+        agenda = _agenda(focus=["robustness"], reject={"keywords": ["fine-tuning"]})
+        candidate = _candidate(
+            title="An intervention",
+            problem_statement=(
+                "Does the intervention preserve accuracy under input noise at "
+                "the same parameter count as the unmodified baseline?"
+            ),
+            experimental_plan=json.dumps({"note": "measures robustness"}),
+        )
+        decision = screen_candidate(candidate, agenda)
+        self.assertNotIn(REASON_SCOPE_MISMATCH, decision.reason_codes)
+        self.assertNotIn(REASON_GENERIC, decision.reason_codes)
+
     def test_low_expected_information_is_rejected(self):
         record = _gate_record()
         record["prediction"]["confidence"] = 0.985

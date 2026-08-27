@@ -52,6 +52,7 @@ from typing import Any, Mapping
 
 from agents.agenda_relevance import (
     agenda_scope_terms,
+    candidate_claim_text,
     candidate_scope_text,
     insight_in_scope,
 )
@@ -261,8 +262,11 @@ def _scope_blockers(
         )
         return blockers
     text = candidate_scope_text(dict(candidate))
+    # Scope is earned from anywhere the candidate names the agenda's terms;
+    # refusal is only for what it says it will do. See candidate_claim_text.
+    claim = candidate_claim_text(dict(candidate))
     for phrase in sorted(str(value) for value in (agenda.reject or {}).get("keywords") or []):
-        if phrase.lower() in text:
+        if phrase.lower() in claim:
             blockers.append(
                 {
                     "question": "agenda_scope",

@@ -43,6 +43,38 @@ def agenda_constraint_block(agenda: ResearchAgenda) -> str:
     )
 
 
+# What the candidate asserts it will do. The reject list is a statement about
+# method -- "no weight updates here" -- so it must be matched against the
+# candidate's own claim, not against every sentence in the file.
+_CLAIM_FIELDS = (
+    "title",
+    "problem_statement",
+    "formal_structure",
+    "transformation",
+    "proposed_method",
+)
+
+
+def candidate_claim_text(candidate: dict[str, Any]) -> str:
+    """The fields where a candidate says what it proposes to do.
+
+    ``candidate_scope_text`` deliberately includes the whole experimental and
+    evidence plan, because an older candidate often names its agenda's terms
+    only there. That breadth is right for asking "is this in scope"; it is
+    wrong for asking "does this do a forbidden thing", because those plans
+    carry risk registers and expected-result prose that discuss the forbidden
+    thing in order to disclaim it. On 2026-08-27 five candidates were refused
+    642 times in one day, every one of them for a sentence like "without
+    requiring weight updates or fine-tuning" -- three of the five matched
+    inside a risks entry. The matcher sees a phrase, not a negation, so the
+    only fix that does not need it to read English is to stop showing it prose
+    that was never a claim.
+    """
+    return " ".join(
+        str(candidate.get(field) or "") for field in _CLAIM_FIELDS
+    ).lower()
+
+
 def candidate_scope_text(candidate: dict[str, Any]) -> str:
     fields = (
         "title",
