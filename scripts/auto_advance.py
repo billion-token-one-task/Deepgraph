@@ -97,7 +97,13 @@ ARTIFACT_REQUIREMENTS = list(REQUIRED_ARTIFACTS)
 # contract (2a3bf7d), and the GPU host had no transformers/datasets because
 # the remote auto-install is disabled by default. Three attempts, nothing
 # measured about either idea.
-RECYCLE_EPOCH = "candidate-contract-and-remote-deps-2026-08-26"
+# Bumped 2026-08-27. Idea 241 held recycles=3 for three failures produced by
+# defects fixed and deployed the same day: the proxy named the deployment's
+# default benchmark instead of the candidate's contract, the GPU host had no
+# transformers or datasets, and a token reservation orphaned by the staleness
+# sweep held 43% of its grant so every forge refused. None of the three
+# measured anything about the hypothesis.
+RECYCLE_EPOCH = "stranded-reservation-and-audit-holdout-2026-08-27"
 
 # A preflight whose blockers cannot heal on their own (missing requirements,
 # unresolvable declared repos) is retried this many times before the candidate
