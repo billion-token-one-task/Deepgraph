@@ -254,6 +254,20 @@ def _advance_settled_evidence_state(
                 actor="settled_compute_handoff_v1",
             )
             counts[target] += 1
+            # An OutcomeRecord stamps state_decision from the run at assembly
+            # time and is never restamped, and advance_to_full_benchmark
+            # requires the outcome and the run to agree. On the colab path the
+            # transition happened before assembly, so they agreed by accident
+            # of ordering; advancing afterwards left outcomes 200 and 202
+            # reading 'planned' against runs that had reached sanity_passed,
+            # and neither candidate could be funded for the benchmark that
+            # would turn its measured -0.315 into a verdict. Append the record
+            # for the new state, which is what the colab path did when it
+            # produced three outcomes for run 264.
+            MetaHarnessRepository().assemble_and_record_outcome(
+                resource_grant_id=int(record["grant_id"] or 0),
+                experiment_run_id=run_id,
+            )
         except Exception:  # noqa: BLE001 - never undo a settled compute job
             db.rollback()
             counts["refused"] += 1
