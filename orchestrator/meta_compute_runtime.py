@@ -733,12 +733,31 @@ def _require_grant_preflight(grant_row: dict, *, backend_kind: str) -> None:
         PreflightPersistenceError,
     )
 
+    # The preflight records where the CANDIDATE ran. For a pilot that is also
+    # where this submission goes, so requiring them equal is a real check. An
+    # evidence_audit holdout is a different flight on purpose -- it reruns the
+    # locked contract on unseen data, and which accelerator hosts it is the
+    # audit's choice, not a property of the candidate. Equating the two refused
+    # ideas 237 and 241, both measured on ssh_gpu and both one rung from the
+    # first directional verdict this repository would produce from a candidate
+    # carrying signal provenance, with passed_candidate_preflight_required
+    # against preflights that had passed with their revisions bound. For that
+    # stage, validate against the grant's own allowlist: the preflight must
+    # still be real, declared and revision-bound.
+    allowed: tuple[str, ...] = (str(backend_kind),)
+    if str(grant_row.get("stage") or "") == "evidence_audit":
+        declared = [
+            str(value)
+            for value in _load_json_list(grant_row.get("backend_allowlist_json"))
+            if str(value) != "llm"
+        ]
+        allowed = tuple(declared) or (str(backend_kind),)
     try:
         CandidatePreflightRepository().require_passed(
             preflight_result_id=int(grant_row.get("preflight_result_id") or 0),
             agenda_id=int(grant_row["agenda_id"]),
             idea_id=int(grant_row["idea_id"]),
-            allowed_backends=(str(backend_kind),),
+            allowed_backends=allowed,
             required_artifacts=tuple(
                 _load_json_list(grant_row.get("artifact_requirements_json"))
             ),

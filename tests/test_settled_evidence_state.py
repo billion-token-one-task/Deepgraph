@@ -170,3 +170,31 @@ class HoldoutAdmissionLeaseTests(unittest.TestCase):
         from meta_harness.failure_policy import measured_nothing
 
         self.assertTrue(measured_nothing("transport:admission_abandoned"))
+
+
+class HoldoutBackendIndependenceTests(unittest.TestCase):
+    """A holdout is a different flight on purpose.
+
+    The preflight records where the candidate ran. For a pilot, requiring the
+    submission to match it is a real check. For an evidence_audit holdout --
+    which reruns the locked contract on unseen data, on whatever accelerator
+    the audit chooses -- equating them refused two candidates measured on
+    ssh_gpu with passed_candidate_preflight_required.
+    """
+
+    def test_the_audit_stage_validates_against_the_grants_own_allowlist(self):
+        import inspect
+        from orchestrator import meta_compute_runtime as mcr
+
+        body = inspect.getsource(mcr._require_grant_preflight)
+        self.assertIn('"evidence_audit"', body)
+        self.assertIn("backend_allowlist_json", body)
+
+    def test_the_grant_row_actually_carries_what_the_branch_reads(self):
+        """SELECT * is what makes the branch reachable; keep it that way."""
+        import inspect
+        from orchestrator import meta_compute_runtime as mcr
+
+        for fn in (mcr.submit_colab_work, mcr.submit_experiment_run):
+            with self.subTest(fn=fn.__name__):
+                self.assertIn("SELECT * FROM resource_grants", inspect.getsource(fn))
