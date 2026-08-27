@@ -129,3 +129,21 @@ class StateOrderingTests(unittest.TestCase):
                 "unmeasurable_retracted", "sanity_passed"
             )
         )
+
+
+class ValidationGrantStageTests(unittest.TestCase):
+    """A full_benchmark grant is compute authority, not a different currency.
+
+    run_validation_loop accepted only pilot and validation, so idea 237's
+    benchmark run -- funded by the full_benchmark grant issued precisely to
+    run it -- was refused as having no authority at all.
+    """
+
+    def test_the_loop_accepts_the_grant_that_funds_a_benchmark(self):
+        import inspect
+        from agents import validation_loop
+
+        body = inspect.getsource(validation_loop.run_validation_loop)
+        self.assertIn("'full_benchmark'", body)
+        self.assertIn("'pilot'", body)
+        self.assertIn("'validation'", body)

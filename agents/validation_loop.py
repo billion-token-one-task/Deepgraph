@@ -3198,7 +3198,8 @@ def run_validation_loop(run_id: int, execution_context: dict | None = None) -> d
     grant = db.fetchone(
         """
         SELECT id FROM resource_grants
-        WHERE id=? AND agenda_id=? AND stage IN ('pilot', 'validation')
+        WHERE id=? AND agenda_id=?
+          AND stage IN ('pilot', 'validation', 'full_benchmark')
           AND status='active' AND expires_at > CURRENT_TIMESTAMP
         """,
         (run.get("resource_grant_id"), run.get("agenda_id")),
@@ -3207,7 +3208,7 @@ def run_validation_loop(run_id: int, execution_context: dict | None = None) -> d
         return {
             "run_id": run_id,
             "verdict": "blocked",
-            "reason": "active pilot/validation ResourceGrant required",
+            "reason": "an active pilot, validation or full_benchmark ResourceGrant is required",
         }
 
     insight_id = run["deep_insight_id"]
