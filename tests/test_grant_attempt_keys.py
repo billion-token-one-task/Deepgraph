@@ -109,7 +109,15 @@ class CallSiteTests(unittest.TestCase):
 
         from agents import paper_idea_agent
 
-        source = inspect.getsource(paper_idea_agent.discover_paper_ideas)
+        # The design call moved into the contract loop, which allocates one
+        # attempt key per try; both halves of the ring are still covered.
+        source = "\n".join(
+            inspect.getsource(item)
+            for item in (
+                paper_idea_agent.discover_paper_ideas,
+                paper_idea_agent._design_experiment_within_contract,
+            )
+        )
         self.assertIn("next_attempt_key", source)
         # The bare operation name may still appear as the *base* key; what must
         # never happen again is a bare key reaching the ledger as the
@@ -117,7 +125,7 @@ class CallSiteTests(unittest.TestCase):
         keys = re.findall(r"idempotency_key=([^,\n]+)", source)
         self.assertEqual(len(keys), 2, f"unexpected proposal call sites: {keys}")
         self.assertEqual(
-            sorted(item.strip() for item in keys), ["experiment_key", "method_key"]
+            sorted(item.strip() for item in keys), ["attempt_key", "method_key"]
         )
 
     def test_forge_ring_no_longer_keeps_its_own_copy(self):

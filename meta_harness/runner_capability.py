@@ -295,7 +295,17 @@ class ExperimentRequirements:
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     @classmethod
-    def from_dict(cls, value: Mapping[str, Any]) -> "ExperimentRequirements":
+    def parse_unvalidated(cls, value: Mapping[str, Any]) -> "ExperimentRequirements":
+        """Build requirements from a plan block without judging them.
+
+        ``from_dict`` validates, and ``validate`` reports only the first defect
+        it meets. A generated proposal usually carries several independent ones
+        at once -- the 2026-08-25..27 batch averaged 2.9 per candidate -- and a
+        generator told about one defect at a time cannot repair the rest inside
+        a bounded number of attempts. Parsing and judging are separated so a
+        caller can collect every violation in one pass. Nothing here refuses
+        anything: a caller that needs the guarantee still calls ``validate``.
+        """
         dataset = value.get("dataset") or {}
         model = value.get("model") or {}
         metric = value.get("metric") or {}
@@ -361,6 +371,11 @@ class ExperimentRequirements:
                 value.get("schema_version") or "experiment_requirements_v1"
             ),
         )
+        return result
+
+    @classmethod
+    def from_dict(cls, value: Mapping[str, Any]) -> "ExperimentRequirements":
+        result = cls.parse_unvalidated(value)
         result.validate()
         return result
 

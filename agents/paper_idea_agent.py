@@ -210,7 +210,13 @@ You will receive the problem statement and proposed method.
 10. **Execution Requirements**: Declare the cheapest falsification run as a
 structured capability contract before any execution grant exists.
    - Use concrete public dataset/model repository IDs; never use a display
-     name as a repository ID.
+     name as a repository ID. The same rule binds "datasets" and "baselines"
+     above: the execution contract is checked against the repository ids named
+     there, so a plan that says "MOCHEG" in one place and "owner/mocheg" in the
+     other is refused as unbound. Write the repository id in both.
+   - "field_mapping" is keyed by CONTRACT ROLE (the dataset field roles in the
+     capability envelope), and valued by the dataset's own column name. A key
+     that is a column name is refused.
    - Set "revision" to "main" unless you are copying a revision hash from
      material provided in this prompt. NEVER invent a commit hash: a
      fabricated revision fails the metadata preflight and strands the idea
@@ -231,20 +237,20 @@ Return JSON:
   "baselines": [
     {
       "name": "Method name",
-      "model": "Specific model (e.g., Llama-3-8B, ViT-L/14)",
+      "model": "Hugging Face repository id, owner/name -- NOT a display name. One baseline must carry exactly the string in execution_requirements.model.repository_id",
       "source_paper": "paper ID if known",
       "expected_performance": "Estimated metric value"
     }
   ],
   "datasets": [
     {
-      "name": "Dataset name",
+      "name": "Hugging Face repository id, owner/name -- NOT a display name, and no trailing parenthetical. One dataset must carry exactly the string in execution_requirements.dataset.repository_id",
       "split": "train/val/test sizes",
       "why": "Why this dataset tests the hypothesis"
     }
   ],
   "metrics": {
-    "primary": "metric name and why",
+    "primary": "begin with the exact execution_requirements.metric.name token, then the explanation",
     "secondary": ["other metrics"],
     "significance": "testing method"
   },
@@ -276,14 +282,14 @@ Return JSON:
       "revision": "immutable commit or explicit tag",
       "config": "dataset config or empty string",
       "split": "evaluation split",
-      "field_mapping": {"semantic_role": "actual_column_name"}
+      "field_mapping": {"<contract role from the capability envelope above>": "actual_column_name"}
     },
     "model": {
       "repository_id": "public repository id",
       "revision": "immutable commit or explicit tag",
       "framework": "transformers|sentence_transformers|another explicit framework",
       "task": "causal_lm|sequence_classification|embedding|another explicit task",
-      "min_vram_gb": 0,
+      "min_vram_gb": "estimate from the checkpoint you named: fp16 weights plus KV cache, in GB. Never 0 for a model that needs an accelerator",
       "requires_cuda": false,
       "quantization": "none|4bit|8bit"
     },
@@ -296,9 +302,9 @@ Return JSON:
     "network_required": true,
     "min_disk_gb": 1,
     "seeds": [0],
-    "sample_cap": 32,
+    "sample_cap": 200,
     "artifact_contract": ["final_results", "raw_predictions", "environment_manifest", "dataset_manifest", "model_manifest"],
-    "preferred_backends": ["cpu|local_gpu|ssh_gpu|colab_gpu"]
+    "preferred_backends": ["only backends the capability envelope above lists for your task_protocol; a protocol that needs an accelerator does not accept cpu"]
   },
   "risks": [
     {
@@ -1706,6 +1712,166 @@ def _proposal_candidate_and_grant(
     return candidate_id, grant
 
 
+from agents.candidate_contract import (  # noqa: E402
+    RepositoryResolver,
+    render_violations,
+    review_candidate_plan,
+)
+
+CONTRACT_ATTEMPTS = 3
+
+
+def _experimental_plan_payload(
+    result3: dict,
+    *,
+    paper_title: str = "",
+    raw_paper_title: str = "",
+) -> dict:
+    """The plan exactly as it will be stored.
+
+    One definition, so the review that runs before the row is written judges
+    the same object preflight reads afterwards. When these were assembled in
+    two places they could disagree, and a disagreement here means a candidate
+    passes review and is refused by the gate for a reason nobody was told.
+    """
+    return {
+        "baselines": result3.get("baselines", []),
+        "datasets": result3.get("datasets", []),
+        "metrics": result3.get("metrics", {}),
+        "ablations": result3.get("ablations", []),
+        "expected_results": result3.get("expected_results", {}),
+        "compute_budget": result3.get("compute_budget", {}),
+        "execution_requirements": result3.get("execution_requirements", {}),
+        "risks": result3.get("risks", []),
+        "paper_title": paper_title,
+        "raw_paper_title": raw_paper_title,
+        "title_source": "paper_idea_title_policy",
+    }
+
+
+def _design_experiment_within_contract(
+    *,
+    problem: dict,
+    method: dict,
+    agenda_id: int,
+    agenda,
+    proposal_candidate_id: int,
+    proposal_grant: dict,
+    attempts,
+    prompt_version: str,
+    proposal_token_cap: int,
+    resolver,
+):
+    """Ask for an executable plan, and say what was wrong until it is one.
+
+    Before this loop existed the design call ran once and whatever came back
+    was stored. Preflight then judged it -- after the row existed, after it had
+    counted against the agenda's candidate quota, after the grant was spent --
+    and nothing carried the verdict back to the generator, so the next
+    candidate repeated the same defect. Of the 35 candidates generated for
+    agendas 16/17/18 between 2026-08-25 and 08-27, two were executable.
+
+    Attempts come from the grant's own ledger, so the number of tries is
+    bounded by the same budget everything else is, and an exhausted candidate
+    is refused rather than stored unexecutable.
+    """
+    from meta_harness.grant_usage import GrantUsageError
+
+    base_prompt = _build_experiment_prompt(problem, method)
+    base_key = f"proposal-experiment:{agenda_id}:{proposal_candidate_id}"
+    result3: dict = {}
+    experiment_route: dict = {}
+    review = None
+    tokens = 0
+    calls = 0
+
+    for attempt in range(1, CONTRACT_ATTEMPTS + 1):
+        try:
+            attempt_key = attempts.next_attempt_key(
+                base_key, max_attempts=CONTRACT_ATTEMPTS
+            )
+        except GrantUsageError as exc:
+            print(
+                f"[PAPER_IDEA] Contract loop out of attempts after {attempt - 1}: {exc}",
+                flush=True,
+            )
+            break
+
+        prompt = base_prompt
+        if review is not None:
+            prompt = f"{base_prompt}\n\n{render_violations(review)}"
+        print(
+            f"[PAPER_IDEA] Call 3/3 attempt {attempt}/{CONTRACT_ATTEMPTS}: "
+            f"designing experiments for '{method.get('name', '')}'...",
+            flush=True,
+        )
+        try:
+            result3, tokens3, experiment_route = call_llm_json_for_role(
+                EXPERIMENT_DESIGN_SYSTEM,
+                prompt,
+                agenda_id=agenda_id,
+                idea_id=proposal_candidate_id,
+                role="proposer",
+                stage="proposal",
+                resource_grant_id=int(proposal_grant["id"]),
+                operation="proposal_experiment_design",
+                idempotency_key=attempt_key,
+                prompt_version=prompt_version,
+                max_tokens=proposal_token_cap,
+            )
+            tokens += tokens3
+            calls += 1
+        except Exception as exc:
+            if _llm_temporarily_unavailable(exc):
+                print(
+                    f"[PAPER_IDEA] Experiment design skipped: LLM unavailable ({exc})",
+                    flush=True,
+                )
+            else:
+                print(f"[PAPER_IDEA] Experiment design failed: {exc}", flush=True)
+            return {}, experiment_route, tokens, calls, review
+
+        if not isinstance(result3, dict):
+            result3 = {}
+        review = review_candidate_plan(
+            _experimental_plan_payload(result3),
+            agenda=agenda,
+            resolver=resolver,
+        )
+        # Carry the identities the hub resolved for us into what gets stored,
+        # so the correction is not re-derived (or lost) downstream.
+        requirements = review.plan.get("execution_requirements")
+        if isinstance(requirements, dict) and requirements:
+            result3["execution_requirements"] = requirements
+        for field_name in ("datasets", "baselines"):
+            if field_name in review.plan:
+                result3[field_name] = review.plan[field_name]
+        if review.ok:
+            if attempt > 1:
+                print(
+                    f"[PAPER_IDEA] Contract satisfied on attempt {attempt}.",
+                    flush=True,
+                )
+            return result3, experiment_route, tokens, calls, review
+        if not review.actionable:
+            # Every remaining objection is a condition of the deployment. A
+            # rewritten plan cannot change the weather, and preflight defers
+            # (not refuses) on these, so store it and let the retry path run.
+            print(
+                "[PAPER_IDEA] Contract blocked only by deployment conditions "
+                f"({', '.join(review.codes)}); storing for the deferred retry path.",
+                flush=True,
+            )
+            return result3, experiment_route, tokens, calls, None
+        print(
+            f"[PAPER_IDEA] Plan refused ({', '.join(review.codes)}); "
+            "returning the reasons to the generator.",
+            flush=True,
+        )
+
+    return result3, experiment_route, tokens, calls, review
+
+
 def discover_paper_ideas(
     max_problems: int = 8,
     max_papers: int | None = None,
@@ -1740,6 +1906,24 @@ def discover_paper_ideas(
     print(f"[PAPER_IDEA] Starting Tier 2 discovery...", flush=True)
     total_tokens = 0
     total_calls = 0
+
+    # Read once and shared by every candidate this pass produces: the agenda
+    # carries the keyword rule the topic gate will apply, and the resolver
+    # caches repository identities so a pass asking about the same dozen
+    # repositories pays for each of them once.
+    from agents.agenda_loader import get_agenda
+    from orchestrator.pipeline import log_event
+
+    try:
+        agenda = get_agenda(int(agenda_id))
+    except Exception as exc:  # noqa: BLE001
+        # The keyword rule is an early warning, not the ruling: the topic gate
+        # still applies it to the stored row. Losing the warning costs one
+        # regeneration; refusing to propose because the agenda row could not be
+        # read would cost the whole pass.
+        print(f"[PAPER_IDEA] Agenda scope rule unavailable ({exc})", flush=True)
+        agenda = None
+    contract_resolver = RepositoryResolver()
 
     # Stage 0: Gather signals
     signals = get_tier2_signals(
@@ -1838,9 +2022,9 @@ def discover_paper_ideas(
             method_key = attempts.next_attempt_key(
                 f"proposal-method:{agenda_id}:{proposal_candidate_id}"
             )
-            experiment_key = attempts.next_attempt_key(
-                f"proposal-experiment:{agenda_id}:{proposal_candidate_id}"
-            )
+            # The experiment key is allocated per attempt inside the contract
+            # loop. Taking one here spent an attempt even when the method call
+            # returned nothing usable and the design call never happened.
         except GrantUsageError as exc:
             print(
                 f"[PAPER_IDEA] Proposal candidate {proposal_candidate_id} "
@@ -1950,33 +2134,48 @@ def discover_paper_ideas(
             )
             continue
 
-        # Stage 3: Experimental Design
-        print(f"[PAPER_IDEA] Call 3/3: Designing experiments for '{method['name']}'...", flush=True)
-        exp_prompt = _build_experiment_prompt(problem, method)
-        experiment_route: dict = {}
-        try:
-            result3, tokens3, experiment_route = call_llm_json_for_role(
-                EXPERIMENT_DESIGN_SYSTEM,
-                exp_prompt,
-                agenda_id=agenda_id,
-                idea_id=proposal_candidate_id,
-                role="proposer",
-                stage="proposal",
-                resource_grant_id=int(proposal_grant["id"]),
-                operation="proposal_experiment_design",
-                idempotency_key=experiment_key,
-                prompt_version=prompt_version,
-                max_tokens=proposal_token_cap,
+        # Stage 3: Experimental Design, bounded by the runner contract
+        (
+            result3,
+            experiment_route,
+            tokens3,
+            calls3,
+            contract_review,
+        ) = _design_experiment_within_contract(
+            problem=problem,
+            method=method,
+            agenda_id=agenda_id,
+            agenda=agenda,
+            proposal_candidate_id=proposal_candidate_id,
+            proposal_grant=proposal_grant,
+            attempts=attempts,
+            prompt_version=prompt_version,
+            proposal_token_cap=proposal_token_cap,
+            resolver=contract_resolver,
+        )
+        total_tokens += tokens3
+        total_calls += calls3
+        if contract_review is not None and not contract_review.ok:
+            # Storing it would spend a candidate slot on something no runner
+            # can execute, and leave the next generation no wiser. Refusing
+            # here keeps the quota for plans that can be measured.
+            print(
+                "[PAPER_IDEA] Candidate abandoned after "
+                f"{CONTRACT_ATTEMPTS} contract attempts: "
+                f"{', '.join(contract_review.codes) or 'no plan returned'}",
+                flush=True,
             )
-            total_tokens += tokens3
-            total_calls += 1
-        except Exception as e:
-            if _llm_temporarily_unavailable(e):
-                print(f"[PAPER_IDEA] Experiment design skipped: LLM unavailable ({e})", flush=True)
-                result3 = {}
-            else:
-                print(f"[PAPER_IDEA] Experiment design failed: {e}", flush=True)
-                result3 = {}
+            log_event(
+                "warning",
+                {
+                    "step": "proposal_contract_unsatisfied",
+                    "agenda_id": agenda_id,
+                    "idea_id": proposal_candidate_id,
+                    "attempts": CONTRACT_ATTEMPTS,
+                    "reason_codes": list(contract_review.codes),
+                },
+            )
+            continue
 
         generated_problem_awareness = result3.get("problem_awareness")
         if not isinstance(generated_problem_awareness, dict):
@@ -2019,21 +2218,13 @@ def discover_paper_ideas(
             "problem_statement": problem.get("problem_statement") or problem.get("formal_statement", ""),
             "existing_weakness": problem.get("current_failure_mode", ""),
             "proposed_method": json.dumps(method),
-            "experimental_plan": json.dumps({
-                "baselines": result3.get("baselines", []),
-                "datasets": result3.get("datasets", []),
-                "metrics": result3.get("metrics", {}),
-                "ablations": result3.get("ablations", []),
-                "expected_results": result3.get("expected_results", {}),
-                "compute_budget": result3.get("compute_budget", {}),
-                "execution_requirements": result3.get(
-                    "execution_requirements", {}
-                ),
-                "risks": result3.get("risks", []),
-                "paper_title": normalized_paper_title,
-                "raw_paper_title": raw_paper_title,
-                "title_source": "paper_idea_title_policy",
-            }),
+            "experimental_plan": json.dumps(
+                _experimental_plan_payload(
+                    result3,
+                    paper_title=normalized_paper_title,
+                    raw_paper_title=raw_paper_title,
+                )
+            ),
             "related_work_positioning": json.dumps(result3.get("paper_outline", {})),
             "supporting_papers": json.dumps(problem.get("source_paper_ids", [])),
             "source_node_ids": json.dumps(problem.get("related_node_ids", [])),

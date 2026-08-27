@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from agents.candidate_contract import ContractReview
 from agents.paper_idea_agent import discover_paper_ideas
 from agents.problem_first import discover_research_problems, problem_first_cycle, writeback_experiment_result
 from agents.signal_harvester import harvest_protocol_artifacts
@@ -375,16 +376,52 @@ class ProblemFirstTests(TempDbTestCase):
             123,
             {"provider": "p", "model": "m"},
         )
+        # The design output must carry a runner contract: the proposer refuses
+        # to store a plan no runner can execute, so a fixture without one now
+        # tests the refusal rather than problem-first discovery.
         llm_outputs = [
             (
                 {
                     "paper_title": "ProtocolShield: Auditing Protocol-Sensitive Benchmarks",
-                    "baselines": [],
-                    "datasets": [],
-                    "metrics": {},
+                    "baselines": [
+                        {"name": "unmodified input", "model": "org/generator"}
+                    ],
+                    "datasets": [{"name": "org/qa-corpus", "split": "test"}],
+                    "metrics": {"primary": "exact_match on the held-out split"},
                     "ablations": [],
                     "expected_results": {"solid": "Improves robustness."},
                     "compute_budget": {},
+                    "execution_requirements": {
+                        "schema_version": "experiment_requirements_v1",
+                        "task_protocol": "generative_qa",
+                        "candidate_hook": "candidate_prompt",
+                        "dataset": {
+                            "repository_id": "org/qa-corpus",
+                            "revision": "main",
+                            "config": "default",
+                            "split": "test",
+                            "field_mapping": {
+                                "prompt": "question",
+                                "target": "answer",
+                            },
+                        },
+                        "model": {
+                            "repository_id": "org/generator",
+                            "revision": "main",
+                            "framework": "transformers",
+                            "task": "causal_lm",
+                            "min_vram_gb": 8,
+                        },
+                        "metric": {"name": "exact_match", "direction": "higher"},
+                        "seeds": [0],
+                        "sample_cap": 200,
+                        "artifact_contract": [
+                            "final_results",
+                            "raw_predictions",
+                            "environment_manifest",
+                        ],
+                        "preferred_backends": ["ssh_gpu", "colab_gpu"],
+                    },
                     "risks": [],
                     "paper_outline": {},
                     "problem_awareness": {},
@@ -395,6 +432,13 @@ class ProblemFirstTests(TempDbTestCase):
         ]
         with (
             mock.patch("agents.paper_idea_agent.get_tier2_signals", return_value=signals),
+            # The contract review reaches the hub; this test is about
+            # problem-first discovery, and tests/test_candidate_contract.py
+            # covers the review itself.
+            mock.patch(
+                "agents.paper_idea_agent.review_candidate_plan",
+                side_effect=lambda plan, **kwargs: ContractReview((), plan),
+            ),
             mock.patch("agents.paper_idea_agent.select_problem_first_candidates", return_value=[problem]),
             mock.patch(
                 "agents.paper_idea_agent.call_llm_for_role",
