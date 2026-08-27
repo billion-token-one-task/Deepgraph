@@ -478,16 +478,25 @@ def _describe(
             f"{_join(capability.model_frameworks)}."
         ),
         "model_task_mismatch": (
-            f"model.task {requirements.model.task!r} is outside "
-            f"{_join(capability.model_tasks)}"
-            + (
-                f"; the hub reports the checkpoint's published task as "
-                f"{str(checks.get('model_task'))!r}"
-                if checks.get("model_task")
-                else ""
+            # Two different failures share this code. Saying the wrong one
+            # produces advice like "model.task 'sequence_classification' is
+            # outside sequence_classification", which is not actionable.
+            (
+                f"the checkpoint {requirements.model.repository_id!r} publishes "
+                f"a {str(checks.get('model_task'))!r} head, not the "
+                f"{requirements.model.task!r} head this plan declares. No runner "
+                "trains, so the weights are loaded exactly as published and a "
+                "wrong head measures nothing. Name a checkpoint already "
+                "fine-tuned for this task -- a base encoder publishes fill_mask "
+                "and an NLI model publishes zero_shot_classification; neither is "
+                "a classifier for your labels."
             )
-            + ". No runner trains, so name a checkpoint that already publishes "
-            "the head for the task you declare, or declare the task it has."
+            if checks.get("model_task")
+            else (
+                f"model.task {requirements.model.task!r} is outside "
+                f"{_join(capability.model_tasks)}. Declare one of those, or "
+                "choose the protocol whose runner serves the head you want."
+            )
         ),
         "metric_contract_unsupported": (
             f"metric.name {requirements.metric.name!r} is not computable by any "
