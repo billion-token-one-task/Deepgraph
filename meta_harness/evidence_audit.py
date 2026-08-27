@@ -419,6 +419,14 @@ def _prepare_holdout_code(workdir: Path) -> Path:
         source = release_root / rel
         if not source.exists():
             raise EvidenceAuditError(f"no current source for vendored {rel}")
+        # copytree preserves mode, and the run's code was itself copied from an
+        # immutable release where every file is read-only, so refreshing the
+        # snapshot raised PermissionError on the first vendored module. The
+        # audit then failed on every pass, its grant never closed, and the
+        # pinned concurrency slot stopped agenda 14 for twelve hours. The
+        # holdout is a working copy -- provenance lives in code/, which stays
+        # byte-identical -- so make the copy writable before replacing it.
+        vendored.chmod(0o644)
         vendored.write_text(source.read_text(encoding="utf-8"), encoding="utf-8")
     return holdout_code
 
