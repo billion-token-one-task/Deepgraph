@@ -394,3 +394,51 @@ class AContractIsNotOptional(unittest.TestCase):
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
+
+
+class AnAbandonedCandidateGivesBackItsSlot(unittest.TestCase):
+    """A refused candidate must not pin the agenda's only concurrency slot.
+
+    Nothing settles a proposal grant except a stored insight, so the contract
+    loop's own refusal path has to hand the grant back or it recreates the
+    2026-08-17 stall it was written to prevent.
+    """
+
+    def test_the_grant_is_expired_with_a_reason(self):
+        from unittest import mock
+
+        from agents import paper_idea_agent
+
+        repository = mock.Mock()
+        repository.expire_grant_now.return_value = True
+        with mock.patch(
+            "meta_harness.repository.MetaHarnessRepository", return_value=repository
+        ):
+            released = paper_idea_agent._release_abandoned_proposal_grant(
+                {"id": 91}, 16
+            )
+        self.assertTrue(released)
+        repository.expire_grant_now.assert_called_once_with(
+            91, agenda_id=16, reason="proposal_contract_unsatisfied"
+        )
+
+    def test_a_failure_to_release_does_not_break_the_pass(self):
+        from unittest import mock
+
+        from agents import paper_idea_agent
+
+        with mock.patch(
+            "meta_harness.repository.MetaHarnessRepository",
+            side_effect=RuntimeError("db down"),
+        ):
+            self.assertFalse(
+                paper_idea_agent._release_abandoned_proposal_grant({"id": 91}, 16)
+            )
+
+    def test_the_refusal_path_calls_it(self):
+        import inspect
+
+        from agents import paper_idea_agent
+
+        source = inspect.getsource(paper_idea_agent.discover_paper_ideas)
+        self.assertIn("_release_abandoned_proposal_grant(proposal_grant", source)

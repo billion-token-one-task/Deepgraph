@@ -1721,6 +1721,33 @@ from agents.candidate_contract import (  # noqa: E402
 CONTRACT_ATTEMPTS = 3
 
 
+def _release_abandoned_proposal_grant(proposal_grant: dict, agenda_id: int) -> bool:
+    """Give back the slot a candidate no longer needs.
+
+    Nothing settles a proposal grant except a stored insight. A candidate
+    abandoned for an unsatisfiable contract would therefore hold its grant --
+    and the agenda's only concurrency slot -- for the rest of a four-hour TTL,
+    which is the stall ``expire_grant_now`` was written for (grants 62/67/68,
+    2026-08-17). Settled spend stays settled; only the unspent remainder and
+    the slot come back, and the candidate parks for the standard requeue.
+    """
+    try:
+        from meta_harness.repository import MetaHarnessRepository
+
+        return MetaHarnessRepository().expire_grant_now(
+            int(proposal_grant["id"]),
+            agenda_id=int(agenda_id),
+            reason="proposal_contract_unsatisfied",
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"[PAPER_IDEA] Could not release grant "
+            f"{proposal_grant.get('id')}: {exc}",
+            flush=True,
+        )
+        return False
+
+
 def _experimental_plan_payload(
     result3: dict,
     *,
@@ -2175,6 +2202,7 @@ def discover_paper_ideas(
                     "reason_codes": list(contract_review.codes),
                 },
             )
+            _release_abandoned_proposal_grant(proposal_grant, agenda_id)
             continue
 
         generated_problem_awareness = result3.get("problem_awareness")
