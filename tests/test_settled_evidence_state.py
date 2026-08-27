@@ -226,3 +226,58 @@ class RemoteEnvPassthroughTests(unittest.TestCase):
             "DEEPGRAPH_RUNNER_EXAMPLE_OFFSET",
             inspect.getsource(generic_transformers),
         )
+
+
+class FullBenchmarkVerdictTests(unittest.TestCase):
+    """refute_min is a search budget; a locked benchmark is not a search.
+
+    Run 272 measured 0.165 against a 0.480 baseline at p=0.000999 on 200
+    examples and was written down as inconclusive, because the refutation rule
+    asked it to exhaust an iteration budget it never had. Its own artifacts,
+    its holdout and its independent evaluator all said refuted, and the audit
+    refused the transition on the disagreement.
+    """
+
+    def _verdict(self, *, p, candidate, baseline, search):
+        from agents.validation_loop import _determine_final_verdict
+
+        summary = {
+            "statistical_tests": {"paired_permutation_p": p},
+            "per_method": {
+                "cand": {"metric_value": candidate},
+                "unmodified_input_baseline": {"metric_value": baseline},
+            },
+            "metric_name": "numeric_accuracy",
+            "baseline_method": "unmodified_input_baseline",
+            "candidate_method": "cand",
+            "num_seeds": 3,
+        }
+        return _determine_final_verdict(
+            baseline=baseline,
+            best_value=candidate,
+            direction="higher",
+            criteria={},
+            total_iters=0,
+            total_kept=0,
+            refute_min=30,
+            benchmark_summary=summary,
+            search_performed=search,
+        )
+
+    def test_a_significant_degradation_refutes_without_a_search(self):
+        self.assertEqual(
+            self._verdict(p=0.000999, candidate=0.165, baseline=0.480, search=False),
+            "refuted",
+        )
+
+    def test_an_insignificant_degradation_stays_inconclusive(self):
+        self.assertEqual(
+            self._verdict(p=0.42, candidate=0.46, baseline=0.480, search=False),
+            "inconclusive",
+        )
+
+    def test_a_search_still_owes_its_iteration_budget(self):
+        self.assertEqual(
+            self._verdict(p=0.000999, candidate=0.165, baseline=0.480, search=True),
+            "inconclusive",
+        )

@@ -2006,6 +2006,7 @@ def _determine_final_verdict(
     refute_min: int,
     benchmark_summary: dict | None = None,
     automation_failed: bool = False,
+    search_performed: bool = True,
 ) -> str:
     """Classify the overall run outcome.
 
@@ -2048,6 +2049,22 @@ def _determine_final_verdict(
     if total_iters >= refute_min and not is_improvement:
         return "refuted"
     if not is_improvement:
+        # refute_min is a budget for the hypothesis SEARCH: it asks how many
+        # variants must fail before a direction is called. A full benchmark is
+        # not a search -- it runs the locked contract once, on the full n, with
+        # seeds -- so it arrives with total_iters=0 and could never refute
+        # anything. Run 272 measured 0.165 against a 0.480 baseline at
+        # p=0.000999 on 200 examples and was written down as inconclusive,
+        # which then disagreed with its own artifacts, its holdout and its
+        # independent evaluator, and the audit refused the transition. When no
+        # search was run, significance is the standard, and it is stricter than
+        # counting iterations: noise cannot become a refutation.
+        if not search_performed:
+            from meta_harness.runner_contract import extract_p_value as _p_of
+
+            measured_p = _p_of(summary) if summary else None
+            if measured_p is not None and measured_p < 0.05:
+                return "refuted"
         return "inconclusive"
 
     # One vocabulary, one lookup: a private copy here once made a runner that
@@ -3124,6 +3141,8 @@ def run_full_benchmark_completion(run_id: int, execution_context: dict | None = 
         best_value=best_value,
         direction=direction,
         criteria=criteria,
+        # A full benchmark runs the locked contract, not a search.
+        search_performed=False,
         total_iters=0,
         total_kept=0,
         refute_min=EXPERIMENT_REFUTE_MIN_ITERS,
