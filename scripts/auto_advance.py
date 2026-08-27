@@ -461,6 +461,19 @@ def _guard_spent_delta(state: dict, args) -> int:
     )
 
 
+def _agenda_backends(agenda_id: int) -> list[str]:
+    """The backends this agenda is allowed to draw on, as the operator set them."""
+    row = db.fetchone(
+        "SELECT backend_allowlist_json FROM research_agendas WHERE id=?",
+        (agenda_id,),
+    )
+    try:
+        allowed = json.loads(str(dict(row or {}).get("backend_allowlist_json") or "[]"))
+    except (TypeError, ValueError):
+        allowed = []
+    return [str(item) for item in allowed] or ["colab_gpu", "llm"]
+
+
 def _grant_key(agenda_id: int, idea_id: int, suffix: str) -> str:
     """A key that has not been used before.
 
@@ -1963,7 +1976,19 @@ def advance_evidence_audit(agenda_id: int, state: dict, journal: Journal, args) 
                     token_cap=args.grant_token_cap,
                     gpu_class=args.gpu_class,
                     max_gpu_hours=args.grant_gpu_hours,
-                    backend_allowlist=["colab_gpu", "llm"],
+                    # Hardcoding colab here refused every ssh candidate its
+                    # audit: _require_execution_preflight compares the
+                    # candidate's pilot preflight -- which records where the
+                    # CANDIDATE ran -- against this list, which describes where
+                    # the HOLDOUT may run. Those are different questions, and
+                    # equating them meant idea 241, measured on ssh_gpu and one
+                    # step from a directional verdict, was refused with
+                    # passed_candidate_preflight_required against a preflight
+                    # that had passed. Follow the agenda's own allowlist so the
+                    # check tests what it can actually test: that the preflight
+                    # is real and revision-bound. Choosing the holdout's
+                    # backend stays with the audit.
+                    backend_allowlist=_agenda_backends(agenda_id),
                     artifact_requirements=ARTIFACT_REQUIREMENTS,
                     expires_at=(_now() + timedelta(hours=24)).isoformat(),
                     idempotency_key=_grant_key(
