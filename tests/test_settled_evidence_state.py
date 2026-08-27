@@ -198,3 +198,31 @@ class HoldoutBackendIndependenceTests(unittest.TestCase):
         for fn in (mcr.submit_colab_work, mcr.submit_experiment_run):
             with self.subTest(fn=fn.__name__):
                 self.assertIn("SELECT * FROM resource_grants", inspect.getsource(fn))
+
+
+class RemoteEnvPassthroughTests(unittest.TestCase):
+    """A filter that drops what it was handed must not do so quietly.
+
+    The ssh launcher exported only DEEPGRAPH_BENCHMARK_*, so
+    DEEPGRAPH_RUNNER_EXAMPLE_OFFSET -- the knob that makes a holdout land on
+    unseen examples -- never reached the process. Run 272's holdout
+    re-measured test[0:200], spent 923 GPU-seconds and was refused by the
+    provenance guard.
+    """
+
+    def test_both_runner_prefixes_cross_to_the_remote(self):
+        import inspect
+        from orchestrator import ssh_gpu_backend
+
+        body = inspect.getsource(ssh_gpu_backend._remote_launcher_script)
+        self.assertIn("DEEPGRAPH_BENCHMARK_", body)
+        self.assertIn("DEEPGRAPH_RUNNER_", body)
+
+    def test_the_offset_key_is_the_one_the_runner_reads(self):
+        import inspect
+        from meta_harness.runners import generic_transformers
+
+        self.assertIn(
+            "DEEPGRAPH_RUNNER_EXAMPLE_OFFSET",
+            inspect.getsource(generic_transformers),
+        )

@@ -567,10 +567,19 @@ def _remote_launcher_script(
     wrapped_command = f"exec {command_line}"
     set_id_command = f"bash -lc {shlex.quote(wrapped_command)}"
     env_exports = benchmark_env or _default_benchmark_env()
+    # The runner reads two prefixes: DEEPGRAPH_BENCHMARK_* selects the dataset
+    # and model, DEEPGRAPH_RUNNER_* controls how it walks them --
+    # EXAMPLE_OFFSET is what makes a holdout land on unseen examples. Exporting
+    # only the first prefix dropped the offset silently, so run 272's holdout
+    # re-measured test[0:200], spent 923 GPU-seconds, and was refused by the
+    # provenance guard as holdout_offset_not_applied. A filter that drops what
+    # it was handed must not do so quietly; both prefixes belong to the runner
+    # contract, so both cross.
     benchmark_lines = [
         f"export {key}={shlex.quote(str(value))}"
         for key, value in sorted(env_exports.items())
-        if key.startswith("DEEPGRAPH_BENCHMARK_") and str(value).strip()
+        if key.startswith(("DEEPGRAPH_BENCHMARK_", "DEEPGRAPH_RUNNER_"))
+        and str(value).strip()
     ]
     return "\n".join(
         [
