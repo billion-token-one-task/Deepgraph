@@ -98,3 +98,34 @@ class SettledEvidenceStateTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StateOrderingTests(unittest.TestCase):
+    """The forward-only guard, exercised so a bad import cannot pass CI.
+
+    EVIDENCE_STATES lives in contracts.meta_harness; importing it from
+    meta_harness.repository raises only when the branch actually runs, which
+    no test reached.
+    """
+
+    def test_a_record_behind_the_run_moves_forward(self):
+        self.assertTrue(
+            outcome_finalizer._state_is_behind("planned", "sanity_passed")
+        )
+        self.assertTrue(
+            outcome_finalizer._state_is_behind(
+                "sanity_passed", "full_benchmark_complete"
+            )
+        )
+
+    def test_a_record_never_moves_backward(self):
+        self.assertFalse(
+            outcome_finalizer._state_is_behind("sanity_passed", "planned")
+        )
+
+    def test_a_retraction_is_a_decision_not_a_stale_view(self):
+        self.assertFalse(
+            outcome_finalizer._state_is_behind(
+                "unmeasurable_retracted", "sanity_passed"
+            )
+        )

@@ -82,6 +82,23 @@ from meta_harness.grant_usage import GrantUsageLedger
 _TOKEN_RESERVATION_LEASE_SECONDS = 2 * 3600
 
 
+def _state_is_behind(recorded: str, target: str) -> bool:
+    """True when a recorded evidence state sits earlier than the one reached.
+
+    Never move a record backward, and never touch a retraction: an outcome
+    withdrawn as unmeasurable is a decision about the science, not a stale
+    view of the run.
+    """
+    from contracts.meta_harness import EVIDENCE_STATES
+
+    if recorded == "unmeasurable_retracted":
+        return False
+    try:
+        return EVIDENCE_STATES.index(recorded) < EVIDENCE_STATES.index(target)
+    except ValueError:
+        return recorded != target
+
+
 def evidence_advance_plan(
     *,
     state: str,
@@ -255,19 +272,33 @@ def _advance_settled_evidence_state(
             )
             counts[target] += 1
             # An OutcomeRecord stamps state_decision from the run at assembly
-            # time and is never restamped, and advance_to_full_benchmark
-            # requires the outcome and the run to agree. On the colab path the
-            # transition happened before assembly, so they agreed by accident
-            # of ordering; advancing afterwards left outcomes 200 and 202
-            # reading 'planned' against runs that had reached sanity_passed,
-            # and neither candidate could be funded for the benchmark that
-            # would turn its measured -0.315 into a verdict. Append the record
-            # for the new state, which is what the colab path did when it
-            # produced three outcomes for run 264.
-            MetaHarnessRepository().assemble_and_record_outcome(
-                resource_grant_id=int(record["grant_id"] or 0),
-                experiment_run_id=run_id,
+            # time, assembly is idempotent per (grant, run), and
+            # advance_to_full_benchmark requires the outcome and the run to
+            # agree. On the colab path the transition ran before assembly so
+            # they agreed by accident of ordering; advancing afterwards left
+            # outcomes 200 and 202 reading 'planned' against runs that had
+            # reached sanity_passed, and neither candidate could be funded for
+            # the benchmark that would turn idea 241's measured -0.315 into a
+            # directional verdict. state_decision is a derived view of the
+            # run's evidence state, not a measurement, so bring it forward --
+            # never backward, and never onto a retracted record.
+            # Only the newest record, and only when it is behind: run 264
+            # carries one outcome per rung (sanity_passed,
+            # full_benchmark_complete, scientifically_decided) and rewriting
+            # them all would flatten the ladder's own history.
+            latest = db.fetchone(
+                "SELECT id, state_decision FROM outcome_records"
+                " WHERE experiment_run_id=? ORDER BY id DESC LIMIT 1",
+                (run_id,),
             )
+            latest_row = dict(latest or {})
+            recorded = str(latest_row.get("state_decision") or "planned")
+            if latest_row and _state_is_behind(recorded, target):
+                db.execute(
+                    "UPDATE outcome_records SET state_decision=? WHERE id=?",
+                    (target, int(latest_row["id"])),
+                )
+                db.commit()
         except Exception:  # noqa: BLE001 - never undo a settled compute job
             db.rollback()
             counts["refused"] += 1
