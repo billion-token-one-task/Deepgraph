@@ -338,9 +338,11 @@ def review_candidate_plan(
     result = PreflightEngine(registry=registry, probe=resolver).run(
         requirements, environment
     )
+    checks = dict(result.checks)
+    checks["backend_vram_gb"] = dict(environment.backend_vram_gb)
     for code in result.reason_codes:
         violations.append(
-            _describe(code, requirements, capability, plan, registry, checks=result.checks)
+            _describe(code, requirements, capability, plan, registry, checks=checks)
         )
     return ContractReview(tuple(violations), plan, tuple(normalizations), True)
 
@@ -399,6 +401,15 @@ def _agenda_scope_violations(
             "'inference only' -- and do not use these phrases anywhere in the "
             "problem statement, method or plan.",
         )
+    ]
+
+
+def _backend_sizes(checks: Mapping[str, Any]) -> list[str]:
+    """The backends this plan may use, with the VRAM each actually has."""
+    eligible = checks.get("eligible_backends") or []
+    sizes = checks.get("backend_vram_gb") or {}
+    return [f"{name} {float(sizes.get(name, 0.0)):g}GB" for name in eligible] or [
+        "none"
     ]
 
 
@@ -578,9 +589,13 @@ def _describe(
             "card declares its features."
         ),
         "vram_insufficient": (
-            "the declared model does not fit the largest verified accelerator "
-            f"({_join(str(round(float(value), 1)) for value in (checks.get('vram_required_gb'),) if value is not None)} GB "
-            "required). Name a smaller checkpoint."
+            f"model.min_vram_gb is {requirements.model.min_vram_gb:g} but every "
+            f"backend this plan allows has less: "
+            f"{_join(_backend_sizes(checks))}. Either declare a backend with an "
+            f"accelerator (the runner runs on {_join(capability.backends)}) or, "
+            "if the model really is small enough to run on cpu, declare "
+            "min_vram_gb 0. Shrinking the checkpoint does not help while the "
+            "only allowed backend has no accelerator at all."
         ),
         "backend_unavailable": (
             "no enabled backend can run this contract right now. This is a "

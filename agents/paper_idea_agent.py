@@ -1467,6 +1467,31 @@ def _discover_exact_bounded_proposal(
         )
     )
     resolver = RepositoryResolver()
+
+    # The agenda's reject rule reads the claim -- the problem statement and the
+    # invented method -- and this loop only rewrites the experiment design. So
+    # ask it once, here, and abandon rather than spend three design attempts on
+    # a refusal no redesign can lift. On 2026-08-27 that is exactly what agenda
+    # 16 did: three attempts, three identical reject_keyword refusals, because
+    # the phrase was in the method text the loop never touches.
+    blocked = _claim_refused_by_agenda(claim_text, agenda_rule)
+    if blocked:
+        print(f"[PAPER_IDEA] Bounded proposal {idea_id} abandoned: {blocked}", flush=True)
+        from orchestrator.pipeline import log_event
+
+        log_event(
+            "warning",
+            {
+                "step": "proposal_claim_refused_by_agenda",
+                "agenda_id": agenda_id,
+                "idea_id": idea_id,
+                "resource_grant_id": resource_grant_id,
+                "detail": blocked,
+            },
+        )
+        _release_abandoned_proposal_grant({"id": resource_grant_id}, agenda_id)
+        return []
+
     experiment_tokens = 0
     experiment_calls = 0
     experiment_route: dict = {}
@@ -1509,9 +1534,7 @@ def _discover_exact_bounded_proposal(
             invalid_delivery("has no experiment design")
         review = review_candidate_plan(
             _experimental_plan_payload(experiment),
-            agenda=agenda_rule,
             resolver=resolver,
-            claim_text=claim_text,
         )
         _fold_resolved_identities(experiment, review)
         if review.ok:
@@ -1915,6 +1938,30 @@ def _agenda_scope_rule(agenda_id: int):
     except Exception as exc:  # noqa: BLE001
         print(f"[PAPER_IDEA] Agenda scope rule unavailable ({exc})", flush=True)
         return None
+
+
+def _claim_refused_by_agenda(claim_text: str, agenda) -> str:
+    """The agenda's reject rule, asked about text the design loop cannot change.
+
+    Returns a description when the claim is refused, "" otherwise. This is the
+    same rule the topic gate applies to the stored row; asking it before the
+    design calls turns three wasted attempts into none.
+    """
+    if agenda is None:
+        return ""
+    try:
+        phrases = [str(value) for value in (agenda.reject or {}).get("keywords") or []]
+    except Exception:  # noqa: BLE001
+        return ""
+    text = str(claim_text or "").lower()
+    found = sorted({phrase for phrase in phrases if phrase.lower() in text})
+    if not found:
+        return ""
+    return (
+        f"the agenda refuses a claim containing {found!r}, and that text is in "
+        "the problem or the invented method, which redesigning the experiment "
+        "cannot change"
+    )
 
 
 def _fold_resolved_identities(experiment: dict, review) -> None:

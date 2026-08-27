@@ -875,3 +875,79 @@ class TheGrantFundsEveryAttemptNotJustTheFirst(unittest.TestCase):
 
         source = inspect.getsource(auto_advance.main)
         self.assertIn("paper_idea_agent.PROPOSAL_GRANT_TOKEN_CAP", source)
+
+
+class AnUnliftableRefusalIsNotWorthThreeAttempts(unittest.TestCase):
+    """The design loop rewrites the experiment, not the problem or the method.
+
+    The agenda's reject rule reads the claim, so a phrase in the invented
+    method produces the same refusal on every attempt. Agenda 16 spent three
+    design calls on that on 2026-08-27 before abandoning anyway.
+    """
+
+    class Agenda:
+        reject = {"keywords": ["fine-tuning"]}
+
+    def test_a_refused_claim_is_named_before_any_design_call(self):
+        blocked = paper_idea_agent._claim_refused_by_agenda(
+            "A method that improves the model by fine-tuning its head.", self.Agenda()
+        )
+        self.assertIn("fine-tuning", blocked)
+
+    def test_a_clean_claim_costs_nothing(self):
+        self.assertEqual(
+            paper_idea_agent._claim_refused_by_agenda(
+                "A prompt-only intervention with frozen weights.", self.Agenda()
+            ),
+            "",
+        )
+
+    def test_no_agenda_means_no_opinion(self):
+        self.assertEqual(
+            paper_idea_agent._claim_refused_by_agenda("anything at all", None), ""
+        )
+
+    def test_the_bounded_path_asks_before_it_spends(self):
+        method = json.dumps(
+            {
+                "method": {
+                    "name": "Fine-Tuned Method",
+                    "one_line": "Improve it by fine-tuning the head.",
+                    "definition": "minimize an exact persisted objective",
+                    "why_novel": "This is distinct because it tests the persisted mechanism directly.",
+                    "falsification_hook": "Reject when the bounded metric does not improve.",
+                }
+            }
+        )
+        with (
+            mock.patch.object(paper_idea_agent.db, "fetchone", return_value=_exact_problem_scope()),
+            mock.patch.object(
+                paper_idea_agent,
+                "_call_exact_proposal_llm",
+                side_effect=[(method, 120, {})],
+            ) as exact_call,
+            mock.patch.object(
+                paper_idea_agent, "configured_role_prompt_version", return_value="v1"
+            ),
+            mock.patch.object(
+                paper_idea_agent, "_agenda_scope_rule", return_value=self.Agenda()
+            ),
+            mock.patch.object(
+                paper_idea_agent, "_release_abandoned_proposal_grant"
+            ) as release,
+        ):
+            result = paper_idea_agent.discover_paper_ideas(
+                max_problems=1,
+                max_papers=1,
+                agenda_id=2,
+                proposal_job_id=110,
+                proposal_candidate_id=115,
+                proposal_grant_id=501,
+            )
+        self.assertEqual(result, [])
+        # Only the method call was bought; no design attempt was spent.
+        self.assertEqual(
+            [call.kwargs["operation"] for call in exact_call.call_args_list],
+            ["proposal_method_invention"],
+        )
+        release.assert_called_once_with({"id": 501}, 2)
