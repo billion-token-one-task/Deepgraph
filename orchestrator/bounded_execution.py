@@ -775,62 +775,44 @@ def _finalize_persisted_run(
             "missing": missing,
             "final_results_present": final_results_present,
         }
-        run_status = str(run.get("status") or "")
-        resource_class = str(run.get("resource_class") or "").strip().lower()
         verdict = str(run.get("hypothesis_verdict") or "").strip().lower()
         if result.verdict is None:
             result.verdict = verdict or None
-        valid_verdict = verdict in {"supported", "refuted", "inconclusive"}
-        state = str(run.get("scientific_evidence_state") or "planned")
+        # The transition used to live here too, gated on resource_class=="cpu",
+        # and its else-branch told every other run "non_cpu_run" -- the code
+        # said in as many words that a GPU pilot does not advance. Colab had
+        # its own copy in colab_worker and ssh had none, so one rule existed
+        # four times with four guard sets. It is now
+        # _advance_settled_evidence_state in the outcome finalizer, which asks
+        # only what is true of every backend: the run finished, it reached a
+        # verdict, and its artifacts are registered.
+        from meta_harness.outcome_finalizer import evidence_advance_plan
+
+        plan = evidence_advance_plan(
+            state=str(run.get("scientific_evidence_state") or "planned"),
+            verdict=verdict,
+            artifacts_present=present,
+            artifacts_missing=missing,
+            artifacts_hash=digest,
+            resource_grant_id=request.resource_grant_id,
+        )
         try:
-            already_sane = EVIDENCE_STATES.index(state) >= EVIDENCE_STATES.index(
-                "sanity_passed"
-            )
-        except ValueError:
-            already_sane = False
-        if (
-            run_status == "completed"
-            and resource_class == "cpu"
-            and present > 0
-            and final_results_present
-            and valid_verdict
-            and not already_sane
-        ):
-            try:
+            if plan is not None and str(run.get("status") or "") == "completed":
                 repository.advance_experiment_state(
                     agenda_id=request.agenda_id,
                     experiment_run_id=run_id,
-                    target="sanity_passed",
-                    context=EvidenceTransitionContext(
-                        resource_grant_valid=True,
-                        resource_grant_id=request.resource_grant_id,
-                        execution_succeeded=True,
-                        pilot_only=True,
-                        raw_artifacts_present=True,
-                        raw_artifacts_hash=digest,
-                    ),
+                    target=plan[0],
+                    context=plan[1],
                     actor=actor,
                 )
-            except Exception as exc:
-                # Evidence authority failure must prevent scientific success,
-                # but it must not strand already-metered usage. Outcome
-                # assembly below remains the formal settlement path.
-                result.details["advance_error"] = f"{type(exc).__name__}: {exc}"
-                result.details["not_advanced"] = "evidence_transition_failed"
-            run = _load_run(request, run_id)
-            state = str(run.get("scientific_evidence_state") or "planned")
-        elif not already_sane:
-            result.details["not_advanced"] = (
-                "non_cpu_run"
-                if resource_class != "cpu"
-                else "invalid_or_missing_verdict"
-                if not valid_verdict
-                else "execution_incomplete"
-                if run_status != "completed"
-                else "no_final_results_file"
-                if not final_results_present
-                else "no_artifact_files"
-            )
+        except Exception as exc:  # noqa: BLE001
+            # Evidence authority failure must prevent scientific success, but
+            # it must not strand already-metered usage. Outcome assembly below
+            # remains the formal settlement path.
+            result.details["advance_error"] = f"{type(exc).__name__}: {exc}"
+            result.details["not_advanced"] = "evidence_transition_failed"
+        run = _load_run(request, run_id)
+        state = str(run.get("scientific_evidence_state") or "planned")
         result.evidence_state = str(run.get("scientific_evidence_state") or state)
 
         outcome_id = repository.assemble_and_record_outcome(

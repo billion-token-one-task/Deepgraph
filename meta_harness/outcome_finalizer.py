@@ -70,6 +70,7 @@ def _recover_terminal_usage() -> dict[str, int]:
         "stranded_token_reservations_released": (
             _release_stranded_token_reservations()
         ),
+        "evidence_state_advanced": _advance_settled_evidence_state(),
     }
 
 
@@ -79,6 +80,184 @@ def _recover_terminal_usage() -> dict[str, int]:
 from meta_harness.grant_usage import GrantUsageLedger
 
 _TOKEN_RESERVATION_LEASE_SECONDS = 2 * 3600
+
+
+def evidence_advance_plan(
+    *,
+    state: str,
+    verdict: str,
+    artifacts_present: int,
+    artifacts_missing: Any,
+    artifacts_hash: str,
+    resource_grant_id: int,
+    grant_stage: str = "",
+    contract_hash: str = "",
+) -> tuple[str, "EvidenceTransitionContext"] | None:
+    """Decide the next evidence rung from facts no backend owns.
+
+    This is the whole rule, in one place. It says nothing about Colab, ssh or
+    cpu because none of them change what makes a measurement admissible: the
+    run reached a verdict and its artifacts are registered. Callers that
+    already hold the run pass it in; the finalizer reads it from the ledger.
+    Returns None when nothing may advance.
+    """
+    from meta_harness.repository import EvidenceTransitionContext
+
+    if str(verdict or "").strip().lower() not in {
+        "supported",
+        "refuted",
+        "inconclusive",
+    }:
+        return None
+    if artifacts_present <= 0 or artifacts_missing:
+        return None
+    current = str(state or "planned")
+    if current == "planned":
+        return "sanity_passed", EvidenceTransitionContext(
+            resource_grant_valid=True,
+            resource_grant_id=int(resource_grant_id),
+            execution_succeeded=True,
+            pilot_only=True,
+            raw_artifacts_present=True,
+            raw_artifacts_hash=artifacts_hash,
+        )
+    if current == "sanity_passed":
+        if str(grant_stage or "") != "full_benchmark" or not contract_hash:
+            return None
+        return "full_benchmark_complete", EvidenceTransitionContext(
+            resource_grant_valid=True,
+            resource_grant_id=int(resource_grant_id),
+            execution_succeeded=True,
+            pilot_only=False,
+            full_benchmark_complete=True,
+            raw_artifacts_present=True,
+            raw_artifacts_hash=artifacts_hash,
+            benchmark_contract_hash=contract_hash,
+        )
+    return None
+
+
+def _advance_settled_evidence_state(
+    limit: int = 50, run_id: int | None = None
+) -> dict[str, int]:
+    """Advance any run whose compute finished, whatever ran it.
+
+    A GPU is a GPU. The evidence ladder has no business knowing whether the
+    accelerator was reached over Colab's CLI or over ssh, yet the transition
+    lived three times in two files with three different guard sets: colab in
+    colab_worker (both rungs), legacy/ssh in meta_compute_runtime (first rung
+    only), and cpu nowhere at all. So a pilot measured on ssh_gpu recorded a
+    real two-arm result and sat at 'planned' forever -- every run in this
+    repository that ever produced supported or refuted went through Colab --
+    and each new rented accelerator would have needed a fourth copy.
+
+    One implementation, keyed on what actually matters: the compute job
+    succeeded and the runner's artifacts are all registered. Guards are the
+    union of the three it replaces, so nothing that used to be refused is now
+    admitted: one rung per pass, artifacts complete, and the upper rung
+    additionally requires a full_benchmark-stage grant and the contract hash
+    the preflight locked.
+    """
+    from orchestrator.bounded_execution import raw_artifacts_hash
+    from meta_harness.repository import (
+        EvidenceTransitionContext,
+        MetaHarnessRepository,
+    )
+
+    counts = {"sanity_passed": 0, "full_benchmark_complete": 0, "refused": 0}
+    # Deliberately says nothing about compute jobs: whether one exists, and
+    # what its command_ref looks like, is itself a backend detail. Colab keys
+    # them as colab-work-request:N, ssh as experiment-run:N, and a cpu run
+    # creates none at all -- a first attempt at this query keyed on
+    # command_ref and would have silently cut Colab out of its own ladder.
+    # What the science needs is true of every backend: the run finished, it
+    # reached a verdict, and its artifacts are registered.
+    rows = db.fetchall(
+        """
+        SELECT er.id AS run_id, er.agenda_id,
+               COALESCE(er.scientific_evidence_state, 'planned') AS state,
+               er.resource_grant_id AS grant_id,
+               er.hypothesis_verdict AS verdict
+          FROM experiment_runs er
+         WHERE er.status = 'completed'
+           AND COALESCE(er.scientific_evidence_state, 'planned')
+               IN ('planned', 'sanity_passed')
+           AND LOWER(COALESCE(er.hypothesis_verdict, ''))
+               IN ('supported', 'refuted', 'inconclusive')
+           AND (CAST(? AS INTEGER) IS NULL OR er.id = ?)
+         ORDER BY er.id ASC
+         LIMIT ?
+        """,
+        (run_id, run_id, int(limit)),
+    )
+    for row in rows:
+        record = dict(row)
+        run_id = int(record["run_id"])
+        agenda_id = int(record["agenda_id"])
+        state = str(record["state"])
+        try:
+            digest, present, missing = raw_artifacts_hash(
+                agenda_id=agenda_id, experiment_run_id=run_id
+            )
+        except Exception:  # noqa: BLE001 - a bookkeeping gap must not raise
+            db.rollback()
+            counts["refused"] += 1
+            continue
+        if present <= 0 or missing:
+            counts["refused"] += 1
+            continue
+        grant_stage = ""
+        contract_hash = ""
+        if state == "sanity_passed":
+            # Only the upper rung needs the grant, so only it reads one.
+            grant = dict(
+                db.fetchone(
+                    "SELECT stage, preflight_result_id FROM resource_grants WHERE id=?",
+                    (int(record["grant_id"] or 0),),
+                )
+                or {}
+            )
+            grant_stage = str(grant.get("stage") or "")
+            contract_row = db.fetchone(
+                """
+                SELECT cer.requirements_hash
+                  FROM candidate_preflight_results_v1 cpr
+                  JOIN candidate_execution_requirements_v1 cer
+                    ON cer.id = cpr.requirement_id
+                 WHERE cpr.id = ?
+                """,
+                (int(grant.get("preflight_result_id") or 0),),
+            )
+            contract_hash = str(
+                dict(contract_row or {}).get("requirements_hash") or ""
+            )
+        plan = evidence_advance_plan(
+            state=state,
+            verdict=str(record.get("verdict") or ""),
+            artifacts_present=present,
+            artifacts_missing=missing,
+            artifacts_hash=digest,
+            resource_grant_id=int(record["grant_id"] or 0),
+            grant_stage=grant_stage,
+            contract_hash=contract_hash,
+        )
+        if plan is None:
+            counts["refused"] += 1
+            continue
+        target, context = plan
+        try:
+            MetaHarnessRepository().advance_experiment_state(
+                agenda_id=agenda_id,
+                experiment_run_id=run_id,
+                target=target,
+                context=context,
+                actor="settled_compute_handoff_v1",
+            )
+            counts[target] += 1
+        except Exception:  # noqa: BLE001 - never undo a settled compute job
+            db.rollback()
+            counts["refused"] += 1
+    return counts
 
 
 def _release_stranded_token_reservations() -> int:

@@ -1,0 +1,100 @@
+from __future__ import annotations
+
+import unittest
+from unittest import mock
+
+from meta_harness import outcome_finalizer
+
+
+class SettledEvidenceStateTests(unittest.TestCase):
+    """One rule for every backend, because a GPU is a GPU.
+
+    The transition existed four times -- colab_worker twice, meta_compute_runtime
+    for ssh, bounded_execution gated on resource_class=="cpu" whose else-branch
+    literally recorded "non_cpu_run". Every run that ever produced supported or
+    refuted went through Colab, and each new rented accelerator would have
+    needed a fifth copy.
+    """
+
+    def _advance(self, rows, artifacts=("digest", 5, ()), contract="chash"):
+        calls = []
+
+        class Repo:
+            def advance_experiment_state(self, **kwargs):
+                calls.append(kwargs)
+
+        def fetchall(sql, params=()):
+            return rows
+
+        def fetchone(sql, params=()):
+            # The upper rung reads the grant first, then the locked contract.
+            if "resource_grants" in sql:
+                return {"stage": getattr(self, "_stage", "pilot"),
+                        "preflight_result_id": 313}
+            return {"requirements_hash": contract} if contract else None
+
+        with mock.patch.object(outcome_finalizer.db, "fetchall", fetchall), \
+             mock.patch.object(outcome_finalizer.db, "fetchone", fetchone), \
+             mock.patch.object(outcome_finalizer.db, "rollback", lambda: None), \
+             mock.patch.dict(
+                 "sys.modules",
+                 {"orchestrator.bounded_execution": mock.Mock(
+                     raw_artifacts_hash=lambda **k: artifacts)},
+             ), \
+             mock.patch("meta_harness.repository.MetaHarnessRepository", Repo):
+            counts = outcome_finalizer._advance_settled_evidence_state()
+        return counts, calls
+
+    def _row(self, state="planned", stage="pilot", verdict="refuted"):
+        self._stage = stage
+        return {"run_id": 272, "agenda_id": 18, "state": state,
+                "grant_id": 362, "verdict": verdict}
+
+    def test_a_pilot_advances_one_rung_whatever_ran_it(self):
+        counts, calls = self._advance([self._row()])
+        self.assertEqual(counts["sanity_passed"], 1)
+        self.assertEqual(calls[0]["target"], "sanity_passed")
+        self.assertTrue(calls[0]["context"].pilot_only)
+
+    def test_a_colab_shaped_run_is_not_excluded(self):
+        """The first draft keyed on compute_jobs_v1.command_ref.
+
+        Colab keys its jobs colab-work-request:N, ssh keys them
+        experiment-run:N, and a cpu run creates none -- that draft would have
+        cut Colab out of its own ladder while its own transition was being
+        deleted. The selection must not mention compute jobs at all.
+        """
+        source = outcome_finalizer._advance_settled_evidence_state.__doc__ or ""
+        import inspect
+        body = inspect.getsource(outcome_finalizer._advance_settled_evidence_state)
+        self.assertNotIn("compute_jobs_v1", body)
+        self.assertIn("hypothesis_verdict", body)
+
+    def test_the_upper_rung_needs_a_full_benchmark_grant_and_a_contract(self):
+        counts, calls = self._advance([self._row(state="sanity_passed",
+                                                 stage="full_benchmark")])
+        self.assertEqual(counts["full_benchmark_complete"], 1)
+        self.assertTrue(calls[0]["context"].full_benchmark_complete)
+
+    def test_a_pilot_grant_cannot_buy_the_upper_rung(self):
+        counts, calls = self._advance([self._row(state="sanity_passed",
+                                                 stage="pilot")])
+        self.assertEqual(counts["full_benchmark_complete"], 0)
+        self.assertEqual(calls, [])
+
+    def test_missing_artifacts_refuse_the_transition(self):
+        counts, calls = self._advance([self._row()],
+                                      artifacts=("digest", 0, ("final_results",)))
+        self.assertEqual(counts["refused"], 1)
+        self.assertEqual(calls, [])
+
+    def test_a_missing_contract_hash_refuses_the_upper_rung(self):
+        counts, calls = self._advance([self._row(state="sanity_passed",
+                                                 stage="full_benchmark")],
+                                      contract="")
+        self.assertEqual(counts["refused"], 1)
+        self.assertEqual(calls, [])
+
+
+if __name__ == "__main__":
+    unittest.main()

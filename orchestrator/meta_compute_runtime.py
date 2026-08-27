@@ -1122,73 +1122,6 @@ def settle_cpu_run(experiment_run_id: int) -> str:
     return observed.status
 
 
-def _advance_pilot_evidence_state(backend_job_id: str) -> str:
-    """Move a settled non-colab pilot onto the evidence ladder.
-
-    colab_worker advances the run to ``sanity_passed`` when its request
-    succeeds; nothing on the legacy/ssh path ever did. So an ssh_gpu run could
-    measure a real two-arm result, record an OutcomeRecord, and still sit at
-    ``planned`` forever -- and advance_to_full_benchmark selects on
-    ``scientific_evidence_state='sanity_passed'``, so it was never funded for
-    the full benchmark, never audited, and never reached a directional
-    verdict. Every one of the 35 runs that ever produced supported or refuted
-    went through colab; ideas 237 and 241 measured +0.06 and -0.315 on the
-    A10G on 2026-08-27 and both stopped at inconclusive/planned for want of
-    this transition.
-
-    Same guards as the colab path: one rung only, pilot_only, and refuse when
-    the runner's artifacts are not all registered. Reported, never raised -- a
-    bookkeeping gap must not undo a settled compute job.
-    """
-    row = db.fetchone(
-        """
-        SELECT cj.agenda_id, cj.resource_grant_id, cj.command_ref,
-               er.id AS run_id, er.scientific_evidence_state
-          FROM compute_jobs_v1 AS cj
-          JOIN experiment_runs AS er
-            ON 'experiment-run:' || er.id = cj.command_ref
-         WHERE cj.backend_job_id=?
-        """,
-        (backend_job_id,),
-    )
-    if not row:
-        return "no_run_for_job"
-    record = dict(row)
-    if str(record.get("scientific_evidence_state") or "planned") != "planned":
-        return "already_advanced"
-    try:
-        from orchestrator.bounded_execution import raw_artifacts_hash
-
-        digest, present, missing = raw_artifacts_hash(
-            agenda_id=int(record["agenda_id"]),
-            experiment_run_id=int(record["run_id"]),
-        )
-        if present <= 0 or missing:
-            return "runner_artifact_registration_incomplete"
-        from meta_harness.repository import (
-            EvidenceTransitionContext,
-            MetaHarnessRepository,
-        )
-
-        MetaHarnessRepository().advance_experiment_state(
-            agenda_id=int(record["agenda_id"]),
-            experiment_run_id=int(record["run_id"]),
-            target="sanity_passed",
-            context=EvidenceTransitionContext(
-                resource_grant_valid=True,
-                resource_grant_id=int(record["resource_grant_id"]),
-                execution_succeeded=True,
-                pilot_only=True,
-                raw_artifacts_present=True,
-                raw_artifacts_hash=digest,
-            ),
-        )
-        return "advanced_to_sanity_passed"
-    except Exception as exc:  # noqa: BLE001 - never undo a settled job
-        db.rollback()
-        return "%s: %s" % (type(exc).__name__, str(exc)[:120])
-
-
 def settle_legacy_job(gpu_job_id: int) -> str:
     """Mirror a legacy worker observation into durable v1 compute state."""
     backend_job_id = f"legacy-gpu-job:{int(gpu_job_id)}"
@@ -1235,8 +1168,6 @@ def settle_legacy_job(gpu_job_id: int) -> str:
             )
         ),
     )
-    if observed.status == "succeeded":
-        _advance_pilot_evidence_state(backend_job_id)
     return observed.status
 
 
