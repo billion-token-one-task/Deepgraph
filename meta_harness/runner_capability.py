@@ -49,6 +49,36 @@ def canonical_dataset_repository_id(value: Any) -> str:
 # must denote the *same* measurement as its value, never a related one. A
 # rename that changes what is measured (pass@k, bleu, rouge, ...) is a real
 # capability gap and must keep failing preflight.
+# Hugging Face publishes a classifier's pipeline_tag as "text-classification";
+# the runner contract calls the same thing "sequence_classification". With no
+# synonym between them the contract was unsatisfiable in both directions: a
+# plan declaring sequence_classification was refused because the hub reported
+# text_classification, and a plan declaring text_classification was refused
+# because it is not in the runner's model_tasks. Measured 2026-08-27 against
+# three published classifiers -- every one of them reports text_classification
+# -- which means the sequence_classification runner had never been able to
+# accept any model at all.
+#
+# Same rule as METRIC_NAME_ALIASES: exact synonyms only. A rename that changes
+# what the head does (token-classification, zero-shot-classification) is a real
+# capability gap and must keep failing.
+MODEL_TASK_ALIASES: Mapping[str, str] = {
+    "text-classification": "sequence_classification",
+    "text_classification": "sequence_classification",
+    "sequence-classification": "sequence_classification",
+    "text-generation": "causal_lm",
+    "text_generation": "causal_lm",
+    "causal-lm": "causal_lm",
+}
+
+
+def canonical_model_task(value: Any) -> str:
+    """Fold a published or declared task name onto the contract's spelling."""
+    text = str(value or "").strip().lower().replace(" ", "_")
+    return MODEL_TASK_ALIASES.get(text, MODEL_TASK_ALIASES.get(
+        text.replace("_", "-"), text))
+
+
 METRIC_NAME_ALIASES: Mapping[str, str] = {
     "acc": "accuracy",
     "accuracy_score": "accuracy",
@@ -327,7 +357,7 @@ class ExperimentRequirements:
                 repository_id=str(model.get("repository_id") or ""),
                 revision=str(model.get("revision") or "main"),
                 framework=str(model.get("framework") or "transformers"),
-                task=str(model.get("task") or "causal_lm"),
+                task=canonical_model_task(model.get("task") or "causal_lm"),
                 min_vram_gb=float(model.get("min_vram_gb") or 0.0),
                 requires_cuda=bool(model.get("requires_cuda")),
                 quantization=str(model.get("quantization") or "none"),
@@ -746,10 +776,14 @@ class PreflightEngine:
             reasons.append("model_unavailable")
         elif not model.resolved_revision:
             reasons.append("model_revision_unresolved")
-        if model.available and model.task and model.task not in {
-            requirements.model.task,
-            requirements.model.task.replace("causal_lm", "text_generation"),
-        }:
+        # Compare what the hub publishes with what the plan declares in one
+        # vocabulary; the two sides spell the same heads differently.
+        if (
+            model.available
+            and model.task
+            and canonical_model_task(model.task)
+            != canonical_model_task(requirements.model.task)
+        ):
             reasons.append("model_task_mismatch")
         adapter = matches[0]
         required_dependencies = runtime_dependencies(adapter, requirements)

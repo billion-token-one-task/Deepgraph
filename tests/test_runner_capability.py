@@ -562,3 +562,90 @@ class SampleCapDefaultTests(unittest.TestCase):
         ):
             requirements = requirements_from_plan(plan)
         self.assertEqual(requirements.sample_cap, 250)
+
+
+class TheHubAndTheContractNameTheSameHead(unittest.TestCase):
+    """One of V1's two runners could never accept a model.
+
+    Hugging Face publishes a classifier's pipeline_tag as
+    "text-classification"; the runner contract calls that head
+    "sequence_classification". With no synonym between them the contract was
+    unsatisfiable in both directions -- declare the contract's spelling and the
+    remote check refused it against the hub's, declare the hub's and the
+    structural check refused it against the runner's. Measured 2026-08-27
+    against three published classifiers, every one of which reports
+    text_classification.
+    """
+
+    def _engine_and_env(self, published_task):
+        probe = Probe(
+            datasets={
+                "org/sentiment-corpus": RepositoryMetadata(
+                    True, resolved_revision="sha", fields=("sentence", "class_id")
+                )
+            },
+            models={
+                "org/classifier": RepositoryMetadata(
+                    True, resolved_revision="sha", task=published_task, size_gb=0.5
+                )
+            },
+        )
+        return PreflightEngine(probe=probe), ENVIRONMENT
+
+    def test_a_published_classifier_is_accepted(self):
+        engine, env = self._engine_and_env("text_classification")
+        result = engine.run(classification_requirements(), env)
+        self.assertEqual(result.reason_codes, ())
+        self.assertTrue(result.passed, result.reason_codes)
+
+    def test_declaring_the_hubs_spelling_is_also_accepted(self):
+        requirements = requirements_from_plan(
+            {
+                "datasets": [{"name": "org/sentiment-corpus"}],
+                "baselines": [{"model": "org/classifier"}],
+                "metrics": {"primary": "macro_f1"},
+                "execution_requirements": {
+                    "task_protocol": "sequence_classification",
+                    "candidate_hook": "candidate_text",
+                    "dataset": {
+                        "repository_id": "org/sentiment-corpus",
+                        "revision": "v2",
+                        "split": "test",
+                        "field_mapping": {"text": "sentence", "label": "class_id"},
+                    },
+                    "model": {
+                        "repository_id": "org/classifier",
+                        "revision": "v4",
+                        "task": "text-classification",
+                        "min_vram_gb": 4.0,
+                    },
+                    "metric": {"name": "macro_f1", "direction": "higher"},
+                    "preferred_backends": ["ssh_gpu"],
+                },
+            }
+        )
+        self.assertEqual(requirements.model.task, "sequence_classification")
+        self.assertTrue(RunnerRegistry().matches(requirements))
+
+    def test_a_genuinely_different_head_is_still_refused(self):
+        for published in ("token_classification", "fill_mask", "zero_shot_classification"):
+            with self.subTest(published=published):
+                engine, env = self._engine_and_env(published)
+                result = engine.run(classification_requirements(), env)
+                self.assertIn("model_task_mismatch", result.reason_codes)
+
+    def test_the_generative_synonym_still_holds(self):
+        probe = Probe(
+            datasets={
+                "org/qa-corpus": RepositoryMetadata(
+                    True, resolved_revision="sha", fields=("query_text", "gold_text")
+                )
+            },
+            models={
+                "org/generator": RepositoryMetadata(
+                    True, resolved_revision="sha", task="text_generation", size_gb=1.0
+                )
+            },
+        )
+        result = PreflightEngine(probe=probe).run(qa_requirements(), ENVIRONMENT)
+        self.assertNotIn("model_task_mismatch", result.reason_codes)
