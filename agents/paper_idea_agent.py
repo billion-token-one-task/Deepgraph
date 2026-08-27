@@ -1445,23 +1445,96 @@ def _discover_exact_bounded_proposal(
     if len(why_novel) < 30:
         invalid_delivery("has no novelty argument")
 
-    raw_experiment, experiment_tokens, experiment_route = _call_exact_proposal_llm(
-        job_id=job_id,
-        agenda_id=agenda_id,
-        idea_id=idea_id,
-        grant_id=resource_grant_id,
-        operation="proposal_experiment_design",
-        system_prompt=EXPERIMENT_DESIGN_SYSTEM,
-        user_prompt=_build_exact_experiment_prompt(problem, method),
-        prompt_version=prompt_version,
-        token_cap=token_cap,
-    )
-    try:
-        experiment, _ = parse_llm_json_text(raw_experiment)
-    except Exception as exc:
-        invalid_delivery("experiment output is not valid JSON", exc)
-    if not isinstance(experiment, dict) or not experiment:
-        invalid_delivery("has no experiment design")
+    # The design call is the contract loop. This is the path a funded proposal
+    # actually takes -- realize_funded_proposals -> execute_bounded_proposal ->
+    # here -- so it is the path that produced all 35 candidates of the
+    # 2026-08-25..27 batch, of which 2 were executable. The durable checkpoint
+    # is keyed on the prompt digest, so appending the refusal reasons makes a
+    # genuinely new input rather than replaying the answer that was refused.
+    base_experiment_prompt = _build_exact_experiment_prompt(problem, method)
+    agenda_rule = _agenda_scope_rule(agenda_id)
+    resolver = RepositoryResolver()
+    experiment_tokens = 0
+    experiment_calls = 0
+    experiment_route: dict = {}
+    experiment: dict = {}
+    review = None
+    for attempt in range(1, CONTRACT_ATTEMPTS + 1):
+        user_prompt = base_experiment_prompt
+        if review is not None:
+            user_prompt = f"{base_experiment_prompt}\n\n{render_violations(review)}"
+        raw_experiment, attempt_tokens, experiment_route = _call_exact_proposal_llm(
+            job_id=job_id,
+            agenda_id=agenda_id,
+            idea_id=idea_id,
+            grant_id=resource_grant_id,
+            operation="proposal_experiment_design",
+            system_prompt=EXPERIMENT_DESIGN_SYSTEM,
+            user_prompt=user_prompt,
+            prompt_version=prompt_version,
+            token_cap=token_cap,
+        )
+        experiment_tokens += attempt_tokens
+        experiment_calls += 1
+        try:
+            experiment, _ = parse_llm_json_text(raw_experiment)
+        except Exception as exc:
+            invalid_delivery("experiment output is not valid JSON", exc)
+        if not isinstance(experiment, dict) or not experiment:
+            invalid_delivery("has no experiment design")
+        review = review_candidate_plan(
+            _experimental_plan_payload(experiment),
+            agenda=agenda_rule,
+            resolver=resolver,
+        )
+        _fold_resolved_identities(experiment, review)
+        if review.ok:
+            if attempt > 1:
+                print(
+                    f"[PAPER_IDEA] Contract satisfied on attempt {attempt}.",
+                    flush=True,
+                )
+            break
+        if not review.actionable:
+            # Only conditions of the deployment remain. Preflight defers on
+            # those and a later pass retries them, so a rewrite buys nothing.
+            print(
+                "[PAPER_IDEA] Contract blocked only by deployment conditions "
+                f"({', '.join(review.codes)}); storing for the deferred retry path.",
+                flush=True,
+            )
+            break
+        print(
+            f"[PAPER_IDEA] Plan refused on attempt {attempt}/{CONTRACT_ATTEMPTS} "
+            f"({', '.join(review.codes)}); returning the reasons to the generator.",
+            flush=True,
+        )
+    if review is not None and review.actionable:
+        # Storing it would spend a candidate slot on a plan no runner can
+        # execute and teach the next generation nothing. Refuse, and hand back
+        # the grant so the agenda's concurrency slot does not idle out its TTL.
+        print(
+            f"[PAPER_IDEA] Bounded proposal {idea_id} abandoned after "
+            f"{experiment_calls} contract attempts: {', '.join(review.codes)}",
+            flush=True,
+        )
+        # Imported here rather than at module scope: orchestrator.pipeline
+        # imports this module's agents, so a top-level import is a cycle.
+        from orchestrator.pipeline import log_event
+
+        log_event(
+            "warning",
+            {
+                "step": "proposal_contract_unsatisfied",
+                "agenda_id": agenda_id,
+                "idea_id": idea_id,
+                "resource_grant_id": resource_grant_id,
+                "attempts": experiment_calls,
+                "reason_codes": list(review.codes),
+            },
+        )
+        _release_abandoned_proposal_grant({"id": resource_grant_id}, agenda_id)
+        return []
 
     generated_awareness = experiment.get("problem_awareness")
     if not isinstance(generated_awareness, dict):
@@ -1496,19 +1569,12 @@ def _discover_exact_bounded_proposal(
         for ref in source_refs.get("signals", [])
         if isinstance(ref, dict) and ref.get("content_hash")
     ]
-    plan = {
-        "baselines": experiment.get("baselines", []),
-        "datasets": experiment.get("datasets", []),
-        "metrics": experiment.get("metrics", {}),
-        "ablations": experiment.get("ablations", []),
-        "expected_results": expected_results,
-        "compute_budget": experiment.get("compute_budget", {}),
-        "execution_requirements": experiment.get("execution_requirements", {}),
-        "risks": experiment.get("risks", []),
-        "paper_title": title,
-        "raw_paper_title": raw_title,
-        "title_source": "bounded_proposal_title_policy",
-    }
+    plan = _experimental_plan_payload(
+        experiment,
+        paper_title=title,
+        raw_paper_title=raw_title,
+        title_source="bounded_proposal_title_policy",
+    )
     return [
         {
             "proposal_candidate_id": idea_id,
@@ -1546,7 +1612,7 @@ def _discover_exact_bounded_proposal(
             ),
             "novelty_status": "unchecked",
             "generation_tokens": method_tokens + experiment_tokens,
-            "llm_calls": 2,
+            "llm_calls": 1 + experiment_calls,
             "prompt_version": prompt_version,
             "model_version": str(
                 experiment_route.get("model") or method_route.get("model") or ""
@@ -1753,6 +1819,7 @@ def _experimental_plan_payload(
     *,
     paper_title: str = "",
     raw_paper_title: str = "",
+    title_source: str = "paper_idea_title_policy",
 ) -> dict:
     """The plan exactly as it will be stored.
 
@@ -1772,8 +1839,34 @@ def _experimental_plan_payload(
         "risks": result3.get("risks", []),
         "paper_title": paper_title,
         "raw_paper_title": raw_paper_title,
-        "title_source": "paper_idea_title_policy",
+        "title_source": title_source,
     }
+
+
+def _agenda_scope_rule(agenda_id: int):
+    """The agenda whose keyword rule the topic gate will apply, or None.
+
+    An early warning, not the ruling: the gate still applies it to the stored
+    row. Losing the warning costs one regeneration; refusing to propose because
+    the agenda row could not be read would cost the whole pass.
+    """
+    try:
+        from agents.agenda_loader import get_agenda
+
+        return get_agenda(int(agenda_id))
+    except Exception as exc:  # noqa: BLE001
+        print(f"[PAPER_IDEA] Agenda scope rule unavailable ({exc})", flush=True)
+        return None
+
+
+def _fold_resolved_identities(experiment: dict, review) -> None:
+    """Keep the repository ids the hub resolved, so nothing re-derives them."""
+    requirements = review.plan.get("execution_requirements")
+    if isinstance(requirements, dict) and requirements:
+        experiment["execution_requirements"] = requirements
+    for field_name in ("datasets", "baselines"):
+        if field_name in review.plan:
+            experiment[field_name] = review.plan[field_name]
 
 
 def _design_experiment_within_contract(

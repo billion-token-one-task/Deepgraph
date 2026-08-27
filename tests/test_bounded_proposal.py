@@ -15,6 +15,7 @@ from meta_harness.llm_routing import (
 )
 from orchestrator import bounded_proposal
 from agents import paper_idea_agent
+from agents.candidate_contract import ContractReview, ContractViolation
 from agents import problem_first
 
 
@@ -190,6 +191,115 @@ class BoundedProposalTests(unittest.TestCase):
             ):
                 bounded_proposal.authorize_bounded_proposal(_request())
 
+    def test_the_bounded_path_loops_on_a_refused_contract(self):
+        """The funded path is the one candidates are actually born on.
+
+        The 35 candidates of the 2026-08-25..27 batch all came through here --
+        realize_funded_proposals -> execute_bounded_proposal -> exact discovery
+        -- so a contract loop wired only into the unfunded discovery loop would
+        never run. Two attempts, then a plan that satisfies the contract.
+        """
+        method = json.dumps(
+            {
+                "method": {
+                    "name": "Bounded Method",
+                    "one_line": "A bounded mechanism repair.",
+                    "definition": "minimize an exact persisted objective",
+                    "why_novel": "This is distinct because it tests the persisted mechanism directly.",
+                    "falsification_hook": "Reject when the bounded metric does not improve.",
+                }
+            }
+        )
+        experiment = json.dumps({"paper_title": "T", "execution_requirements": {}})
+        refused = ContractReview(
+            (ContractViolation("metric_contract_unsupported", "pick a real metric"),),
+            {},
+        )
+        reviews = [refused, refused, ContractReview((), {})]
+        with (
+            mock.patch.object(paper_idea_agent.db, "fetchone", return_value=_exact_problem_scope()),
+            mock.patch.object(
+                paper_idea_agent,
+                "_call_exact_proposal_llm",
+                side_effect=[
+                    (method, 120, {"model": "method-model"}),
+                    (experiment, 10, {"model": "experiment-model"}),
+                    (experiment, 10, {"model": "experiment-model"}),
+                    (experiment, 10, {"model": "experiment-model"}),
+                ],
+            ) as exact_call,
+            mock.patch.object(
+                paper_idea_agent, "configured_role_prompt_version", return_value="v1"
+            ),
+            mock.patch.object(
+                paper_idea_agent, "review_candidate_plan", side_effect=reviews
+            ),
+        ):
+            result = paper_idea_agent.discover_paper_ideas(
+                max_problems=1,
+                max_papers=1,
+                agenda_id=2,
+                proposal_job_id=110,
+                proposal_candidate_id=115,
+                proposal_grant_id=501,
+            )
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]["llm_calls"], 4)
+        self.assertEqual(result[0]["generation_tokens"], 150)
+        design_prompts = [
+            call.kwargs["user_prompt"]
+            for call in exact_call.call_args_list
+            if call.kwargs["operation"] == "proposal_experiment_design"
+        ]
+        self.assertEqual(len(design_prompts), 3)
+        self.assertNotIn("metric_contract_unsupported", design_prompts[0])
+        self.assertIn("metric_contract_unsupported", design_prompts[1])
+
+    def test_an_unsatisfiable_contract_stores_nothing_and_frees_the_grant(self):
+        method = json.dumps(
+            {
+                "method": {
+                    "name": "Bounded Method",
+                    "one_line": "A bounded mechanism repair.",
+                    "definition": "minimize an exact persisted objective",
+                    "why_novel": "This is distinct because it tests the persisted mechanism directly.",
+                    "falsification_hook": "Reject when the bounded metric does not improve.",
+                }
+            }
+        )
+        experiment = json.dumps({"paper_title": "T", "execution_requirements": {}})
+        refused = ContractReview(
+            (ContractViolation("metric_contract_unsupported", "pick a real metric"),),
+            {},
+        )
+        with (
+            mock.patch.object(paper_idea_agent.db, "fetchone", return_value=_exact_problem_scope()),
+            mock.patch.object(
+                paper_idea_agent,
+                "_call_exact_proposal_llm",
+                side_effect=[(method, 120, {})] + [(experiment, 10, {})] * 3,
+            ),
+            mock.patch.object(
+                paper_idea_agent, "configured_role_prompt_version", return_value="v1"
+            ),
+            mock.patch.object(
+                paper_idea_agent, "review_candidate_plan", return_value=refused
+            ),
+            mock.patch.object(
+                paper_idea_agent, "_release_abandoned_proposal_grant"
+            ) as release,
+        ):
+            result = paper_idea_agent.discover_paper_ideas(
+                max_problems=1,
+                max_papers=1,
+                agenda_id=2,
+                proposal_job_id=110,
+                proposal_candidate_id=115,
+                proposal_grant_id=501,
+            )
+        self.assertEqual(result, [])
+        release.assert_called_once_with({"id": 501}, 2)
+
     def test_exact_discovery_uses_only_named_rows_and_no_global_side_path(self):
         method = json.dumps(
             {
@@ -239,6 +349,15 @@ class BoundedProposalTests(unittest.TestCase):
                 paper_idea_agent,
                 "configured_role_prompt_version",
                 return_value="proposal-v1",
+            ),
+            # The contract review reaches the hub; this test is about the exact
+            # path's row scoping. tests/test_candidate_contract.py covers the
+            # review, and test_the_bounded_path_loops_on_a_refused_contract
+            # below covers that this path consults it.
+            mock.patch.object(
+                paper_idea_agent,
+                "review_candidate_plan",
+                side_effect=lambda plan, **kwargs: ContractReview((), plan),
             ),
         ):
             with ExitStack() as stack:
