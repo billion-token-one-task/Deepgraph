@@ -351,6 +351,10 @@ def _run_paths(run: Mapping[str, Any]) -> tuple[Path, Path, Path]:
 # both modes, so the precise value carries no weight.
 MAX_BLANK_PREDICTION_RATE = 0.5
 
+# How long an admission may sit without producing a compute job before it
+# counts as abandoned. Longer than a healthy provision, short enough that a
+# silent failure does not hold an audit for hours.
+HOLDOUT_ADMISSION_LEASE_SECONDS = 900
 MAX_HOLDOUT_ATTEMPTS = 3
 # A transport death measured nothing, so it buys a separate, larger budget:
 # the science retry cap stays 3, but infrastructure may fail more often than
@@ -634,6 +638,48 @@ def run_evidence_audit_phase(
                 holdout_dir.rename(quarantine)
             log(f"[AUDIT] run {run_id} holdout rejected ({problem}); quarantined")
     if not holdout_final_path.exists():
+        rows = db.fetchall(
+            """
+            SELECT id, status, failure_reason, compute_job_id
+              FROM colab_work_requests_v1
+            WHERE experiment_run_id=? AND idempotency_key LIKE '%evidence_audit_holdout%'
+            ORDER BY id DESC
+            """,
+            (run_id,),
+        )
+        # An admission that never produced a compute job is not a flight in
+        # progress, and nothing bounded it: requests 155 and 156 sat at
+        # 'admitting' with compute_job_id NULL while both audits reported
+        # holdout_pending on every pass, so ideas 237 and 241 waited on a
+        # provision that had already failed silently. Time it out and record it
+        # as transport, which the retry budget below already refuses to charge
+        # to the science.
+        for row in rows:
+            record = dict(row)
+            if str(record.get("status")) != "admitting":
+                continue
+            if record.get("compute_job_id"):
+                continue
+            stale = db.fetchone(
+                "SELECT 1 AS stale FROM colab_work_requests_v1"
+                " WHERE id=? AND created_at <= CURRENT_TIMESTAMP - CAST(? AS INTERVAL)",
+                (int(record["id"]), "%d seconds" % HOLDOUT_ADMISSION_LEASE_SECONDS),
+            )
+            if not stale:
+                continue
+            db.execute(
+                "UPDATE colab_work_requests_v1 SET status='failed',"
+                " failure_reason=?, updated_at=CURRENT_TIMESTAMP"
+                " WHERE id=? AND status='admitting'",
+                ("transport:admission_abandoned", int(record["id"])),
+            )
+            db.commit()
+            record["status"] = "failed"
+            record["failure_reason"] = "transport:admission_abandoned"
+            log(
+                f"[AUDIT] run {run_id} holdout request {record['id']} abandoned in "
+                "admission; released as transport"
+            )
         rows = db.fetchall(
             """
             SELECT id, status, failure_reason FROM colab_work_requests_v1

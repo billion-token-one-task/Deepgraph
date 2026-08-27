@@ -147,3 +147,26 @@ class ValidationGrantStageTests(unittest.TestCase):
         self.assertIn("'full_benchmark'", body)
         self.assertIn("'pilot'", body)
         self.assertIn("'validation'", body)
+
+
+class HoldoutAdmissionLeaseTests(unittest.TestCase):
+    """An admission that never produced a compute job is not a flight.
+
+    Requests 155 and 156 sat at 'admitting' with compute_job_id NULL while both
+    audits reported holdout_pending on every pass, so two candidates waited on
+    a provision that had already failed silently. Nothing bounded that state.
+    """
+
+    def test_the_stale_check_can_see_whether_a_job_exists(self):
+        import inspect
+        from meta_harness import evidence_audit
+
+        body = inspect.getsource(evidence_audit)
+        # the guard reads compute_job_id, so the query must fetch it
+        self.assertIn("SELECT id, status, failure_reason, compute_job_id", body)
+        self.assertIn("transport:admission_abandoned", body)
+
+    def test_the_abandoned_reason_is_transport_class(self):
+        from meta_harness.failure_policy import measured_nothing
+
+        self.assertTrue(measured_nothing("transport:admission_abandoned"))
