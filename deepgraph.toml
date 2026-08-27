@@ -386,7 +386,14 @@ ssh_port = 22
 ssh_user = ""
 base_dir = "/root/deepgraph-remote-worker"
 python = "python"
-auto_pip_install = false
+# A rented accelerator arrives with whatever image it was built from. On
+# 2026-08-27 the aws-g5 host had torch and no transformers or datasets, so the
+# runner reported dependency_missing and three pilot attempts for ideas 237
+# and 241 died without measuring one example. The remote setup that installs
+# the bundle's requirements has existed all along; only this flag kept it from
+# running. Verified on that host: a plain pip install lands in the
+# interpreter's own site-packages and imports, no sudo and no user-site needed.
+auto_pip_install = true
 setup_timeout_seconds = 3600
 
 [manuscript]
