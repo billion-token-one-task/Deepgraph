@@ -4,6 +4,7 @@ import json
 import os
 import threading
 import time
+from collections.abc import Mapping
 from typing import Any, Callable
 
 import httpx
@@ -232,6 +233,49 @@ def _mark_prompt_cache_unsupported(provider: dict) -> None:
     print(f"[LLM] {name} does not accept prompt cache request fields; retrying without them", flush=True)
 
 
+# The route owns these: a provider entry declares how a vendor wants to be
+# asked, not which model answers or how much it may spend.
+_ROUTE_OWNED_BODY_KEYS = frozenset({"model", "messages", "stream", "max_tokens"})
+
+
+def _resolve_extra_body(value: Any) -> dict:
+    """Vendor-specific request fields, declared per provider in configuration.
+
+    Vendors differ in how a capability is switched on. DeepSeek takes thinking
+    mode as a top-level ``{"thinking": {"type": "enabled"}}`` plus
+    ``reasoning_effort``; the next vendor will spell it differently. Naming
+    those fields in a provider entry rather than in this file means adding a
+    vendor is a configuration change, and means nothing here has to know which
+    vendor is answering.
+
+    A string value of the form ``env:NAME`` reads NAME from the environment,
+    the same indirection the role routes use for provider and model, so a
+    setting with an existing home (reasoning effort) keeps having one home.
+    """
+    if not isinstance(value, Mapping):
+        return {}
+    resolved: dict[str, Any] = {}
+    for key, item in value.items():
+        name = str(key)
+        if name in _ROUTE_OWNED_BODY_KEYS:
+            print(
+                f"[LLM] Ignoring extra_body.{name}: the route owns it",
+                flush=True,
+            )
+            continue
+        if isinstance(item, str) and item.startswith("env:"):
+            item = os.environ.get(item[4:], "")
+            if not item:
+                continue
+        resolved[name] = item
+    return resolved
+
+
+def _apply_extra_body(payload: dict, provider: dict) -> None:
+    for key, value in (provider.get("extra_body") or {}).items():
+        payload[key] = value
+
+
 def _apply_prompt_cache_options(payload: dict, provider: dict, system_prompt: str) -> None:
     if not LLM_PROMPT_CACHE_ENABLED or _prompt_cache_disabled(provider):
         return
@@ -389,6 +433,7 @@ def _declared_providers() -> list[dict]:
                     if isinstance(entry.get("extra_headers"), dict)
                     else {}
                 ),
+                "extra_body": _resolve_extra_body(entry.get("extra_body")),
             }
         )
     return providers
@@ -739,6 +784,7 @@ def _call_chat_completions(
         )
     if max_tokens and not _should_omit_token_limit(provider):
         payload["max_tokens"] = max_tokens
+    _apply_extra_body(payload, provider)
     if not strict_single_request:
         _apply_prompt_cache_options(payload, provider, system_prompt)
 

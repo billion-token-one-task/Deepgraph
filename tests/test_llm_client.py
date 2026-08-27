@@ -793,3 +793,67 @@ class LlmClientCooldownTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExtraBodyIsVendorConfigurationNotCode(unittest.TestCase):
+    """How a vendor switches a capability on belongs in its provider entry.
+
+    DeepSeek takes thinking mode as a top-level ``thinking`` object plus
+    ``reasoning_effort``; the next vendor will spell it differently. Naming
+    those fields in configuration is what keeps this client from having to know
+    which vendor is answering.
+    """
+
+    def test_a_nested_vendor_field_survives_intact(self):
+        resolved = llm_client._resolve_extra_body(
+            {"thinking": {"type": "enabled"}}
+        )
+        self.assertEqual(resolved, {"thinking": {"type": "enabled"}})
+
+    def test_env_indirection_reads_the_environment(self):
+        with unittest.mock.patch.dict(
+            llm_client.os.environ, {"DG_TEST_EFFORT": "high"}, clear=False
+        ):
+            resolved = llm_client._resolve_extra_body(
+                {"reasoning_effort": "env:DG_TEST_EFFORT"}
+            )
+        self.assertEqual(resolved, {"reasoning_effort": "high"})
+
+    def test_an_unset_env_reference_is_dropped_not_sent_empty(self):
+        with unittest.mock.patch.dict(llm_client.os.environ, {}, clear=False):
+            llm_client.os.environ.pop("DG_TEST_ABSENT", None)
+            resolved = llm_client._resolve_extra_body(
+                {"reasoning_effort": "env:DG_TEST_ABSENT"}
+            )
+        self.assertEqual(resolved, {})
+
+    def test_configuration_cannot_redirect_the_call(self):
+        """A provider entry says how to ask, never who answers or how much."""
+        resolved = llm_client._resolve_extra_body(
+            {
+                "model": "some-other-model",
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": True,
+                "max_tokens": 999999,
+                "thinking": {"type": "enabled"},
+            }
+        )
+        self.assertEqual(resolved, {"thinking": {"type": "enabled"}})
+
+    def test_absent_or_malformed_declaration_means_nothing_extra(self):
+        for value in (None, "", [], "thinking"):
+            self.assertEqual(llm_client._resolve_extra_body(value), {})
+
+    def test_the_fields_reach_the_request_body(self):
+        payload = {"model": "m", "messages": [], "stream": False}
+        llm_client._apply_extra_body(
+            payload,
+            {"extra_body": {"reasoning_effort": "high", "thinking": {"type": "enabled"}}},
+        )
+        self.assertEqual(payload["reasoning_effort"], "high")
+        self.assertEqual(payload["thinking"], {"type": "enabled"})
+
+    def test_a_provider_that_declares_none_sends_none(self):
+        payload = {"model": "m", "messages": [], "stream": False}
+        llm_client._apply_extra_body(payload, {"name": "plain"})
+        self.assertEqual(payload, {"model": "m", "messages": [], "stream": False})

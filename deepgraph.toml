@@ -82,15 +82,31 @@ enabled = true
 # from the proposer, so a verdict is not the proposing model grading its own
 # output. Independence is judged on model_family, and this is the only declared
 # route whose family is genuinely unrelated to the proposer's.
+# Renamed from novita_deepseek on 2026-08-27 when the endpoint moved to
+# DeepSeek's own API. The old name stays on the rows it actually served: a
+# ledger that says "novita" for a call to api.deepseek.com is worse than one
+# whose provider names change when the provider does.
+#
+# thinking mode is on by default for deepseek-v4-flash, but a default is not a
+# decision. Declared explicitly so the audit trail says the verdicts were
+# reasoned, and so a change in the vendor's default cannot quietly turn it off.
+# Measured 2026-08-27: {"type": "disabled"} yields 0 characters of
+# reasoning_content, {"type": "enabled"} yields 468 on the same question.
 [[llm.providers]]
-name = "novita_deepseek"
+name = "deepseek_official"
 base_url_env = "DEEPGRAPH_LLM_DEEPSEEK_BASE_URL"
-model = "deepseek/deepseek-v4-flash-0731"
+model = "deepseek-v4-flash"
 model_family = "deepseek"
 protocol = "chat_completions"
 api_key_env = "DEEPGRAPH_LLM_DEEPSEEK_API_KEY"
 rpm = 0
 enabled = true
+
+[llm.providers.extra_body]
+reasoning_effort = "env:DEEPGRAPH_LLM_REASONING_EFFORT"
+
+[llm.providers.extra_body.thinking]
+type = "enabled"
 
 # Claude on the same gateway. Declared so a proposer-model comparison can name
 # a Claude arm without the ledger recording it under a provider called
@@ -216,8 +232,8 @@ prompt_version = "proposer_v1"
 # minutes later. A different vendor means a different network path, which is the
 # only kind of fallback a transport blip cannot follow.
 [[llm_routes.proposer]]
-provider_ref = "novita_deepseek"
-model_ref = "deepseek/deepseek-v4-flash-0731"
+provider_ref = "deepseek_official"
+model_ref = "deepseek-v4-flash"
 model_family_ref = "deepseek"
 prompt_version = "proposer_v1"
 
