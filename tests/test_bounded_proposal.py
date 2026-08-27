@@ -833,3 +833,29 @@ class ProposalDeliveryOrderingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheGrantFundsEveryAttemptNotJustTheFirst(unittest.TestCase):
+    """A repair with no budget left is a loop that cannot loop.
+
+    Sized at half the grant, a 32k proposal funded the method call and one
+    design call and nothing else, so the first repair failed with
+    "ResourceGrant token budget is exhausted" and left the grant spent for the
+    candidate behind it (grant 387, agenda 16, 2026-08-27).
+    """
+
+    def test_the_whole_loop_fits_inside_the_grant(self):
+        cap = paper_idea_agent._proposal_call_token_cap(32_000)
+        calls = 1 + paper_idea_agent.CONTRACT_ATTEMPTS
+        self.assertLessEqual(cap * calls, 32_000)
+
+    def test_a_call_still_gets_room_to_answer(self):
+        # The measured design call is 4-5k tokens.
+        self.assertGreaterEqual(paper_idea_agent._proposal_call_token_cap(32_000), 6_000)
+
+    def test_the_provider_ceiling_still_binds_a_large_grant(self):
+        self.assertEqual(paper_idea_agent._proposal_call_token_cap(10_000_000), 16_000)
+
+    def test_a_grant_too_small_to_divide_never_returns_zero(self):
+        self.assertGreaterEqual(paper_idea_agent._proposal_call_token_cap(1), 1)
+        self.assertGreaterEqual(paper_idea_agent._proposal_call_token_cap(0), 1)

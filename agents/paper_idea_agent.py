@@ -1421,7 +1421,11 @@ def _discover_exact_bounded_proposal(
         resource_grant_id=resource_grant_id,
     )
     prompt_version = configured_role_prompt_version("proposer")
-    token_cap = max(1, min(16_000, int(grant["token_cap"]) // 2))
+    # Room for the method call plus every contract attempt, not for exactly
+    # two calls. Sized at // 2 the grant funded one design call, so the first
+    # repair found the budget already spent -- and left the grant exhausted
+    # for the candidate behind it (grant 387, agenda 16, 2026-08-27).
+    token_cap = _proposal_call_token_cap(int(grant["token_cap"]))
 
     raw_method, method_tokens, method_route = _call_exact_proposal_llm(
         job_id=job_id,
@@ -1809,6 +1813,17 @@ from agents.candidate_contract import (  # noqa: E402
 CONTRACT_ATTEMPTS = 3
 
 
+def _proposal_call_token_cap(grant_token_cap: int) -> int:
+    """Per-call output ceiling that leaves the contract loop room to work.
+
+    A proposal spends one method call and up to CONTRACT_ATTEMPTS design
+    calls, so the grant has to divide by that many, not by two. The measured
+    design call is 4-5k tokens, well inside the 8k this yields from the
+    standard 32k grant.
+    """
+    return max(1, min(16_000, int(grant_token_cap or 0) // (CONTRACT_ATTEMPTS + 1)))
+
+
 def _release_abandoned_proposal_grant(proposal_grant: dict, agenda_id: int) -> bool:
     """Give back the slot a candidate no longer needs.
 
@@ -2164,7 +2179,7 @@ def discover_paper_ideas(
             continue
         proposal_token_cap = max(
             1,
-            min(16_000, int(proposal_grant.get("token_cap") or 0) // 2),
+            _proposal_call_token_cap(int(proposal_grant.get("token_cap") or 0)),
         )
         prompt_version = configured_role_prompt_version("proposer")
         # Reaching here proves no earlier attempt delivered an idea: a realized
