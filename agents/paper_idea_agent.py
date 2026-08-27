@@ -1472,12 +1472,24 @@ def _discover_exact_bounded_proposal(
         user_prompt = base_experiment_prompt
         if review is not None:
             user_prompt = f"{base_experiment_prompt}\n\n{render_violations(review)}"
+        # A repair is a new operation, not the same one re-asked. The proposal
+        # checkpoint refuses a changed input fingerprint for an operation that
+        # already delivered -- rightly, since that is how a crash loop
+        # re-bills the same step. A bounded repair is a different thing: it is
+        # billed once per attempt against the grant's own ledger and has to be
+        # auditable as its own delivery, so it gets its own operation name and
+        # its own checkpoint rather than overwriting the one before it.
+        operation = (
+            "proposal_experiment_design"
+            if attempt == 1
+            else f"proposal_experiment_design:repair{attempt - 1}"
+        )
         raw_experiment, attempt_tokens, experiment_route = _call_exact_proposal_llm(
             job_id=job_id,
             agenda_id=agenda_id,
             idea_id=idea_id,
             grant_id=resource_grant_id,
-            operation="proposal_experiment_design",
+            operation=operation,
             system_prompt=EXPERIMENT_DESIGN_SYSTEM,
             user_prompt=user_prompt,
             prompt_version=prompt_version,
@@ -1924,6 +1936,11 @@ def _design_experiment_within_contract(
     calls = 0
 
     for attempt in range(1, CONTRACT_ATTEMPTS + 1):
+        operation = (
+            "proposal_experiment_design"
+            if attempt == 1
+            else f"proposal_experiment_design:repair{attempt - 1}"
+        )
         try:
             attempt_key = attempts.next_attempt_key(
                 base_key, max_attempts=CONTRACT_ATTEMPTS
@@ -1952,7 +1969,7 @@ def _design_experiment_within_contract(
                 role="proposer",
                 stage="proposal",
                 resource_grant_id=int(proposal_grant["id"]),
-                operation="proposal_experiment_design",
+                operation=operation,
                 idempotency_key=attempt_key,
                 prompt_version=prompt_version,
                 max_tokens=proposal_token_cap,

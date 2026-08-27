@@ -246,14 +246,26 @@ class BoundedProposalTests(unittest.TestCase):
         self.assertEqual(len(result), 1)
         self.assertEqual(result[0]["llm_calls"], 4)
         self.assertEqual(result[0]["generation_tokens"], 150)
-        design_prompts = [
-            call.kwargs["user_prompt"]
+        design_calls = [
+            call
             for call in exact_call.call_args_list
-            if call.kwargs["operation"] == "proposal_experiment_design"
+            if call.kwargs["operation"].startswith("proposal_experiment_design")
         ]
-        self.assertEqual(len(design_prompts), 3)
-        self.assertNotIn("metric_contract_unsupported", design_prompts[0])
-        self.assertIn("metric_contract_unsupported", design_prompts[1])
+        self.assertEqual(len(design_calls), 3)
+        prompts = [call.kwargs["user_prompt"] for call in design_calls]
+        self.assertNotIn("metric_contract_unsupported", prompts[0])
+        self.assertIn("metric_contract_unsupported", prompts[1])
+        # Each repair is its own operation, so the proposal checkpoint sees a
+        # new delivery rather than a changed input to one already delivered --
+        # which it refuses, because that is how a crash loop re-bills a step.
+        self.assertEqual(
+            [call.kwargs["operation"] for call in design_calls],
+            [
+                "proposal_experiment_design",
+                "proposal_experiment_design:repair1",
+                "proposal_experiment_design:repair2",
+            ],
+        )
 
     def test_an_unsatisfiable_contract_stores_nothing_and_frees_the_grant(self):
         method = json.dumps(
