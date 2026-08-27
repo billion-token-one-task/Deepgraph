@@ -67,7 +67,72 @@ def _recover_terminal_usage() -> dict[str, int]:
         "prelaunch_blocked_attempts_released": (
             control.release_prelaunch_blocked_reservations()
         ),
+        "stranded_token_reservations_released": (
+            _release_stranded_token_reservations()
+        ),
     }
+
+
+# How long a token reservation may sit unsettled before it is presumed dead.
+# Longer than any single LLM turn the forge or validation loop makes, so a slow
+# call is never reclaimed out from under itself.
+from meta_harness.grant_usage import GrantUsageLedger
+
+_TOKEN_RESERVATION_LEASE_SECONDS = 2 * 3600
+
+
+def _release_stranded_token_reservations() -> int:
+    """Return token budget held by reservations whose work already died.
+
+    GrantUsage.release is only called on the normal completion path, and the
+    orphan sweep next to it covers experiment_attempt_gpu_reservations_v1 --
+    GPU hours, not tokens. So when a run dies mid-call the token reservation
+    is never released: idea 241's validation_code_iteration was holding 17,275
+    of a 40,000 token grant on 2026-08-26, reserved at 20:49:46 and orphaned
+    twenty seconds later when the staleness sweep reclaimed run 266. The
+    candidate then failed every forge with "ResourceGrant token budget is
+    exhausted" while 43% of its budget was held by a dead call, and
+    attempt_key refuses to retry an operation that still has an open
+    reservation, so it could not even try again.
+
+    Only reclaim when the lease has expired AND the grant has no live work:
+    an unfinished compute job or a run that has not reached a terminal state
+    means the call may still be in flight.
+    """
+    rows = db.fetchall(
+        """
+        SELECT u.id, u.resource_grant_id, u.operation, u.token_reserved
+          FROM resource_grant_usage_reservations u
+         WHERE u.status='reserved'
+           AND u.created_at <= CURRENT_TIMESTAMP - CAST(? AS INTERVAL)
+           AND NOT EXISTS (
+                 SELECT 1 FROM compute_jobs_v1 cj
+                  WHERE cj.resource_grant_id = u.resource_grant_id
+                    AND cj.status NOT IN (
+                          'succeeded', 'failed', 'cancelled', 'canceled',
+                          'timed_out', 'usage_unknown', 'submission_unknown'
+                    )
+           )
+           AND NOT EXISTS (
+                 SELECT 1 FROM experiment_runs er
+                  WHERE er.resource_grant_id = u.resource_grant_id
+                    AND COALESCE(er.status, '') NOT IN ('completed', 'failed')
+           )
+        """,
+        ("%d seconds" % _TOKEN_RESERVATION_LEASE_SECONDS,),
+    )
+    released = 0
+    for row in rows:
+        record = dict(row)
+        try:
+            GrantUsageLedger(int(record["resource_grant_id"])).release(
+                int(record["id"]),
+                reason="lease_expired_no_live_work:%s" % str(record.get("operation"))[:60],
+            )
+            released += 1
+        except Exception:  # noqa: BLE001 - a stuck row must not stop the sweep
+            db.rollback()
+    return released
 
 
 def _candidate_rows(limit: int) -> list[dict[str, Any]]:
