@@ -844,18 +844,34 @@ class TheGrantFundsEveryAttemptNotJustTheFirst(unittest.TestCase):
     candidate behind it (grant 387, agenda 16, 2026-08-27).
     """
 
-    def test_the_whole_loop_fits_inside_the_grant(self):
-        cap = paper_idea_agent._proposal_call_token_cap(32_000)
+    def test_the_default_grant_holds_every_call_the_loop_can_make(self):
         calls = 1 + paper_idea_agent.CONTRACT_ATTEMPTS
-        self.assertLessEqual(cap * calls, 32_000)
+        self.assertGreaterEqual(
+            paper_idea_agent.PROPOSAL_GRANT_TOKEN_CAP,
+            paper_idea_agent.PROPOSAL_CALL_TOKEN_CAP * calls,
+        )
 
-    def test_a_call_still_gets_room_to_answer(self):
-        # The measured design call is 4-5k tokens.
-        self.assertGreaterEqual(paper_idea_agent._proposal_call_token_cap(32_000), 6_000)
+    def test_a_call_keeps_the_room_its_prompt_needs(self):
+        """Each bounded call reserves prompt bytes plus framing plus output
+        against its own ceiling, so shrinking the ceiling to a share of the
+        grant made the call impossible rather than cheaper."""
+        self.assertEqual(
+            paper_idea_agent._proposal_call_token_cap(
+                paper_idea_agent.PROPOSAL_GRANT_TOKEN_CAP
+            ),
+            paper_idea_agent.PROPOSAL_CALL_TOKEN_CAP,
+        )
 
-    def test_the_provider_ceiling_still_binds_a_large_grant(self):
-        self.assertEqual(paper_idea_agent._proposal_call_token_cap(10_000_000), 16_000)
+    def test_a_grant_smaller_than_one_call_is_not_overspent(self):
+        self.assertEqual(paper_idea_agent._proposal_call_token_cap(5_000), 5_000)
 
-    def test_a_grant_too_small_to_divide_never_returns_zero(self):
-        self.assertGreaterEqual(paper_idea_agent._proposal_call_token_cap(1), 1)
+    def test_a_missing_cap_never_yields_zero(self):
         self.assertGreaterEqual(paper_idea_agent._proposal_call_token_cap(0), 1)
+
+    def test_the_lane_default_matches_what_the_loop_needs(self):
+        import inspect
+
+        from scripts import auto_advance
+
+        source = inspect.getsource(auto_advance.main)
+        self.assertIn("paper_idea_agent.PROPOSAL_GRANT_TOKEN_CAP", source)

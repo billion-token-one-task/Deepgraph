@@ -56,6 +56,7 @@ from meta_harness.job_states import RECYCLABLE  # noqa: E402
 from meta_harness import topic_gate_admission  # noqa: E402
 from meta_harness.outcome_finalizer import finalize_terminal_outcomes  # noqa: E402
 from meta_harness.portfolio import decide_portfolio, issue_resource_grant  # noqa: E402
+from agents import paper_idea_agent  # noqa: E402
 from meta_harness.preflight_repository import CandidatePreflightRepository  # noqa: E402
 from meta_harness.repository import MetaHarnessRepository  # noqa: E402
 from meta_harness.topic_gate_record import record_prediction  # noqa: E402
@@ -2552,7 +2553,16 @@ def main() -> int:
     # benchmark design ~8400 = ~23000. A 15000 cap left 398 for the design
     # call, so the pass died one step from a runnable plan.
     parser.add_argument("--grant-token-cap", type=int, default=40000)
-    parser.add_argument("--proposal-token-cap", type=int, default=32000)
+    # A proposal now spends one method call and up to three contract attempts,
+    # each reserving its own prompt-plus-output ceiling against this grant. At
+    # 32000 the grant funded two calls and the first repair met an exhausted
+    # budget. Settlement is on tokens actually used (4-5k per call), so the
+    # larger cap buys room for the loop rather than spend.
+    parser.add_argument(
+        "--proposal-token-cap",
+        type=int,
+        default=paper_idea_agent.PROPOSAL_GRANT_TOKEN_CAP,
+    )
     parser.add_argument("--grant-gpu-hours", type=float, default=2.0)
     # Not a constant. The requested class decides which backend a grant may
     # draw on, so a stale default silently pins every pilot to hardware that is

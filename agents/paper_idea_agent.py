@@ -1813,15 +1813,31 @@ from agents.candidate_contract import (  # noqa: E402
 CONTRACT_ATTEMPTS = 3
 
 
-def _proposal_call_token_cap(grant_token_cap: int) -> int:
-    """Per-call output ceiling that leaves the contract loop room to work.
+# A bounded call reserves prompt bytes plus framing plus output against this
+# ceiling, and the design prompt carries the capability envelope, the prior
+# refusals for the problem and the contract violations being repaired. Sized
+# below what the prompt needs, the call cannot be made at all: "prompt cannot
+# fit inside total_token_cap".
+PROPOSAL_CALL_TOKEN_CAP = 16_000
 
-    A proposal spends one method call and up to CONTRACT_ATTEMPTS design
-    calls, so the grant has to divide by that many, not by two. The measured
-    design call is 4-5k tokens, well inside the 8k this yields from the
-    standard 32k grant.
+# One method call plus every contract attempt. The reservation is what the
+# grant has to be able to hold at once; settlement is on tokens actually used,
+# which measured 4-5k per call, so a larger cap buys room rather than spend.
+PROPOSAL_GRANT_TOKEN_CAP = PROPOSAL_CALL_TOKEN_CAP * (CONTRACT_ATTEMPTS + 1)
+
+
+def _proposal_call_token_cap(grant_token_cap: int) -> int:
+    """Per-call ceiling: the whole cap unless the grant is smaller than one call.
+
+    Dividing the grant by the number of attempts is the wrong shape. The cap
+    is not a share of a budget, it is the room one call needs for its prompt
+    and its answer; what has to divide is the grant, and that is
+    PROPOSAL_GRANT_TOKEN_CAP's job.
     """
-    return max(1, min(16_000, int(grant_token_cap or 0) // (CONTRACT_ATTEMPTS + 1)))
+    cap = int(grant_token_cap or 0)
+    if cap <= 0:
+        return PROPOSAL_CALL_TOKEN_CAP
+    return max(1, min(PROPOSAL_CALL_TOKEN_CAP, cap))
 
 
 def _release_abandoned_proposal_grant(proposal_grant: dict, agenda_id: int) -> bool:
