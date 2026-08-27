@@ -92,6 +92,22 @@ api_key_env = "DEEPGRAPH_LLM_DEEPSEEK_API_KEY"
 rpm = 0
 enabled = true
 
+# Claude on the same gateway. Declared so a proposer-model comparison can name
+# a Claude arm without the ledger recording it under a provider called
+# "sora2_gemini": the provider entry supplies the endpoint and credential, the
+# route supplies the model, and a comparison is only readable if the two agree.
+# Measured 2026-08-27: 45 tok/s, so a 16k-token design call needs a request
+# timeout above the 120s default.
+[[llm.providers]]
+name = "sora2_claude"
+base_url_env = "DEEPGRAPH_LLM_SORA2_BASE_URL"
+model = "claude-opus-4-6-thinking"
+model_family = "claude"
+protocol = "chat_completions"
+api_key_env = "DEEPGRAPH_LLM_SECONDARY_API_KEY"
+rpm = 0
+enabled = true
+
 # Same-vendor fallback for the evaluator and reviewer roles. Kept declared but
 # unreferenced: a different generation and size class from the proposer, so it
 # is better than self-grading and worse than a cross-vendor split.
