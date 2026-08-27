@@ -1530,11 +1530,16 @@ def _discover_exact_bounded_proposal(
                 flush=True,
             )
             break
+        # Print what is handed back, not only its labels. The loop's whole
+        # value is the quality of the instruction it returns, and a log that
+        # shows only reason codes cannot tell a loop that is failing to
+        # converge from one whose advice was never actionable.
         print(
-            f"[PAPER_IDEA] Plan refused on attempt {attempt}/{CONTRACT_ATTEMPTS} "
-            f"({', '.join(review.codes)}); returning the reasons to the generator.",
+            f"[PAPER_IDEA] Plan refused on attempt {attempt}/{CONTRACT_ATTEMPTS}:",
             flush=True,
         )
+        for item in review.violations:
+            print(f"[PAPER_IDEA]   - {item.code}: {item.detail}", flush=True)
     if review is not None and review.actionable:
         # Storing it would spend a candidate slot on a plan no runner can
         # execute and teach the next generation nothing. Refuse, and hand back
