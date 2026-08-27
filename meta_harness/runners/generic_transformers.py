@@ -168,6 +168,13 @@ class GenericTransformersRunner(ResearchRunner):
         end = min(len(dataset), start + cap)
         self.dataset_rows = [dict(dataset[index]) for index in range(start, end)]
         self.example_offset = start
+        # How many rows the split actually holds, not how many we took. The
+        # evidence audit needs a slice this run never saw, and nothing recorded
+        # whether one exists: idea 237 consumed all 200 rows of bigbench
+        # object_counting's validation split, so its holdout at offset 200 came
+        # back empty and the audit could never complete for a reason fixed at
+        # design time.
+        self.split_total = len(dataset)
         if not self.dataset_rows:
             raise RunnerContractError("dataset_unavailable", "empty_split")
         missing = sorted(
@@ -515,6 +522,7 @@ class GenericTransformersRunner(ResearchRunner):
                 "field_mapping": dict(self.requirements.dataset.field_mapping),
                 "num_examples": len(self.dataset_rows),
                 "example_offset": int(getattr(self, "example_offset", 0)),
+                "split_total": int(getattr(self, "split_total", 0)),
             },
         )
         _dump(

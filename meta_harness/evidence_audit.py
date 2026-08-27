@@ -638,6 +638,25 @@ def run_evidence_audit_phase(
                 holdout_dir.rename(quarantine)
             log(f"[AUDIT] run {run_id} holdout rejected ({problem}); quarantined")
     if not holdout_final_path.exists():
+        # A holdout needs rows the audited run never saw. When the manifest
+        # says the split held no more than the run consumed, no flight can
+        # produce one -- idea 237 took all 200 rows of bigbench
+        # object_counting's validation split, and every holdout at offset 200
+        # came back empty. Say so once instead of spending the retry budget
+        # discovering it three times. Older manifests carry no split_total, so
+        # absence is not treated as a refusal.
+        try:
+            audited_manifest = json.loads(
+                (results_dir / "dataset_manifest.json").read_text()
+            )
+        except (OSError, ValueError):
+            audited_manifest = {}
+        split_total = audited_manifest.get("split_total")
+        if split_total is not None and int(split_total) <= HOLDOUT_OFFSET:
+            raise EvidenceAuditError(
+                "holdout_impossible_split_exhausted:"
+                f"{int(split_total)}<={HOLDOUT_OFFSET}"
+            )
         rows = db.fetchall(
             """
             SELECT id, status, failure_reason, compute_job_id

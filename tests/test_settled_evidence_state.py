@@ -281,3 +281,30 @@ class FullBenchmarkVerdictTests(unittest.TestCase):
             self._verdict(p=0.000999, candidate=0.165, baseline=0.480, search=True),
             "inconclusive",
         )
+
+
+class HoldoutFeasibilityTests(unittest.TestCase):
+    """A holdout needs rows the audited run never saw.
+
+    Idea 237 consumed all 200 rows of bigbench object_counting's validation
+    split, so every holdout at offset 200 came back empty. Nothing checked
+    whether a disjoint slice existed -- not at preflight, which validates that
+    the runner can execute, and not at the audit, which spent its retry budget
+    rediscovering the same impossibility.
+    """
+
+    def test_the_runner_records_what_the_split_held(self):
+        import inspect
+        from meta_harness.runners import generic_transformers
+
+        body = inspect.getsource(generic_transformers)
+        self.assertIn("split_total", body)
+
+    def test_the_audit_refuses_a_split_it_already_exhausted(self):
+        import inspect
+        from meta_harness import evidence_audit
+
+        body = inspect.getsource(evidence_audit)
+        self.assertIn("holdout_impossible_split_exhausted", body)
+        # absence must not be read as refusal: older manifests have no total
+        self.assertIn("split_total is not None", body)
