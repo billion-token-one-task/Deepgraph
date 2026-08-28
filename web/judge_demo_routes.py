@@ -38,7 +38,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from flask import Blueprint, render_template
+from flask import Blueprint, jsonify, render_template
 
 from db import database as db
 from web.provenance_routes import _scrub_text
@@ -50,6 +50,52 @@ blueprint = Blueprint("judge_demo", __name__)
 # exhibit whose candidate carries this value is a reproduction under audit, and
 # the page says so next to the verdict rather than in a footnote.
 OPERATOR_FROZEN_MODEL_VERSION = "operator_frozen_no_llm"
+
+# Ledger actor names, as shown to a reader.
+#
+# Two different things are being done here, and conflating them would be a
+# mistake in opposite directions:
+#
+#   * `colab_terminal_handoff_v1` names a compute vendor in a string that is
+#     otherwise about WHEN a rung was written. The vendor is not evidence for
+#     any claim on this page, and this page is public, so the display layer
+#     shows the stage instead. The ledger keeps the real value; nothing is
+#     rewritten in the database.
+#   * `retrospective_review:operator` says a HUMAN entered that rung rather
+#     than the system reaching it on its own. That is not infrastructure, it is
+#     the single most important caveat a reader can have about a row, and it
+#     stays visible and says "operator" in both languages.
+#
+# Unknown actors fall through unchanged rather than being silently blanked: an
+# actor this map has not seen is something a reader should still see.
+ACTOR_LABELS = {
+    "forge": ("预注册", "Pre-registration"),
+    "colab_terminal_handoff_v1": ("算力交接", "Compute handoff"),
+    "settled_compute_handoff_v1": ("算力交接 (已结算)", "Compute handoff (settled)"),
+    "evidence_audit_v1": ("证据审计", "Evidence audit"),
+    "ai-reviewer-v1": ("AI 评审", "AI reviewer"),
+    "retrospective_review:operator": ("人工回溯录入", "Operator, entered retrospectively"),
+}
+
+# Any actor whose name carries one of these is a vendor or hardware identity
+# and must not reach a public page even if ACTOR_LABELS has not been taught
+# about it yet. Checked as a substring, case-insensitively.
+INFRASTRUCTURE_TOKENS = (
+    "colab", "aws", "gcp", "azure", "nvidia", "a10g", "a100", "t4", "v100",
+    "h100", "g5.", "ec2", "runpod", "lambda-labs", "vast.ai",
+)
+
+
+def actor_labels(actor: str) -> tuple[str, str]:
+    """(zh, en) for a ledger actor, with infrastructure identity removed."""
+    known = ACTOR_LABELS.get(actor)
+    if known:
+        return known
+    lowered = str(actor or "").lower()
+    if any(token in lowered for token in INFRASTRUCTURE_TOKENS):
+        return ("算力交接", "Compute handoff")
+    return (actor, actor)
+
 
 # The rungs an experiment run must climb, in order. Sourced from
 # contracts.meta_harness.EVIDENCE_STATES; spelled out here with the plain
@@ -174,6 +220,21 @@ CAPABILITY_LEDGER = [
 ]
 
 
+# How a verdict reads in a sentence, in both languages.
+#
+# Deliberately not "accuracy improved": the metric is whatever the run's
+# benchmark contract pinned, and hardcoding one metric's name into the verdict
+# phrasing makes the sentence wrong the first time a run measures something
+# else. What the verdict actually says is whether the pre-registered predicted
+# effect was met, and that is what these say.
+VERDICT_PHRASE = {
+    "supported": ("达到了预期效果", "met its predicted effect"),
+    "refuted": ("并未达到预期效果", "did not meet its predicted effect"),
+    "inconclusive": ("证据不足以判定", "evidence insufficient to decide"),
+    "invalid": ("未能测出结果", "measured nothing usable"),
+}
+
+
 def _rows(sql: str, params: tuple = ()) -> list[dict]:
     try:
         return [dict(row) for row in db.fetchall(sql, params)]
@@ -266,8 +327,11 @@ def _exhibit(run_id: int) -> dict | None:
     # run 274's pilot grant was issued 1.3 seconds BEFORE the run row existed,
     # so a "grants created at or after the run" filter silently dropped the
     # first rung of the very chain this row is here to show.
+    # gpu_class is deliberately not selected. It is the hardware class a grant
+    # requested, it is not evidence for anything, and an earlier draft rendered
+    # it straight onto the public page.
     grants = _rows(
-        "SELECT g.id, g.stage, g.token_cap, g.gpu_class, g.max_gpu_hours,"
+        "SELECT g.id, g.stage, g.token_cap, g.max_gpu_hours,"
         " g.status, g.grant_reason, g.created_at FROM resource_grants g"
         " WHERE g.id IN ("
         "   SELECT DISTINCT resource_grant_id FROM colab_work_requests_v1"
@@ -297,6 +361,8 @@ def _exhibit(run_id: int) -> dict | None:
         hit = reached.get(state)
         if state == "planned":
             hit = hit or {"actor": "forge", "created_at": run.get("created_at")}
+        raw_actor = (hit or {}).get("actor", "")
+        actor_zh, actor_en = actor_labels(raw_actor) if raw_actor else ("", "")
         ladder.append({
             "state": state,
             "label_zh": label_zh,
@@ -304,7 +370,13 @@ def _exhibit(run_id: int) -> dict | None:
             "why_zh": why_zh,
             "why_en": why_en,
             "reached": bool(hit),
-            "actor": (hit or {}).get("actor", ""),
+            # The abstracted label only. The raw actor is deliberately not
+            # carried into the response: a field that exists is a field that
+            # gets rendered by the next person who needs "just a bit more
+            # detail", and the point of the mapping is that it cannot.
+            "actor_zh": actor_zh,
+            "actor_en": actor_en,
+            "operator_entered": raw_actor.startswith("retrospective_review:"),
             "at": _ts((hit or {}).get("created_at")),
         })
 
@@ -416,3 +488,122 @@ def judge_demo():
 
 def register_judge_demo_routes(app) -> None:
     app.register_blueprint(blueprint)
+
+
+def _headline(idea_row: dict) -> str:
+    """The sentence a reader came for, not the name the system files it under.
+
+    Same precedence web/app.py::_conclusion_headline uses for the hero
+    conclusion -- proposed_method.one_line, then evidence_summary, then the
+    internal identifier as a last resort -- so the drill-down and the headline
+    above it never disagree about what a finding is called.
+    """
+    method = idea_row.get("proposed_method")
+    if isinstance(method, str):
+        try:
+            method = json.loads(method)
+        except (TypeError, ValueError):
+            method = None
+    if isinstance(method, dict):
+        one_line = str(method.get("one_line") or "").strip()
+        if one_line:
+            return _scrub_text(one_line)
+    summary = str(idea_row.get("evidence_summary") or "").strip()
+    if summary:
+        return _scrub_text(summary)
+    return _scrub_text(str(idea_row.get("title") or ""))
+
+
+@blueprint.get("/api/v1/judge/ladder/<int:run_id>")
+def judge_ladder(run_id: int):
+    """One run's evidence ladder, as JSON, for the drill-down on the homepage.
+
+    Everything here is read live from the ledger. Two things are removed on the
+    way out and neither is evidence for any claim: the compute vendor baked
+    into some actor names, and the hardware class a grant requested. What the
+    verdict actually rests on -- the holdout, the permutation test, the
+    independent evaluator, and the five hashes -- is returned in full, because
+    a drill-down a reader cannot check is decoration.
+    """
+    exhibit = _exhibit(run_id)
+    if exhibit is None:
+        return jsonify({"error": "no such run", "run_id": run_id}), 404
+
+    idea = _one(
+        "SELECT id, title, proposed_method, evidence_summary, model_version"
+        " FROM deep_insights WHERE id=?",
+        (exhibit["run"]["deep_insight_id"],),
+    )
+    verdict = str(exhibit["verdict"] or "")
+    phrase_zh, phrase_en = VERDICT_PHRASE.get(verdict, (verdict, verdict))
+    run = exhibit["run"]
+    outcome = exhibit["outcome"] or {}
+    audit = exhibit["audit"] or {}
+    decision = exhibit["decision"] or {}
+
+    return jsonify({
+        "run_id": run["id"],
+        "idea_id": run["deep_insight_id"],
+        "agenda_id": run["agenda_id"],
+        "verdict": verdict,
+        "verdict_phrase": {"zh": phrase_zh, "en": phrase_en},
+        "headline": _headline(idea),
+        # Said plainly, next to the verdict: a candidate a human transcribed
+        # from a paper is a reproduction under audit, not a discovery.
+        "operator_frozen": exhibit["operator_frozen"],
+        "model_version": exhibit["model_version"],
+        "ladder": exhibit["ladder"],
+        "statistics": {
+            "metric_name": run.get("baseline_metric_name"),
+            "metric_value": exhibit["metric_value"] if exhibit["metric_value"] is not None
+                            else run.get("best_metric_value"),
+            "baseline_value": exhibit["baseline_value"] if exhibit["baseline_value"] is not None
+                              else run.get("baseline_metric_value"),
+            "effect_pct": run.get("effect_pct"),
+            "p_value": exhibit["p_value"],
+            "alpha": exhibit["alpha"],
+            "significant": exhibit["significant"],
+            "blockers": exhibit["blockers"],
+        },
+        "audit": {
+            "holdout_ref": audit.get("holdout_ref"),
+            "holdout_hash": audit.get("holdout_hash"),
+            "evaluator_ref": audit.get("evaluator_ref"),
+            "evaluator_hash": audit.get("evaluator_hash"),
+            "raw_artifacts_hash": audit.get("raw_artifacts_hash"),
+            "claim_ledger_hash": audit.get("claim_ledger_hash"),
+            "benchmark_contract_hash": audit.get("benchmark_contract_hash"),
+        },
+        "decision": {
+            "id": decision.get("id"),
+            "verdict_hash": decision.get("verdict_hash"),
+            "created_at": _ts(decision.get("created_at")),
+        },
+        "grants": [
+            {
+                "id": g.get("id"),
+                "stage": g.get("stage"),
+                "token_cap": g.get("token_cap"),
+                "max_gpu_hours": g.get("max_gpu_hours"),
+                "status": g.get("status"),
+            }
+            for g in exhibit["grants"]
+        ],
+        "cost": {
+            "tokens": outcome.get("actual_tokens"),
+            "gpu_hours": outcome.get("actual_gpu_hours"),
+            "wall_seconds": outcome.get("wall_seconds"),
+        },
+    })
+
+
+@blueprint.get("/judge-preview")
+def judge_preview():
+    """Temporary: the interactive drill-down, for review before it lands.
+
+    Mounts the same evidence-ladder component the Evidence tab will use, over
+    the same live decisions list, so what gets approved is what ships. Deleted
+    once the component is wired into the tab -- it is a review surface, not a
+    second front door.
+    """
+    return render_template("judge_preview.html")

@@ -3900,7 +3900,8 @@ def api_scientific_decisions():
                er.hypothesis_verdict, er.baseline_metric_name,
                er.baseline_metric_value, er.best_metric_value, er.effect_pct,
                di.id AS deep_insight_id, di.title AS insight_title, di.tier AS insight_tier,
-               di.submission_status
+               di.submission_status, di.proposed_method, di.evidence_summary,
+               di.model_version
         FROM scientific_decision_records sdr
         LEFT JOIN evidence_audit_records ear
           ON ear.id = sdr.evidence_audit_record_id
@@ -3920,6 +3921,23 @@ def api_scientific_decisions():
         for row in rows:
             row["decision_detail"] = _decision_detail(row.pop("evidence_decision_json", None))
             row["manuscript"] = _decision_manuscript(row.get("deep_insight_id"), row.get("agenda_id"))
+            # The list headed every row with di.title -- the internal filing
+            # name, batch tag and snake_case method and all. The hero
+            # conclusion was fixed to use the written sentence on 2026-08-26
+            # and the list was left behind, so the same finding read two
+            # different ways on two parts of one page. Same precedence, one
+            # function, both places.
+            row["headline"] = _conclusion_headline(row)
+            # Whether a human wrote the method down is the caveat that decides
+            # how a reader should read the row, so it travels with the row
+            # rather than being looked up separately.
+            row["operator_frozen"] = (
+                str(row.pop("model_version", "") or "") == "operator_frozen_no_llm"
+            )
+            # Bulky source columns the headline was derived from; the derived
+            # sentence is what the client needs.
+            row.pop("proposed_method", None)
+            row.pop("evidence_summary", None)
         # Split the counter by whether the row actually climbed the ladder.
         # 34 of the 54 decision records were stamped scientifically_decided
         # without an evidence_audit_v1 transition ever happening, and every one

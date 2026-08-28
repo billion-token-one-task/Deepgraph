@@ -256,7 +256,10 @@ footer { margin-top: 60px; padding-top: 20px; border-top: 1px solid var(--line);
         <div class="rung-head">
           <span class="rung-name"><span class="zh">{{ r.label_zh }}</span><span class="en">{{ r.label_en }}</span></span>
           <span class="rung-meta">{{ r.state }}</span>
-          {% if r.at %}<span class="rung-meta">{{ r.at }} &middot; {{ r.actor }}</span>{% endif %}
+          {% if r.at %}<span class="rung-meta">{{ r.at }} &middot;
+            <span class="zh">{{ r.actor_zh }}</span><span class="en">{{ r.actor_en }}</span></span>{% endif %}
+          {% if r.operator_entered %}<span class="tag tag-frozen">
+            <span class="zh">人工录入</span><span class="en">operator-entered</span></span>{% endif %}
         </div>
         <div class="rung-why"><span class="zh">{{ r.why_zh }}</span><span class="en">{{ r.why_en }}</span></div>
       </div>
