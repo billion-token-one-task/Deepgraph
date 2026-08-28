@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Deepgraph - 科学证据裁判台</title>
+<style>
+/* Self-contained on purpose: this page must render identically for a reader
+   who opens it on a phone in a meeting, with no dependency on the dashboard's
+   asset pipeline and nothing fetched from a CDN. */
+:root {
+  --bg: #0e1117; --panel: #161b22; --panel2: #1c2430; --line: #2b3542;
+  --ink: #e6edf3; --dim: #8b98a5; --faint: #5c6773;
+  --ok: #3fb950; --no: #f85149; --hold: #d29922; --link: #58a6ff;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 15px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI",
+        "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+}
+.wrap { max-width: 980px; margin: 0 auto; padding: 40px 20px 80px; }
+h1 { font-size: 28px; margin: 0 0 6px; letter-spacing: -0.01em; }
+h2 { font-size: 20px; margin: 48px 0 4px; }
+h3 { font-size: 16px; margin: 26px 0 8px; }
+p { margin: 10px 0; }
+.sub { color: var(--dim); margin: 0 0 28px; font-size: 14px; }
+.mono { font-family: var(--mono); font-size: 12.5px; }
+.dim { color: var(--dim); }
+.faint { color: var(--faint); }
+a { color: var(--link); }
+
+.card {
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: 10px; padding: 20px 22px; margin: 16px 0;
+}
+.callout {
+  border-left: 3px solid var(--hold); background: var(--panel2);
+  border-radius: 0 8px 8px 0; padding: 14px 18px; margin: 18px 0;
+}
+.callout strong { color: var(--hold); }
+
+.verdict {
+  display: inline-block; padding: 3px 12px; border-radius: 999px;
+  font-family: var(--mono); font-size: 12px; font-weight: 600;
+  letter-spacing: 0.04em; text-transform: uppercase;
+}
+.v-supported { background: rgba(63,185,80,.14); color: var(--ok);
+               border: 1px solid rgba(63,185,80,.4); }
+.v-refuted { background: rgba(248,81,73,.14); color: var(--no);
+             border: 1px solid rgba(248,81,73,.4); }
+.v-inconclusive, .v-pending { background: rgba(210,153,34,.14);
+             color: var(--hold); border: 1px solid rgba(210,153,34,.4); }
+
+.tag {
+  display: inline-block; padding: 2px 9px; border-radius: 5px;
+  font-size: 11.5px; font-family: var(--mono);
+  background: var(--panel2); border: 1px solid var(--line); color: var(--dim);
+}
+.tag-frozen { border-color: rgba(210,153,34,.45); color: var(--hold); }
+
+/* The ladder. Each rung is a row so it stays legible when a phone forces it
+   to one column, rather than a diagram that collapses into nothing. */
+.rung { display: flex; gap: 14px; padding: 11px 0; border-top: 1px solid var(--line); }
+.rung:first-child { border-top: 0; }
+.rung-mark {
+  flex: 0 0 22px; text-align: center; font-family: var(--mono);
+  font-size: 15px; line-height: 1.5;
+}
+.rung-on { color: var(--ok); }
+.rung-off { color: var(--faint); }
+.rung-body { flex: 1 1 auto; min-width: 0; }
+.rung-head { display: flex; flex-wrap: wrap; gap: 10px; align-items: baseline; }
+.rung-name { font-weight: 600; }
+.rung-why { color: var(--dim); font-size: 13.5px; margin-top: 2px; }
+.rung-meta { color: var(--faint); font-size: 12px; font-family: var(--mono); }
+
+.kv { display: grid; grid-template-columns: 150px 1fr; gap: 6px 14px; margin: 12px 0 0; }
+.kv dt { color: var(--dim); font-size: 13px; }
+.kv dd { margin: 0; font-family: var(--mono); font-size: 12.5px; word-break: break-all; }
+@media (max-width: 560px) { .kv { grid-template-columns: 1fr; gap: 2px 0; }
+  .kv dd { margin-bottom: 8px; } }
+
+.stats { display: flex; flex-wrap: wrap; gap: 10px; margin: 14px 0 0; }
+.stat {
+  flex: 1 1 130px; background: var(--panel2); border: 1px solid var(--line);
+  border-radius: 8px; padding: 12px 14px;
+}
+.stat b { display: block; font-size: 22px; font-family: var(--mono); }
+.stat span { color: var(--dim); font-size: 12.5px; }
+
+.scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+table { border-collapse: collapse; width: 100%; min-width: 560px; font-size: 14px; }
+th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--line);
+         vertical-align: top; }
+th { color: var(--dim); font-weight: 600; font-size: 12.5px;
+     text-transform: uppercase; letter-spacing: .04em; }
+td.yes { color: var(--ok); font-family: var(--mono); }
+td.no { color: var(--faint); font-family: var(--mono); }
+
+footer { margin-top: 60px; padding-top: 20px; border-top: 1px solid var(--line);
+         color: var(--faint); font-size: 12.5px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>科学证据裁判台</h1>
+<p class="sub">
+  这一页只有一个主张: 一条结论要在这套系统里被记成成立, 必须走完一条固定的证据阶梯,
+  而同一条阶梯会对证据不足的主张给出 refuted 或 inconclusive。
+  页面上每个数字都是从账本表里现读的, 任何一格都可以要求看它背后那一行。
+</p>
+
+<div class="callout">
+  <p><strong>先说清楚这一页不主张什么。</strong></p>
+  <p>
+    本页展品里的候选方法是<b>操作员从已发表论文里手工抽取并冻结</b>的
+    (账本字段 <span class="mono">model_version = operator_frozen_no_llm</span>),
+    不是系统自己想出来的。接受审判的是<b>裁决过程的严谨性</b>, 不是发明能力。
+  </p>
+  <p>
+    非 operator-frozen 的候选 (LLM 或图谱自主出题) 至今
+    <b>{{ totals.llm_total }} 条判决、{{ totals.llm_supported }} 条 supported</b>;
+    harness 自进化 / RSI 在 V1 上结构性做不到。
+    下方"已实现 vs 路线图"逐条列了边界。
+  </p>
+</div>
+
+<h2>全库判决分布</h2>
+<p class="dim">
+  先给基数, 再给展品。挑出来的三条展品是从下面这个总体里挑的,
+  supported 的稀有程度本身就是这套闸门在起作用的证据。
+</p>
+<div class="stats">
+  <div class="stat"><b>{{ totals.total }}</b><span>判决总数</span></div>
+  <div class="stat"><b style="color:var(--ok)">{{ totals.counts.get('supported', 0) }}</b><span>supported</span></div>
+  <div class="stat"><b style="color:var(--no)">{{ totals.counts.get('refuted', 0) }}</b><span>refuted</span></div>
+  <div class="stat"><b style="color:var(--hold)">{{ totals.counts.get('inconclusive', 0) }}</b><span>inconclusive</span></div>
+  <div class="stat"><b class="faint">{{ totals.counts.get('invalid', 0) }}</b><span>invalid (没测出东西)</span></div>
+</div>
+<p class="dim" style="margin-top:12px">
+  {{ totals.supported }} 条 supported 全部来自 operator-frozen 的文献复现,
+  没有一条来自系统自主选题。
+</p>
+
+{% macro exhibit(ex, letter, heading, lede) %}
+<h2>展品 {{ letter }} &middot; {{ heading }}</h2>
+<p class="dim">{{ lede }}</p>
+{% if not ex %}
+  <div class="card"><p class="dim">这条展品的 run 还没有落进账本; 页面不编造占位数据。</p></div>
+{% else %}
+<div class="card">
+  <div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:6px">
+    <span class="verdict v-{{ ex.verdict }}">{{ ex.verdict }}</span>
+    <span class="tag">run {{ ex.run.id }}</span>
+    <span class="tag">idea {{ ex.idea.id }}</span>
+    <span class="tag">agenda {{ ex.run.agenda_id }}</span>
+    {% if ex.operator_frozen %}
+      <span class="tag tag-frozen">operator-frozen 候选 (人手从论文抽取)</span>
+    {% else %}
+      <span class="tag">model_version = {{ ex.model_version }}</span>
+    {% endif %}
+  </div>
+  <p style="margin:4px 0 0">{{ ex.title }}</p>
+
+  <h3>证据阶梯 <span class="faint mono" style="font-weight:400">时间为 UTC</span></h3>
+  <div>
+  {% for r in ex.ladder %}
+    <div class="rung">
+      <div class="rung-mark {{ 'rung-on' if r.reached else 'rung-off' }}">{{ '[x]' if r.reached else '[ ]' }}</div>
+      <div class="rung-body">
+        <div class="rung-head">
+          <span class="rung-name">{{ r.label }}</span>
+          <span class="rung-meta">{{ r.state }}</span>
+          {% if r.at %}<span class="rung-meta">{{ r.at }} &middot; {{ r.actor }}</span>{% endif %}
+        </div>
+        <div class="rung-why">{{ r.why }}</div>
+      </div>
+    </div>
+  {% endfor %}
+  </div>
+
+  <h3>裁决依据</h3>
+  <dl class="kv">
+    {% if ex.grant %}
+    <dt>预算授权</dt>
+    <dd>grant {{ ex.grant.id }} &middot; {{ ex.grant.stage }} &middot;
+        {{ ex.grant.token_cap }} token &middot; {{ ex.grant.max_gpu_hours }} GPU-h
+        &middot; {{ ex.grant.gpu_class or 'n/a' }}<br>
+        <span class="faint">发放理由: {{ ex.grant.grant_reason }}</span></dd>
+    {% endif %}
+    <dt>指标</dt>
+    <dd>{{ ex.run.baseline_metric_name or 'metric' }} =
+        {{ ex.metric_value if ex.metric_value is not none else ex.run.best_metric_value }}
+        &nbsp;vs&nbsp; 基线
+        {{ ex.baseline_value if ex.baseline_value is not none else ex.run.baseline_metric_value }}
+        {% if ex.run.effect_pct is not none %}
+          &nbsp;({{ '%+.1f' | format(ex.run.effect_pct) }}%)
+        {% endif %}</dd>
+    {% if ex.p_value is not none %}
+    <dt>置换检验</dt>
+    <dd>p = {{ '%.6f' | format(ex.p_value) }} &nbsp;(alpha = {{ ex.alpha }},
+        显著 = {{ '是' if ex.significant else '否' }})</dd>
+    {% endif %}
+    {% if ex.blockers %}
+    <dt>阻断原因</dt>
+    <dd>{{ ex.blockers | join(', ') }}</dd>
+    {% endif %}
+    {% if ex.audit %}
+    <dt>留出集</dt>
+    <dd>{{ ex.audit.holdout_ref }}<br>
+        <span class="faint">sha256 {{ ex.audit.holdout_hash }}</span></dd>
+    <dt>独立评审方</dt>
+    <dd>{{ ex.audit.evaluator_ref }}<br>
+        <span class="faint">sha256 {{ ex.audit.evaluator_hash }}</span></dd>
+    <dt>原始产物</dt>
+    <dd class="faint">sha256 {{ ex.audit.raw_artifacts_hash }}</dd>
+    <dt>主张账本</dt>
+    <dd class="faint">sha256 {{ ex.audit.claim_ledger_hash }}</dd>
+    <dt>基准契约</dt>
+    <dd class="faint">sha256 {{ ex.audit.benchmark_contract_hash }}</dd>
+    {% endif %}
+    {% if ex.decision %}
+    <dt>判决签名</dt>
+    <dd>{{ ex.decision.verdict_hash }}<br>
+        <span class="faint">scientific_decision_records #{{ ex.decision.id }} &middot;
+        {{ ex.decision.created_at }}</span></dd>
+    {% endif %}
+    {% if ex.outcome %}
+    <dt>实际开销</dt>
+    <dd>{{ ex.outcome.actual_tokens }} token &middot;
+        {{ '%.3f' | format(ex.outcome.actual_gpu_hours | float) }} GPU-h &middot;
+        {{ '%.0f' | format(ex.outcome.wall_seconds | float) }} 秒挂钟</dd>
+    {% endif %}
+  </dl>
+</div>
+{% endif %}
+{% endmacro %}
+
+{{ exhibit(exhibits.latest, 'A', '最近一次走完全程的裁决',
+   '这条是账本里 agenda 14 最新一条完成裁决的 run: 从预注册到判决全部由服务自己完成, 没有人在中间推。') }}
+
+{{ exhibit(exhibits.refuted, 'B', '同一条阶梯说"不成立"',
+   '同一个 agenda、同一份基准契约、同一份留出集切片。候选在留出集上拿到 0.0, 基线 0.32; 审计以 evaluator_refuted 阻断, 不允许任何正向主张。会说不, 才是这套东西值钱的地方。') }}
+
+{{ exhibit(exhibits.inconclusive, 'C', '同一条阶梯说"下不了结论"',
+   '效果方向对但不显著。系统没有把它记成小胜, 而是记成 inconclusive 并拒绝成稿 -- 这是最容易被包装成"有提升"的那一格。') }}
+
+<h2>展品 D &middot; 系统拒收自己产出的留出集</h2>
+<p class="dim">
+  这一条在账本里没有自己的行, 因为它拦下的是<b>一个本来会存在的数字</b>。
+  记录是那次事故和为它装上的闸门。
+</p>
+<div class="card">
+  <dl class="kv">
+    <dt>事故</dt>
+    <dd style="font-family:inherit;font-size:14px">{{ gate.incident }}</dd>
+    <dt>现行规则</dt>
+    <dd style="font-family:inherit;font-size:14px">{{ gate.rule }}</dd>
+    <dt>提交</dt>
+    <dd>{{ gate.commit }} &middot; {{ gate.date }}<br>
+        <span class="faint">{{ gate.title }}</span></dd>
+    <dt>代码位置</dt>
+    <dd>{{ gate.source }}</dd>
+  </dl>
+  <p class="dim" style="margin-top:14px">
+    值得注意的是这条闸门伤的是自己人: 它作废的是本系统刚刚花掉 GPU 跑出来的测量,
+    并强制重跑。一套只会给自己发好成绩的系统不会写这行代码。
+  </p>
+</div>
+
+<h2>已实现 vs 路线图</h2>
+<p class="dim">
+  分界线在这里画死, 免得上面几张表被读成比实际更多的东西。
+</p>
+<div class="card scroll">
+  <table>
+    <thead><tr><th style="width:36px"></th><th>能力</th><th>依据 / 为什么还不行</th></tr></thead>
+    <tbody>
+    {% for name, done, note in capabilities %}
+      <tr>
+        <td class="{{ 'yes' if done else 'no' }}">{{ '[x]' if done else '[ ]' }}</td>
+        <td>{{ name }}</td>
+        <td class="dim">{{ note }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<footer>
+  只读页面, 无任何写入或操作入口。所有数值现读自 PostgreSQL 账本:
+  <span class="mono">experiment_runs</span>,
+  <span class="mono">evidence_state_transitions</span>,
+  <span class="mono">evidence_audit_records</span>,
+  <span class="mono">scientific_decision_records</span>,
+  <span class="mono">outcome_records</span>,
+  <span class="mono">resource_grants</span>。
+</footer>
+
+</div>
+</body>
+</html>

@@ -62,6 +62,7 @@ def _asset_version() -> str:
 
 
 ASSET_VERSION = _asset_version()
+from web.judge_demo_routes import blueprint as judge_demo_blueprint
 from web.meta_harness_routes import blueprint as meta_harness_blueprint
 from web.provenance_routes import blueprint as provenance_blueprint
 from web.provenance_routes import _scrub_text as _scrub_path_text
@@ -69,6 +70,9 @@ from web.stats_cache import StatsCache
 
 app.register_blueprint(meta_harness_blueprint)
 app.register_blueprint(provenance_blueprint)
+# /judge is a standalone read-only exhibit page. It adds a route and touches
+# nothing the dashboard renders, so the homepage is unchanged by its presence.
+app.register_blueprint(judge_demo_blueprint)
 
 # Large dashboard totals come from PostgreSQL's planner catalog estimates
 # rather than repeated COUNT(*) scans.  pg_stat_user_tables can be reset while
