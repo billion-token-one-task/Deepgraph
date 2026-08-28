@@ -44,7 +44,6 @@ def _exhibit_stub(verdict, *, model_version, run_id=1, blockers=()):
             {"id": 410, "stage": "evidence_audit", "token_cap": 40000,
              "max_gpu_hours": 2.0, "status": "active", "gpu_class": "NVIDIA A10G"},
         ],
-        "accounts": [{"stage": "pilot", "account_ref": "colab-pro"}],
         "audit": {},
         "decision": {},
         "outcome": {},
@@ -220,20 +219,22 @@ class ProvenanceRenderingTests(unittest.TestCase):
         self.assertIn("7 supported out of 21 verdicts", page)
         self.assertNotIn("167", page)
 
-    def test_the_authorised_gpu_class_is_not_shown_as_where_it_ran(self):
-        """grant.gpu_class is a request, not a receipt.
+    def test_no_infrastructure_detail_reaches_a_public_page(self):
+        """Which machine or account ran it is not evidence, and this page is public.
 
-        The audit grant for run 274 asked for an A10G and the work ran on
-        Colab. Rendering the class alone labelled a Colab flight "NVIDIA
-        A10G" -- the kind of small false detail that costs a reader's trust in
-        every other figure on the page.
+        An earlier draft rendered resource_grants.gpu_class, which is what a
+        grant REQUESTED -- so three Colab flights came out labelled "NVIDIA
+        A10G". Naming the compute accounts instead would have been accurate and
+        still wrong to publish: it puts infrastructure detail on a company site
+        in exchange for nothing a reader needs. What carries the claim is the
+        holdout, the evaluator and the five hashes, and those stay.
         """
         frozen = _exhibit_stub("supported",
                                model_version=judge.OPERATOR_FROZEN_MODEL_VERSION)
         page = self._render({235: frozen, 240: frozen})
-        self.assertIn("colab-pro", page)
-        self.assertIn("Where it actually ran", page)
-        self.assertNotIn("NVIDIA A10G", page)
+        for leak in ("colab-pro", "colab_pro", "aws-g5", "NVIDIA", "A10G", "T4",
+                     "A100", "g5.xlarge", "gpu_class"):
+            self.assertNotIn(leak, page, f"{leak!r} reached a public page")
 
     def test_the_grant_chain_shows_every_stage_that_had_to_wait(self):
         frozen = _exhibit_stub("supported",

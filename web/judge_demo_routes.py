@@ -93,12 +93,12 @@ HOLDOUT_GATE = {
     "date": "2026-08-18",
     "title": "Holdout provenance gate: a holdout must prove it is a holdout",
     "incident_zh": (
-        "第一次留出集飞行 (colab 请求 14) 跑出来的数字和被审计的那一趟逐位相同。"
+        "第一次留出集飞行 (算力请求 14) 跑出来的数字和被审计的那一趟逐位相同。"
         "原因是那次 run 的 vendored runner 快照早于 example-offset 支持, 环境变量被"
         "静默忽略, test[0:200] 被测了两遍 -- 同一批样本冒充留出集。"
     ),
     "incident_en": (
-        "The first holdout flight (Colab request 14) reproduced the audited "
+        "The first holdout flight (compute request 14) reproduced the audited "
         "numbers bit for bit. That run's vendored runner snapshot predated "
         "example-offset support, so the environment variable was silently "
         "ignored and test[0:200] ran twice -- the same examples posing as a "
@@ -276,17 +276,11 @@ def _exhibit(run_id: int) -> dict | None:
         (run_id,),
     )
 
-    # Where the work actually ran. resource_grants.gpu_class is what the grant
-    # AUTHORISED, and rendering it alone labelled a Colab flight "NVIDIA A10G"
-    # because that is the class the grant asked for. The compute account that
-    # returned the artifacts is the answer to "where did this run", and it is
-    # the one a reader checking the story will ask for.
-    accounts = _rows(
-        "SELECT DISTINCT stage, account_ref FROM colab_work_requests_v1"
-        " WHERE experiment_run_id=? AND status='succeeded' AND account_ref IS NOT NULL"
-        " ORDER BY stage",
-        (run_id,),
-    )
+    # Which compute account or GPU class ran the work is deliberately NOT
+    # collected here. It is not evidence for any claim on this page -- the
+    # holdout, the evaluator and the five hashes are -- and this page is
+    # public. Naming the accounts would put infrastructure detail on a company
+    # site in exchange for nothing a reader needs.
 
     reached = {
         row["to_state"]: row
@@ -324,7 +318,6 @@ def _exhibit(run_id: int) -> dict | None:
         "operator_frozen": idea.get("model_version") == OPERATOR_FROZEN_MODEL_VERSION,
         "model_version": idea.get("model_version"),
         "grants": grants,
-        "accounts": accounts,
         "audit": audit,
         "decision": decision,
         "verdict": (decision.get("verdict") or outcome.get("verdict")

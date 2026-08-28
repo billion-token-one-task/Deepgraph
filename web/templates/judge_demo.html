@@ -273,16 +273,10 @@ footer { margin-top: 60px; padding-top: 20px; border-top: 1px solid var(--line);
         <span class="zh">上限</span><span class="en">cap</span> {{ g.max_gpu_hours }} GPU-h
         &middot; {{ g.status }}<br>{% endfor %}
         <span class="faint">
-          <span class="zh">每一级台阶单独申请预算; 上一笔结清才发下一笔。
-            gpu_class 是授权申请的机型, 不代表实际跑在哪。</span>
+          <span class="zh">每一级台阶单独申请预算; 上一笔结清才发下一笔。</span>
           <span class="en">Each rung asks for its own budget, and the previous
-            grant must settle before the next is issued. gpu_class is the class
-            the grant requested, not where the work ran.</span>
+            grant must settle before the next is issued.</span>
         </span></dd>
-    {% endif %}
-    {% if ex.accounts %}
-    <dt><span class="zh">实际执行后端</span><span class="en">Where it actually ran</span></dt>
-    <dd>{% for a in ex.accounts %}{{ a.stage }} &rarr; {{ a.account_ref }}<br>{% endfor %}</dd>
     {% endif %}
     <dt><span class="zh">指标</span><span class="en">Metric</span></dt>
     <dd>{{ ex.run.baseline_metric_name or 'metric' }} =
