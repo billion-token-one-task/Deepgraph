@@ -62,7 +62,31 @@
     "ladder.record":         ["账本记录", "Ledger record"],
     "ladder.cost":           ["实际开销", "What it cost"],
     "ladder.wall":           ["秒挂钟", "s wall clock"],
-    "ladder.noEvidence":     ["这一级还没有留下记录。", "Nothing recorded at this rung yet."]
+    "ladder.noEvidence":     ["这一级还没有留下记录。", "Nothing recorded at this rung yet."],
+    "ladder.claim":          ["事先声明要验证的效果", "The effect it said in advance it would produce"],
+    "ladder.thresholds":     ["事先划的达标线", "Thresholds set in advance"],
+    "ladder.thExciting":     ["很好", "strong"],
+    "ladder.thSolid":        ["算数", "counts"],
+    "ladder.thDisappointing":["不理想", "weak"],
+    "ladder.direction":      ["越高越好", "higher is better"],
+    "ladder.directionLower": ["越低越好", "lower is better"],
+    "ladder.confidence":     ["事先给自己的把握", "Confidence it gave itself in advance"],
+    "ladder.reference":      ["预测所依据的文献", "Prior work the prediction was taken from"],
+    "ladder.noReference":    ["未给出文献依据", "no prior work cited"],
+    "ladder.falsification":  ["事先写明的证伪条件", "What it said in advance would falsify it"],
+    "ladder.fPrimary":       ["主判据", "primary"],
+    "ladder.fRobustness":    ["稳健性", "robustness"],
+    "ladder.fIntegrity":     ["完整性", "integrity"],
+    "ladder.program":        ["研究方案全文", "The full research program"],
+    "ladder.problem":        ["要解决的问题", "The problem it set out to solve"],
+    "ladder.measured":       ["实测", "measured"],
+    "ladder.control":        ["对照", "control"],
+    "ladder.files":          ["可下载的原始记录", "Downloadable records"],
+    "ladder.filesNote":      ["每个文件旁边是它的 sha256, 下载后可自行校验",
+                              "Each file is listed with its sha256 so it can be checked after download"],
+    "ladder.download":       ["下载", "download"],
+    "ladder.holdoutNote":    ["这一趟用的是全新样本, 与前面测过的不重叠",
+                              "This pass used a fresh sample with no overlap with anything measured earlier"]
   };
 
   function tr(key) {
@@ -94,6 +118,29 @@
     return isFinite(n) ? n.toFixed(digits) : String(value);
   }
 
+  function measurementFor(data, stage) {
+    var found = (data.measurements || []).filter(function (m) { return m.stage === stage; })[0];
+    if (!found || found.metric_value == null) return "";
+    var base = (data.statistics || {}).baseline_value;
+    var line = esc(found.metric_key || "") + " = <b>" + esc(found.metric_value) + "</b>";
+    if (base != null) {
+      line += " &nbsp;vs&nbsp; " + esc(tr("ladder.control")) + " " + esc(base);
+    }
+    return line;
+  }
+
+  function filesFor(data, stage) {
+    var files = (data.artifacts || []).filter(function (a) { return a.stage === stage; });
+    if (!files.length) return "";
+    var rows = files.map(function (a) {
+      return '<div class="dg-file"><a class="dg-file-link" href="' + esc(a.url)
+        + '" download>' + esc(a.kind) + "</a>"
+        + '<code class="dg-hash">' + esc(a.sha256) + "</code></div>";
+    }).join("");
+    return field(tr("ladder.files"), rows
+      + '<p class="dg-note">' + esc(tr("ladder.filesNote")) + "</p>");
+  }
+
   /* Which evidence belongs to which rung. The point of the drill-down is that
    * a rung's own record is behind that rung: opening "evidence audit" is how a
    * reader finds the holdout, rather than scrolling to a footer that lists
@@ -103,6 +150,7 @@
     var a = data.audit || {};
     var d = data.decision || {};
     var c = data.cost || {};
+    var x = data.expectation || {};
     var grants = data.grants || [];
     var out = [];
 
@@ -116,23 +164,59 @@
     }
 
     if (state === "planned") {
-      out.push(field(tr("ladder.metric"), s.metric_name ? esc(s.metric_name) : ""));
+      /* Everything here was written down before any measurement existed. It is
+       * the answer to the question a verdict always provokes -- "worked
+       * against what?" -- and burying it was the single biggest gap in the
+       * first version of this page. */
+      out.push(field(tr("ladder.claim"), x.claim ? esc(x.claim) : ""));
+      if (data.problem) out.push(field(tr("ladder.problem"), esc(data.problem)));
+      var th = x.thresholds || {};
+      var thParts = [];
+      if (th.solid != null) thParts.push(esc(tr("ladder.thSolid")) + " &ge; " + esc(th.solid));
+      if (th.exciting != null) thParts.push(esc(tr("ladder.thExciting")) + " &ge; " + esc(th.exciting));
+      if (th.disappointing != null) thParts.push(esc(tr("ladder.thDisappointing")) + " &lt; " + esc(th.disappointing));
+      if (thParts.length) {
+        out.push(field(tr("ladder.thresholds"),
+          esc(x.metric_name || "") + " ("
+          + esc(x.metric_direction === "lower" ? tr("ladder.directionLower") : tr("ladder.direction"))
+          + ") &middot; " + thParts.join(" &middot; ")));
+      }
+      if (x.confidence != null) out.push(field(tr("ladder.confidence"), esc(x.confidence)));
+      out.push(field(tr("ladder.reference"),
+        x.effect_reference ? esc(x.effect_reference)
+                           : '<span class="dg-muted">' + esc(tr("ladder.noReference")) + "</span>"));
+      var f = x.falsification || {};
+      var fParts = [];
+      if (f.primary) fParts.push("<b>" + esc(tr("ladder.fPrimary")) + "</b> " + esc(f.primary));
+      if (f.robustness) fParts.push("<b>" + esc(tr("ladder.fRobustness")) + "</b> " + esc(f.robustness));
+      if (f.integrity) fParts.push("<b>" + esc(tr("ladder.fIntegrity")) + "</b> " + esc(f.integrity));
+      if (fParts.length) out.push(field(tr("ladder.falsification"), fParts.join("<br>")));
+      if (data.program_md) {
+        out.push('<details class="dg-sub"><summary>' + esc(tr("ladder.program"))
+          + '</summary><pre class="dg-program">' + esc(data.program_md) + "</pre></details>");
+      }
       out.push(field(tr("ladder.grant"), grantsFor("proposal") || grantsFor("pilot")));
       out.push('<p class="dg-note">' + esc(tr("ladder.grantNote")) + "</p>");
     } else if (state === "sanity_passed") {
+      out.push(field(tr("ladder.measured"), measurementFor(data, "pilot")));
       out.push(field(tr("ladder.grant"), grantsFor("pilot")));
+      out.push(filesFor(data, "pilot"));
     } else if (state === "full_benchmark_complete") {
-      if (s.metric_value != null) {
-        out.push(field(tr("ladder.metric"),
-          esc(s.metric_name || "") + " = " + esc(s.metric_value)
-          + " &nbsp;vs&nbsp; " + esc(tr("ladder.baseline")) + " " + esc(s.baseline_value)
-          + (s.effect_pct == null ? ""
-             : " (" + (Number(s.effect_pct) > 0 ? "+" : "") + num(s.effect_pct, 1) + "%)")));
-      }
+      out.push(field(tr("ladder.measured"), measurementFor(data, "full_benchmark")
+        || (s.metric_value != null
+            ? esc(s.metric_name || "") + " = <b>" + esc(s.metric_value) + "</b> &nbsp;vs&nbsp; "
+              + esc(tr("ladder.control")) + " " + esc(s.baseline_value)
+            : "")));
       out.push(field(tr("ladder.grant"), grantsFor("full_benchmark")));
+      out.push(filesFor(data, "full_benchmark"));
     } else if (state === "evidence_audited") {
+      /* The held-out number belongs here and nowhere else. Showing only the
+       * full-benchmark figure, which is usually the larger of the two, is the
+       * selective reporting this whole ladder exists to prevent. */
+      out.push(field(tr("ladder.measured"), measurementFor(data, "evidence_audit")));
       out.push(field(tr("ladder.holdout"),
-        a.holdout_ref ? esc(a.holdout_ref) + "<br>" + hash(a.holdout_hash) : ""));
+        a.holdout_ref ? esc(a.holdout_ref) + "<br>" + hash(a.holdout_hash)
+                        + '<p class="dg-note">' + esc(tr("ladder.holdoutNote")) + "</p>" : ""));
       out.push(field(tr("ladder.evaluator"),
         a.evaluator_ref ? esc(a.evaluator_ref) + "<br>" + hash(a.evaluator_hash) : ""));
       if (s.p_value != null) {
@@ -144,6 +228,7 @@
       out.push(field(tr("ladder.claimLedger"), hash(a.claim_ledger_hash)));
       out.push(field(tr("ladder.benchmark"), hash(a.benchmark_contract_hash)));
       out.push(field(tr("ladder.grant"), grantsFor("evidence_audit")));
+      out.push(filesFor(data, "evidence_audit"));
     } else if (state === "scientifically_decided") {
       if ((s.blockers || []).length) {
         out.push(field(tr("ladder.blockers"), esc(s.blockers.join(", "))));

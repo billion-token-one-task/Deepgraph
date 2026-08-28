@@ -128,6 +128,21 @@
       "decisions.hasPaper": "has a paper",
       "decisions.unaudited": "not audited",
       "decisions.unauditedHint": "This verdict was stamped without an evidence audit. It is shown for completeness and is excluded from the counts above.",
+      // The reference a verdict is always implicitly measured against. It goes
+      // on the summary line because "it worked" provokes "against what?" and a
+      // reader should not have to click to find out.
+      "decisions.vsControl": "vs control",
+      "decisions.auditedOnly": "Showing findings that walked the full evidence ladder.",
+      "decisions.showUnaudited": "Also show {n} recorded without an audit",
+      "decisions.showingAll": "Showing every recorded verdict, audited or not.",
+      "decisions.backToAudited": "Show audited only",
+      // Plain language on purpose. An earlier draft said "the pre-registered
+      // prediction held", and a reader who has to look up a term in the
+      // headline has already stopped reading.
+      "verdictPhrase.supported": "Claimed in advance it would work; measured, it does",
+      "verdictPhrase.refuted": "Claimed in advance it would work; measured, it does not",
+      "verdictPhrase.inconclusive": "The measurement cannot tell either way",
+      "verdictPhrase.invalid": "This run produced no usable measurement",
       "decisions.assets": "assets",
       "nav.research": "Overview",
       "nav.map": "Research areas",
@@ -555,6 +570,15 @@
       "decisions.hasPaper": "已成稿",
       "decisions.unaudited": "未经审计",
       "decisions.unauditedHint": "该判决未走证据阶梯, 仅为完整性展示, 不计入上方计数。",
+      "decisions.vsControl": "对照",
+      "decisions.auditedOnly": "当前只显示走完整条证据阶梯的结论。",
+      "decisions.showUnaudited": "同时显示 {n} 条未经审计的记录",
+      "decisions.showingAll": "当前显示全部记录, 含未经审计的。",
+      "decisions.backToAudited": "只看已审计的",
+      "verdictPhrase.supported": "事先说会有效, 实测确实有效",
+      "verdictPhrase.refuted": "事先说会有效, 实测并没有",
+      "verdictPhrase.inconclusive": "实测数据不足以判断有没有效",
+      "verdictPhrase.invalid": "这一趟没测出可用结果",
       "decisions.assets": "个素材文件",
       "nav.research": "总览",
       "nav.map": "研究领域",

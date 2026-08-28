@@ -94,3 +94,59 @@
    checked, and being checkable is the only reason it is on the page. */
 .dg-hash { font-size: 11.5px; color: var(--text-faint, #5c6773); word-break: break-all; }
 .dg-note { margin: 6px 0 0; font-size: 12.5px; color: var(--text-faint, #5c6773); }
+
+/* Downloadable records. A hash a reader cannot resolve to bytes is
+   decoration, so the file and the hash it is claimed to be sit on one line. */
+.dg-file { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; padding: 2px 0; }
+.dg-file-link {
+  flex: 0 0 auto; min-width: 132px;
+  color: var(--accent, #58a6ff); text-decoration: none;
+  border-bottom: 1px dotted currentColor;
+}
+.dg-file-link:hover { text-decoration: none; opacity: .8; }
+.dg-muted { color: var(--text-faint, #5c6773); font-style: italic; }
+
+/* The run's own research program. Long, so it is folded away by default and
+   scrolls inside itself rather than stretching the row. */
+.dg-sub { margin: 6px 0; }
+.dg-sub > summary {
+  cursor: pointer; font-size: 13px; color: var(--accent, #58a6ff);
+  list-style: none; padding: 3px 0;
+}
+.dg-sub > summary::-webkit-details-marker { display: none; }
+.dg-sub > summary::before { content: "> "; font-family: ui-monospace, monospace; }
+.dg-sub[open] > summary::before { content: "v "; }
+.dg-program {
+  margin: 6px 0 0;
+  max-height: 340px; overflow: auto;
+  padding: 12px 14px;
+  background: var(--panel-2, rgba(255,255,255,.03));
+  border: 1px solid var(--border, #2b3542);
+  border-radius: 8px;
+  font-size: 12px; line-height: 1.65;
+  white-space: pre-wrap; word-break: break-word;
+}
+
+/* Rows and the hero headline, when the drill-down is active. Kept in this file
+   rather than style.css so the whole interaction arrives and leaves as one
+   unit while it is under review. */
+.decision-drill { padding: 0 2px 8px; }
+.decision-phrase {
+  display: block;
+  font-size: 13px; font-weight: 400;
+  color: var(--text-dim, #8b98a5);
+  margin-top: 3px;
+}
+.decision-against {
+  display: inline-block; margin-top: 3px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11.5px; color: var(--text-faint, #5c6773);
+}
+.decision-row.is-focused {
+  outline: 2px solid var(--accent, #58a6ff);
+  outline-offset: 2px;
+  transition: outline-color .4s ease;
+}
+#latestStatement.is-openable { cursor: pointer; }
+#latestStatement.is-openable:hover { text-decoration: underline; text-underline-offset: 4px; }
+#latestStatement.is-openable:focus-visible { outline: 2px solid var(--accent, #58a6ff); outline-offset: 3px; }

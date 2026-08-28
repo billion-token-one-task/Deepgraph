@@ -34,6 +34,9 @@
     </script>
     <script defer src="/static/vendor/mathjax/tex-svg.js"></script>
     <link rel="stylesheet" href="/static/css/style.css?v={{ asset_version }}">
+    {% if evidence_drilldown %}
+    <link rel="stylesheet" href="/static/css/evidence-ladder.css?v={{ asset_version }}">
+    {% endif %}
 </head>
 <body data-root-node="{{ root_node_id }}" data-profile="{{ profile }}">
     <a class="skip-link" href="#mainContent" data-i18n="a11y.skipToContent">Skip to main content</a>
@@ -491,6 +494,14 @@
     <!-- Tooltip (shared) -->
     <div class="tooltip" id="tooltip"></div>
 
+    {% if evidence_drilldown %}
+    <!-- Loaded before app.js so window.dgEvidenceLadder exists by the time the
+         Evidence tab renders its first row. Behind a flag while the
+         interaction is under review; once approved the flag goes and this is
+         simply part of the page. -->
+    <script>window.DG_EVIDENCE_DRILLDOWN = true;</script>
+    <script src="/static/js/evidence-ladder.js?v={{ asset_version }}"></script>
+    {% endif %}
     <script src="/static/js/app.js?v={{ asset_version }}"></script>
 <script type="application/json" id="researchMapLayout">{{ map_layout | tojson }}</script>
 </body>

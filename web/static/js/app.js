@@ -193,6 +193,32 @@ function renderLatestConclusion() {
     }
 
     setText('latestStatement', latest.title || tr('latest.untitled', 'Conclusion recorded'));
+    // The hero names one finding. Make it the way into that finding's evidence
+    // rather than a headline the reader has to go hunting for in the list
+    // below. Only when the drill-down is loaded and the run is known -- a
+    // control that leads nowhere is worse than no control.
+    const statement = el('latestStatement');
+    if (statement) {
+        const runId = latest.experiment_run_id;
+        const openable = drilldownEnabled() && runId != null;
+        statement.classList.toggle('is-openable', openable);
+        statement.onclick = openable ? () => window._dg.openConclusion(runId) : null;
+        if (openable) {
+            statement.setAttribute('role', 'button');
+            statement.setAttribute('tabindex', '0');
+            statement.title = tr('trail.evidenceLink', 'See the evidence trail');
+            statement.onkeydown = (event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    window._dg.openConclusion(runId);
+                }
+            };
+        } else {
+            statement.removeAttribute('role');
+            statement.removeAttribute('tabindex');
+            statement.onkeydown = null;
+        }
+    }
     if (pill) {
         pill.hidden = !latest.verdict;
         pill.dataset.verdict = latest.verdict || '';
@@ -2805,6 +2831,16 @@ function decisionMetricLine(d) {
 // are kept so a chip can actually filter what it names.
 let decisionRows = [];
 let decisionVerdictFilter = '';
+// A decision record that never got an evidence_audit_v1 transition carries a
+// verdict with no audited evidence behind it. All 34 of them are the operator
+// backfill of 2026-08-17 and all 34 are `inconclusive`; the endpoint has always
+// counted them separately, and the list marked them, but it still led with
+// them. Default to the audited half and offer the rest one click away -- this
+// is a display default over the API's own walked_ladder field, not a filter on
+// what the system records: a conclusion that walks the ladder tomorrow appears
+// here the moment it does.
+let decisionsAuditedOnly = true;
+function drilldownEnabled() { return !!window.DG_EVIDENCE_DRILLDOWN; }
 
 async function loadDecisions() {
     const body = el('decisionsBody');
@@ -2840,9 +2876,12 @@ function renderDecisionRows() {
     const body = el('decisionsBody');
     if (!body) return;
     const filter = String(decisionVerdictFilter || '').toLowerCase();
+    const auditedOnly = drilldownEnabled() && decisionsAuditedOnly;
+    const pool = auditedOnly ? decisionRows.filter(d => d.walked_ladder) : decisionRows;
+    const hiddenUnaudited = auditedOnly ? decisionRows.length - pool.length : 0;
     const rows = filter
-        ? decisionRows.filter(d => String(d.verdict || '').toLowerCase() === filter)
-        : decisionRows;
+        ? pool.filter(d => String(d.verdict || '').toLowerCase() === filter)
+        : pool;
     const banner = filter
         ? `<div class="decision-filter-banner">
                ${esc(t('decisions.filtered') || 'Showing')} ${fmt(rows.length)} / ${fmt(decisionRows.length)}
@@ -2852,12 +2891,27 @@ function renderDecisionRows() {
                </button>
            </div>`
         : '';
+    const auditBanner = hiddenUnaudited > 0
+        ? `<div class="decision-filter-banner">
+               ${esc(t('decisions.auditedOnly'))}
+               <button type="button" class="decision-filter-clear" onclick="window._dg.showUnaudited()">
+                   ${esc(t('decisions.showUnaudited').replace('{n}', fmt(hiddenUnaudited)))}
+               </button>
+           </div>`
+        : (drilldownEnabled() && !decisionsAuditedOnly
+            ? `<div class="decision-filter-banner">
+                   ${esc(t('decisions.showingAll'))}
+                   <button type="button" class="decision-filter-clear" onclick="window._dg.hideUnaudited()">
+                       ${esc(t('decisions.backToAudited'))}
+                   </button>
+               </div>`
+            : '');
     if (!rows.length) {
-        body.innerHTML = banner
+        body.innerHTML = auditBanner + banner
             + `<div class="paper-reader-empty-title">${esc(t('decisions.empty'))}</div>`;
         return;
     }
-    body.innerHTML = banner + rows.map(d => {
+    body.innerHTML = auditBanner + banner + rows.map(d => {
             const cls = VERDICT_CLASS[String(d.verdict)] || '';
             const metrics = decisionMetricLine(d);
             const detail = d.decision_detail || {};
@@ -2874,13 +2928,30 @@ function renderDecisionRows() {
                 if (paper.reader_url) links.push(`<a class="decision-link" href="${esc(paper.reader_url)}" target="_blank" rel="noopener">${esc(t('decisions.openPaper'))}</a>`);
             }
 
-            return `<details class="decision-row">
+            // The written sentence, not the internal filing name. Same
+            // precedence the hero conclusion has used since 2026-08-26.
+            // Behind the flag with everything else, so "/" is byte-for-byte
+            // the page it was until the interaction is approved.
+            const title = (drilldownEnabled() ? d.headline : null)
+                || d.insight_title || `#${d.id}`;
+            // "It worked" always provokes "against what?", so the control
+            // value rides on the summary line rather than waiting behind a
+            // click.
+            const against = (d.best_metric_value != null && d.baseline_metric_value != null)
+                ? `${esc(String(d.baseline_metric_name || ''))} ${Number(d.best_metric_value).toPrecision(3)}`
+                  + ` ${esc(t('decisions.vsControl'))} ${Number(d.baseline_metric_value).toPrecision(3)}`
+                : '';
+            return `<details class="decision-row" data-run="${esc(String(d.experiment_run_id ?? ''))}">
                 <summary class="decision-head">
                     <span class="decision-verdict ${cls}">${esc(String(d.verdict || '?'))}</span>
-                    <span class="decision-title">${esc(trunc(d.insight_title || `#${d.id}`, 110))}</span>
+                    <span class="decision-title">${esc(trunc(title, 150))}
+                        ${drilldownEnabled() ? `<span class="decision-phrase">${esc(t('verdictPhrase.' + String(d.verdict || '')))}</span>` : ''}
+                        ${drilldownEnabled() && against ? `<span class="decision-against">${against}</span>` : ''}
+                    </span>
                     ${paper.available ? `<span class="decision-paper-flag">${esc(t('decisions.hasPaper'))}</span>` : ''}
                     ${d.walked_ladder ? '' : `<span class="decision-unaudited-flag" title="${esc(t('decisions.unauditedHint'))}">${esc(t('decisions.unaudited'))}</span>`}
                 </summary>
+                ${drilldownEnabled() ? '<div class="decision-drill"></div>' : ''}
                 <div class="decision-meta">
                     agenda #${esc(String(d.agenda_id))}
                     &middot; ${esc(t('decisions.runLabel'))} #${esc(String(d.experiment_run_id ?? '-'))}
@@ -4290,11 +4361,54 @@ function searchNav(type, id) {
 
 // ── Public API (for onclick handlers in HTML strings) ────────────────
 
+// The ladder for a row is fetched the first time that row is opened, so
+// listing thirty-three conclusions costs one request rather than thirty-four.
+document.addEventListener('toggle', (event) => {
+    const row = event.target;
+    if (!row || !row.classList || !row.classList.contains('decision-row')) return;
+    if (!row.open || !drilldownEnabled()) return;
+    const drill = row.querySelector('.decision-drill');
+    const runId = row.dataset.run;
+    if (drill && runId && window.dgEvidenceLadder) {
+        window.dgEvidenceLadder.mount(drill, runId);
+    }
+}, true);
+
 window._dg = {
     navigateTo,
     clearDecisionFilter() {
         decisionVerdictFilter = '';
         renderDecisionRows();
+    },
+    showUnaudited() {
+        decisionsAuditedOnly = false;
+        renderDecisionRows();
+    },
+    hideUnaudited() {
+        decisionsAuditedOnly = true;
+        renderDecisionRows();
+    },
+    // The hero conclusion names one finding; clicking it should land on that
+    // finding with its evidence open, not on a list of thirty-three where the
+    // reader has to go looking for the one they just read about.
+    openConclusion(runId) {
+        switchTab('evidence');
+        const focus = () => {
+            const row = document.querySelector(`.decision-row[data-run="${runId}"]`);
+            if (!row) return false;
+            row.open = true;
+            row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            row.classList.add('is-focused');
+            setTimeout(() => row.classList.remove('is-focused'), 2400);
+            return true;
+        };
+        // The tab loads its rows lazily, so the row may not exist yet on the
+        // first frame after the switch.
+        if (focus()) return;
+        let tries = 0;
+        const timer = setInterval(() => {
+            if (focus() || ++tries > 40) clearInterval(timer);
+        }, 100);
     },
     exploreNode(nodeId) {
         switchTab('explore');

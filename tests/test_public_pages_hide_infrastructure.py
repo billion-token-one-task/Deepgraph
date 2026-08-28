@@ -57,7 +57,6 @@ FORBIDDEN = re.compile(
 PUBLIC_ASSETS = [
     "web/templates/index.html",
     "web/templates/judge_demo.html",
-    "web/templates/judge_preview.html",
     "web/static/js/evidence-ladder.js",
     "web/static/js/app.js",
     "web/static/js/i18n.js",

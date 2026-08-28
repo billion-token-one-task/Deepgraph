@@ -36,10 +36,12 @@ language on the homepage carries over to here and back.
 from __future__ import annotations
 
 import json
+import pathlib
 from typing import Any
 
-from flask import Blueprint, jsonify, render_template
+from flask import Blueprint, abort, jsonify, render_template, send_file
 
+from config import IDEA_WORKSPACE_DIR
 from db import database as db
 from web.provenance_routes import _scrub_text
 
@@ -222,16 +224,24 @@ CAPABILITY_LEDGER = [
 
 # How a verdict reads in a sentence, in both languages.
 #
-# Deliberately not "accuracy improved": the metric is whatever the run's
-# benchmark contract pinned, and hardcoding one metric's name into the verdict
-# phrasing makes the sentence wrong the first time a run measures something
-# else. What the verdict actually says is whether the pre-registered predicted
-# effect was met, and that is what these say.
+# Two rules, both learned the hard way on this page.
+#
+# Not "accuracy improved": the metric is whatever the run's benchmark contract
+# pinned, and hardcoding one metric's name makes the sentence wrong the first
+# time a run measures latency or cost instead.
+#
+# And no jargon. An earlier draft said "预注册的预测成立" / "the pre-registered
+# prediction held". Nobody arriving on this page knows what pre-registration
+# is, and a reader who has to look up a word in the headline has already
+# stopped reading. These say the same thing in words that need no gloss: the
+# candidate said in advance that it would work, and then it was measured. What
+# it was measured AGAINST is the control value and the thresholds, and those
+# are on the row itself rather than hidden behind the sentence.
 VERDICT_PHRASE = {
-    "supported": ("达到了预期效果", "met its predicted effect"),
-    "refuted": ("并未达到预期效果", "did not meet its predicted effect"),
-    "inconclusive": ("证据不足以判定", "evidence insufficient to decide"),
-    "invalid": ("未能测出结果", "measured nothing usable"),
+    "supported": ("事先说会有效, 实测确实有效", "Claimed in advance it would work; measured, it does"),
+    "refuted": ("事先说会有效, 实测并没有", "Claimed in advance it would work; measured, it does not"),
+    "inconclusive": ("实测数据不足以判断有没有效", "The measurement cannot tell either way"),
+    "invalid": ("这一趟没测出可用结果", "This run produced no usable measurement"),
 }
 
 
@@ -530,9 +540,15 @@ def judge_ladder(run_id: int):
         return jsonify({"error": "no such run", "run_id": run_id}), 404
 
     idea = _one(
-        "SELECT id, title, proposed_method, evidence_summary, model_version"
+        "SELECT id, title, proposed_method, evidence_summary, model_version,"
+        " predictions, falsification, problem_statement"
         " FROM deep_insights WHERE id=?",
         (exhibit["run"]["deep_insight_id"],),
+    )
+    full_run = _one(
+        "SELECT program_md, success_criteria, baseline_metric_name"
+        " FROM experiment_runs WHERE id=?",
+        (run_id,),
     )
     verdict = str(exhibit["verdict"] or "")
     phrase_zh, phrase_en = VERDICT_PHRASE.get(verdict, (verdict, verdict))
@@ -553,6 +569,20 @@ def judge_ladder(run_id: int):
         "operator_frozen": exhibit["operator_frozen"],
         "model_version": exhibit["model_version"],
         "ladder": exhibit["ladder"],
+        # What "the effect held" was measured against, written down before the
+        # run existed. Without this the verdict is an assertion.
+        "expectation": _declared_expectation(full_run or {}, idea),
+        "problem": _scrub_text(str(idea.get("problem_statement") or "")),
+        # The run's own research program, as the forge wrote it. Markdown, a
+        # couple of thousand characters, and the answer to "what did it
+        # actually do".
+        "program_md": _scrub_text(str((full_run or {}).get("program_md") or "")),
+        # Every stage's scored result, so the held-out number sits beside the
+        # benchmark number instead of behind it.
+        "measurements": _measurements(run_id),
+        # The files behind the hashes, so a hash is checkable rather than
+        # decorative.
+        "artifacts": _artifacts(run_id),
         "statistics": {
             "metric_name": run.get("baseline_metric_name"),
             "metric_value": exhibit["metric_value"] if exhibit["metric_value"] is not None
@@ -597,13 +627,216 @@ def judge_ladder(run_id: int):
     })
 
 
-@blueprint.get("/judge-preview")
-def judge_preview():
-    """Temporary: the interactive drill-down, for review before it lands.
+# The review URL. Not a second front door and not a mock: it renders the real
+# homepage template with the drill-down flag on, so what is approved is the
+# page itself rather than a poster about it. The nonce keeps it off search
+# engines and off anyone's guess; the route is deleted the moment the flag
+# flips on "/".
+REVIEW_NONCE = "b7f3c1a9e2"
 
-    Mounts the same evidence-ladder component the Evidence tab will use, over
-    the same live decisions list, so what gets approved is what ships. Deleted
-    once the component is wired into the tab -- it is a review surface, not a
-    second front door.
+
+@blueprint.get("/preview/<nonce>")
+def homepage_review(nonce: str):
+    if nonce != REVIEW_NONCE:
+        abort(404)
+    from web.app import APP_NAME, APP_SUBTITLE, ASSET_VERSION, MAP_LAYOUT, PROFILE, ROOT_NODE_ID
+
+    return render_template(
+        "index.html",
+        app_name=APP_NAME,
+        subtitle=APP_SUBTITLE,
+        root_node_id=ROOT_NODE_ID,
+        profile=PROFILE,
+        asset_version=ASSET_VERSION,
+        map_layout=MAP_LAYOUT,
+        evidence_drilldown=True,
+    )
+
+
+# Artifact kinds a reader may download. Everything here is a measurement or a
+# manifest describing one: the predictions the model actually produced, the
+# dataset revision and slice they were produced on, the environment, the model,
+# and the scored result. `source_data` is deliberately absent -- those rows
+# point at internal plan JSON full of absolute paths, and they are not
+# evidence.
+DOWNLOADABLE_ARTIFACTS = (
+    "final_results",
+    "raw_predictions",
+    "dataset_manifest",
+    "environment_manifest",
+    "model_manifest",
+)
+
+# Stages in the order they happen, so the measurement table reads down the page
+# the way the run went.
+STAGE_ORDER = ("pilot", "full_benchmark", "evidence_audit")
+
+STAGE_LABELS = {
+    "pilot": ("小样本试跑", "Pilot"),
+    "full_benchmark": ("全量基准", "Full benchmark"),
+    "evidence_audit": ("留出集复核", "Held-out re-check"),
+}
+
+
+def _json_or_none(value: Any) -> Any:
+    if value is None or isinstance(value, (dict, list)):
+        return value
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _declared_expectation(run: dict, idea: dict) -> dict:
+    """What the run said, before it ran, would count as the effect working.
+
+    This is the thing a reader is actually asking for when a verdict says the
+    effect held: held against what? The answer was written down before the
+    measurement existed -- the claim, the metric and its direction, the three
+    thresholds, the confidence, the paper the predicted effect was taken from,
+    and the conditions that would count as falsifying it.
     """
-    return render_template("judge_preview.html")
+    criteria = _json_or_none(run.get("success_criteria")) or {}
+    contract = criteria.get("publication_evidence_contract") or {}
+    predictions = _json_or_none(idea.get("predictions")) or []
+    first = predictions[0] if isinstance(predictions, list) and predictions else {}
+    falsification = _json_or_none(idea.get("falsification")) or {}
+
+    thresholds = {
+        key: criteria.get(key)
+        for key in ("exciting", "solid", "disappointing")
+        if criteria.get(key) is not None
+    }
+    return {
+        "claim": _scrub_text(str(
+            contract.get("claim_to_validate")
+            or first.get("outcome") or "").strip()),
+        "metric_name": criteria.get("metric_name") or run.get("baseline_metric_name"),
+        "metric_direction": criteria.get("metric_direction"),
+        "thresholds": thresholds,
+        "minimum_seeds": contract.get("minimum_seeds"),
+        "confidence": first.get("confidence"),
+        # The paper the predicted effect was taken from. Present on every
+        # literature-grounded candidate and absent on every candidate the
+        # proposer invented unaided -- which is the sharpest single predictor
+        # in the ledger of whether a candidate ever reaches supported.
+        "effect_reference": _scrub_text(str(first.get("effect_reference") or "")),
+        "falsification": {
+            key: _scrub_text(str(value))
+            for key, value in falsification.items()
+            if isinstance(value, str)
+        } if isinstance(falsification, dict) else {},
+    }
+
+
+def _measurements(run_id: int) -> list[dict]:
+    """The scored result at each stage, so the held-out number is not buried.
+
+    The page used to show the full-benchmark figure alone. For run 274 that is
+    0.625, while the held-out re-check the verdict actually rests on is 0.57 --
+    both well clear of the 0.32 control, but showing only the larger of the two
+    is the kind of selective reporting this system exists to catch.
+    """
+    rows = _rows(
+        "SELECT artifact_stage, metric_key, metric_value, content_sha256"
+        " FROM experiment_artifacts"
+        " WHERE run_id=? AND artifact_type='final_results'"
+        "   AND metric_value IS NOT NULL"
+        " ORDER BY id",
+        (run_id,),
+    )
+    by_stage: dict[str, dict] = {}
+    for row in rows:
+        stage = str(row.get("artifact_stage") or "")
+        if stage:
+            by_stage[stage] = row
+    out = []
+    for stage in STAGE_ORDER:
+        row = by_stage.get(stage)
+        if not row:
+            continue
+        zh, en = STAGE_LABELS.get(stage, (stage, stage))
+        out.append({
+            "stage": stage,
+            "label_zh": zh,
+            "label_en": en,
+            "metric_key": row.get("metric_key"),
+            "metric_value": row.get("metric_value"),
+            "content_sha256": row.get("content_sha256"),
+        })
+    return out
+
+
+def _artifacts(run_id: int) -> list[dict]:
+    """Every downloadable measurement file, with the hash it is claimed to be.
+
+    A hash on a page nobody can resolve to bytes is decoration. These rows are
+    what turns "here is a sha256" into "here is the file, check it yourself".
+    """
+    placeholders = ", ".join("?" for _ in DOWNLOADABLE_ARTIFACTS)
+    rows = _rows(
+        "SELECT id, artifact_type, artifact_stage, content_sha256, path"
+        f" FROM experiment_artifacts WHERE run_id=? AND artifact_type IN ({placeholders})"
+        " ORDER BY id",
+        (run_id, *DOWNLOADABLE_ARTIFACTS),
+    )
+    out = []
+    for row in rows:
+        if not row.get("content_sha256"):
+            continue
+        stage = str(row.get("artifact_stage") or "")
+        zh, en = STAGE_LABELS.get(stage, (stage, stage))
+        out.append({
+            "id": row["id"],
+            "kind": row.get("artifact_type"),
+            "stage": stage,
+            "stage_zh": zh,
+            "stage_en": en,
+            "sha256": row.get("content_sha256"),
+            # The path itself never leaves the process; the id is the handle.
+            "url": f"/api/v1/judge/artifact/{row['id']}",
+        })
+    return out
+
+
+@blueprint.get("/api/v1/judge/artifact/<int:artifact_id>")
+def judge_artifact(artifact_id: int):
+    """Hand over one measurement file so a reader can check a hash themselves.
+
+    The path comes from the ledger, never from the request, and is still
+    confined to the idea workspace before it is opened: a row is a row, and a
+    route that opens whatever a table says is one bad INSERT from serving
+    anything on the disk.
+    """
+    row = _one(
+        "SELECT id, run_id, artifact_type, path, content_sha256"
+        " FROM experiment_artifacts WHERE id=?",
+        (artifact_id,),
+    )
+    if not row or row.get("artifact_type") not in DOWNLOADABLE_ARTIFACTS:
+        abort(404)
+    raw_path = str(row.get("path") or "")
+    if not raw_path:
+        abort(404)
+    try:
+        resolved = pathlib.Path(raw_path).resolve()
+        root = pathlib.Path(IDEA_WORKSPACE_DIR).resolve()
+        resolved.relative_to(root)
+    except (OSError, ValueError):
+        abort(404)
+    if not resolved.is_file():
+        abort(404)
+    # Named for what it is, not where it lives: the filesystem layout is
+    # nobody's business and the sha256 is how a reader identifies the file.
+    suffix = ".jsonl" if row["artifact_type"] == "raw_predictions" else ".json"
+    download_name = (
+        f"run{row['run_id']}-{row['artifact_type']}-"
+        f"{str(row['content_sha256'] or '')[:12]}{suffix}"
+    )
+    return send_file(
+        resolved,
+        mimetype="application/json",
+        as_attachment=True,
+        download_name=download_name,
+        max_age=0,
+    )

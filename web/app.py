@@ -2008,6 +2008,8 @@ def index():
         profile=PROFILE,
         asset_version=ASSET_VERSION,
         map_layout=MAP_LAYOUT,
+        # Off here, on at the review URL, until the drill-down is approved.
+        evidence_drilldown=False,
     )
 
 
@@ -2206,6 +2208,10 @@ def _homepage_latest_conclusion() -> dict | None:
 
     return {
         "id": row.get("id"),
+        # The run, not just the decision record: the hero conclusion is now a
+        # link into that finding's evidence ladder, and the ladder is keyed by
+        # run.
+        "experiment_run_id": row.get("experiment_run_id"),
         "verdict": row.get("verdict"),
         "title": _conclusion_headline(row),
         "hypothesis": _clean_problem_statement(row.get("problem_statement")),
