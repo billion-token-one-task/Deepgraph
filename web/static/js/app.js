@@ -2840,7 +2840,10 @@ let decisionVerdictFilter = '';
 // what the system records: a conclusion that walks the ladder tomorrow appears
 // here the moment it does.
 let decisionsAuditedOnly = true;
-function drilldownEnabled() { return !!window.DG_EVIDENCE_DRILLDOWN; }
+// Gated on the component actually being there rather than on a flag saying it
+// should be. A flag set by the template while the script failed to load is the
+// one combination that would throw, and it is also the likeliest.
+function drilldownEnabled() { return !!window.dgEvidenceLadder; }
 
 async function loadDecisions() {
     const body = el('decisionsBody');

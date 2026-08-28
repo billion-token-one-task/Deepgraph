@@ -1,37 +1,35 @@
-"""Read-only exhibit page for the adjudication path: /judge.
+"""The evidence behind one verdict, read live from the ledger.
 
-What this page is for: showing, from the ledger and nothing else, that a
-claim which reaches "supported" here had to walk a fixed ladder, and that the
-same ladder returns "refuted" and "inconclusive" for claims that do not earn
-better. It is an exhibit, not a dashboard -- every number on it is read live
-from the tables the meta-harness writes during a run, so a reader can ask for
-the row behind any figure.
+This is the data layer the homepage drill-down runs on: open a conclusion in
+the Evidence tab and every rung it renders, every hash it shows and every file
+it offers for download is served from here.
 
-Three things this module deliberately does NOT do, because the page's whole
-value is that it can be checked:
+Three things it deliberately does NOT do, because the whole value of the
+drill-down is that a reader can check it:
 
   * It never recomputes a verdict. Verdicts come from
-    scientific_decision_records, which is the only table a verdict is written
-    to, and each one carries the verdict_hash the auditor signed it with.
-  * It never widens a query to make an exhibit look better. The headline
-    counts are the whole-ledger counts, cherry-picked exhibits included, so a
-    reader sees the base rate a supported result was drawn from.
+    scientific_decision_records, the only table a verdict is written to, and
+    each carries the verdict_hash the auditor signed it with.
+  * It never narrows or widens a query to make a finding look better. A run's
+    measurement at every stage is returned, so the held-out number sits beside
+    the benchmark number instead of behind it.
   * It has no mutating endpoint and no operator affordance. Mutations belong
     to the operator-authenticated /api/meta-harness/v1 blueprint.
 
-Provenance honesty is enforced here rather than left to the template: every
-exhibit carries the candidate's model_version, and the operator-frozen badge is
-rendered wherever that value says a human wrote the method down. Nothing on
-this page may read as an autonomous discovery when it was a reproduction.
+Two things are removed on the way out, and neither is evidence for anything:
+the compute vendor baked into some actor names, and the hardware class a grant
+requested. The ledger keeps every real value; this is a display decision, made
+in one place so it cannot be quietly undone. What is NOT removed is
+`retrospective_review:operator`, which says a human entered a rung by hand --
+the most important caveat a reader can have about a row.
 
-Bilingual copy lives here as (zh, en) pairs rather than in
-web/static/js/i18n.js. That file is the dashboard's, keyed to the dashboard's
-template and edited by whoever is working on the homepage; adding sixty keys to
-both of its tables is a merge conflict waiting to happen on a shared worktree,
-and it would make this page's rendering depend on an asset pipeline it
-otherwise does not touch. The language *choice* is still shared: the template
-reads and writes the same localStorage key the dashboard uses, so switching
-language on the homepage carries over to here and back.
+Bilingual copy lives here as (zh, en) pairs. The dashboard's i18n.js owns the
+strings its own template renders; these belong to the payload, travel with it,
+and cannot drift out of sync with the field they describe.
+
+It began as a standalone exhibit page at /judge, which was retired on
+2026-08-28 once the homepage could do the same thing in the place a reader
+already was.
 """
 from __future__ import annotations
 
@@ -39,7 +37,7 @@ import json
 import pathlib
 from typing import Any
 
-from flask import Blueprint, abort, jsonify, render_template, send_file
+from flask import Blueprint, abort, jsonify, send_file
 
 from config import IDEA_WORKSPACE_DIR
 from db import database as db
@@ -131,96 +129,6 @@ LADDER = [
      "只有走完上面全部台阶的判决才允许写成论文",
      "Only a verdict that climbed every rung above may be written up"),
 ]
-
-# Exhibit D has no row of its own in the ledger: it is a gate that fires before
-# a measurement is allowed to exist, so what it produced was the ABSENCE of a
-# number. The record is the commit that installed it and the incident that
-# forced it, both quoted rather than paraphrased.
-HOLDOUT_GATE = {
-    "commit": "65e2699",
-    "date": "2026-08-18",
-    "title": "Holdout provenance gate: a holdout must prove it is a holdout",
-    "incident_zh": (
-        "第一次留出集飞行 (算力请求 14) 跑出来的数字和被审计的那一趟逐位相同。"
-        "原因是那次 run 的 vendored runner 快照早于 example-offset 支持, 环境变量被"
-        "静默忽略, test[0:200] 被测了两遍 -- 同一批样本冒充留出集。"
-    ),
-    "incident_en": (
-        "The first holdout flight (compute request 14) reproduced the audited "
-        "numbers bit for bit. That run's vendored runner snapshot predated "
-        "example-offset support, so the environment variable was silently "
-        "ignored and test[0:200] ran twice -- the same examples posing as a "
-        "holdout."
-    ),
-    "rule_zh": (
-        "审计现在拒收两类留出集: dataset_manifest 里没记录 example_offset 的, "
-        "以及原始输入 input_sha256 集合与被审计那趟不相交不成立的。"
-        "manifest 字段只是一个声明, 哈希集合才是证据, 两个都查。"
-    ),
-    "rule_en": (
-        "The audit now refuses any holdout whose dataset_manifest does not "
-        "record the example_offset, and any whose raw input_sha256 set is not "
-        "disjoint from the audited run's. A manifest field is a claim; the "
-        "hash sets are the evidence. Both are checked."
-    ),
-    "source": "meta_harness/evidence_audit.py :: holdout_provenance_problem",
-}
-
-# What the system does today versus what it does not. The second column exists
-# because the first one is easy to over-read: agenda 10 spent 3.63M tokens and
-# roughly 50 GPU-hours on self-improving the harness and produced zero
-# supported results, and V1 cannot structurally do it. Saying so here is
-# cheaper than being caught not saying it.
-#
-# Counts are {placeholders} filled from the live ledger at render time. A
-# hardcoded "166 判决" was right for about an hour and then quietly became a
-# false number on the one page whose entire claim is that its numbers check out.
-#
-# (name_zh, name_en, done, note_zh, note_en)
-CAPABILITY_LEDGER = [
-    ("预注册 -> 判决 全流程无人介入",
-     "Pre-registration to verdict, unattended", True,
-     "调度、授权、执行、审计、判决全部由服务自己完成; "
-     "展品里每一级台阶都带着写入它的 actor 和时间戳",
-     "Scheduling, budget authorisation, execution, audit and verdict are all "
-     "done by the service itself; every rung in the exhibits carries the actor "
-     "that wrote it and when"),
-    ("拒绝证据不足的主张", "Refuses claims the evidence does not carry", True,
-     "全库 {total} 条判决里 supported 只有 {supported} 条; "
-     "展品 B 是系统对一个候选说不, 展品 C 是拒绝下结论",
-     "{supported} supported out of {total} verdicts in the whole ledger; "
-     "exhibit B is the system saying no to a candidate, exhibit C is it "
-     "declining to conclude anything"),
-    ("拒收被污染的留出集", "Rejects a contaminated holdout", True,
-     "展品 D: 同一批样本冒充留出集被拦下, 该趟测量作废重跑",
-     "Exhibit D: the same examples posing as a holdout were caught, and that "
-     "measurement was voided and re-flown"),
-    ("跨厂商独立复核", "Cross-vendor independent review", True,
-     "评审模型与被测模型来自不同厂商, evaluator_ref 和 evaluator_hash 记在账本里",
-     "The evaluator model and the model under test come from different "
-     "vendors; evaluator_ref and evaluator_hash are on the ledger"),
-    ("不可变账本", "Immutable ledger", True,
-     "判决、原始产物、评审器、留出集各自的 sha256 都随判决一起落盘",
-     "The verdict, the raw artifacts, the evaluator and the holdout each carry "
-     "their own sha256, written with the verdict"),
-    ("系统自主选题并做出可复现的发现",
-     "Autonomous topic selection producing a reproducible finding", False,
-     "路线图。本页所有候选都是人手从论文里抽出来冻结的 (operator-frozen); "
-     "非 operator-frozen 的 {llm_total} 条判决里 supported 为 {llm_supported}",
-     "Roadmap. Every candidate on this page was transcribed from a paper by a "
-     "human (operator-frozen); of the {llm_total} verdicts on candidates that "
-     "were not, {llm_supported} are supported"),
-    ("通用程序 runner", "A general program runner", False,
-     "路线图。目前只覆盖两种任务协议, 换一类实验就要人接线",
-     "Roadmap. Two task protocols are covered today; a different kind of "
-     "experiment still needs a human to wire it up"),
-    ("harness 自进化 / RSI", "Self-improving harness / RSI", False,
-     "路线图, 且 V1 结构上做不了。agenda 10 为此花掉 363 万 token 和约 50 GPU-h, "
-     "0 条 supported",
-     "Roadmap, and structurally out of reach for V1. Agenda 10 spent 3.63M "
-     "tokens and roughly 50 GPU-hours on it for zero supported results"),
-]
-
 
 # How a verdict reads in a sentence, in both languages.
 #
@@ -416,90 +324,6 @@ def _exhibit(run_id: int) -> dict | None:
     }
 
 
-def _ledger_totals() -> dict:
-    counts = {
-        row["verdict"]: int(row["c"])
-        for row in _rows(
-            "SELECT verdict, count(*) c FROM outcome_records GROUP BY 1"
-        )
-    }
-    total = sum(counts.values())
-    frozen = _one(
-        "SELECT count(*) c FROM scientific_decision_records d"
-        " JOIN experiment_runs r ON r.id = d.experiment_run_id"
-        " JOIN deep_insights i ON i.id = r.deep_insight_id"
-        " WHERE d.verdict='supported' AND i.model_version=?",
-        (OPERATOR_FROZEN_MODEL_VERSION,),
-    )
-    # The roadmap row claims no LLM-authored candidate has ever been supported.
-    # It is counted, not asserted: an autonomous supported result appearing
-    # here should change the page, not be argued with.
-    llm = _one(
-        "SELECT count(*) c FROM outcome_records o"
-        " JOIN deep_insights i ON i.id = o.idea_id"
-        " WHERE i.model_version IS DISTINCT FROM ?",
-        (OPERATOR_FROZEN_MODEL_VERSION,),
-    )
-    llm_supported = _one(
-        "SELECT count(*) c FROM outcome_records o"
-        " JOIN deep_insights i ON i.id = o.idea_id"
-        " WHERE o.verdict='supported' AND i.model_version IS DISTINCT FROM ?",
-        (OPERATOR_FROZEN_MODEL_VERSION,),
-    )
-    return {
-        "counts": counts,
-        "total": total,
-        "supported": counts.get("supported", 0),
-        "supported_operator_frozen": int(frozen.get("c") or 0),
-        "llm_total": int(llm.get("c") or 0),
-        "llm_supported": int(llm_supported.get("c") or 0),
-    }
-
-
-@blueprint.get("/judge")
-def judge_demo():
-    # Exhibit A is whichever agenda-14 run most recently walked the whole
-    # ladder; naming a run id here would freeze the page to one demo.
-    newest = _one(
-        "SELECT d.experiment_run_id AS id FROM scientific_decision_records d"
-        " JOIN experiment_runs r ON r.id = d.experiment_run_id"
-        " WHERE r.agenda_id=14 ORDER BY d.id DESC LIMIT 1"
-    )
-    exhibits = {
-        # A: the most recent completed adjudication, whatever it decided. Keyed
-        # "latest" and not "supported" on purpose -- the page must not be built
-        # around an assumption about a verdict it has not seen yet.
-        "latest": _exhibit(int(newest["id"])) if newest.get("id") else None,
-        # B: the same ladder saying no. Run 235's candidate produced 0.0 on a
-        # 0.32 baseline and the audit refused it at p=0.000999.
-        "refuted": _exhibit(235),
-        # C: the same ladder declining to conclude anything, at p=0.697.
-        "inconclusive": _exhibit(240),
-    }
-    totals = _ledger_totals()
-    capabilities = [
-        {
-            "name_zh": name_zh,
-            "name_en": name_en,
-            "done": done,
-            "note_zh": note_zh.format(**totals),
-            "note_en": note_en.format(**totals),
-        }
-        for name_zh, name_en, done, note_zh, note_en in CAPABILITY_LEDGER
-    ]
-    return render_template(
-        "judge_demo.html",
-        exhibits=exhibits,
-        gate=HOLDOUT_GATE,
-        capabilities=capabilities,
-        totals=totals,
-    )
-
-
-def register_judge_demo_routes(app) -> None:
-    app.register_blueprint(blueprint)
-
-
 def _headline(idea_row: dict) -> str:
     """The sentence a reader came for, not the name the system files it under.
 
@@ -625,32 +449,6 @@ def judge_ladder(run_id: int):
             "wall_seconds": outcome.get("wall_seconds"),
         },
     })
-
-
-# The review URL. Not a second front door and not a mock: it renders the real
-# homepage template with the drill-down flag on, so what is approved is the
-# page itself rather than a poster about it. The nonce keeps it off search
-# engines and off anyone's guess; the route is deleted the moment the flag
-# flips on "/".
-REVIEW_NONCE = "b7f3c1a9e2"
-
-
-@blueprint.get("/preview/<nonce>")
-def homepage_review(nonce: str):
-    if nonce != REVIEW_NONCE:
-        abort(404)
-    from web.app import APP_NAME, APP_SUBTITLE, ASSET_VERSION, MAP_LAYOUT, PROFILE, ROOT_NODE_ID
-
-    return render_template(
-        "index.html",
-        app_name=APP_NAME,
-        subtitle=APP_SUBTITLE,
-        root_node_id=ROOT_NODE_ID,
-        profile=PROFILE,
-        asset_version=ASSET_VERSION,
-        map_layout=MAP_LAYOUT,
-        evidence_drilldown=True,
-    )
 
 
 # Artifact kinds a reader may download. Everything here is a measurement or a

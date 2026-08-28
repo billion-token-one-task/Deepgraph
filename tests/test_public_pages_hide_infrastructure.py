@@ -56,7 +56,6 @@ FORBIDDEN = re.compile(
 # drill-down lands.
 PUBLIC_ASSETS = [
     "web/templates/index.html",
-    "web/templates/judge_demo.html",
     "web/static/js/evidence-ladder.js",
     "web/static/js/app.js",
     "web/static/js/i18n.js",
@@ -88,6 +87,43 @@ class PublicAssetScanTests(unittest.TestCase):
                 self.assertEqual(
                     _offending_lines(path.read_text(encoding="utf-8")), [],
                     f"{relative} names infrastructure on a public surface",
+                )
+
+
+class BilingualCopyTests(unittest.TestCase):
+    """Every rung exists in both languages, and neither side is a stub.
+
+    Kept from the retired /judge page's suite, because the ladder it covers is
+    now what the homepage drill-down renders. A half-translated rung shown to
+    someone deciding whether to believe this system is worse than a
+    monolingual one.
+    """
+
+    def test_every_ladder_rung_has_both_languages(self):
+        for state, label_zh, label_en, why_zh, why_en in judge.LADDER:
+            for name, value in (("label_zh", label_zh), ("label_en", label_en),
+                                ("why_zh", why_zh), ("why_en", why_en)):
+                self.assertTrue(value.strip(), f"ladder {state}: {name} is empty")
+            self.assertNotEqual(label_zh, label_en, f"ladder {state}: untranslated")
+
+    def test_every_stage_label_has_both_languages(self):
+        for stage, (zh, en) in judge.STAGE_LABELS.items():
+            self.assertTrue(zh.strip() and en.strip(), f"stage {stage}")
+
+    def test_every_actor_label_has_both_languages(self):
+        for actor, (zh, en) in judge.ACTOR_LABELS.items():
+            self.assertTrue(zh.strip() and en.strip(), f"actor {actor}")
+
+
+class ReadOnlyTests(unittest.TestCase):
+    def test_the_blueprint_exposes_no_mutating_route(self):
+        from web.app import app
+
+        for rule in app.url_map.iter_rules():
+            if rule.endpoint.startswith("judge_demo."):
+                self.assertEqual(
+                    rule.methods & {"POST", "PUT", "PATCH", "DELETE"}, set(),
+                    f"{rule.endpoint} accepts a mutating method",
                 )
 
 

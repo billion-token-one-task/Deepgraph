@@ -2008,8 +2008,6 @@ def index():
         profile=PROFILE,
         asset_version=ASSET_VERSION,
         map_layout=MAP_LAYOUT,
-        # Off here, on at the review URL, until the drill-down is approved.
-        evidence_drilldown=False,
     )
 
 
