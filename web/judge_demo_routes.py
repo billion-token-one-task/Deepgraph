@@ -238,9 +238,9 @@ CAPABILITY_LEDGER = [
 # it was measured AGAINST is the control value and the thresholds, and those
 # are on the row itself rather than hidden behind the sentence.
 VERDICT_PHRASE = {
-    "supported": ("事先说会有效, 实测确实有效", "Claimed in advance it would work; measured, it does"),
-    "refuted": ("事先说会有效, 实测并没有", "Claimed in advance it would work; measured, it does not"),
-    "inconclusive": ("实测数据不足以判断有没有效", "The measurement cannot tell either way"),
+    "supported": ("符合预期效果", "Matched the effect it predicted"),
+    "refuted": ("达不到预期效果", "Did not reach the effect it predicted"),
+    "inconclusive": ("不确定是否有效", "Not clear whether it works"),
     "invalid": ("这一趟没测出可用结果", "This run produced no usable measurement"),
 }
 

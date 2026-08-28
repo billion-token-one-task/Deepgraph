@@ -2917,8 +2917,21 @@ function renderDecisionRows() {
                </div>`
             : '');
     if (!rows.length) {
+        // "No adjudicated findings in this scope yet" is true and useless: nine
+        // of the thirteen active agendas have none, so the commonest reason a
+        // reader sees this is a stored filter they do not remember setting.
+        // Say which filter, and offer the way out.
+        const scoped = drilldownEnabled() && currentAgendaId !== ALL_AGENDAS && currentAgendaId != null;
         body.innerHTML = auditBanner + banner
-            + `<div class="paper-reader-empty-title">${esc(t('decisions.empty'))}</div>`;
+            + `<div class="paper-reader-empty-title">${esc(t('decisions.empty'))}</div>`
+            + (scoped
+                ? `<div class="decision-filter-banner">
+                       ${esc(t('decisions.scopedEmpty').replace('{n}', esc(String(currentAgendaId))))}
+                       <button type="button" class="decision-filter-clear" onclick="window._dg.setAgendaScope('${ALL_AGENDAS}')">
+                           ${esc(t('decisions.showAllAgendas'))}
+                       </button>
+                   </div>`
+                : '');
         return;
     }
     body.innerHTML = auditBanner + banner + rows.map(d => {
@@ -4414,7 +4427,17 @@ window._dg = {
     // The hero conclusion names one finding; clicking it should land on that
     // finding with its evidence open, not on a list of thirty-three where the
     // reader has to go looking for the one they just read about.
-    openConclusion(runId) {
+    //
+    // The hero is chosen across every agenda while the list below is scoped to
+    // the one in the switcher, so a reader whose stored scope is an agenda with
+    // no adjudicated findings -- nine of the thirteen active ones -- saw the
+    // headline advertise a finding and then landed on "no adjudicated findings
+    // in this scope yet". That mismatch predates the link; making the headline
+    // clickable only turned a silent inconsistency into a dead click. Widening
+    // the scope is the honest resolution: the reader asked for THIS finding,
+    // and the switcher is updated to say where they now are rather than
+    // quietly disagreeing with the list.
+    async openConclusion(runId) {
         switchTab('evidence');
         const focus = () => {
             const row = document.querySelector(`.decision-row[data-run="${runId}"]`);
@@ -4425,13 +4448,36 @@ window._dg = {
             setTimeout(() => row.classList.remove('is-focused'), 2400);
             return true;
         };
-        // The tab loads its rows lazily, so the row may not exist yet on the
-        // first frame after the switch.
-        if (focus()) return;
-        let tries = 0;
-        const timer = setInterval(() => {
-            if (focus() || ++tries > 40) clearInterval(timer);
-        }, 100);
+        const settle = (attempts) => new Promise(resolve => {
+            if (focus()) return resolve(true);
+            let tries = 0;
+            const timer = setInterval(() => {
+                if (focus()) { clearInterval(timer); resolve(true); }
+                else if (++tries > attempts) { clearInterval(timer); resolve(false); }
+            }, 100);
+        });
+
+        // The tab loads its rows lazily, so give it a moment before concluding
+        // the row is out of scope rather than merely late.
+        if (await settle(15)) return;
+        if (currentAgendaId === ALL_AGENDAS) { await settle(25); return; }
+        await window._dg.setAgendaScope(ALL_AGENDAS);
+        await settle(40);
+    },
+    // Change the agenda filter from code the way the switcher does from a
+    // click, so the dropdown, the stored preference and the loaded data cannot
+    // drift apart.
+    async setAgendaScope(next) {
+        if (next === currentAgendaId) return;
+        currentAgendaId = next;
+        try { localStorage.setItem('deepgraph.agenda', String(next)); } catch (e) {}
+        evidenceStateMap = null;
+        papersLoaded = false;
+        allPapers = [];
+        selectedPaperId = null;
+        renderAgendaSwitcher();
+        await loadDecisions();
+        onTabActivated(activeTab);
     },
     exploreNode(nodeId) {
         switchTab('explore');
