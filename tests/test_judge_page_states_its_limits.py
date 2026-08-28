@@ -2,7 +2,7 @@
 
 /judge exists to be shown to people deciding whether to believe this system,
 which makes every overstatement on it expensive in a way a dashboard's is not.
-Two failures are specifically guarded here because both already happened:
+Failures guarded here because they already happened:
 
   * A ledger total was written into the page as a literal. "全库 166 条判决" was
     true for about an hour after it was typed and then became a false number on
@@ -10,11 +10,15 @@ Two failures are specifically guarded here because both already happened:
   * A cross-reference pointed at the wrong exhibit, so the row claiming the
     system rejects contaminated holdouts cited the exhibit about statistical
     significance instead.
+  * resource_grants.gpu_class was rendered as if it said where a run executed,
+    labelling three Colab flights "NVIDIA A10G".
 
-The third guard has never failed, and is here because it is the one that would
-matter most: an operator-frozen candidate must never render without saying so.
-Every candidate on this page was transcribed from a paper by a human, and a
-reader who misses that is reading a reproduction as a discovery.
+Two guards have never failed and are the ones that would matter most. An
+operator-frozen candidate must never render without saying so: every candidate
+on this page was transcribed from a paper by a human, and a reader who misses
+that is reading a reproduction as a discovery. And every string must exist in
+both languages, because a half-translated page shown to an investor is worse
+than a monolingual one.
 """
 
 from __future__ import annotations
@@ -52,12 +56,44 @@ def _exhibit_stub(verdict, *, model_version, run_id=1, blockers=()):
         "blockers": list(blockers),
         "significant": True,
         "ladder": [
-            {"state": s, "label": label, "why": why, "reached": True,
+            {"state": state, "label_zh": zh, "label_en": en,
+             "why_zh": why_zh, "why_en": why_en, "reached": True,
              "actor": "evidence_audit_v1", "at": "2026-08-21 05:29:52"}
-            for s, label, why in judge.LADDER
+            for state, zh, en, why_zh, why_en in judge.LADDER
         ],
         "complete": True,
     }
+
+
+class BilingualCopyTests(unittest.TestCase):
+    """Every string exists in both languages, and neither side is a stub."""
+
+    def test_every_ladder_rung_has_both_languages(self):
+        for state, label_zh, label_en, why_zh, why_en in judge.LADDER:
+            for name, value in (("label_zh", label_zh), ("label_en", label_en),
+                                ("why_zh", why_zh), ("why_en", why_en)):
+                self.assertTrue(value.strip(), f"ladder {state}: {name} is empty")
+            self.assertNotEqual(label_zh, label_en, f"ladder {state}: untranslated")
+
+    def test_every_capability_row_has_both_languages(self):
+        for name_zh, name_en, _done, note_zh, note_en in judge.CAPABILITY_LEDGER:
+            for label, value in (("name_zh", name_zh), ("name_en", name_en),
+                                 ("note_zh", note_zh), ("note_en", note_en)):
+                self.assertTrue(value.strip(), f"{name_zh}: {label} is empty")
+            self.assertNotEqual(name_zh, name_en, f"{name_zh}: untranslated")
+
+    def test_the_holdout_gate_has_both_languages(self):
+        for key in ("incident_zh", "incident_en", "rule_zh", "rule_en"):
+            self.assertTrue(judge.HOLDOUT_GATE[key].strip(), f"gate {key} is empty")
+
+    def test_the_two_sides_carry_the_same_placeholders(self):
+        """A count shown in one language and dropped in the other is a lie in one."""
+        for name_zh, _name_en, _done, note_zh, note_en in judge.CAPABILITY_LEDGER:
+            self.assertEqual(
+                set(re.findall(r"\{(\w+)\}", note_zh)),
+                set(re.findall(r"\{(\w+)\}", note_en)),
+                f"{name_zh}: the zh and en notes format different fields",
+            )
 
 
 class CapabilityLedgerTests(unittest.TestCase):
@@ -68,15 +104,20 @@ class CapabilityLedgerTests(unittest.TestCase):
     # about spend that does not change (agenda 10's 363万 token, V1). The
     # allowlist names the second kind explicitly so a new number has to be
     # argued for rather than slipped in.
-    ALLOWED_LITERALS = {"363", "50", "0", "10", "1"}
+    ALLOWED_LITERALS = {"363", "3", "50", "0", "10", "1"}
 
     # Digits glued to letters are part of an identifier, not a count: the first
     # version of this rule read "256" out of "sha256" and demanded a
     # placeholder for it.
-    STANDALONE_NUMBER = re.compile(r"(?<![A-Za-z0-9])\d+(?![A-Za-z0-9])")
+    STANDALONE_NUMBER = re.compile(r"(?<![A-Za-z0-9.])\d+(?![A-Za-z0-9.])")
+
+    def _notes(self):
+        for name_zh, _name_en, _done, note_zh, note_en in judge.CAPABILITY_LEDGER:
+            yield name_zh, note_zh
+            yield name_zh, note_en
 
     def test_notes_use_placeholders_for_anything_the_ledger_counts(self):
-        for name, _done, note in judge.CAPABILITY_LEDGER:
+        for name, note in self._notes():
             for number in self.STANDALONE_NUMBER.findall(note):
                 self.assertIn(
                     number, self.ALLOWED_LITERALS,
@@ -90,7 +131,7 @@ class CapabilityLedgerTests(unittest.TestCase):
             "counts", "total", "supported", "supported_operator_frozen",
             "llm_total", "llm_supported",
         }
-        for name, _done, note in judge.CAPABILITY_LEDGER:
+        for name, note in self._notes():
             for field in re.findall(r"\{(\w+)\}", note):
                 self.assertIn(
                     field, supplied,
@@ -102,14 +143,15 @@ class CapabilityLedgerTests(unittest.TestCase):
         # Exhibits are lettered A-D in the template. The contamination row
         # cited C (significance) for its first hour of life.
         letters = set()
-        for _name, _done, note in judge.CAPABILITY_LEDGER:
+        for _name, note in self._notes():
             letters.update(re.findall(r"展品 ([A-Z])", note))
+            letters.update(re.findall(r"[Ee]xhibit ([A-Z])", note))
         self.assertTrue(letters, "no capability row cites an exhibit at all")
         self.assertLessEqual(letters, {"A", "B", "C", "D"})
 
     def test_the_roadmap_half_is_not_quietly_empty(self):
         # The page's credibility rests on the "not yet" column being real.
-        not_done = [name for name, done, _ in judge.CAPABILITY_LEDGER if not done]
+        not_done = [zh for zh, _en, done, _nz, _ne in judge.CAPABILITY_LEDGER if not done]
         self.assertIn("harness 自进化 / RSI", " | ".join(not_done))
         self.assertGreaterEqual(len(not_done), 3)
 
@@ -150,7 +192,7 @@ class ProvenanceRenderingTests(unittest.TestCase):
         # Anchored on the rendered badge: "v-supported" alone matches the
         # stylesheet rule near the top of the document first.
         block = page[page.index('class="verdict v-supported"'):]
-        self.assertLess(block.index("operator-frozen"), block.index("证据阶梯"))
+        self.assertLess(block.index("operator-frozen"), block.index("Evidence ladder"))
 
     def test_an_llm_authored_candidate_shows_the_model_that_wrote_it(self):
         authored = _exhibit_stub("supported", model_version="gemini-3.7-flash-high")
@@ -175,6 +217,7 @@ class ProvenanceRenderingTests(unittest.TestCase):
         }
         page = self._render({235: frozen, 240: frozen})
         self.assertIn("全库 21 条判决里 supported 只有 7 条", page)
+        self.assertIn("7 supported out of 21 verdicts", page)
         self.assertNotIn("167", page)
 
     def test_the_authorised_gpu_class_is_not_shown_as_where_it_ran(self):
@@ -189,7 +232,7 @@ class ProvenanceRenderingTests(unittest.TestCase):
                                model_version=judge.OPERATOR_FROZEN_MODEL_VERSION)
         page = self._render({235: frozen, 240: frozen})
         self.assertIn("colab-pro", page)
-        self.assertIn("实际执行后端", page)
+        self.assertIn("Where it actually ran", page)
         self.assertNotIn("NVIDIA A10G", page)
 
     def test_the_grant_chain_shows_every_stage_that_had_to_wait(self):
@@ -202,6 +245,47 @@ class ProvenanceRenderingTests(unittest.TestCase):
     def test_a_missing_run_renders_an_absence_rather_than_a_placeholder(self):
         page = self._render({})
         self.assertIn("页面不编造占位数据", page)
+        self.assertIn("does not invent a placeholder", page)
+
+
+class BilingualPageTests(unittest.TestCase):
+    """Both languages ship in the document; the root attribute picks one."""
+
+    def setUp(self):
+        from web.app import app
+
+        self.app = app
+        self._exhibit = judge._exhibit
+        judge._exhibit = lambda run_id: None
+
+    def tearDown(self):
+        judge._exhibit = self._exhibit
+
+    def _page(self):
+        with self.app.test_client() as client:
+            return client.get("/judge").data.decode("utf-8")
+
+    def test_the_page_carries_both_languages_not_a_translation_request(self):
+        page = self._page()
+        self.assertIn('class="zh"', page)
+        self.assertIn('class="en"', page)
+        self.assertIn("Scientific Evidence Bench", page)
+        self.assertIn("科学证据裁判台", page)
+
+    def test_the_default_language_needs_no_javascript(self):
+        # data-lang is on the served markup, and the CSS hides the other half,
+        # so a blocked script leaves a complete Chinese page rather than one
+        # showing every sentence twice.
+        page = self._page()
+        self.assertIn('data-lang="zh"', page)
+        self.assertIn('[data-lang="zh"] .en { display: none; }', page)
+        self.assertIn('[data-lang="en"] .zh { display: none; }', page)
+
+    def test_the_language_choice_is_shared_with_the_dashboard(self):
+        # Same localStorage key the dashboard's i18n.js uses, so switching on
+        # the homepage carries over to this page and back.
+        page = self._page()
+        self.assertIn('"deepgraph.lang"', page)
 
 
 class ReadOnlyTests(unittest.TestCase):

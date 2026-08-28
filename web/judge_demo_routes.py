@@ -20,9 +20,18 @@ value is that it can be checked:
     to the operator-authenticated /api/meta-harness/v1 blueprint.
 
 Provenance honesty is enforced here rather than left to the template: every
-exhibit carries the candidate's model_version, and OPERATOR_FROZEN_NOTE is
+exhibit carries the candidate's model_version, and the operator-frozen badge is
 rendered wherever that value says a human wrote the method down. Nothing on
 this page may read as an autonomous discovery when it was a reproduction.
+
+Bilingual copy lives here as (zh, en) pairs rather than in
+web/static/js/i18n.js. That file is the dashboard's, keyed to the dashboard's
+template and edited by whoever is working on the homepage; adding sixty keys to
+both of its tables is a merge conflict waiting to happen on a shared worktree,
+and it would make this page's rendering depend on an asset pipeline it
+otherwise does not touch. The language *choice* is still shared: the template
+reads and writes the same localStorage key the dashboard uses, so switching
+language on the homepage carries over to here and back.
 """
 from __future__ import annotations
 
@@ -46,38 +55,65 @@ OPERATOR_FROZEN_MODEL_VERSION = "operator_frozen_no_llm"
 # contracts.meta_harness.EVIDENCE_STATES; spelled out here with the plain
 # language a reader outside the project needs, and with the gate that has to
 # pass before each one is written.
+#
+# (state, label_zh, label_en, why_zh, why_en)
 LADDER = [
-    ("planned", "预注册",
-     "候选的方法、指标、基准切片和成功阈值在跑之前写死并存档; 之后改不了"),
-    ("sanity_passed", "小样本试跑",
-     "先用小切片证明这套代码能跑出非空预测, 再申请全量预算"),
-    ("full_benchmark_complete", "全量基准",
-     "候选和基线在同一份 revision-pinned 数据、同一份预算下各跑一遍"),
-    ("evidence_audited", "证据审计",
-     "留出集必须自证是留出集; 置换检验出 p 值; 跨厂商的独立评审读原始预测"),
-    ("scientifically_decided", "判决",
-     "supported / refuted / inconclusive 之一, 连同 verdict_hash 写进不可变账本"),
-    ("manuscript_allowed", "允许成稿",
-     "只有走完上面全部台阶的判决才允许写成论文"),
+    ("planned", "预注册", "Pre-registration",
+     "候选的方法、指标、基准切片和成功阈值在跑之前写死并存档; 之后改不了",
+     "The method, metric, benchmark slice and success thresholds are frozen "
+     "and filed before anything runs, and cannot be edited afterwards"),
+    ("sanity_passed", "小样本试跑", "Pilot",
+     "先用小切片证明这套代码能跑出非空预测, 再申请全量预算",
+     "A small slice first, to prove the code produces non-empty predictions "
+     "before it may ask for a full benchmark budget"),
+    ("full_benchmark_complete", "全量基准", "Full benchmark",
+     "候选和基线在同一份 revision-pinned 数据、同一份预算下各跑一遍",
+     "Candidate and baseline each run once, on the same revision-pinned data "
+     "and under the same budget"),
+    ("evidence_audited", "证据审计", "Evidence audit",
+     "留出集必须自证是留出集; 置换检验出 p 值; 跨厂商的独立评审读原始预测",
+     "The holdout must prove it is a holdout; a permutation test yields the "
+     "p-value; an independent evaluator from a different vendor reads the raw "
+     "predictions"),
+    ("scientifically_decided", "判决", "Verdict",
+     "supported / refuted / inconclusive 之一, 连同 verdict_hash 写进不可变账本",
+     "One of supported / refuted / inconclusive, written to the immutable "
+     "ledger together with its verdict_hash"),
+    ("manuscript_allowed", "允许成稿", "Manuscript allowed",
+     "只有走完上面全部台阶的判决才允许写成论文",
+     "Only a verdict that climbed every rung above may be written up"),
 ]
 
-# Exhibit 3 has no row of its own in the ledger: it is a gate that fires before
+# Exhibit D has no row of its own in the ledger: it is a gate that fires before
 # a measurement is allowed to exist, so what it produced was the ABSENCE of a
 # number. The record is the commit that installed it and the incident that
-# forced it, both quoted verbatim rather than paraphrased.
+# forced it, both quoted rather than paraphrased.
 HOLDOUT_GATE = {
     "commit": "65e2699",
     "date": "2026-08-18",
     "title": "Holdout provenance gate: a holdout must prove it is a holdout",
-    "incident": (
+    "incident_zh": (
         "第一次留出集飞行 (colab 请求 14) 跑出来的数字和被审计的那一趟逐位相同。"
         "原因是那次 run 的 vendored runner 快照早于 example-offset 支持, 环境变量被"
         "静默忽略, test[0:200] 被测了两遍 -- 同一批样本冒充留出集。"
     ),
-    "rule": (
+    "incident_en": (
+        "The first holdout flight (Colab request 14) reproduced the audited "
+        "numbers bit for bit. That run's vendored runner snapshot predated "
+        "example-offset support, so the environment variable was silently "
+        "ignored and test[0:200] ran twice -- the same examples posing as a "
+        "holdout."
+    ),
+    "rule_zh": (
         "审计现在拒收两类留出集: dataset_manifest 里没记录 example_offset 的, "
         "以及原始输入 input_sha256 集合与被审计那趟不相交不成立的。"
         "manifest 字段只是一个声明, 哈希集合才是证据, 两个都查。"
+    ),
+    "rule_en": (
+        "The audit now refuses any holdout whose dataset_manifest does not "
+        "record the example_offset, and any whose raw input_sha256 set is not "
+        "disjoint from the audited run's. A manifest field is a claim; the "
+        "hash sets are the evidence. Both are checked."
     ),
     "source": "meta_harness/evidence_audit.py :: holdout_provenance_problem",
 }
@@ -91,29 +127,51 @@ HOLDOUT_GATE = {
 # Counts are {placeholders} filled from the live ledger at render time. A
 # hardcoded "166 判决" was right for about an hour and then quietly became a
 # false number on the one page whose entire claim is that its numbers check out.
+#
+# (name_zh, name_en, done, note_zh, note_en)
 CAPABILITY_LEDGER = [
-    ("预注册 -> 判决 全流程无人介入", True,
+    ("预注册 -> 判决 全流程无人介入",
+     "Pre-registration to verdict, unattended", True,
      "调度、授权、执行、审计、判决全部由服务自己完成; "
-     "展品里每一级台阶都带着写入它的 actor 和时间戳"),
-    ("拒绝证据不足的主张", True,
+     "展品里每一级台阶都带着写入它的 actor 和时间戳",
+     "Scheduling, budget authorisation, execution, audit and verdict are all "
+     "done by the service itself; every rung in the exhibits carries the actor "
+     "that wrote it and when"),
+    ("拒绝证据不足的主张", "Refuses claims the evidence does not carry", True,
      "全库 {total} 条判决里 supported 只有 {supported} 条; "
-     "展品 B 是系统对一个候选说不, 展品 C 是拒绝下结论"),
-    ("拒收被污染的留出集", True,
-     "展品 D: 同一批样本冒充留出集被拦下, 该趟测量作废重跑"),
-    ("跨厂商独立复核", True,
-     "评审模型与被测模型来自不同厂商, evaluator_ref 和 evaluator_hash 记在账本里"),
-    ("不可变账本", True,
-     "判决、原始产物、评审器、留出集各自的 sha256 都随判决一起落盘"),
-    ("系统自主选题并做出可复现的发现", False,
+     "展品 B 是系统对一个候选说不, 展品 C 是拒绝下结论",
+     "{supported} supported out of {total} verdicts in the whole ledger; "
+     "exhibit B is the system saying no to a candidate, exhibit C is it "
+     "declining to conclude anything"),
+    ("拒收被污染的留出集", "Rejects a contaminated holdout", True,
+     "展品 D: 同一批样本冒充留出集被拦下, 该趟测量作废重跑",
+     "Exhibit D: the same examples posing as a holdout were caught, and that "
+     "measurement was voided and re-flown"),
+    ("跨厂商独立复核", "Cross-vendor independent review", True,
+     "评审模型与被测模型来自不同厂商, evaluator_ref 和 evaluator_hash 记在账本里",
+     "The evaluator model and the model under test come from different "
+     "vendors; evaluator_ref and evaluator_hash are on the ledger"),
+    ("不可变账本", "Immutable ledger", True,
+     "判决、原始产物、评审器、留出集各自的 sha256 都随判决一起落盘",
+     "The verdict, the raw artifacts, the evaluator and the holdout each carry "
+     "their own sha256, written with the verdict"),
+    ("系统自主选题并做出可复现的发现",
+     "Autonomous topic selection producing a reproducible finding", False,
      "路线图。本页所有候选都是人手从论文里抽出来冻结的 (operator-frozen); "
-     "非 operator-frozen 的 {llm_total} 条判决里 supported 为 {llm_supported}"),
-    ("通用程序 runner", False,
-     "路线图。目前只覆盖两种任务协议, 换一类实验就要人接线"),
-    ("harness 自进化 / RSI", False,
+     "非 operator-frozen 的 {llm_total} 条判决里 supported 为 {llm_supported}",
+     "Roadmap. Every candidate on this page was transcribed from a paper by a "
+     "human (operator-frozen); of the {llm_total} verdicts on candidates that "
+     "were not, {llm_supported} are supported"),
+    ("通用程序 runner", "A general program runner", False,
+     "路线图。目前只覆盖两种任务协议, 换一类实验就要人接线",
+     "Roadmap. Two task protocols are covered today; a different kind of "
+     "experiment still needs a human to wire it up"),
+    ("harness 自进化 / RSI", "Self-improving harness / RSI", False,
      "路线图, 且 V1 结构上做不了。agenda 10 为此花掉 363 万 token 和约 50 GPU-h, "
-     "0 条 supported"),
+     "0 条 supported",
+     "Roadmap, and structurally out of reach for V1. Agenda 10 spent 3.63M "
+     "tokens and roughly 50 GPU-hours on it for zero supported results"),
 ]
-
 
 
 def _rows(sql: str, params: tuple = ()) -> list[dict]:
@@ -197,6 +255,7 @@ def _exhibit(run_id: int) -> dict | None:
         " ORDER BY id DESC LIMIT 1",
         (run_id,),
     )
+
     # The whole grant chain, not just the last one. Waiting for budget is a rung
     # of the ladder the page claims to show, and a run that reached a verdict
     # did so across a separate grant per stage -- pilot, full benchmark, audit --
@@ -240,14 +299,16 @@ def _exhibit(run_id: int) -> dict | None:
     # "planned" is the state a run is created in, so no transition writes it;
     # the run's own created_at is when the pre-registration was frozen.
     ladder = []
-    for state, label, why in LADDER:
+    for state, label_zh, label_en, why_zh, why_en in LADDER:
         hit = reached.get(state)
         if state == "planned":
             hit = hit or {"actor": "forge", "created_at": run.get("created_at")}
         ladder.append({
             "state": state,
-            "label": label,
-            "why": why,
+            "label_zh": label_zh,
+            "label_en": label_en,
+            "why_zh": why_zh,
+            "why_en": why_en,
             "reached": bool(hit),
             "actor": (hit or {}).get("actor", ""),
             "at": _ts((hit or {}).get("created_at")),
@@ -342,7 +403,14 @@ def judge_demo():
     }
     totals = _ledger_totals()
     capabilities = [
-        (name, done, note.format(**totals)) for name, done, note in CAPABILITY_LEDGER
+        {
+            "name_zh": name_zh,
+            "name_en": name_en,
+            "done": done,
+            "note_zh": note_zh.format(**totals),
+            "note_en": note_en.format(**totals),
+        }
+        for name_zh, name_en, done, note_zh, note_en in CAPABILITY_LEDGER
     ]
     return render_template(
         "judge_demo.html",
