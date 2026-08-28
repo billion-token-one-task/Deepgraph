@@ -2875,6 +2875,16 @@ async function loadDecisions() {
 function renderDecisionRows() {
     const body = el('decisionsBody');
     if (!body) return;
+    // Switching language re-renders this list, and rebuilding the rows closed
+    // threw away whatever drill-down the reader had open -- so the act of
+    // reading a finding in the other language destroyed the thing being read.
+    // Remember which runs were open and restore them; the ladder itself is
+    // cached per run, so restoring costs no request.
+    const wasOpen = new Set(
+        Array.from(body.querySelectorAll('details.decision-row[open]'))
+             .map(row => row.dataset.run)
+             .filter(Boolean)
+    );
     const filter = String(decisionVerdictFilter || '').toLowerCase();
     const auditedOnly = drilldownEnabled() && decisionsAuditedOnly;
     const pool = auditedOnly ? decisionRows.filter(d => d.walked_ladder) : decisionRows;
@@ -2967,6 +2977,19 @@ function renderDecisionRows() {
                 ${d.verdict_hash ? `<div class="decision-hash">${esc(String(d.verdict_hash).slice(0, 16))}…</div>` : ''}
             </details>`;
     }).join('');
+
+    if (wasOpen.size) {
+        for (const row of body.querySelectorAll('details.decision-row')) {
+            if (!wasOpen.has(row.dataset.run)) continue;
+            row.open = true;
+            // `open` set from script does not fire `toggle` in every engine,
+            // so mount directly rather than relying on the delegated listener.
+            const drill = row.querySelector('.decision-drill');
+            if (drill && window.dgEvidenceLadder && drilldownEnabled()) {
+                window.dgEvidenceLadder.mount(drill, row.dataset.run);
+            }
+        }
+    }
 }
 
 async function loadTaxonomyDropdown() {
