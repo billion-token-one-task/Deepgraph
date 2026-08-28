@@ -2861,10 +2861,11 @@ async function loadDecisions() {
                     .map(([verdict, n]) => `${n} ${verdict}`).join(' / ') || '0';
             }
         }
-        if (!rows.length) {
-            body.innerHTML = `<div class="paper-reader-empty-title">${esc(t('decisions.empty'))}</div>`;
-            return;
-        }
+        // No early return on an empty payload: renderDecisionRows already
+        // handles empty, and it is the only place that explains WHY the list
+        // is empty. Short-circuiting here meant the one case that most needs
+        // the explanation -- an agenda filter with nothing in it -- was the one
+        // case that never got it.
         renderDecisionRows();
     } catch (e) {
         console.error('Decisions unavailable:', e);
