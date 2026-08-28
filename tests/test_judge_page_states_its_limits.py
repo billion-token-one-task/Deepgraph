@@ -34,7 +34,13 @@ def _exhibit_stub(verdict, *, model_version, run_id=1, blockers=()):
         "title": "C01 algorithmic_filter_sum_3shot",
         "operator_frozen": model_version == judge.OPERATOR_FROZEN_MODEL_VERSION,
         "model_version": model_version,
-        "grant": {},
+        "grants": [
+            {"id": 408, "stage": "pilot", "token_cap": 40000, "max_gpu_hours": 2.0,
+             "status": "consumed", "gpu_class": "NVIDIA A10G"},
+            {"id": 410, "stage": "evidence_audit", "token_cap": 40000,
+             "max_gpu_hours": 2.0, "status": "active", "gpu_class": "NVIDIA A10G"},
+        ],
+        "accounts": [{"stage": "pilot", "account_ref": "colab-pro"}],
         "audit": {},
         "decision": {},
         "outcome": {},
@@ -170,6 +176,28 @@ class ProvenanceRenderingTests(unittest.TestCase):
         page = self._render({235: frozen, 240: frozen})
         self.assertIn("全库 21 条判决里 supported 只有 7 条", page)
         self.assertNotIn("167", page)
+
+    def test_the_authorised_gpu_class_is_not_shown_as_where_it_ran(self):
+        """grant.gpu_class is a request, not a receipt.
+
+        The audit grant for run 274 asked for an A10G and the work ran on
+        Colab. Rendering the class alone labelled a Colab flight "NVIDIA
+        A10G" -- the kind of small false detail that costs a reader's trust in
+        every other figure on the page.
+        """
+        frozen = _exhibit_stub("supported",
+                               model_version=judge.OPERATOR_FROZEN_MODEL_VERSION)
+        page = self._render({235: frozen, 240: frozen})
+        self.assertIn("colab-pro", page)
+        self.assertIn("实际执行后端", page)
+        self.assertNotIn("NVIDIA A10G", page)
+
+    def test_the_grant_chain_shows_every_stage_that_had_to_wait(self):
+        frozen = _exhibit_stub("supported",
+                               model_version=judge.OPERATOR_FROZEN_MODEL_VERSION)
+        page = self._render({235: frozen, 240: frozen})
+        self.assertIn("grant 408", page)
+        self.assertIn("grant 410", page)
 
     def test_a_missing_run_renders_an_absence_rather_than_a_placeholder(self):
         page = self._render({})

@@ -185,12 +185,17 @@ footer { margin-top: 60px; padding-top: 20px; border-top: 1px solid var(--line);
 
   <h3>裁决依据</h3>
   <dl class="kv">
-    {% if ex.grant %}
-    <dt>预算授权</dt>
-    <dd>grant {{ ex.grant.id }} &middot; {{ ex.grant.stage }} &middot;
-        {{ ex.grant.token_cap }} token &middot; {{ ex.grant.max_gpu_hours }} GPU-h
-        &middot; {{ ex.grant.gpu_class or 'n/a' }}<br>
-        <span class="faint">发放理由: {{ ex.grant.grant_reason }}</span></dd>
+    {% if ex.grants %}
+    <dt>预算授权链</dt>
+    <dd>{% for g in ex.grants %}grant {{ g.id }} &middot; {{ g.stage }} &middot;
+        {{ g.token_cap }} token &middot; 上限 {{ g.max_gpu_hours }} GPU-h
+        &middot; {{ g.status }}<br>{% endfor %}
+        <span class="faint">每一级台阶单独申请预算; 上一笔结清才发下一笔。
+        gpu_class 是授权申请的机型, 不代表实际跑在哪。</span></dd>
+    {% endif %}
+    {% if ex.accounts %}
+    <dt>实际执行后端</dt>
+    <dd>{% for a in ex.accounts %}{{ a.stage }} &rarr; {{ a.account_ref }}<br>{% endfor %}</dd>
     {% endif %}
     <dt>指标</dt>
     <dd>{{ ex.run.baseline_metric_name or 'metric' }} =

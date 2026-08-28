@@ -197,11 +197,37 @@ def _exhibit(run_id: int) -> dict | None:
         " ORDER BY id DESC LIMIT 1",
         (run_id,),
     )
-    grant = _one(
-        "SELECT id, stage, token_cap, gpu_class, max_gpu_hours, grant_reason,"
-        " created_at, expires_at FROM resource_grants WHERE id=?",
-        (run["resource_grant_id"],),
-    ) if run.get("resource_grant_id") else {}
+    # The whole grant chain, not just the last one. Waiting for budget is a rung
+    # of the ladder the page claims to show, and a run that reached a verdict
+    # did so across a separate grant per stage -- pilot, full benchmark, audit --
+    # each with its own cap. Showing only run.resource_grant_id showed the audit
+    # grant alone and made the wait look like it never happened.
+    #
+    # Reached through the run's own compute requests rather than by timestamp:
+    # run 274's pilot grant was issued 1.3 seconds BEFORE the run row existed,
+    # so a "grants created at or after the run" filter silently dropped the
+    # first rung of the very chain this row is here to show.
+    grants = _rows(
+        "SELECT g.id, g.stage, g.token_cap, g.gpu_class, g.max_gpu_hours,"
+        " g.status, g.grant_reason, g.created_at FROM resource_grants g"
+        " WHERE g.id IN ("
+        "   SELECT DISTINCT resource_grant_id FROM colab_work_requests_v1"
+        "   WHERE experiment_run_id=? AND resource_grant_id IS NOT NULL"
+        " ) ORDER BY g.id",
+        (run_id,),
+    )
+
+    # Where the work actually ran. resource_grants.gpu_class is what the grant
+    # AUTHORISED, and rendering it alone labelled a Colab flight "NVIDIA A10G"
+    # because that is the class the grant asked for. The compute account that
+    # returned the artifacts is the answer to "where did this run", and it is
+    # the one a reader checking the story will ask for.
+    accounts = _rows(
+        "SELECT DISTINCT stage, account_ref FROM colab_work_requests_v1"
+        " WHERE experiment_run_id=? AND status='succeeded' AND account_ref IS NOT NULL"
+        " ORDER BY stage",
+        (run_id,),
+    )
 
     reached = {
         row["to_state"]: row
@@ -236,7 +262,8 @@ def _exhibit(run_id: int) -> dict | None:
         "title": _scrub_text(str(idea.get("title") or "")),
         "operator_frozen": idea.get("model_version") == OPERATOR_FROZEN_MODEL_VERSION,
         "model_version": idea.get("model_version"),
-        "grant": grant,
+        "grants": grants,
+        "accounts": accounts,
         "audit": audit,
         "decision": decision,
         "verdict": (decision.get("verdict") or outcome.get("verdict")
