@@ -6,7 +6,7 @@
 
 set -euo pipefail
 
-DOMAIN="deepgraph.sora2.today"
+DOMAIN="${DEEPGRAPH_DOMAIN:-deepgraph.example.com}"
 UPSTREAM="127.0.0.1:8080"
 NGINX_CONF="/etc/nginx/conf.d/deepgraph.conf"
 

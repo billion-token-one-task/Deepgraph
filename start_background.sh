@@ -12,7 +12,7 @@ WEB_RUNNER="$ROOT/scripts/run_web_forever.sh"
 FRPC_RUNNER="$ROOT/scripts/run_frpc_deepgraph_forever.sh"
 KEEPER_RUNNER="$ROOT/scripts/keep_deepgraph_alive.sh"
 PROCESSOR_RUNNER="$ROOT/scripts/run_pipeline_forever.sh"
-PUBLIC_URL="http://PUBLIC_HOST:25281"
+PUBLIC_URL="${DEEPGRAPH_PUBLIC_URL:-http://127.0.0.1:8080}"
 
 mkdir -p "$LOG_DIR"
 

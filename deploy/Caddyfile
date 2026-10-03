@@ -1,7 +1,7 @@
 # HTTPS reverse proxy for DeepGraph (Flask on 127.0.0.1:8080).
 # Caddy obtains and renews Let's Encrypt certificates automatically.
 
-deepgraph.sora2.today {
+{$DEEPGRAPH_DOMAIN:deepgraph.example.com} {
 	encode gzip zstd
 	reverse_proxy 127.0.0.1:8080 {
 		header_up X-Forwarded-Proto {scheme}

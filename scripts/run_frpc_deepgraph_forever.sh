@@ -6,7 +6,7 @@ FRPC_BIN="${DEEPGRAPH_FRPC_BIN:-/usr/local/bin/frpc}"
 FRPC_CONFIG="${DEEPGRAPH_FRPC_CONFIG:-/etc/frp/frpc-deepgraph.toml}"
 LOG_DIR="$ROOT/logs"
 FRPC_LOG="$LOG_DIR/frpc_deepgraph.log"
-PUBLIC_URL="http://PUBLIC_HOST:25281"
+PUBLIC_URL="${DEEPGRAPH_PUBLIC_URL:-http://127.0.0.1:8080}"
 
 mkdir -p "$LOG_DIR"
 

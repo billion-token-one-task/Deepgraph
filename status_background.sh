@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT="${DEEPGRAPH_ROOT:-/root/hf_models/hk_backup/Deepgraph}"
 SCREEN_BIN="${SCREEN_BIN:-/usr/bin/screen}"
-PUBLIC_URL="http://PUBLIC_HOST:25281"
+PUBLIC_URL="${DEEPGRAPH_PUBLIC_URL:-http://127.0.0.1:8080}"
 API_BASE="http://127.0.0.1:8081"
 FRPC_LOG="$ROOT/logs/frpc_deepgraph.log"
 WEB_LOG="$ROOT/logs/web_8081.log"
