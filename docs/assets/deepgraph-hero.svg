@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0B1220"/>
+      <stop offset="1" stop-color="#14203A"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#F5B841" stop-opacity="0.32"/>
+      <stop offset="1" stop-color="#F5B841" stop-opacity="0"/>
+    </radialGradient>
+    <marker id="arr" viewBox="0 0 10 10" refX="6" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5EEAD4"/>
+    </marker>
+  </defs>
+
+  <rect width="1280" height="640" rx="24" fill="url(#bg)"/>
+
+  <!-- left panel -->
+  <text x="64" y="132" fill="#F5B841" font-size="15" font-weight="700" letter-spacing="3">JOULEBEAT · OPEN-SOURCE RSI LAB</text>
+  <text x="60" y="210" fill="#F1F5FB" font-size="76" font-weight="800" letter-spacing="-1.5">DeepGraph</text>
+  <text x="64" y="262" fill="#CBD5E1" font-size="24">An autonomous research agent</text>
+  <text x="64" y="296" fill="#CBD5E1" font-size="24">that improves by being</text>
+  <text x="64" y="330" fill="#CBD5E1" font-size="24"><tspan fill="#F5B841" font-weight="700">judged by reality</tspan>.</text>
+
+  <g font-size="15" font-weight="600">
+    <rect x="64" y="384" width="196" height="40" rx="20" fill="#1B2A48" stroke="#2E4370"/>
+    <text x="162" y="409" fill="#E2E8F0" text-anchor="middle">24,407 papers read</text>
+    <rect x="272" y="384" width="236" height="40" rx="20" fill="#1B2A48" stroke="#2E4370"/>
+    <text x="390" y="409" fill="#E2E8F0" text-anchor="middle">248k-entity evidence graph</text>
+    <rect x="64" y="436" width="236" height="40" rx="20" fill="#1B2A48" stroke="#2E4370"/>
+    <text x="182" y="461" fill="#E2E8F0" text-anchor="middle">921M LLM tokens invested</text>
+    <rect x="312" y="436" width="196" height="40" rx="20" fill="#1B2A48" stroke="#2E4370"/>
+    <text x="410" y="461" fill="#E2E8F0" text-anchor="middle">150 audited verdicts</text>
+  </g>
+  <text x="64" y="540" fill="#7C8BA5" font-size="15">Harness × Benchmark co-evolution, fed by real research tasks.</text>
+  <text x="64" y="564" fill="#7C8BA5" font-size="15">Open source · MIT</text>
+
+  <!-- loop -->
+  <circle cx="930" cy="330" r="150" fill="url(#glow)"/>
+  <circle cx="930" cy="330" r="215" fill="none" stroke="#5EEAD4" stroke-opacity="0.55" stroke-width="2.5" stroke-dasharray="10 9">
+    <animate attributeName="stroke-dashoffset" from="0" to="-76" dur="3s" repeatCount="indefinite"/>
+  </circle>
+  <!-- direction arrows on the ring (clockwise) -->
+  <g fill="none" stroke="#5EEAD4" stroke-width="2.5" marker-end="url(#arr)">
+    <path d="M1030,140 A215,215 0 0 1 1080,175"/>
+    <path d="M1144,348 A215,215 0 0 1 1136,392"/>
+    <path d="M940,545 A215,215 0 0 1 912,545"/>
+    <path d="M730,415 A215,215 0 0 1 718,372"/>
+    <path d="M790,165 A215,215 0 0 1 830,140"/>
+  </g>
+
+  <!-- centre -->
+  <circle cx="930" cy="330" r="98" fill="#0F1A30" stroke="#F5B841" stroke-width="2"/>
+  <text x="930" y="300" fill="#F5B841" font-size="13" font-weight="700" text-anchor="middle" letter-spacing="2">RSI LOOP</text>
+  <text x="930" y="328" fill="#F1F5FB" font-size="19" font-weight="700" text-anchor="middle">Harness ×</text>
+  <text x="930" y="352" fill="#F1F5FB" font-size="19" font-weight="700" text-anchor="middle">Benchmark</text>
+  <text x="930" y="376" fill="#CBD5E1" font-size="15" text-anchor="middle">co-evolve</text>
+
+  <!-- nodes -->
+  <g font-size="16" text-anchor="middle">
+    <rect x="820" y="83" width="220" height="64" rx="14" fill="#16213A" stroke="#36507F"/>
+    <text x="930" y="110" fill="#F1F5FB" font-weight="700">1 · Read</text>
+    <text x="930" y="132" fill="#94A3B8" font-size="14">claims, methods, results</text>
+
+    <rect x="1034" y="232" width="200" height="64" rx="14" fill="#16213A" stroke="#36507F"/>
+    <text x="1134" y="259" fill="#F1F5FB" font-weight="700">2 · Map</text>
+    <text x="1134" y="281" fill="#94A3B8" font-size="14">evidence graph</text>
+
+    <rect x="946" y="472" width="220" height="64" rx="14" fill="#16213A" stroke="#36507F"/>
+    <text x="1056" y="499" fill="#F1F5FB" font-weight="700">3 · Ask</text>
+    <text x="1056" y="521" fill="#94A3B8" font-size="14">open questions, zero LLM</text>
+
+    <rect x="694" y="472" width="220" height="64" rx="14" fill="#16213A" stroke="#36507F"/>
+    <text x="804" y="499" fill="#F1F5FB" font-weight="700">4 · Test</text>
+    <text x="804" y="521" fill="#94A3B8" font-size="14">pre-registered experiments</text>
+
+    <rect x="616" y="232" width="220" height="64" rx="14" fill="#16213A" stroke="#F5B841" stroke-width="1.5"/>
+    <text x="726" y="259" fill="#F5B841" font-weight="700">5 · Judge</text>
+    <text x="726" y="281" fill="#94A3B8" font-size="14">verdicts by reality</text>
+  </g>
+</svg>
