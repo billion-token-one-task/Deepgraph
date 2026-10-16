@@ -14,6 +14,7 @@ import json
 import os
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -3835,7 +3836,37 @@ def _launch_candidates_to_capacity() -> dict:
     }
 
 
+@contextmanager
+def _auto_research_budget_scope(insight: dict):
+    """Attribute this candidate's LLM calls to its agenda.
+
+    Discovery enters an agenda scope before it spends. Execution workers
+    dispatched after a selection is handed to auto-research used to call the
+    provider outside any scope, so those tokens never reached the agenda
+    ledger. The scope is attribution only; it does not reserve budget.
+    """
+    agenda_id = int(insight.get("agenda_id") or 0)
+    insight_id = int(insight.get("id") or 0)
+    if agenda_id <= 0 or insight_id <= 0:
+        yield
+        return
+    from agents.agenda_budget import agenda_scope
+
+    with agenda_scope(
+        agenda_id,
+        "auto_research_execution",
+        f"auto-research:{agenda_id}:{insight_id}",
+    ):
+        yield
+
+
 def _process_candidate(insight: dict) -> None:
+    """Run one auto-research candidate inside its agenda token scope."""
+    with _auto_research_budget_scope(insight):
+        _process_candidate_in_scope(insight)
+
+
+def _process_candidate_in_scope(insight: dict) -> None:
     insight_id = insight["id"]
     tier = insight.get("tier")
     initial_auto_stage = str(insight.get("auto_stage") or "").strip()

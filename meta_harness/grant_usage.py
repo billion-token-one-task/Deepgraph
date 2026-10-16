@@ -235,6 +235,17 @@ class GrantUsageLedger:
                 """,
                 (tokens_used, cost_usd, reservation_id, self.resource_grant_id),
             )
+            # Execution workers spend through this sub-reservation. The parent
+            # grant still owns token_spent; the compatibility ledger is the
+            # per-call record, written in this same transaction.
+            from agents.agenda_budget import attribute_settled_grant_usage
+
+            attribute_settled_grant_usage(
+                int(row["agenda_id"]),
+                str(row.get("operation") or "llm_call"),
+                int(tokens_used),
+                cost_usd,
+            )
             db.commit()
         except Exception:
             db.rollback()

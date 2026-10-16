@@ -1131,11 +1131,60 @@ def is_llm_transient_provider_error(exc: Exception) -> bool:
     return any(marker in msg for marker in markers)
 
 
+def _agenda_budget_scope() -> tuple[int, str, str] | None:
+    """Active agenda attribution, if this call is running inside one."""
+    from agents.agenda_budget import current_scope
+
+    return current_scope()
+
+
+def _enforce_scoped_budget(agenda_id: int | None = None) -> tuple[int, str, str] | None:
+    """Check the agenda cap before a provider request.
+
+    A scope for a different agenda is ignored so one worker cannot charge
+    or block another agenda's call.
+    """
+    scope = _agenda_budget_scope()
+    if scope is None:
+        return None
+    if agenda_id is not None and int(scope[0]) != int(agenda_id):
+        return None
+    from agents.agenda_budget import check_budget
+
+    check_budget(int(scope[0]))
+    return scope
+
+
+def _record_scoped_usage(
+    scope: tuple[int, str, str] | None,
+    tokens: int,
+    cost_usd: float | None,
+) -> None:
+    """Record a legacy, non-grant call. Failures keep the paid response."""
+    if scope is None or not tokens:
+        return
+    try:
+        from agents.agenda_budget import record_usage
+
+        record_usage(int(scope[0]), str(scope[1]), int(tokens), cost_usd=cost_usd)
+    except Exception as acct_err:  # noqa: BLE001
+        print(
+            f"[LLM] WARNING: agenda token accounting failed "
+            f"(agenda {scope[0]}): {acct_err}",
+            flush=True,
+        )
+
+
 def call_llm(system_prompt: str, user_prompt: str, temperature: float = 0.0,
              max_tokens: int = None) -> tuple[str, int]:
-    """Call LLM with automatic provider selection, rate limiting, and failover."""
+    """Call LLM with automatic provider selection, rate limiting, and failover.
+
+    Inside ``agenda_scope``, the agenda cap is checked before any provider
+    request and a successful response is recorded on the agenda ledger.
+    """
     max_tokens = max_tokens or LLM_MAX_OUTPUT_TOKENS
     _init_providers()
+    budget_scope = _enforce_scoped_budget()
 
     last_error = None
     tried = set()
@@ -1161,7 +1210,7 @@ def call_llm(system_prompt: str, user_prompt: str, temperature: float = 0.0,
 
             start = time.time()
             try:
-                text, tokens, cached_toks, input_toks, _cost_usd = _call_provider(
+                text, tokens, cached_toks, input_toks, cost_usd = _call_provider(
                     provider, system_prompt, user_prompt, max_tokens)
                 latency = time.time() - start
 
@@ -1182,6 +1231,7 @@ def call_llm(system_prompt: str, user_prompt: str, temperature: float = 0.0,
                     stats["cached_tokens"] += cached_toks
                     stats["input_tokens"] += input_toks
                 _release_provider(provider["name"])
+                _record_scoped_usage(budget_scope, tokens, cost_usd)
                 return text, tokens
 
             except Exception as e:
@@ -1309,6 +1359,7 @@ def call_llm_with_provider(
         provider = _providers[0]
 
     name = provider["name"]
+    budget_scope = _enforce_scoped_budget()
     limiter = _rate_limiters.get(name)
     if limiter:
         limiter.wait()
@@ -1316,7 +1367,7 @@ def call_llm_with_provider(
         _provider_stats[name]["in_flight"] = _provider_stats[name].get("in_flight", 0) + 1
     start = time.time()
     try:
-        text, tokens, cached_toks, input_toks, _cost_usd = _call_provider(
+        text, tokens, cached_toks, input_toks, cost_usd = _call_provider(
             provider, system_prompt, user_prompt, max_tokens
         )
         latency = time.time() - start
@@ -1329,6 +1380,7 @@ def call_llm_with_provider(
             stats["input_tokens"] += input_toks
         if not text or len(text.strip()) < 10:
             raise RuntimeError(f"{name} returned empty response")
+        _record_scoped_usage(budget_scope, tokens, cost_usd)
         return text, tokens, {
             "name": provider.get("name"),
             "model": provider.get("model"),
@@ -1396,6 +1448,10 @@ def call_llm_for_role(
     )
     if not grant_row:
         raise PermissionError("active scoped ResourceGrant is required for LLM role")
+    # Execution workers enter agenda_scope before this call. The grant still
+    # owns token_spent; this only refuses a provider request once spent plus
+    # in-flight grant usage has already reached the agenda cap.
+    _enforce_scoped_budget(int(agenda_id))
     # Trim the request to what this grant still has, rather than sending the
     # caller's own default and letting the sub-reservation refuse it. A small
     # short grant is the whole point of the bounded pilot path: without this a
