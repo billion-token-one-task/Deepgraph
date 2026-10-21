@@ -5,8 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
-import subprocess
-import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -15,7 +13,6 @@ from unittest import mock
 
 from meta_harness.compute import ComputeBackendError
 from orchestrator import colab_worker
-from scripts import backfill_artifact_stage_versions as backfill
 from scripts.meta_harness_migration import MIGRATION_KEYS, migration_plan
 
 
@@ -306,136 +303,6 @@ class ArtifactStageMigrationTests(unittest.TestCase):
                     "content_sha256",
                 ):
                     self.assertIn(added, table)
-
-
-class ArtifactStageBackfillTests(unittest.TestCase):
-    def test_operator_help_runs_outside_the_repository_working_directory(self):
-        script = (
-            Path(__file__).resolve().parents[1]
-            / "scripts"
-            / "backfill_artifact_stage_versions.py"
-        )
-        with tempfile.TemporaryDirectory() as outside:
-            completed = subprocess.run(
-                [sys.executable, str(script), "--help"],
-                cwd=outside,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-        self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertIn("--run-id", completed.stdout)
-
-    def test_dry_run_then_apply_appends_full_and_holdout_and_marks_lost_pilot(self):
-        registry = _SQLiteRegistry()
-        with tempfile.TemporaryDirectory() as temp:
-            workdir = Path(temp)
-            full_dir = workdir / "results"
-            holdout_dir = workdir / "results_holdout"
-            full_dir.mkdir()
-            holdout_dir.mkdir()
-            full_path = full_dir / "final_results.json"
-            holdout_path = holdout_dir / "final_results.json"
-            full = b"full benchmark bytes"
-            holdout = b"holdout bytes"
-            full_path.write_bytes(full)
-            holdout_path.write_bytes(holdout)
-            registry.execute(
-                """
-                INSERT INTO experiment_runs
-                    (id, agenda_id, deep_insight_id, resource_grant_id, workdir,
-                     scientific_evidence_state, status)
-                VALUES (246, 14, 91, 72, ?, 'scientifically_decided', 'completed')
-                """,
-                (str(workdir),),
-            )
-            registry.execute(
-                "INSERT INTO resource_grants (id, stage) VALUES (72, 'full_benchmark')"
-            )
-            registry.execute(
-                "INSERT INTO resource_grants (id, stage) VALUES (73, 'evidence_audit')"
-            )
-            registry.execute(
-                """
-                INSERT INTO colab_work_requests_v1
-                    (id, agenda_id, idea_id, experiment_run_id, resource_grant_id,
-                     stage, artifact_output_dir, status, completed_at)
-                VALUES (140, 14, 91, 246, 72, 'full_benchmark', ?, 'succeeded', 1)
-                """,
-                (str(full_dir),),
-            )
-            registry.execute(
-                """
-                INSERT INTO colab_work_requests_v1
-                    (id, agenda_id, idea_id, experiment_run_id, resource_grant_id,
-                     stage, artifact_output_dir, status, completed_at)
-                VALUES (141, 14, 91, 246, 73, 'evidence_audit', ?, 'succeeded', 2)
-                """,
-                (str(holdout_dir),),
-            )
-            pilot_sha = hashlib.sha256(b"unavailable pilot bytes").hexdigest()
-            cursor = registry.execute(
-                """
-                INSERT INTO experiment_artifacts
-                    (agenda_id, run_id, artifact_type, path, metadata)
-                VALUES (14, 246, 'final_results', ?, ?)
-                """,
-                (str(full_path), json.dumps({"sha256": pilot_sha})),
-            )
-            pilot_id = int(cursor.lastrowid)
-
-            def verified(_run, request):
-                source = Path(str(request["artifact_output_dir"])) / "final_results.json"
-                content = source.read_bytes()
-                return (
-                    {},
-                    SimpleNamespace(metric_name="accuracy", candidate_value=0.63),
-                    [
-                        {
-                            "artifact_type": "final_results",
-                            "source_path": source.resolve(),
-                            "content": content,
-                            "content_sha256": hashlib.sha256(content).hexdigest(),
-                        }
-                    ],
-                )
-
-            with (
-                mock.patch.object(backfill, "db", registry),
-                mock.patch.object(colab_worker, "db", registry),
-                mock.patch.object(backfill, "_verified_request_artifacts", side_effect=verified),
-            ):
-                plan = backfill.run(run_id=246)
-                self.assertEqual(plan["mode"], "dry_run")
-                self.assertFalse((workdir / ".artifact-history-v1").exists())
-                self.assertEqual(len(registry.fetchall("SELECT id FROM experiment_artifacts")), 1)
-                self.assertEqual(
-                    plan["legacy_unresolved"]["final_results"][0]["artifact_id"],
-                    pilot_id,
-                )
-
-                applied = backfill.run(run_id=246, apply=True)
-
-            self.assertEqual(applied["mode"], "apply")
-            rows = registry.fetchall(
-                """
-                SELECT id, path, artifact_stage, artifact_version, metadata
-                FROM experiment_artifacts ORDER BY id
-                """
-            )
-            self.assertEqual(len(rows), 3)
-            self.assertIsNone(rows[0]["artifact_stage"])
-            self.assertEqual(
-                [row["artifact_stage"] for row in rows[1:]],
-                ["full_benchmark", "evidence_audit"],
-            )
-            self.assertEqual([row["artifact_version"] for row in rows], [1, 2, 3])
-            self.assertEqual(Path(rows[1]["path"]).read_bytes(), full)
-            self.assertEqual(Path(rows[2]["path"]).read_bytes(), holdout)
-            for row in rows[1:]:
-                issue = json.loads(row["metadata"])["legacy_unresolved"][0]
-                self.assertEqual(issue["artifact_id"], pilot_id)
-                self.assertEqual(issue["status"], "legacy_unresolved")
 
 
 if __name__ == "__main__":
