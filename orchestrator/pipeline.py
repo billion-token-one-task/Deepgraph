@@ -684,6 +684,7 @@ def process_single_paper(
             contras, tokens2 = detect_contradictions_batch(
                 claims,
                 llm_scope=llm_scope,
+                paper_id=paper_id,
             )
             for contra in contras:
                 contradiction_records.append(dict(contra))

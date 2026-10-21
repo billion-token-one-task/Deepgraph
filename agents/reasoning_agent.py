@@ -158,8 +158,17 @@ def detect_contradictions_batch(
     claims: list[dict],
     *,
     llm_scope: Mapping[str, Any] | None = None,
+    paper_id: str | None = None,
 ) -> tuple[list[dict], int]:
-    """Check all performance claims from a paper in one LLM call."""
+    """Check all performance claims from a paper in one LLM call.
+
+    Comparison claims must come from OTHER papers. The lookup used to exclude
+    only the claim's own row, so it mostly found the same paper's sibling
+    claims: on 2026-09-24, 705 of 756 "related" rows sampled were from the
+    paper under test, every one of the twelve newest stored contradictions set
+    a paper against itself, and 57 of 258 in the table were of that kind. A
+    paper disagreeing with itself across ablation settings is not a finding.
+    """
     perf_claims = [c for c in claims if c.get("claim_type") == "performance" and c.get("method_name")]
     if CONTRADICTION_REQUIRES_GROUNDED:
         perf_claims = [c for c in perf_claims if c.get("grounding_status") == "verified"]
@@ -172,10 +181,11 @@ def detect_contradictions_batch(
     for c in perf_claims:
         claim_id = c.get("_id", 0)
         if c.get("method_name"):
+            own_paper = paper_id or c.get("paper_id") or ""
             rows = db.fetchall(
                 "SELECT id, claim_text, claim_type, method_name, dataset_name, metric_name, metric_value, paper_id "
-                "FROM claims WHERE method_name=? AND id!=? LIMIT 10",
-                (c["method_name"], claim_id)
+                "FROM claims WHERE method_name=? AND id!=? AND paper_id<>? LIMIT 10",
+                (c["method_name"], claim_id, own_paper)
             )
             for r in rows:
                 if r["id"] not in seen_ids:
