@@ -107,9 +107,12 @@ it, and set auto-install to `false`.
 
 ## Production (systemd)
 
-Systemd units, the Caddyfile, and SHA-pinned deployment manifests live in
-`deploy/`. The manifests record source, target, and SHA256 for every deployed
-file, plus rollback artifacts -- deploy from the manifest, not by hand. The
+Systemd units, the Caddyfile, and the deployment-manifest tooling live in
+`deploy/` and `scripts/`. A manifest records source, target, and SHA256 for
+every deployed file, plus rollback artifacts -- deploy from a generated
+manifest, not by hand. `deploy/manifest/` keeps only the reference
+`recovery_2026-08-03` manifest and spec (a worked example and a test fixture);
+past manifests live in git history. The
 self-heal watchdog (`deploy/deepgraph-selfheal.timer`) restarts the web
 service on sustained health-probe failure and holds in every ambiguous case;
 reason codes and operator responses:
