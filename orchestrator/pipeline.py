@@ -48,6 +48,15 @@ RETRYABLE_ERROR_MARKERS = (
     # the single extraction route retired 2,528 papers to status='error' in
     # six minutes, none of them actually attempted.
     "all_explicit_routes_failed",
+    # The legacy client's own phrasing for an exhausted provider list, e.g.
+    # "All 2 providers failed. Last error: Server error '524'". Every variant
+    # in the corpus is a gateway fault -- 524, 502, 504, 500, a disconnect, a
+    # 401 -- and none of them say anything about the paper. Without this line
+    # 630 papers sat in a terminal state because a gateway was down months ago.
+    "providers failed",
+    # Raised when the process starts with no route configured at all. A
+    # deployment mistake, not a property of the paper.
+    "no llm providers configured",
     "transient failure",
     "connection refused",
     "connection reset",

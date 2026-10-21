@@ -31,3 +31,26 @@ def test_cooldown_wrapped_by_multi_agent_extraction_is_retryable():
 def test_a_paper_with_no_text_stays_permanent():
     """The guard must not turn every failure into an infinite retry."""
     assert not _is_retryable_pipeline_error("No text available")
+
+
+def test_exhausted_provider_list_is_retryable():
+    """The legacy client's phrasing for the same class of gateway fault."""
+    for message in (
+        "All 2 providers failed. Last error: Server error '524 ' for url ...",
+        "All 1 providers failed. Last error: Server disconnected without sending a response",
+        "All 2 providers failed. Last error: Client error '401 Unauthorized' for url ...",
+    ):
+        assert _is_retryable_pipeline_error(message), message
+
+
+def test_missing_provider_configuration_is_retryable():
+    assert _is_retryable_pipeline_error(
+        "No LLM providers configured. Set MINIMAX_API_KEY ..."
+    )
+
+
+def test_a_data_defect_is_not_retryable():
+    """A malformed metric value is a bug in us, not a transient fault."""
+    assert not _is_retryable_pipeline_error(
+        'invalid input syntax for type double precision: ""'
+    )
