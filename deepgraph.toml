@@ -131,6 +131,31 @@ api_key_env = "DEEPGRAPH_LLM_SECONDARY_API_KEY"
 rpm = 0
 enabled = true
 
+# The model UNDER TEST, and deliberately not a thinking model.
+#
+# Every other route here is "-high" or "-thinking", which is right for the
+# roles that reason on our behalf. It is wrong for the one being measured. A
+# thinking model asked for a bare label or a bare number spends its whole
+# output budget reasoning and returns empty content -- observed on
+# gemini-3.7-flash-high, gemini-3.1-pro-high and deepseek-v4-flash alike, on
+# direct-answer prompts, "number only" prompts and few-shot label prompts. Our
+# own reasoning setting was deciding what the measurement could see.
+#
+# It is also the faithful choice. The claims in the topic bank are about
+# non-thinking models -- one of the papers says so in its title -- so measuring
+# them on a thinking model would answer a different question than the one
+# published. No extra_body block: the endpoint is left in its plain
+# configuration so the experiment is about the prompt and nothing else.
+[[llm.providers]]
+name = "sora2_gemini_plain"
+base_url_env = "DEEPGRAPH_LLM_SORA2_BASE_URL"
+model = "gemini-3.7-flash"
+model_family = "gemini-flash"
+protocol = "chat_completions"
+api_key_env = "DEEPGRAPH_LLM_SECONDARY_API_KEY"
+rpm = 90
+enabled = true
+
 # Same-vendor fallback for the evaluator and reviewer roles. Kept declared but
 # unreferenced: a different generation and size class from the proposer, so it
 # is better than self-grading and worse than a cross-vendor split.

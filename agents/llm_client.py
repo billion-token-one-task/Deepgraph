@@ -1329,6 +1329,7 @@ def call_llm_with_provider(
     provider_index: int | None = None,
     temperature: float = 0.0,
     max_tokens: int = None,
+    min_chars: int = 10,
 ) -> tuple[str, int, dict]:
     """Call one selected provider, used when reviewer roles should be model-routed.
 
@@ -1378,7 +1379,14 @@ def call_llm_with_provider(
             stats["total_latency"] += latency
             stats["cached_tokens"] += cached_toks
             stats["input_tokens"] += input_toks
-        if not text or len(text.strip()) < 10:
+        # Ten characters was a sensible floor when every caller wanted prose:
+        # a one-word reply from a reasoning model means it spent its budget
+        # thinking and said nothing. It is exactly wrong for a benchmark, where
+        # the correct answer to "16 - 3 - 4" IS one character. This route
+        # returned "9" and the floor threw it away as empty, which is how a
+        # working model looked like a broken endpoint for an afternoon.
+        # Callers that expect a short answer say so; everyone else keeps ten.
+        if not text or len(text.strip()) < max(1, int(min_chars)):
             raise RuntimeError(f"{name} returned empty response")
         _record_scoped_usage(budget_scope, tokens, cost_usd)
         return text, tokens, {

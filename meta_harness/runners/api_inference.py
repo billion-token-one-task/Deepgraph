@@ -183,6 +183,10 @@ class ApiInferenceRunner(GenericTransformersRunner):
                 prompt,
                 provider_name=self.provider_name,
                 max_tokens=max_tokens,
+                # A benchmark answer is often one character. The client's
+                # default floor of ten treats a correct "9" as an empty
+                # response, which is the opposite of what this runner needs.
+                min_chars=1,
             )
         except Exception as exc:                                    # noqa: BLE001
             reason = classify_failure(message=f"inference:{exc}")
@@ -210,6 +214,38 @@ class ApiInferenceRunner(GenericTransformersRunner):
     def _classification_prediction(self, text: str) -> str:
         answer, _truncated = self._one_call(text)
         return answer.strip().splitlines()[0] if answer.strip() else ""
+
+    def _run_method(self, method: str, *, candidate: bool):
+        """Let the control arm be constructed too, when the claim needs it.
+
+        The parent fixes the baseline at the dataset's raw input, which is the
+        right default: it is the least assuming control there is. But most
+        published prompt claims contrast two CONSTRUCTED prompts -- balanced
+        few-shot exemplars against homogeneous ones, a reasoning chain ending
+        in the right answer against one ending in a conflicting answer. With a
+        raw baseline those become untestable, or worse, testable in a way that
+        silently measures something else: a drop against a bare question can
+        come from the chain rather than from the conflict inside it.
+
+        So an adapter may define `baseline_prompt` alongside `candidate_prompt`.
+        When it does, both arms are its own and the comparison is the paper's.
+        When it does not, nothing changes.
+        """
+        builder = getattr(self.candidate_module, "baseline_prompt", None)
+        if candidate or not callable(builder):
+            return super()._run_method(method, candidate=candidate)
+
+        mapping = self.requirements.dataset.field_mapping
+        original = self.candidate_module.candidate_prompt
+        try:
+            # The parent asks for the candidate hook; hand it the baseline
+            # builder so one code path produces both arms and they cannot
+            # drift apart in how they are hashed, seeded or recorded.
+            self.candidate_module.candidate_prompt = builder
+            del mapping  # only the hook differs; field handling is the parent's
+            return super()._run_method(method, candidate=True)
+        finally:
+            self.candidate_module.candidate_prompt = original
 
     def _device(self):
         return "api"
