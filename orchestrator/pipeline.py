@@ -40,6 +40,14 @@ STAGE_ORDER = {
 
 RETRYABLE_ERROR_MARKERS = (
     "all llm providers are cooling down",
+    # The router's phrasing for the same condition. The marker above only
+    # covers the legacy client; when a role's routes are all in transient
+    # cooldown the router raises all_explicit_routes_failed instead, and
+    # without this line that read as a permanent paper-level error. A rate
+    # limit then cost us the paper: on 2026-09-03 a three-minute cooldown on
+    # the single extraction route retired 2,528 papers to status='error' in
+    # six minutes, none of them actually attempted.
+    "all_explicit_routes_failed",
     "transient failure",
     "connection refused",
     "connection reset",
