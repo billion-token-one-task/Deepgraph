@@ -5,7 +5,6 @@ Owns insight generation, ranking, reasoning, novelty checks, and routing ideas t
 Primary legacy modules:
 
 - `agents.insight_agent`
-- `agents.insight_ranker`
 - `agents.reasoning_agent`
 - `agents.abstraction_agent`
 - `agents.research_bridge`

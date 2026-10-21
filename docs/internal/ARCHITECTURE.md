@@ -62,8 +62,8 @@ or Thompson sampler after sufficient OutcomeRecord data exists.
 | Role-separated LLM | `meta_harness/llm_routing.py`, granted entry point in `agents/llm_client.py` |
 | Backend-neutral execution | `meta_harness/compute.py`, `compute_repository.py`, `backends/colab_cli.py`, `backends/colab_durable.py` |
 | Scientific state | `contracts/scientific_evidence.py`, `meta_harness/evidence_state.py` |
-| Feedback/calibration | trusted OutcomeRecord assembly in `repository.py`, `meta_harness/calibration.py` |
-| Harness evolution | `harness_evolution.py`, `candidate_workspace.py`, `evaluator_runner.py`, `harness_repository.py` |
+| Feedback/calibration | trusted OutcomeRecord assembly in `repository.py` |
+| Harness evolution | `harness_evolution.py`, `evaluator_runner.py`, `harness_repository.py` |
 | Scoped ingestion queue | `ingestion_queue.py`, `orchestrator/scoped_ingestion_worker.py` |
 | Operator control/observation | `web/meta_harness_routes.py` |
 

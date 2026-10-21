@@ -21,8 +21,6 @@ from agents.insight_validation import get_evosci_input_issue
 from agents.llm_client import (
     call_llm_json,
     call_llm,
-    _init_providers,
-    _providers,
     is_llm_auth_error,
     is_llm_provider_unavailable_error,
 )
@@ -326,41 +324,6 @@ def _build_formalization_prompt(candidate: dict, signals: dict) -> str:
                 sections.append(f"  {r['method_name']} on {r['dataset_name']} [{r['metric_name']}] = {r['metric_value']}")
 
     return "\n".join(sections)
-
-
-def _call_with_provider(system: str, user: str, provider_name: str = None) -> tuple:
-    """Call LLM, optionally targeting a specific provider for adversarial diversity."""
-    if provider_name:
-        _init_providers()
-        for p in _providers:
-            if p["name"] == provider_name:
-                from agents.llm_client import _call_provider, _rate_limiters
-                limiter = _rate_limiters.get(p["name"])
-                if limiter:
-                    limiter.wait()
-                text, tokens, _, _, _, _ = _call_provider(p, system, user, 16_000)
-                import re
-                text = text.strip()
-                text = re.sub(r'<think>[\s\S]*?</think>', '', text).strip()
-                if text.startswith("```"):
-                    lines = text.split("\n")
-                    end = len(lines)
-                    for i in range(len(lines) - 1, 0, -1):
-                        if lines[i].strip() == "```":
-                            end = i
-                            break
-                    text = "\n".join(lines[1:end]).strip()
-                try:
-                    return json.loads(text), tokens
-                except json.JSONDecodeError:
-                    for match in re.finditer(r'(\{[\s\S]*\}|\[[\s\S]*\])', text):
-                        try:
-                            return json.loads(match.group()), tokens
-                        except json.JSONDecodeError:
-                            continue
-                    print(f"[PARADIGM] {provider_name} returned non-JSON ({len(text)} chars), falling back", flush=True)
-        # fallback
-    return call_llm_json(system, user)
 
 
 def _llm_temporarily_unavailable(exc: Exception) -> bool:

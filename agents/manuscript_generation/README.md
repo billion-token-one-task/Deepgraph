@@ -14,7 +14,6 @@ Primary legacy modules:
 - `agents.paperorchestra.reference_manager`
 - `agents.paperorchestra.experiment_plot_reference`
 - `agents.paperorchestra.plotting_orchestra`
-- `agents.paperorchestra.refinement_loop`
 - `agents.paperorchestra.semantic_scholar`
 
 Primary scripts:

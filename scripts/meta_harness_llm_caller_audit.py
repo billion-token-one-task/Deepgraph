@@ -15,10 +15,7 @@ from pathlib import Path
 
 
 CLASSIFICATION = {
-    "agents/codebase_scout.py": "legacy_not_default_registered",
     "agents/figure_agent.py": "legacy_no_generic_call_site",
-    "agents/insight_ranker.py": "legacy_endpoint_and_registry_blocked",
-    "agents/paperorchestra/refinement_loop.py": "legacy_not_default_registered",
     "agents/paperorchestra/tracing.py": "legacy_no_generic_call_site",
     "agents/paradigm_agent.py": "legacy_scheduler_and_registry_blocked",
 }

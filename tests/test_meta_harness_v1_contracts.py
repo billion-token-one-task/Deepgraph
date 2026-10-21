@@ -30,7 +30,6 @@ from meta_harness.frontier_builder import (
     RetrievalSnapshot,
     build_frontier_packet,
 )
-from meta_harness.candidate_workspace import CandidateSandbox
 from meta_harness.grants import GrantDeniedError, ResourceRequest, authorize
 from meta_harness.repository import MetaHarnessPersistenceError, MetaHarnessRepository
 from meta_harness.harness_evolution import (
@@ -358,37 +357,6 @@ class ResourceGrantAndEvidenceTests(unittest.TestCase):
 
 
 class HarnessIsolationTests(unittest.TestCase):
-    def test_candidate_environment_does_not_inherit_secrets_or_production_db(self):
-        candidate = HarnessCandidate(
-            agenda_id=11,
-            candidate_ref="candidate-1",
-            base_commit="a" * 40,
-            worktree_path="/tmp/meta-harness-candidates/candidate-1",
-            database_namespace="meta_harness_candidate_1",
-            artifact_namespace="meta_harness_candidate_1/artifacts",
-        )
-        sandbox = CandidateSandbox(
-            candidate=candidate,
-            database_url_ref="env:DEEPGRAPH_CANDIDATE_DATABASE_URL",
-            artifact_root="/tmp/meta-harness-artifacts/candidate-1",
-            evaluator_root="/readonly/evaluator",
-            holdout_root="/readonly/holdout",
-            policy_root="/readonly/policy",
-        )
-        environment = sandbox.candidate_environment(
-            {
-                "HOME": "/unsafe",
-                "DEEPGRAPH_DATABASE_URL": "postgresql://production",
-                "OPENAI_API_KEY": "secret",
-                "PUBLIC_SETTING": "kept",
-            }
-        )
-        self.assertNotIn("HOME", environment)
-        self.assertNotIn("DEEPGRAPH_DATABASE_URL", environment)
-        self.assertNotIn("OPENAI_API_KEY", environment)
-        self.assertEqual(environment["PUBLIC_SETTING"], "kept")
-        self.assertEqual(environment["DEEPGRAPH_PROTECTED_INPUTS_READ_ONLY"], "1")
-
     def test_candidate_cannot_overlap_production(self):
         policy = HarnessPolicy(candidate_root="/tmp/meta-harness-candidates")
         candidate = HarnessCandidate(
