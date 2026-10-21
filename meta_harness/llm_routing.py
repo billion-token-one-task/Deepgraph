@@ -94,6 +94,11 @@ class RouteUsage:
     input_tokens: int
     output_tokens: int
     cost_usd: float | None
+    # The model the provider reported answering with. Optional so every
+    # existing construction site stays valid; where it is set it is the only
+    # trustworthy provenance, because a gateway may serve a different model
+    # than the one requested without saying so anywhere else.
+    served_model: str | None = None
 
     @property
     def total_tokens(self) -> int:
@@ -121,6 +126,10 @@ class RouteObservation:
     role: str
     provider: str
     model: str
+    # The model the provider reported answering with, when it reported one.
+    # `model` is what we asked for; a gateway that substitutes silently makes
+    # the two differ, and only this one is evidence of what ran.
+    served_model: str | None
     model_family: str
     prompt_version: str
     input_tokens: int
@@ -322,6 +331,7 @@ class LLMRouter:
                                     role=request.role,
                                     provider=route.provider,
                                     model=route.model,
+                                    served_model=usage.served_model,
                                     model_family=route.model_family,
                                     prompt_version=route.prompt_version,
                                     input_tokens=usage.input_tokens,
@@ -387,6 +397,7 @@ class LLMRouter:
                                             role=request.role,
                                             provider=route.provider,
                                             model=route.model,
+                                            served_model=usage.served_model,
                                             model_family=route.model_family,
                                             prompt_version=route.prompt_version,
                                             input_tokens=usage.input_tokens,
@@ -434,6 +445,7 @@ class LLMRouter:
                                     role=request.role,
                                     provider=route.provider,
                                     model=route.model,
+                                    served_model=usage.served_model,
                                     model_family=route.model_family,
                                     prompt_version=route.prompt_version,
                                     input_tokens=usage.input_tokens,
@@ -488,6 +500,7 @@ class LLMRouter:
                                     role=request.role,
                                     provider=route.provider,
                                     model=route.model,
+                                    served_model=failed_usage.served_model,
                                     model_family=route.model_family,
                                     prompt_version=route.prompt_version,
                                     input_tokens=failed_usage.input_tokens,
@@ -531,6 +544,7 @@ class LLMRouter:
                                 role=request.role,
                                 provider=route.provider,
                                 model=route.model,
+                                served_model=failed_usage.served_model,
                                 model_family=route.model_family,
                                 prompt_version=route.prompt_version,
                                 input_tokens=failed_usage.input_tokens,

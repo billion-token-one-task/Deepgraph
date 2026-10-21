@@ -3652,10 +3652,11 @@ class MetaHarnessRepository:
         observation_id = db.insert_returning_id(
             """
             INSERT INTO llm_route_observations
-                (agenda_id, idea_id, role, provider, model, model_family, prompt_version,
+                (agenda_id, idea_id, role, provider, model, served_model,
+                 model_family, prompt_version,
                  input_tokens, output_tokens, cost_usd, status, failure_reason,
                  grant_usage_reservation_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING id
             """,
             (
@@ -3664,6 +3665,7 @@ class MetaHarnessRepository:
                 observation.role,
                 observation.provider,
                 observation.model,
+                observation.served_model,
                 observation.model_family,
                 observation.prompt_version,
                 observation.input_tokens,

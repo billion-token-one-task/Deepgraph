@@ -739,8 +739,16 @@ def _call_provider(
     max_tokens: int,
     *,
     strict_single_request: bool = False,
-) -> tuple[str, int, int, int, float | None]:
-    """Return text, total/cached/input tokens, and explicit provider cost."""
+) -> tuple[str, int, int, int, float | None, str]:
+    """Return text, total/cached/input tokens, provider cost, and the model
+    the provider says actually answered.
+
+    The last of those is not the model we asked for. This gateway silently
+    substitutes: a request for gemini-3.8-flash-high is served by
+    gemini-3.8-flash, and gemini-3.7-flash-high by gemini-3.7-flash-exp-b.
+    Recording the requested name as provenance made the ledger wrong about
+    the one fact a reader would check it for.
+    """
     protocol = provider.get("protocol", "responses")
     if protocol == "chat_completions":
         return _call_chat_completions(
@@ -766,7 +774,7 @@ def _call_chat_completions(
     max_tokens: int,
     *,
     strict_single_request: bool = False,
-) -> tuple[str, int, int, int, float | None]:
+) -> tuple[str, int, int, int, float | None, str]:
     """Call via OpenAI Chat Completions API (for Kimi etc).
     Returns (text, total_tokens, cached_tokens, input_tokens)."""
     stream_chat = provider.get("stream_chat_completions", True)
@@ -799,12 +807,14 @@ def _call_chat_completions(
     cached_tokens = 0
     input_tokens = 0
     cost_usd = None
+    # What the provider says answered, which is not always what we asked for.
+    served_model = ""
     endpoint = provider.get("chat_endpoint", "/chat/completions")
     chunk_count = 0
     all_lines = []
 
     def _reset_response_state() -> None:
-        nonlocal response_text, total_tokens, cached_tokens, input_tokens, cost_usd, chunk_count, all_lines
+        nonlocal response_text, total_tokens, cached_tokens, input_tokens, cost_usd, served_model, chunk_count, all_lines
         response_text = ""
         total_tokens = 0
         cached_tokens = 0
@@ -814,7 +824,7 @@ def _call_chat_completions(
         all_lines = []
 
     def _consume_body(body: dict) -> None:
-        nonlocal response_text, total_tokens, cached_tokens, input_tokens, cost_usd
+        nonlocal response_text, total_tokens, cached_tokens, input_tokens, cost_usd, served_model
         choices = body.get("choices", [])
         if choices:
             message = choices[0].get("message", {})
@@ -833,6 +843,7 @@ def _call_chat_completions(
                 response_text = joined.strip() or reasoning
             else:
                 response_text = reasoning
+        served_model = str(body.get("model") or "")
         usage = body.get("usage") or {}
         total_tokens = usage.get("total_tokens", 0)
         input_tokens = usage.get("prompt_tokens", 0)
@@ -841,7 +852,7 @@ def _call_chat_completions(
         cost_usd = _usage_cost_usd(usage)
 
     def _consume_stream(resp) -> None:
-        nonlocal response_text, total_tokens, cached_tokens, input_tokens, cost_usd, chunk_count, all_lines
+        nonlocal response_text, total_tokens, cached_tokens, input_tokens, cost_usd, served_model, chunk_count, all_lines
         for line in resp.iter_lines():
             if line.startswith("data: "):
                 data_str = line[6:]
@@ -857,6 +868,8 @@ def _call_chat_completions(
             except json.JSONDecodeError:
                 continue
             chunk_count += 1
+            if not served_model and chunk.get("model"):
+                served_model = str(chunk["model"])
 
             # MiniMax embeds rate limit errors in SSE body (HTTP 200)
             if chunk.get("type") == "error":
@@ -925,7 +938,7 @@ def _call_chat_completions(
         if chunk_count <= 2 and total_tokens > 0:
             print(f"[LLM] {provider['name']}: empty response despite {total_tokens} tokens reported", flush=True)
 
-    return response_text, total_tokens, cached_tokens, input_tokens, cost_usd
+    return response_text, total_tokens, cached_tokens, input_tokens, cost_usd, served_model
 
 
 def _extract_responses_output_text(response: dict) -> str:
@@ -962,7 +975,7 @@ def _call_responses_api(
     max_tokens: int,
     *,
     strict_single_request: bool = False,
-) -> tuple[str, int, int, int, float | None]:
+) -> tuple[str, int, int, int, float | None, str]:
     """Call via OpenAI Responses API (for tabcode etc)."""
     input_items = [
         {"role": "user", "content": [{"type": "input_text", "text": user_prompt}]},
@@ -995,17 +1008,20 @@ def _call_responses_api(
     cached_tokens = 0
     input_tokens = 0
     cost_usd = None
+    # What the provider says answered, which is not always what we asked for.
+    served_model = ""
 
     def _reset_response_state() -> None:
-        nonlocal response_text, total_tokens, cached_tokens, input_tokens, cost_usd
+        nonlocal response_text, total_tokens, cached_tokens, input_tokens, cost_usd, served_model
         response_text = ""
         total_tokens = 0
         cached_tokens = 0
         input_tokens = 0
         cost_usd = None
+        served_model = ""
 
     def _stream_response(request_payload: dict) -> None:
-        nonlocal response_text, total_tokens, cached_tokens, input_tokens, cost_usd
+        nonlocal response_text, total_tokens, cached_tokens, input_tokens, cost_usd, served_model
         _reset_response_state()
         with httpx.Client(timeout=_http_timeout()) as client:
             with client.stream("POST", f"{provider['base_url']}/responses",
@@ -1027,6 +1043,7 @@ def _call_responses_api(
                         response_text += event.get("delta", "")
                     elif event_type == "response.completed":
                         response_obj = event.get("response", {})
+                        served_model = str(response_obj.get("model") or "")
                         if not response_text:
                             response_text = _extract_responses_output_text(response_obj)
                         usage = response_obj.get("usage", {})
@@ -1072,10 +1089,10 @@ def _call_responses_api(
                 continue
             if "prompt_cache" in label:
                 _mark_prompt_cache_unsupported(provider)
-            return response_text, total_tokens, cached_tokens, input_tokens, cost_usd
+            return response_text, total_tokens, cached_tokens, input_tokens, cost_usd, served_model
         raise last_exc
 
-    return response_text, total_tokens, cached_tokens, input_tokens, cost_usd
+    return response_text, total_tokens, cached_tokens, input_tokens, cost_usd, served_model
 
 
 def _is_rate_limit_error(exc: Exception) -> bool:
@@ -1210,7 +1227,7 @@ def call_llm(system_prompt: str, user_prompt: str, temperature: float = 0.0,
 
             start = time.time()
             try:
-                text, tokens, cached_toks, input_toks, cost_usd = _call_provider(
+                text, tokens, cached_toks, input_toks, cost_usd, _served = _call_provider(
                     provider, system_prompt, user_prompt, max_tokens)
                 latency = time.time() - start
 
@@ -1368,7 +1385,7 @@ def call_llm_with_provider(
         _provider_stats[name]["in_flight"] = _provider_stats[name].get("in_flight", 0) + 1
     start = time.time()
     try:
-        text, tokens, cached_toks, input_toks, cost_usd = _call_provider(
+        text, tokens, cached_toks, input_toks, cost_usd, _served = _call_provider(
             provider, system_prompt, user_prompt, max_tokens
         )
         latency = time.time() - start
@@ -1615,7 +1632,7 @@ def call_llm_for_role(
             limiter.wait()
         start = time.time()
         try:
-            text, tokens, cached_tokens, input_tokens, cost_usd = _call_provider(
+            text, tokens, cached_tokens, input_tokens, cost_usd, served_model = _call_provider(
                 provider,
                 system_prompt,
                 user_prompt,
@@ -1627,6 +1644,7 @@ def call_llm_for_role(
                 int(input_tokens or 0),
                 output_tokens,
                 cost_usd,
+                served_model=served_model or None,
             )
             if not text or len(text.strip()) < 10:
                 raise LLMExecutionFailure(

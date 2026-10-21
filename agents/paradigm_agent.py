@@ -338,7 +338,7 @@ def _call_with_provider(system: str, user: str, provider_name: str = None) -> tu
                 limiter = _rate_limiters.get(p["name"])
                 if limiter:
                     limiter.wait()
-                text, tokens, _, _, _ = _call_provider(p, system, user, 16_000)
+                text, tokens, _, _, _, _ = _call_provider(p, system, user, 16_000)
                 import re
                 text = text.strip()
                 text = re.sub(r'<think>[\s\S]*?</think>', '', text).strip()

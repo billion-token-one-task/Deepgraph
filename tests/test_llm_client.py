@@ -207,7 +207,7 @@ class LlmClientCooldownTests(unittest.TestCase):
             unittest.mock.patch.object(
                 llm_client,
                 "_call_provider",
-                return_value=("short", 8001, 0, 100, 0.02),
+                return_value=("short", 8001, 0, 100, 0.02, "gpt-5.4"),
             ) as call_provider,
             unittest.mock.patch(
                 "meta_harness.grant_usage.GrantUsageLedger",
@@ -351,7 +351,7 @@ class LlmClientCooldownTests(unittest.TestCase):
             unittest.mock.patch.object(
                 llm_client,
                 "_call_provider",
-                side_effect=[connect_error, ("valid enough response", 17, 0, 9, None)],
+                side_effect=[connect_error, ("valid enough response", 17, 0, 9, None, "gpt-5.4")],
             ) as call_provider,
             unittest.mock.patch.object(llm_client.time, "sleep"),
         ):
@@ -418,7 +418,7 @@ class LlmClientCooldownTests(unittest.TestCase):
         }
 
         with unittest.mock.patch.object(llm_client.httpx, "Client", FakeClient):
-            text, tokens, cached, input_tokens, cost_usd = llm_client._call_responses_api(provider, "system", "user", 1234)
+            text, tokens, cached, input_tokens, cost_usd, served = llm_client._call_responses_api(provider, "system", "user", 1234)
 
         self.assertEqual(text, "valid enough response")
         self.assertEqual(tokens, 7)
@@ -465,7 +465,7 @@ class LlmClientCooldownTests(unittest.TestCase):
         }
 
         with unittest.mock.patch.object(llm_client.httpx, "Client", FakeClient):
-            text, tokens, cached, input_tokens, cost_usd = llm_client._call_chat_completions(provider, "system", "user", 1234)
+            text, tokens, cached, input_tokens, cost_usd, served = llm_client._call_chat_completions(provider, "system", "user", 1234)
 
         self.assertEqual(text, "valid enough response")
         self.assertEqual(tokens, 5)
@@ -660,7 +660,7 @@ class LlmClientCooldownTests(unittest.TestCase):
         }
 
         with unittest.mock.patch.object(llm_client.httpx, "Client", FakeClient):
-            text, tokens, cached, input_tokens, cost_usd = llm_client._call_responses_api(provider, "stable system", "user", 1234)
+            text, tokens, cached, input_tokens, cost_usd, served = llm_client._call_responses_api(provider, "stable system", "user", 1234)
 
         self.assertEqual(text, "valid enough response")
         self.assertEqual(tokens, 11)
@@ -717,7 +717,7 @@ class LlmClientCooldownTests(unittest.TestCase):
         }
 
         with unittest.mock.patch.object(llm_client.httpx, "Client", FakeClient):
-            text, tokens, cached, input_tokens, cost_usd = llm_client._call_chat_completions(provider, "stable system", "user", 1234)
+            text, tokens, cached, input_tokens, cost_usd, served = llm_client._call_chat_completions(provider, "stable system", "user", 1234)
 
         self.assertEqual(text, "valid enough response")
         self.assertEqual(tokens, 9)
@@ -778,7 +778,7 @@ class LlmClientCooldownTests(unittest.TestCase):
         }
 
         with unittest.mock.patch.object(llm_client.httpx, "Client", FakeClient):
-            text, tokens, cached, input_tokens, cost_usd = llm_client._call_responses_api(provider, "stable system", "user", 1234)
+            text, tokens, cached, input_tokens, cost_usd, served = llm_client._call_responses_api(provider, "stable system", "user", 1234)
 
         self.assertEqual(text, "valid enough response")
         self.assertEqual(tokens, 5)
