@@ -291,7 +291,7 @@ class ExecutionScopeHookTests(_TempAgendaDb):
             mock.patch.object(
                 llm_client,
                 "_call_provider",
-                return_value=("valid enough response", 18, 0, 6, 0.4),
+                return_value=("valid enough response", 18, 0, 6, 0.4, "m"),
             ) as provider,
             agenda_scope(11, "auto_research_execution", "auto-research:11:1"),
         ):
@@ -325,7 +325,7 @@ class ExecutionScopeHookTests(_TempAgendaDb):
             mock.patch.object(
                 llm_client,
                 "_call_provider",
-                return_value=("valid enough response", 9, 0, 2, None),
+                return_value=("valid enough response", 9, 0, 2, None, ""),
             ),
         ):
             llm_client.call_llm("system", "user prompt here")
