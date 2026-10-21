@@ -1111,13 +1111,24 @@ function renderRuntimeStageStates(snapshot) {
 
 function officeLeadText(dep) {
     const items = Array.isArray(dep.items) ? dep.items : [];
+    // An idle tile must not borrow a queued row's verb. A paper parked
+    // mid-stage since yesterday evening still reads "Extracting", and showing
+    // that under a department the ledger says produced nothing for a day is
+    // how the front page came to report a jam as progress.
+    if (dep.status === "idle") {
+        const reason = dep.idle_reason
+            ? tr(dep.idle_reason, 'nothing finished in the past hour')
+            : tr('office.lead.idle', 'standing by');
+        return items.length
+            ? `${reason} (${tr('office.lead.waiting', 'waiting')}: ${fmt(dep.item_count || items.length)})`
+            : reason;
+    }
     if (items.length) {
         const lead = items[0];
         return `${officeTaskStatus(lead.status || dep.status)}: ${lead.title || officeDepartmentTitle(dep)}`;
     }
     if (dep.status === "blocked") return tr('office.lead.blocked', 'waiting on a repair path');
-    if (dep.status === "working") return tr('office.lead.working', 'coordinating background work');
-    return tr('office.lead.idle', 'standing by');
+    return tr('office.lead.working', 'coordinating background work');
 }
 
 function officeAgentAction(agent, dep, index) {

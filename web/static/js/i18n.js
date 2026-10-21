@@ -138,6 +138,11 @@
       "decisions.backToAudited": "Show audited only",
       "decisions.scopedEmpty": "The list is filtered to agenda #{n}, which has no adjudicated findings.",
       "decisions.showAllAgendas": "Show every agenda",
+      // Why a department tile is dark. A tile only turns green on measured
+      // output in the last hour, so the dark ones owe the reader a reason.
+      "office.idle.noOutput": "nothing finished in the past hour",
+      "office.idle.noBacklog": "nothing left to process",
+      "office.lead.waiting": "waiting",
       // Plain language on purpose. An earlier draft said "the pre-registered
       // prediction held", and a reader who has to look up a term in the
       // headline has already stopped reading.
@@ -579,6 +584,9 @@
       "decisions.backToAudited": "只看已审计的",
       "decisions.scopedEmpty": "列表当前只看 agenda #{n}, 这个方向下还没有已判定的发现。",
       "decisions.showAllAgendas": "显示全部 agenda",
+      "office.idle.noOutput": "过去一小时没有完成任何一项",
+      "office.idle.noBacklog": "没有待处理的了",
+      "office.lead.waiting": "排队",
       "verdictPhrase.supported": "符合预期效果",
       "verdictPhrase.refuted": "达不到预期效果",
       "verdictPhrase.inconclusive": "不确定是否有效",

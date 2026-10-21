@@ -2428,10 +2428,20 @@ def _office_item(title, status="working", detail="", kind="task") -> dict:
 
 
 def _office_department_state(items: list[dict], service_running: bool = False) -> str:
+    """Working means work FINISHED recently, not that rows exist.
+
+    `items` used to be enough on its own, and rows sit in a queue for as long
+    as they are stuck: on 2026-08-29 the paper tile read "Extracting" while the
+    ledger had recorded nothing new for a day, because five papers had been
+    parked mid-stage since the previous evening. A dashboard that reports a
+    jam as progress is worse than one that reports nothing, so the only thing
+    that now turns a tile green is measured output inside the last hour --
+    which is what `service_running` carries.
+    """
     statuses = " ".join(str(item.get("status") or "") for item in items).lower()
     if any(token in statuses for token in ("blocked", "error", "failed", "stale")):
         return "blocked"
-    if service_running or items:
+    if service_running:
         return "working"
     return "idle"
 
@@ -2449,6 +2459,11 @@ def _recent_activity_count(table: str, column: str, seconds: int,
         ("papers", "updated_at"),
         ("deep_insights", "created_at"),
         ("auto_research_jobs", "updated_at"),
+        ("experiment_runs", "created_at"),
+        ("compute_jobs_v1", "updated_at"),
+        ("manuscript_runs", "updated_at"),
+        ("scientific_decision_records", "created_at"),
+        ("resource_grants", "created_at"),
     }
     if (table, column) not in allowed:
         return 0
@@ -2534,31 +2549,50 @@ def api_agent_office():
         if auto_research_status.get("running"):
             items_by_key["orchestration"].append(_office_item("Auto research", "running", "review {} | blocked {} | completed {}".format(auto_research_status.get("review_pending") or 0, auto_research_status.get("blocked") or 0, auto_research_status.get("completed") or 0), "service"))
 
-        # Two tiles used to read a controller flag rather than work. The global
-        # auto-research controller is deliberately disabled -- research runs
-        # through agenda-scoped passes instead -- so `idea_generation` reported
-        # idle while ideas were being generated, and `graph_construction` had no
-        # entry at all and so reported idle while the corpus advanced from 7,014
-        # to 7,023 papers. A department is working when its work moved recently.
-        recent_graph_work = _recent_activity_count(
-            "papers", "updated_at", 900, "status = 'reasoned'")
-        recent_ideas = _recent_activity_count("deep_insights", "created_at", 3600)
-        pending_ideas = _recent_activity_count(
-            "auto_research_jobs", "updated_at", 3600,
-            "stage = 'awaiting_portfolio_decision'")
-
-        service_running = {
-            "paper_extraction": bool(paper_worker_status.get("running")) or bool(items_by_key["paper_extraction"]),
-            "graph_construction": bool(recent_graph_work),
-            "idea_generation": bool(recent_ideas or pending_ideas) or (
-                bool(auto_research_status.get("running"))
-                and bool((auto_research_status.get("researching") or 0)
-                         or (auto_research_status.get("verifying") or 0))),
-            "experiment_planning": bool(auto_research_status.get("review_pending") or 0),
-            "experiment_execution": bool(running_gpu or queued_gpu),
-            "manuscript_generation": bool(manuscript_counts.get("drafting", 0) or manuscript_counts.get("manuscript_blocked", 0)),
-            "orchestration": bool(paper_worker_status.get("running") or auto_research_status.get("running")),
+        # Every tile below answers one question: did this department FINISH
+        # something in the last hour? Not "is a service flag set", not "are
+        # there rows in a queue" -- both of those reported progress through a
+        # day-long jam on 2026-08-29, when the paper tile said "Extracting"
+        # against a ledger that had recorded nothing new since the previous
+        # evening. A tile that cannot point at output says idle and says why.
+        HOUR = 3600
+        finished = {
+            "paper_extraction": _recent_activity_count(
+                "papers", "updated_at", HOUR,
+                "status IN ('reasoned', 'processing')"),
+            "graph_construction": _recent_activity_count(
+                "papers", "updated_at", HOUR, "status = 'reasoned'"),
+            "idea_generation": _recent_activity_count(
+                "deep_insights", "created_at", HOUR),
+            "experiment_planning": _recent_activity_count(
+                "resource_grants", "created_at", HOUR),
+            "experiment_execution": _recent_activity_count(
+                "compute_jobs_v1", "updated_at", HOUR),
+            "manuscript_generation": _recent_activity_count(
+                "manuscript_runs", "updated_at", HOUR),
+            "orchestration": _recent_activity_count(
+                "scientific_decision_records", "created_at", HOUR),
         }
+        # Orchestration is the one department whose product is other
+        # departments moving, so it counts theirs as well as its own.
+        finished["orchestration"] += sum(
+            value for key, value in finished.items() if key != "orchestration")
+
+        service_running = {key: bool(value) for key, value in finished.items()}
+
+        # Why a tile is dark. "No output in the last hour" is the honest
+        # default; a queue with nothing in it is a different fact and worth
+        # separating, because one means stuck and the other means done.
+        backlog = _recent_activity_count("papers", "updated_at", 10 ** 9,
+                                         "status = 'ingested'")
+        idle_reasons = {}
+        for key, value in finished.items():
+            if value:
+                continue
+            if key in ("paper_extraction", "graph_construction") and not backlog:
+                idle_reasons[key] = "office.idle.noBacklog"
+            else:
+                idle_reasons[key] = "office.idle.noOutput"
 
         accents = ["blue", "green", "gold", "purple", "red", "cyan", "slate"]
         departments = []
@@ -2580,6 +2614,10 @@ def api_agent_office():
                 "responsibility": boundary.responsibility,
                 "accent": accents[index % len(accents)],
                 "status": _office_department_state(items, service_running.get(boundary.key, False)),
+                # Rendered under a dark tile so a reader is told why, rather
+                # than left to guess whether the system is broken or resting.
+                "idle_reason": idle_reasons.get(boundary.key),
+                "finished_last_hour": finished.get(boundary.key, 0),
                 "sub_agents": sub_agents,
                 "items": items,
                 "item_count": len(items_by_key.get(boundary.key, [])),
