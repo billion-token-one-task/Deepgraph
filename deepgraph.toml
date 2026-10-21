@@ -46,10 +46,20 @@ prompt_cache_retention = "24h"
 connect_timeout_seconds = 30
 request_timeout_seconds = 300
 # A rate limit is a wait, not a failure -- and with no second vendor to fall
-# through to, the retry window has to be long enough to outlast one.
+# through to, the retry window has to be long enough to outlast one. Five
+# attempts twenty seconds apart is up to a hundred seconds of waiting inside a
+# single call, which is where a throttle should be absorbed.
 transient_retries = 5
 transient_backoff_seconds = 20
-transient_cooldown_seconds = 180
+# The cooldown is a different mechanism and was doing damage at three minutes.
+# It is per-route and shared by every worker, so one call that exhausts its
+# retries stops the whole fleet: on 2026-09-03 a twelve-worker batch lost all
+# twenty-four papers in under a minute to a cooldown set by one of them, and
+# the cycle repeated because the driver returned before the window closed.
+# Thirty seconds still spaces out a failing route without converting one bad
+# minute into a fleet-wide stall, and the in-call retry window above is what
+# actually absorbs a throttle.
+transient_cooldown_seconds = 30
 max_input_tokens = 900000
 max_output_tokens = 32000
 
