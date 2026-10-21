@@ -170,12 +170,21 @@ class EveryDefectIsReportedAtOnce(unittest.TestCase):
         self.review = review_candidate_plan(plan, check_remote=False)
 
     def test_reports_all_four(self):
+        # The fourth defect changed on 2026-08-29 and the change is the point.
+        # This plan asks for the `cpu` backend, which no runner supported when
+        # the test was written, so the review said "backend_contract_mismatch".
+        # api_inference_qa_v1 runs per-sample inference against a hosted model
+        # and declares `cpu`, so that complaint is now simply untrue -- and the
+        # review moves on to the defect that actually blocks this plan on that
+        # runner: it names a transformers checkpoint, which an endpoint adapter
+        # cannot load. Same contract, same "all at once" guarantee, more
+        # accurate fourth item.
         self.assertEqual(
             set(self.review.codes),
             {
                 "metric_contract_unsupported",
                 "dataset_schema_role_mismatch",
-                "backend_contract_mismatch",
+                "model_framework_mismatch",
                 "execution_dataset_identity_unbound",
             },
         )
@@ -185,7 +194,10 @@ class EveryDefectIsReportedAtOnce(unittest.TestCase):
         self.assertIn("numeric_accuracy", detail["metric_contract_unsupported"])
         self.assertIn("prompt", detail["dataset_schema_role_mismatch"])
         self.assertIn("target", detail["dataset_schema_role_mismatch"])
-        self.assertIn("colab_gpu", detail["backend_contract_mismatch"])
+        # Names the runner that refused it and what that runner does accept,
+        # so the repair is readable off the message.
+        self.assertIn("api_inference_qa_v1", detail["model_framework_mismatch"])
+        self.assertIn("api", detail["model_framework_mismatch"])
         self.assertIn("openai/gsm8k", detail["execution_dataset_identity_unbound"])
 
     def test_the_prompt_block_carries_every_item(self):

@@ -510,6 +510,31 @@ def default_runner_capabilities() -> tuple[RunnerCapability, ...]:
     )
     common_backends = ("local_gpu", "ssh_gpu", "colab_gpu")
     return (
+        # Inference against a hosted model. No accelerator, so `cpu` is the
+        # only backend it declares and min_vram_gb is zero: the point of this
+        # adapter is that the compute transport which produced almost every
+        # failure in this ledger is not involved at all. Scoped to per-sample
+        # QA and classification on purpose -- training and agent protocols are
+        # separate contracts and are not smuggled in here.
+        RunnerCapability(
+            adapter_id="api_inference_qa_v1",
+            version="1.0.0",
+            task_protocols=("generative_qa", "sequence_classification"),
+            candidate_hooks=("candidate_prompt", "candidate_text"),
+            dataset_roles=("prompt", "target"),
+            model_frameworks=("api",),
+            model_tasks=("causal_lm", "text_generation", "sequence_classification"),
+            metric_names=("exact_match", "numeric_accuracy", "accuracy"),
+            dependencies=(),
+            can_install_dependencies=False,
+            network_required=True,
+            min_disk_gb=0.1,
+            min_vram_gb=0.0,
+            supports_seed=True,
+            supports_sample_cap=True,
+            output_artifacts=common_outputs,
+            backends=("cpu",),
+        ),
         RunnerCapability(
             adapter_id="transformers_causal_lm_qa_v1",
             version="1.0.0",

@@ -180,6 +180,13 @@ def materialize_runner_bundle(
             source_root / "runners" / "generic_transformers.py",
             runner_dir / "generic_transformers.py",
         ),
+        # The API adapter subclasses the transformers one, so both travel
+        # together whichever is selected: shipping only the subclass would
+        # leave it importing a parent that is not in the bundle.
+        (
+            source_root / "runners" / "api_inference.py",
+            runner_dir / "api_inference.py",
+        ),
     ):
         shutil.copy2(source_path, target_path)
 
@@ -202,9 +209,17 @@ def materialize_runner_bundle(
         encoding="utf-8",
     )
     train_path = code_dir / "train.py"
+    # Which runner the entry point calls follows the adapter the preflight
+    # actually selected. Hardcoding the transformers one was correct while it
+    # was the only executor; with two, a bundle that says "api" and then loads
+    # weights would be a silent substitution of the thing being measured.
+    runner_module = (
+        "api_inference" if adapter_id == "api_inference_qa_v1"
+        else "generic_transformers"
+    )
     train_path.write_text(
         "import sys\n"
-        "from meta_harness.runners.generic_transformers import main\n\n"
+        f"from meta_harness.runners.{runner_module} import main\n\n"
         "if __name__ == '__main__':\n"
         "    args = sys.argv[1:] or [\n"
         "        '--config', 'execution_requirements.json',\n"
@@ -217,7 +232,9 @@ def materialize_runner_bundle(
     dependencies = runtime_dependencies(capability, requirements)
     requirements_path = code_dir / "requirements.txt"
     requirements_path.write_text("\n".join(dependencies) + "\n", encoding="utf-8")
-    for path in (train_path, adapter_path, runner_dir / "generic_transformers.py"):
+    for path in (train_path, adapter_path,
+                 runner_dir / "generic_transformers.py",
+                 runner_dir / "api_inference.py"):
         py_compile.compile(str(path), doraise=True)
     return {
         "adapter_id": adapter_id,
