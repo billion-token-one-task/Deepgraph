@@ -45,8 +45,10 @@ prompt_cache_key = "deepgraph"
 prompt_cache_retention = "24h"
 connect_timeout_seconds = 30
 request_timeout_seconds = 300
-transient_retries = 2
-transient_backoff_seconds = 5
+# A rate limit is a wait, not a failure -- and with no second vendor to fall
+# through to, the retry window has to be long enough to outlast one.
+transient_retries = 5
+transient_backoff_seconds = 20
 transient_cooldown_seconds = 180
 max_input_tokens = 900000
 max_output_tokens = 32000
@@ -75,7 +77,12 @@ model = "gemini-3.7-flash-high"
 model_family = "gemini-flash"
 protocol = "chat_completions"
 api_key_env = "DEEPGRAPH_LLM_SECONDARY_API_KEY"
-rpm = 0
+# Capped rather than unlimited. Corpus ingestion, a literature survey and an
+# experiment all ran against this gateway at once on 2026-08-30 and it returned
+# 429; three extraction batches failed. Ninety calls a minute is well above what
+# ingestion needs on its own and leaves room for an experiment beside it, while
+# making a burst wait instead of fail.
+rpm = 90
 enabled = true
 
 # Evaluator and reviewer route. A different vendor and different training data
@@ -223,19 +230,20 @@ model_ref = "env:DEEPGRAPH_LLM_PRIMARY_MODEL"
 model_family_ref = "env:DEEPGRAPH_LLM_PRIMARY_FAMILY"
 prompt_version = "proposer_v1"
 
-# Second proposer route: AVAILABILITY. The proposer had exactly one route, so a
-# two-second network blip on 2026-08-25 ended it. Seven calls succeeded, three
-# failed inside two seconds with in=0 out=0 -- the request never left the host --
-# and fail_closed_or_manual then declared all_explicit_routes_failed. Two paper
-# ingestion jobs died, the backfill made no further progress and tripped its
-# three-hour breaker, while the same route completed sixteen calls twelve
-# minutes later. A different vendor means a different network path, which is the
-# only kind of fallback a transport blip cannot follow.
-[[llm_routes.proposer]]
-provider_ref = "deepseek_official"
-model_ref = "deepseek-v4-flash"
-model_family_ref = "deepseek"
-prompt_version = "proposer_v1"
+# There is deliberately no second proposer route.
+#
+# One existed, on deepseek, added on 2026-08-25 after a two-second network blip
+# killed the single-route proposer and stalled corpus ingestion. It worked --
+# and that was the problem. Whenever the primary gateway rate-limited, corpus
+# extraction fell silently through to the other vendor and kept going, so a
+# throttle that should have slowed us down instead moved the bill: 1,300 calls
+# and 8.2M output tokens on deepseek in a week, none of it visible as a
+# decision anyone made.
+#
+# A rate limit is information. The correct response to it is to slow down and
+# wait, which is what the per-provider rpm cap and the longer transient retry
+# window below now do. Corpus ingestion is a background job with no deadline;
+# paying a second vendor to keep it at full speed was never worth it.
 
 [[llm_routes.evaluator]]
 provider_ref = "env:DEEPGRAPH_LLM_EVALUATOR"

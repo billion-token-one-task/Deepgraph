@@ -52,21 +52,52 @@ class RoleRouteRedundancyTest(unittest.TestCase):
                 out.append(("literal", family))
         return out
 
-    def test_every_role_has_more_than_one_route(self):
-        for role in ("proposer", "evaluator", "reviewer"):
+    def test_the_judging_roles_have_more_than_one_route(self):
+        """A verdict must not be blocked by one vendor being unreachable.
+
+        The proposer is deliberately excluded, see the test below.
+        """
+        for role in ("evaluator", "reviewer"):
             with self.subTest(role=role):
                 self.assertGreaterEqual(
                     len(self.routes.get(role, [])), 2,
                     f"{role} has a single route and therefore a single network path")
 
-    def test_the_proposer_fallback_is_a_different_vendor(self):
-        literals = [e for e in self.routes["proposer"]
-                    if not str(e.get("provider_ref", "")).startswith("env:")]
-        self.assertTrue(literals, "the proposer fallback must name a provider directly")
-        for entry in literals:
-            provider = self.providers.get(entry["provider_ref"])
-            self.assertIsNotNone(provider, f"unknown provider {entry['provider_ref']}")
-            self.assertTrue(provider.get("enabled"), "a disabled provider is not a fallback")
+    def test_the_proposer_is_deliberately_single_route(self):
+        """Redundancy here bought availability and paid for it in silence.
+
+        The proposer's second route was added on 2026-08-25 so a transport blip
+        could not stall corpus ingestion, and it did that job. It also did one
+        nobody asked for: whenever the primary gateway rate-limited, ingestion
+        fell through to the other vendor and carried on at full speed. A week of
+        that put 1,300 calls and 8.2M output tokens on the fallback vendor, and
+        no human ever decided to spend it.
+
+        The roles differ in what a stall costs. A blocked verdict is a blocked
+        scientific result and stays redundant. Corpus ingestion is a background
+        job with no deadline, so the right answer to a rate limit is to wait --
+        which is what the provider rpm cap and the widened transient retry
+        window do instead.
+        """
+        self.assertEqual(
+            len(self.routes.get("proposer", [])), 1,
+            "a second proposer route turns a rate limit into a bill at another vendor")
+        primary = self.routes["proposer"][0]
+        self.assertTrue(
+            str(primary.get("provider_ref", "")).startswith("env:"),
+            "the single proposer route must stay switchable without a code change")
+
+    def test_the_primary_gateway_is_rate_capped(self):
+        """With no fallback, the throttle has to be ours rather than theirs."""
+        capped = [p for p in self.config["llm"]["providers"]
+                  if p.get("name") == "sora2_gemini"]
+        self.assertTrue(capped, "the primary proposer gateway is not declared")
+        self.assertGreater(
+            int(capped[0].get("rpm") or 0), 0,
+            "an uncapped gateway with no fallback fails closed instead of waiting")
+        self.assertGreaterEqual(
+            int(self.config["llm"].get("transient_retries") or 0), 4,
+            "the retry window must outlast a rate limit now that nothing catches it")
 
     def test_an_independent_evaluator_exists_for_every_proposer_family(self):
         proposer_families = {"gemini-flash"}  # env-bound primary, per .env
@@ -77,7 +108,9 @@ class RoleRouteRedundancyTest(unittest.TestCase):
         evaluator_families = set()
         for entry in self.routes["evaluator"]:
             family = str(entry.get("model_family_ref") or "")
-            evaluator_families.add("deepseek" if family.startswith("env:") else family)
+            # The env-bound evaluator is claude since 2026-08-30; deepseek is
+            # no longer any role's primary.
+            evaluator_families.add("claude" if family.startswith("env:") else family)
         for proposer_family in proposer_families:
             with self.subTest(proposer=proposer_family):
                 self.assertTrue(
