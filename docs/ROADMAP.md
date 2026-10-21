@@ -1,73 +1,115 @@
 # Roadmap
 
-> 中文导读: 下一步计划分三层: 正在推进的执行方式, 近期工程强化点, 和 V1 -> V2
-> 升级主线。
+> 中文导读: DeepGraph 的定位是自主科研的裁判, 不是第 10001 个作者。路线分三段:
+> V1.0 一台可信的仪器 (已有); V1.5 让它持续、诚实、便宜地对外运转 (现在);
+> V2 把诚信链收成一小组不变量 + 插件 API 的平台 (建设中)。终局是 benchmark x harness
+> 交错进化, 它跑在 DeepGraph 之上。
 
 ```mermaid
 flowchart LR
-  subgraph NOW["现在: V1 运行中"]
-    N1["bounded pilot<br/>一次一个候选过闸"]
-    N2["glue worker<br/>串起自治链条"]
+  subgraph V10["V1.0: a trustworthy instrument (shipped)"]
+    A1["literature -> evidence graph"]
+    A2["falsifiable plan bound to a runner"]
+    A3["metered execution under ResourceGrant"]
+    A4["evidence ladder: preregistration, equal budget,<br/>frozen holdout, paired permutation test,<br/>cross-vendor review, immutable ledger"]
   end
-  subgraph NEXT["近期: 闸门强化"]
-    X1["选题与写作<br/>评分化"]
-    X2["实验矩阵<br/>补边界条件"]
-    X3["审稿与投稿<br/>多人格 + 计算式清单"]
+  subgraph V15["V1.5: keep it running honestly (now)"]
+    B1["API inference, daily budget caps,<br/>status lights only on real output"]
+    B2["model trust report cards:<br/>claimed vs measured, and how much<br/>a score collapses under meaning-preserving rewrites"]
+    B3["candidates as reasoning scaffolds,<br/>not only prompts"]
   end
-  subgraph V2["主线: V1 -> V2"]
-    V1a["原生 meta-harness worker<br/>取代 glue"]
-    V1b["学习回路闭合<br/>OutcomeRecord 回灌选题"]
-    V1c["代码做减法"]
+  subgraph V2["V2: thin integrity core + plugin API (building)"]
+    C1["6 invariants + 1 loop as a plugin core,<br/>on an open agent-harness substrate"]
+    C2["runner / evaluator / benchmark / scaffold /<br/>agenda / metric / selector plugins"]
+    C3["learning layer: verdicts feed selection<br/>(shadow first, then bounded online)"]
   end
-  NOW --> NEXT --> V2
-  V2 -.->|"目标"| G["第一个爬满证据阶梯的结论"]
+  V10 --> V15 --> V2
+  V2 -.->|"runs on top"| G["benchmark x harness co-evolution"]
 ```
 
-## How work moves today
+## What V1.0 is, and is not
 
-Research candidates advance one at a time through the gated pipeline: topic
-gate -> portfolio decision -> resource grant -> bounded execution -> settlement
--> evidence ladder (`scripts/run_bounded_pilot.py`,
-`orchestrator/bounded_execution.py`). The near-term goal is the first
-candidate to climb the full evidence ladder to a scientifically decided,
-manuscript-ready result.
+V1.0 is an auditable, operator-governed research control plane that has run
+the full chain end to end: it turns literature into an evidence graph, turns
+an opening into a falsifiable plan bound to a runner that can execute it, runs
+it under a metered grant, and applies a fail-closed evidence ladder that
+refuses a verdict when the comparison is unfair, the baseline is missing or
+zero, the holdout overlaps, or the independent reviewer dissents.
 
-## Near-term engineering
+Its real capability is not "it runs experiments"; it is "it does not fool
+itself". The ladder has caught an unequal-budget comparison that would have
+recorded a worse-than-baseline method as confirmed, a global verdict bug
+surfaced by a dissenting cross-vendor reviewer, a contaminated holdout the
+system produced itself, and eleven verdicts built on empty outputs (retracted,
+not deleted).
 
-Strengthenings of the existing gate system, each scoped and independent:
+Boundaries, stated plainly: the instrument today adjudicates single-turn,
+per-sample-scored claims about language models (a prompt or an input
+transformation against a public dataset). It does not train, does not run
+multi-turn tool agents, and does not run arbitrary programs. Hypotheses the
+system invents on its own have not yet passed its own ladder; the results that
+have passed were literature-derived methods fed to it. Public benchmarks it can
+reach are largely saturated by current models, which makes "method X improves
+accuracy" claims hard to certify there.
 
-- Scored title/abstract critique (memorability, quantitative claims,
-  contribution specificity) on top of the existing rewrite-and-ban checks
-- A negative/boundary-condition slot in the standard experiment plan,
-  alongside main comparison, ablation, sensitivity, and cost
-- Baseline budget-parity verification with an explicit stated-differences
-  record, upgrading today's presence checks
-- A multi-persona manuscript review loop (method skeptic, rigor reviewer,
-  clarity/positioning reviewer) unifying the current independent review stages
-- Revision diffs classified by what changed (claim / evidence / objection
-  addressed), on top of the existing revision history and auto-revert
-- A submission checklist computed from audit results, extended with ethics,
-  artifact-availability, and reproducibility items
-- Overfull-box scanning added to the PDF sanity pass
-- A populated reference-paper corpus on the deployment host so corpus-based
-  style audits run at full strength
+## V1.5: keep the instrument running honestly (now)
 
-## Main line: V1 -> V2
+- Inference through hosted APIs rather than owned GPUs; hard daily budget caps
+  per line of work; status indicators light only when the ledger shows real
+  output in the last hour.
+- Model trust report cards: after a model release or a vendor score
+  announcement, an unattended run produces a signed card within 48 hours --
+  vendor claim vs independent measurement (preregistered, frozen holdout,
+  paired test, cross-vendor review), and how much the same items lose under
+  meaning-preserving rewrites and distractor injection. Every number links to
+  downloadable per-item predictions. Collapse figures are reported only when
+  they replicate on the holdout.
+- Candidates as scaffolds: extend the candidate hook from "a prompt string"
+  to "a reasoning strategy" (sampling, voting, self-verification) so the same
+  ladder can adjudicate test-time-compute claims.
+- Evolution experiments are allowed here only under a no-detour protocol:
+  hostile literature audit first, headroom check (no saturated benchmarks),
+  minimum-detectable-effect arithmetic before spending, a positive control
+  before candidates, and an intervention surface that can actually express the
+  hypothesis.
 
-The current deployment (V1) connects the autonomous chain with glue workers.
-V2 replaces the glue with native meta-harness workers and retires
-transitional code -- the full plan, including the code-subtraction targets,
-is maintained in [upgrade-plan-v1-v2.md](upgrade-plan-v1-v2.md).
+## V2: thin integrity core + plugin API (building)
 
-The highest-leverage item there is the **learning loop**: outcome records and
-failure clusters feeding back into candidate ranking and forge prompts, so the
-system improves with use rather than plateauing on hand-written knowledge --
-the Bitter Lesson commitment described in the [README](../README.md) applied to
-the one place it is not yet closed.
+The integrity chain above is a small set of invariants -- preregistration,
+equal budget, holdout-validated significance, independent adjudication,
+immutable provenance, and grant-only spending -- plus one loop
+(propose -> preregister -> run -> measure -> audit -> record). V2 re-expresses
+that core as plugins on an open agent-harness substrate with an append-only
+event log (the plan is to build on the DeepSeek Harness / Cordis family; this
+is planned work, not shipped). Orchestration moves up; the verified Python
+scientific compute is wrapped as the first runner plugin, not rewritten.
 
-## Compute
+Plugin classes, each a clean interface a contributor can own end to end:
+runner (what kinds of experiments can execute -- programs, training, multi-turn
+agents are the gaps), scaffold (candidates as strategies), evaluator
+(independent review), benchmark/dataset (splits, frozen holdouts, perturbation
+libraries, detecting when an evaluation has been worn out), metric, agenda
+(a research direction and how candidates are generated for it), and a learning
+selector (what to fund next, learned from the verdict ledger).
 
-- Scale the verified SSH GPU fleet; every new GPU model enters through a
-  recorded canary before scheduling (`DEEPGRAPH_COMPUTE_VERIFIED_BACKENDS`)
-- Adapter work to admit additional backend types into the same
-  grant-and-canary discipline
+Adjudication runs outside the process of the harness being evaluated: the
+system under test records, freezes and exports; the referee audits, reviews
+and writes the verdict elsewhere.
+
+The learning layer follows the staged protocol from the V2 decision record:
+freeze the baseline, project outcomes offline, run population search on one
+task family, then a shadow policy, then bounded online learning inside grant
+limits, and only then cross-task transfer. Measurement standards stay fixed;
+judgment is what must improve with compute.
+
+## Where this ends up
+
+benchmark x harness co-evolution: harnesses are searched, and the benchmarks
+that evaluate them evolve and know when they have stopped discriminating. That
+runs on top of DeepGraph. The unoccupied intersection today is "searched
+harness changes, measured with standards strict enough to reject the result"
+-- which is the part that already exists here.
+
+The detailed engineering breakdown lives in
+[upgrade-plan-v1-v2.md](upgrade-plan-v1-v2.md) (historical S0-S6 list, now
+subordinate to the plan above).
