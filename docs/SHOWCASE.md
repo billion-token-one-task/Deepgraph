@@ -46,20 +46,6 @@ leaving an auditable record (`OutcomeRecord` id=1). The pipeline that spends
 resources and the ledger that accounts for them agree by construction, not by
 convention.
 
-## Case: a paper-grade benchmark harness (CGGR plugin)
-
-`plugins/examples/cggr/` is a complete, self-contained experiment harness
-showing what "contracted experiment" means in practice:
-
-- A frozen benchmark contract pins datasets (MuSiQue-Ans, StrategyQA,
-  2WikiMultihopQA and a counterfactual stress split), a pinned Qwen instruct
-  checkpoint, and seeds `[0-4]`.
-- The runner emits machine-readable artifacts for every run: per-seed results,
-  ablation tables, `failure_cases.jsonl`, and raw generations
-  (`plugins/examples/cggr/experiment_runner.py`).
-- Statistics are computed, not asserted: paired permutation tests and
-  2,000-round bootstrap confidence intervals ship with the harness.
-
 ## Case: a system that can say no
 
 Manuscript generation is gated, and the gates are load-bearing:

@@ -3902,12 +3902,11 @@ def _executable_probe_train_py(*, method_name: str, metric_name: str, plan: dict
 
 
 def _real_llm_benchmark_train_py(*, method_name: str, metric_name: str, plan: dict) -> str:
-    """Render a benchmark runner only through an explicit implementation plugin.
+    """Render a benchmark runner only when an executable probe applies.
 
-    The historical CGGR/VOC template is isolated in the non-production example
-    plugin. A generic candidate must provide its own audited runner plugin;
-    silently mapping an unknown method to a topic runner would invalidate the
-    benchmark contract.
+    No audited runner plugin exists in this tree, so every other method gets a
+    recipe blocker; silently mapping an unknown method to a topic runner would
+    invalidate the benchmark contract.
     """
     if _plan_uses_executable_probe(plan or {}):
         return _executable_probe_train_py(
@@ -3916,29 +3915,13 @@ def _real_llm_benchmark_train_py(*, method_name: str, metric_name: str, plan: di
             plan=plan,
         )
 
-    runner_plugin = str((plan or {}).get("runner_plugin") or "").strip()
-    if runner_plugin != "example.cggr":
-        return _benchmark_recipe_blocker_train_py(
-            metric_name=metric_name,
-            error="no explicit audited runner_plugin for the proposed method",
-            plan=plan,
-        )
-    enabled = os.getenv("DEEPGRAPH_ENABLE_NONPROD_EXAMPLE_PLUGINS", "").strip().lower()
-    if enabled not in {"1", "true", "yes"}:
-        return _benchmark_recipe_blocker_train_py(
-            metric_name=metric_name,
-            error="example.cggr runner is disabled and non-production",
-            plan=plan,
-        )
-    from plugins.examples.cggr.experiment_runner import (
-        render_historical_benchmark_runner,
-    )
-
-    return render_historical_benchmark_runner(
-        method_name=method_name,
+    return _benchmark_recipe_blocker_train_py(
         metric_name=metric_name,
+        error="no explicit audited runner_plugin for the proposed method",
         plan=plan,
     )
+
+
 def _train_py_uses_cuda(train_py: str | None) -> bool:
     if not train_py:
         return False

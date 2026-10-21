@@ -15,7 +15,4 @@ Primary scripts:
 
 - `scripts.run_gpu_scheduler_forever`
 
-Topic-specific CGGR execution utilities are isolated under
-`plugins/examples/cggr` and are not registered by default.
-
 Configuration lives in `deepgraph.toml` under `experiment`, `gpu`, `runtime`, `tracking`, and `paths`.

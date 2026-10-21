@@ -10,7 +10,7 @@ DeepGraph 的设计原则、回路机制、证据闸门、仓库结构与测试�
 |---|---|---|
 | 要搜索，不要人工整理的知识 | 十个结构信号计算器以**纯 SQL、零 LLM 调用**在全图上做联接，枚举研究切入点：实体重叠、矛盾簇、性能平台期、负空间缺口、claim-方法缺口、机制冲突、隐变量桥接 | `agents/signal_harvester.py:453-1662`，入口 `harvest_all():1828` |
 | 排序是学出来的，不是调出来的 | 实验结果更新各信号类型的后验；学到的权重既重排后续候选，又被注入想法生成的提示词 | `agents/meta_learner.py:200`、`agents/idea_taste.py:74`、`agents/paper_idea_agent.py:580-583` |
-| 人工知识拿不到预算 | frontier 权限被硬性限死在 2 万 token / 120 分钟 / **0.0 GPU 小时**，且"不可能变成 ResourceGrant"；只有落库的组合决策才能签发授权；插件完全在 agent 注册表之外 | `contracts/meta_harness.py:131-216`、`meta_harness/portfolio.py:269-272`、`plugins/__init__.py:1-3` |
+| 人工知识拿不到预算 | frontier 权限被硬性限死在 2 万 token / 120 分钟 / **0.0 GPU 小时**，且"不可能变成 ResourceGrant"；只有落库的组合决策才能签发授权 | `contracts/meta_harness.py:131-216`、`meta_harness/portfolio.py:269-272` |
 | 策略在结构上可被替换 | 组合决策策略是一个冻结的、带版本号的 dataclass，调用时注入；每个输入都是带置信区间和证据来源的 `Estimate`——所以换成 bandit 或 Thompson 采样不需要改调用方 | `meta_harness/portfolio.py:12-36,102`、`contracts/meta_harness.py:52-81` |
 | 算力是被预算化的基本单位 | 每一笔开销都先预留、再计量、最后对着 agenda 预算结算，"把算力加上去"因此是一个受控旋钮而不是水龙头 | `meta_harness/repository.py:691`、`orchestrator/bounded_execution.py` |
 
@@ -229,7 +229,6 @@ python3.12 main.py
 | `web/` | Flask API、溯源 API、Dashboard |
 | `deploy/` | systemd 单元、Caddyfile、部署清单 |
 | `scripts/` | 运维 CLI、审计、迁移、清单工具 |
-| `plugins/` | 自包含的实验 harness，例如 `examples/cggr` |
 | `tests/` | 90 个测试模块 |
 
 ## 文档

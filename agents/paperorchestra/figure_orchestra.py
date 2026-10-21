@@ -1,7 +1,7 @@
 """Disabled generic figure boundary for meta-harness-v1.
 
 Image generation and PaperBanana are outside the first closed loop. The former
-topic-coupled implementation is preserved in the non-production CGGR example.
+topic-coupled implementation was removed (see git history).
 These functions report a blocked state and never manufacture a completed
 artifact.
 """

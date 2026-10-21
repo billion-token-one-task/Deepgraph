@@ -10,7 +10,7 @@ Each commitment below is a specific mechanism in this repository, not a stance:
 |---|---|---|
 | Search, not curated knowledge | Ten structural signal computers join over the whole evidence graph in **pure SQL, zero LLM calls**, to enumerate research openings: entity overlap, contradiction clusters, performance plateaus, negative-space gaps, claim-method gaps, mechanism mismatches, hidden-variable bridges | `agents/signal_harvester.py:453-1662`, entry `harvest_all():1828` |
 | Ranking is learned, not tuned | Experiment outcomes update a per-signal-type posterior; the learned weights re-rank future candidates *and* are injected into the idea-generation prompt | `agents/meta_learner.py:200`, `agents/idea_taste.py:74`, `agents/paper_idea_agent.py:580-583` |
-| Hand-written knowledge holds no budget | The frontier authority is capped at 20k tokens / 120 minutes / **0.0 GPU hours** and "cannot become a ResourceGrant"; only a persisted portfolio decision can mint one; plugins are outside the agent registry entirely | `contracts/meta_harness.py:131-216`, `meta_harness/portfolio.py:269-272`, `plugins/__init__.py:1-3` |
+| Hand-written knowledge holds no budget | The frontier authority is capped at 20k tokens / 120 minutes / **0.0 GPU hours** and "cannot become a ResourceGrant"; only a persisted portfolio decision can mint one | `contracts/meta_harness.py:131-216`, `meta_harness/portfolio.py:269-272` |
 | Policy is swappable by construction | The portfolio policy is a frozen, versioned dataclass injected at call time, every input an `Estimate` carrying a confidence interval and its evidence sources -- so a bandit or Thompson sampler drops in without touching callers | `meta_harness/portfolio.py:12-36,102`, `contracts/meta_harness.py:52-81` |
 | Compute is the budgeted primitive | Every spend is reserved, metered and settled against an agenda budget, so "add compute" is a controlled dial rather than an open tap | `meta_harness/repository.py:691`, `orchestrator/bounded_execution.py` |
 
@@ -257,7 +257,6 @@ configuration reference: **[docs/DEPLOY.md](DEPLOY.md)**.
 | `web/` | Flask API, provenance API, dashboard |
 | `deploy/` | Systemd units, Caddyfile, deployment manifests |
 | `scripts/` | Operator CLIs, audits, migrations, manifest tooling |
-| `plugins/` | Self-contained experiment harnesses, e.g. `examples/cggr` |
 | `tests/` | 90 test modules |
 
 ## Documentation

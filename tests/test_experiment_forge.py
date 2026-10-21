@@ -1,6 +1,5 @@
 import hashlib
 import json
-import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,21 +8,6 @@ from unittest import mock
 from agents import experiment_forge
 from agents.experiment_review import review_experiment_candidate
 from tests.meta_harness_schema import require_meta_harness_schema
-
-
-# _real_llm_benchmark_train_py renders a runner only for an explicitly audited
-# runner_plugin; the CGGR/VOC template these cases describe lives in the
-# demoted plugins.examples.cggr example. That a method without such a plugin is
-# refused instead is asserted by
-# test_generated_runner_refuses_cross_domain_gsm8k_fallback, which runs always.
-NONPROD_RUNNER_PLUGIN = os.getenv(
-    "DEEPGRAPH_ENABLE_NONPROD_EXAMPLE_PLUGINS", ""
-).strip().lower() in {"1", "true", "yes"}
-requires_nonprod_runner_plugin = unittest.skipUnless(
-    NONPROD_RUNNER_PLUGIN,
-    "covers the demoted plugins.examples.cggr benchmark runner template; set "
-    "DEEPGRAPH_ENABLE_NONPROD_EXAMPLE_PLUGINS=1 to run",
-)
 
 
 class GenerateScaffoldTests(unittest.TestCase):
@@ -1321,80 +1305,6 @@ class GenerateScaffoldTests(unittest.TestCase):
         self.assertIn("full_benchmark_stage", scaffold["benchmark_manifest"])
         self.assertIn("required_ablations", scaffold["success_criteria"])
 
-    @requires_nonprod_runner_plugin
-    def test_generate_scaffold_injects_real_benchmark_runner_for_gpu_route(self):
-        require_meta_harness_schema(self, "resource_grant_usage_reservations", None)
-        insight = {
-            "resource_class": "gpu_large",
-            "proposed_method": {
-                "name": "Large GPU Method",
-                "type": "training",
-                "definition": "Train a large CUDA-backed model.",
-            },
-            "experimental_plan": {
-                "baselines": ["baseline-a"],
-                "datasets": ["StrategyQA"],
-                "metrics": {"primary": "gpu_score"},
-                "compute_budget": {"total_gpu_hours": 50},
-                "runner_plugin": "example.cggr",
-            },
-        }
-        codebase = {
-            "url": "https://github.com/example/gpu-repo",
-            "name": "gpu-repo",
-            "main_train_file": "train.py",
-            "main_eval_command": "python train.py",
-        }
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            workdir = Path(tmpdir)
-
-            def _fake_role_call(system: str, prompt: str, **kwargs):
-                return (
-                    {
-                        "program_md": "# program",
-                        "evaluate_py": "print('ok')",
-                        "success_criteria": {"metric_name": "gpu_score"},
-                        "train_py": "import numpy as np\nprint('gpu_score: 0.1')\n",
-                    },
-                    17,
-                    {"provider": "test-provider", "model": "test-model"},
-                )
-
-            with mock.patch.object(
-                experiment_forge,
-                "call_llm_json_for_role",
-                side_effect=_fake_role_call,
-            ):
-                scaffold = experiment_forge.generate_scaffold(
-                    insight,
-                    codebase,
-                    workdir,
-                    llm_scope={
-                        "agenda_id": 1,
-                        "idea_id": 2,
-                        "resource_grant_id": 3,
-                        "stage": "pilot",
-                    },
-                )
-
-            train_py = (workdir / "code" / "train.py").read_text(encoding="utf-8")
-
-        self.assertEqual(scaffold["baseline_command_override"], "python train.py")
-        self.assertIn("torch.cuda.is_available", train_py)
-        self.assertIn("load_dataset", train_py)
-        self.assertIn("AutoModelForCausalLM", train_py)
-        self.assertIn("DEFAULT_REPAIR_MAX_EXAMPLES_CAP", train_py)
-        self.assertIn("DEEPGRAPH_BENCHMARK_FULL_RUN", train_py)
-        self.assertIn("BENCHMARK_STAGE: eval_method_done", train_py)
-        self.assertIn("_method_specs_for_run", train_py)
-        self.assertIn("peak_vram_mb", train_py)
-        self.assertNotEqual(scaffold["success_criteria"]["evidence_tier"], "bootstrap_probe")
-        self.assertEqual(scaffold["success_criteria"]["evidence_tier"], "benchmark_plan")
-        self.assertTrue(scaffold["success_criteria"]["blocks_manuscript"])
-        self.assertIn("claim_route", scaffold["success_criteria"])
-        self.assertFalse(scaffold["benchmark_manifest"]["sanity_only"])
-
     def test_generic_method_without_runner_plugin_gets_blocker(self):
         require_meta_harness_schema(self, "resource_grant_usage_reservations", None)
         insight = {
@@ -1696,51 +1606,6 @@ class GenerateScaffoldTests(unittest.TestCase):
         self.assertIn("/tmp/run_42", params)
         self.assertTrue(any("formal_experiment" in str(value) for value in params))
         commit.assert_called_once()
-
-    @requires_nonprod_runner_plugin
-    def test_fallback_scaffold_produces_real_benchmark_train_py(self):
-        scaffold = experiment_forge._fallback_scaffold(
-            {"name": "CGGR", "definition": "Adaptive reasoning gate."},
-            {
-                "benchmark_design_status": "resolved",
-                "benchmark_design_contract": {"status": "resolved", "source": "unit_test"},
-                "benchmark_targets": [
-                    {
-                        "name": "StrategyQA",
-                        "hf_dataset": "tasksource/strategy-qa",
-                        "split": "validation",
-                        "task_type": "boolean_qa",
-                    }
-                ],
-                "metrics": {"primary": "cost_adjusted_utility"},
-                # The template below is the example.cggr runner; a plan that
-                # does not name an audited plugin gets a recipe blocker.
-                "runner_plugin": "example.cggr",
-            },
-            {"url": "scratch", "name": "minimal"},
-        )
-
-        self.assertIn("train_py", scaffold)
-        self.assertIn("load_dataset", scaffold["train_py"])
-        self.assertIn("AutoModelForCausalLM", scaffold["train_py"])
-        self.assertIn("DEEPGRAPH_BENCHMARK_TARGET_NAMES", scaffold["train_py"])
-        self.assertIn("DEEPGRAPH_BENCHMARK_SEED_OFFSET", scaffold["train_py"])
-        self.assertIn("DEEPGRAPH_BENCHMARK_SEED_COUNT", scaffold["train_py"])
-        self.assertIn('"sharded_run": sharded_run', scaffold["train_py"])
-        self.assertIn('_difficulty_proxy(question_for_prompt, target.get("task_type") or "qa")', scaffold["train_py"])
-        self.assertIn('score = max(score, 0.46)', scaffold["train_py"])
-        self.assertIn('max_new_tokens <= 80', scaffold["train_py"])
-        self.assertIn('prompt_kind = "direct" if kind == "direct" or (selective_kind and max_new_tokens <= 80) else kind', scaffold["train_py"])
-        self.assertIn("apply_chat_template", scaffold["train_py"])
-        self.assertIn("return_dict=True", scaffold["train_py"])
-        self.assertIn("_coerce_tokenizer_encoding", scaffold["train_py"])
-        self.assertIn("LLM generation returned zero new tokens", scaffold["train_py"])
-        self.assertIn("DEEPGRAPH_BENCHMARK_CONTINUE_ON_ERROR", scaffold["train_py"])
-        self.assertIn("use at most two concise reasoning sentences", scaffold["train_py"])
-        self.assertIn("Do not repeat the final answer", scaffold["train_py"])
-        self.assertNotIn("materialize GSM8K fallback", scaffold["train_py"])
-        self.assertNotEqual(scaffold["success_criteria"]["evidence_tier"], "bootstrap_probe")
-        self.assertTrue(scaffold["success_criteria"]["blocks_manuscript"])
 
     def test_codebase_entrypoint_check_requires_expected_file(self):
         with tempfile.TemporaryDirectory() as tmpdir:

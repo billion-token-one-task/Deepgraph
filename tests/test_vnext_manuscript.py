@@ -12,24 +12,7 @@ from agents.paperorchestra.figure_orchestra import run_postwriting_api_figure_st
 from agents import workspace_layout
 from db import database
 
-# The CRPP-specific manuscript implementation was demoted into the disabled
-# plugins.examples.cggr boundary; agents/paperorchestra/full_pipeline.py is now
-# a fail-closed entry point that no longer carries this helper. Importing the
-# old path aborted collection of this whole file, taking 8 live manuscript
-# tests with it. Gate the two tests that need it behind the same opt-in the
-# runtime uses for that plugin.
-from plugins.examples.cggr.full_pipeline import _postwriting_api_manifest_is_reusable
 from tests.meta_harness_schema import require_meta_harness_schema
-
-NONPROD_PLUGINS = os.getenv(
-    "DEEPGRAPH_ENABLE_NONPROD_EXAMPLE_PLUGINS", ""
-).strip().lower() in {"1", "true", "yes"}
-requires_nonprod_plugins = unittest.skipUnless(
-    NONPROD_PLUGINS,
-    "covers demoted plugins.examples.cggr; set "
-    "DEEPGRAPH_ENABLE_NONPROD_EXAMPLE_PLUGINS=1 to run",
-)
-
 
 class ManuscriptBundleTests(unittest.TestCase):
     def setUp(self):
@@ -684,54 +667,6 @@ Candidate & 0.61 & 1.5 \\
         self.assertEqual(result["assets"], [])
         self.assertTrue(result["blockers"])
         self.assertFalse((figures_dir / "postwriting_api_figure_manifest.json").exists())
-
-    @requires_nonprod_plugins
-    def test_failed_postwriting_api_figure_manifest_is_not_reused(self):
-        figures_dir = self.tmpdir_path / "figures_failed_cache"
-        figures_dir.mkdir(parents=True, exist_ok=True)
-        fallback_path = figures_dir / "fig_motivation_symbolic.png"
-        fallback_path.write_text("placeholder", encoding="utf-8")
-        manifest = {
-            "stage": "postwriting_api_figures",
-            "generated_count": 2,
-            "blockers": ["Post-writing figure generation failed for fig_motivation_symbolic."],
-            "assets": [
-                {
-                    "figure_id": "fig_motivation_symbolic",
-                    "path": str(fallback_path),
-                    "kind": "fallback",
-                    "notes": "paperbanana_error_timeout",
-                },
-                {
-                    "figure_id": "fig_overview_symbolic",
-                    "path": str(fallback_path),
-                    "kind": "diagram",
-                    "notes": "paperbanana_ok",
-                },
-            ],
-        }
-
-        self.assertFalse(_postwriting_api_manifest_is_reusable(manifest, figures_dir))
-
-    @requires_nonprod_plugins
-    def test_successful_postwriting_api_figure_manifest_is_reused(self):
-        figures_dir = self.tmpdir_path / "figures_success_cache"
-        figures_dir.mkdir(parents=True, exist_ok=True)
-        motivation_path = figures_dir / "fig_motivation_symbolic.png"
-        overview_path = figures_dir / "fig_overview_symbolic.png"
-        motivation_path.write_bytes(b"png")
-        overview_path.write_bytes(b"png")
-        manifest = {
-            "stage": "postwriting_api_figures",
-            "generated_count": 2,
-            "blockers": [],
-            "assets": [
-                {"figure_id": "fig_motivation_symbolic", "path": str(motivation_path), "kind": "diagram", "notes": "paperbanana_ok"},
-                {"figure_id": "fig_overview_symbolic", "path": str(overview_path), "kind": "diagram", "notes": "paperbanana_ok"},
-            ],
-        }
-
-        self.assertTrue(_postwriting_api_manifest_is_reusable(manifest, figures_dir))
 
     def test_paperorchestra_tracing_deadline_supports_worker_threads(self):
         from agents.paperorchestra import tracing

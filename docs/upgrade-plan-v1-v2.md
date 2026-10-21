@@ -60,7 +60,7 @@ git 身份修复后 run102 声称 40x 改进, 待本轮复证。所以 V1 的正
 
 主源码共 97993 行。确认或高度疑似的死重:
 
-- plugins/examples/cggr 三个文件 6242 行示例代码随主仓库分发;
+- plugins/examples/cggr 三个文件 6242 行示例代码随主仓库分发 (已删除, 存档 tag archive/cggr-example-20261021);
 - paper_orchestra_pipeline.py 4715 行 (活性待 V1 coverage 判定);
 - auto_research.py 4562 行, 其中真正在跑的自动逻辑 (run_scoped_cycle 链) 约 40 行;
 - validation_loop.py 3819 行 (活性待判定);

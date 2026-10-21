@@ -1,27 +1,8 @@
-import os
-import sys
 import unittest
 from unittest import mock
 
 from agents import dataset_resolver
 from agents import experiment_forge
-
-# scripts/run_deepgraph_new_idea_once.py was demoted into the disabled
-# plugins.examples.cggr boundary (see agents/paperorchestra/full_pipeline.py).
-# Importing it at module scope used to abort collection of this whole file,
-# taking 9 live dataset_resolver tests down with it. Gate the two tests that
-# need it behind the same opt-in the runtime uses for that plugin.
-from plugins.examples.cggr.scripts import run_deepgraph_new_idea_once
-
-NONPROD_PLUGINS = os.getenv(
-    "DEEPGRAPH_ENABLE_NONPROD_EXAMPLE_PLUGINS", ""
-).strip().lower() in {"1", "true", "yes"}
-requires_nonprod_plugins = unittest.skipUnless(
-    NONPROD_PLUGINS,
-    "covers demoted plugins.examples.cggr; set "
-    "DEEPGRAPH_ENABLE_NONPROD_EXAMPLE_PLUGINS=1 to run",
-)
-
 
 class DatasetResolverTests(unittest.TestCase):
     def test_known_public_dataset_resolves_without_network(self):
@@ -185,58 +166,6 @@ class DatasetResolverTests(unittest.TestCase):
             "requiring a dedicated domain benchmark harness",
             plan["benchmark_recipe_blockers"][0]["reason"],
         )
-
-    @requires_nonprod_plugins
-    def test_run_script_resolves_before_execution_blocker(self):
-        idea = {
-            "title": "Executable QA idea",
-            "proposed_method": {"name": "MathQA", "definition": "Answer grade-school math word problems."},
-            "experimental_plan": {
-                "benchmark_design_status": "resolved",
-                "benchmark_design_contract": {"status": "resolved", "source": "test_reviewed_contract"},
-                "datasets": [{"name": "GSM8K"}],
-                "generated_runner_supported": False,
-                "benchmark_recipe_blockers": [{"name": "GSM8K", "reason": "missing recipe"}],
-            },
-        }
-
-        updated = run_deepgraph_new_idea_once._resolve_idea_datasets(idea)
-        self.assertIsNone(run_deepgraph_new_idea_once._execution_blocker(updated))
-
-    @requires_nonprod_plugins
-    def test_run_script_stores_unexecutable_recipe_and_routes_to_harness(self):
-        idea = {
-            "title": "Needs harness",
-            "experimental_plan": {
-                "datasets": [{"name": "CustomBench"}],
-                "generated_runner_supported": False,
-                "benchmark_recipe_blockers": [{"name": "CustomBench", "reason": "missing recipe"}],
-            },
-        }
-
-        with (
-            mock.patch.object(sys, "argv", ["run_deepgraph_new_idea_once.py", "--skip-harvest", "--store-limit", "1"]),
-            mock.patch.object(run_deepgraph_new_idea_once, "discover_paper_ideas", return_value=[idea]),
-            mock.patch.object(run_deepgraph_new_idea_once, "_resolve_idea_datasets", side_effect=lambda row: row),
-            mock.patch.object(run_deepgraph_new_idea_once, "_is_cggr_related", return_value=False),
-            mock.patch.object(run_deepgraph_new_idea_once, "detect_compute_profile", return_value=object()),
-            mock.patch.object(run_deepgraph_new_idea_once, "gpu_resource_allowed", return_value=(True, "ok")),
-            mock.patch.object(run_deepgraph_new_idea_once, "store_deep_insight", return_value=42) as store,
-            mock.patch.object(run_deepgraph_new_idea_once.auto_research, "_handle_experiment_review_blocked") as route,
-            mock.patch.object(run_deepgraph_new_idea_once.auto_research, "_process_candidate") as process,
-            mock.patch.object(run_deepgraph_new_idea_once.db, "fetchone", return_value={"id": 42, "title": "Needs harness"}),
-            mock.patch.object(run_deepgraph_new_idea_once.db, "fetchall", return_value=[]),
-        ):
-            rc = run_deepgraph_new_idea_once.main()
-
-        self.assertEqual(rc, 0)
-        store.assert_called_once_with(idea)
-        route.assert_called_once()
-        self.assertEqual(route.call_args.args[0], 42)
-        self.assertEqual(route.call_args.kwargs["source"], "idea_generation")
-        self.assertEqual(route.call_args.args[1]["error"], "no_executable_benchmark_recipe")
-        process.assert_not_called()
-
 
 if __name__ == "__main__":
     unittest.main()

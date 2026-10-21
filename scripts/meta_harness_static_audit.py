@@ -21,16 +21,12 @@ PYTHON_ROOTS = (
     "contracts",
     "meta_harness",
     "orchestrator",
-    "plugins/examples/cggr",
     "scripts",
     "tests",
     "web",
 )
 TOPIC_MARKERS = re.compile(r"(?i)\b(?:cggr|crpp|idea8|run13)\b|eval_cggr")
 TOPIC_BOUNDARY_ALLOWLIST = {
-    "agents/experiment_forge.py",
-    "agents/paperorchestra/figure_orchestra.py",
-    "agents/paperorchestra/full_pipeline.py",
     "scripts/meta_harness_static_audit.py",
 }
 REMOVED_INTEGRITY_SYMBOLS = {
