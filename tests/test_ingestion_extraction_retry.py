@@ -422,7 +422,7 @@ class RoleCheckpointRegressionTests(TempUsageDbCase):
         def fake_call(_system, _user, **kwargs):
             role_name = kwargs["operation"].rsplit(":", 1)[-1]
             calls[role_name] += 1
-            if role_name == "claims_methods" and calls[role_name] == 1:
+            if role_name == "claims_graph_facets" and calls[role_name] == 1:
                 self._record_usage(kwargs, status="reserved")
                 raise RuntimeError("worker crashed with an open reservation")
             self._record_usage(kwargs, status="settled", tokens_used=11)
@@ -431,7 +431,7 @@ class RoleCheckpointRegressionTests(TempUsageDbCase):
         client = self._fake_client(fake_call)
         with mock.patch.dict(sys.modules, {"agents.llm_client": client}):
             with self.assertRaisesRegex(
-                RuntimeError, "claims_methods=worker crashed"
+                RuntimeError, "claims_graph_facets=worker crashed"
             ):
                 multi_agent_extraction.extract_paper_multi_agent(
                     paper_id,
@@ -448,7 +448,7 @@ class RoleCheckpointRegressionTests(TempUsageDbCase):
                 """,
                 (paper_id,),
             )["c"]
-            self.assertEqual(checkpoint_count, 4)
+            self.assertEqual(checkpoint_count, 2)
             delivered = database.get_paper_checkpoint(
                 paper_id, "paper_extraction_role:empirical_results"
             )["payload"]
@@ -464,7 +464,7 @@ class RoleCheckpointRegressionTests(TempUsageDbCase):
                 SELECT * FROM resource_grant_usage_reservations
                 WHERE operation=? AND status='reserved'
                 """,
-                (f"paper_extraction:{paper_id}:claims_methods",),
+                (f"paper_extraction:{paper_id}:claims_graph_facets",),
             )
             ScopedIngestionRepository().dispose_open_usage(
                 ScopedIngestionUsageDispositionRequest(
@@ -512,12 +512,10 @@ class RoleCheckpointRegressionTests(TempUsageDbCase):
         self.assertEqual(retry_tokens, 11)
         self.assertEqual(replay_tokens, 0)
         self.assertEqual(calls, calls_after_recovery)
-        self.assertEqual(calls["claims_methods"], 2)
+        self.assertEqual(calls["claims_graph_facets"], 2)
         for role_name in (
             "taxonomy_overview",
             "empirical_results",
-            "graph_context",
-            "research_facets",
         ):
             self.assertEqual(calls[role_name], 1)
 
@@ -528,21 +526,23 @@ class RoleCheckpointRegressionTests(TempUsageDbCase):
             ORDER BY id
             """
         )
-        self.assertEqual(len(usage), 6)
+        # Three roles: two delivered first time, the shared one crashed
+        # (released) and was settled on retry.
+        self.assertEqual(len(usage), 4)
         self.assertEqual(
             Counter(row["status"] for row in usage),
-            Counter({"settled": 5, "released": 1}),
+            Counter({"settled": 3, "released": 1}),
         )
         self.assertEqual(
             sum(int(row["tokens_used"] or 0) for row in usage),
-            55,
+            33,
         )
         claims_keys = database.fetchall(
             """
             SELECT idempotency_key FROM resource_grant_usage_reservations
             WHERE operation=? ORDER BY id
             """,
-            (f"paper_extraction:{paper_id}:claims_methods",),
+            (f"paper_extraction:{paper_id}:claims_graph_facets",),
         )
         self.assertTrue(claims_keys[0]["idempotency_key"].endswith(":t1"))
         self.assertTrue(claims_keys[1]["idempotency_key"].endswith(":t2"))

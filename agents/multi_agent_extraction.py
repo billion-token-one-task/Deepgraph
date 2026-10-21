@@ -274,6 +274,35 @@ Rules:
 - Keep facet_name short and canonical, e.g. "RGB output decoding" or "low-ratio task-data mixture"."""
 
 
+_SHARED_READERS_ROLE = "claims_graph_facets"
+
+SHARED_READERS_SYSTEM = (
+    "You are performing three specialist reading passes over one paper in a "
+    "single response. Each pass's full instructions follow, unchanged. Apply "
+    "every rule of every pass, as exhaustively as if it were your only job.\n\n"
+    "Return ONE JSON object containing every top-level key the passes specify: "
+    "methods, claims, knowledge_graph, research_facets. Use each pass's field "
+    "names and value vocabularies exactly as written.\n\n"
+    "================ PASS A ================\n" + CLAIMS_METHODS_SYSTEM +
+    "\n\n================ PASS B ================\n" + GRAPH_CONTEXT_SYSTEM +
+    "\n\n================ PASS C ================\n" + RESEARCH_FACETS_SYSTEM
+)
+
+
+def _split_shared_readers(payload: dict) -> dict[str, dict]:
+    """Hand the shared call's output to merge_role_extractions in the per-role
+    shape it has always received, so nothing downstream can tell the difference."""
+    payload = payload if isinstance(payload, dict) else {}
+    return {
+        "claims_methods": {
+            "claims": payload.get("claims") or [],
+            "methods": payload.get("methods") or [],
+        },
+        "graph_context": {"knowledge_graph": payload.get("knowledge_graph") or {}},
+        "research_facets": {"research_facets": payload.get("research_facets") or []},
+    }
+
+
 def _paper_user_prompt(
     paper_id: str,
     title: str,
@@ -451,12 +480,24 @@ def extract_paper_multi_agent(
     """Run role-specialized extraction and merge into legacy schema."""
     # Only the taxonomy reader is told to classify into leaf nodes, so it is the
     # only role that needs the leaf listing in its prompt.
+    #
+    # Three calls, not five. The claims/methods, evidence-graph and facets
+    # readers received an identical user prompt -- the whole paper -- and
+    # differed only in their system prompt, so the paper was billed three
+    # times for them. They now share one call whose system prompt is their
+    # three prompts verbatim. The results reader keeps its own call: the
+    # results table is by far the most verbose section, and when it shared a
+    # call with the others it was the part that got squeezed out.
+    #
+    # Measured 2026-09-24, eight fresh papers, both arms the same day:
+    # 84,692 -> 57,135 tokens per paper; claims 109%, results 94%, methods
+    # 148%, entities 102% of the five-call arm. Per-paper differences went
+    # both ways and sit inside the run-to-run spread (the identical results
+    # prompt on identical papers returned 217 rows one day and 149 another).
     roles = [
         ("taxonomy_overview", TAXONOMY_OVERVIEW_SYSTEM, True),
         ("empirical_results", EMPIRICAL_RESULTS_SYSTEM, False),
-        ("claims_methods", CLAIMS_METHODS_SYSTEM, False),
-        ("graph_context", GRAPH_CONTEXT_SYSTEM, False),
-        ("research_facets", RESEARCH_FACETS_SYSTEM, False),
+        (_SHARED_READERS_ROLE, SHARED_READERS_SYSTEM, False),
     ]
     outputs: dict[str, dict] = {}
     total_tokens = 0
@@ -479,7 +520,10 @@ def extract_paper_multi_agent(
                 else None
             )
             if cached is not None:
-                outputs[role_name] = cached
+                if role_name == _SHARED_READERS_ROLE:
+                    outputs.update(_split_shared_readers(cached))
+                else:
+                    outputs[role_name] = cached
                 continue
             payload, tokens, route = proposer_json(
                 system_prompt,
@@ -500,7 +544,10 @@ def extract_paper_multi_agent(
                     tokens=tokens,
                     route=route,
                 )
-            outputs[role_name] = result
+            if role_name == _SHARED_READERS_ROLE:
+                outputs.update(_split_shared_readers(result))
+            else:
+                outputs[role_name] = result
         except Exception as exc:
             errors[role_name] = str(exc)
 

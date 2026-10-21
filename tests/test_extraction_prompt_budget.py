@@ -148,14 +148,11 @@ class PerRolePromptTests(unittest.TestCase):
                 "2605.5", "Paper", hint, "body text", llm_scope=None
             )
 
-        self.assertEqual(len(seen), 5)
+        # Three calls: taxonomy, results, and one shared by the claims,
+        # evidence-graph and facets readers (see extract_paper_multi_agent).
+        self.assertEqual(len(seen), 3)
         self.assertIn(hint, seen["taxonomy_overview"])
-        for role in (
-            "empirical_results",
-            "claims_methods",
-            "graph_context",
-            "research_facets",
-        ):
+        for role in ("empirical_results", "claims_graph_facets"):
             self.assertNotIn(hint, seen[role])
             self.assertIn("body text", seen[role])
 
