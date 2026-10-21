@@ -131,6 +131,20 @@ api_key_env = "DEEPGRAPH_LLM_SECONDARY_API_KEY"
 rpm = 0
 enabled = true
 
+# Candidate for the extraction role, added 2026-09-03 when the gateway began
+# serving it. Declared so it can be measured against the incumbent on real
+# papers before anything is switched -- the last extraction-model change was
+# made on an abstract-only probe and cost a 7.7x slowdown on full text.
+[[llm.providers]]
+name = "sora2_gemini_38"
+base_url_env = "DEEPGRAPH_LLM_SORA2_BASE_URL"
+model = "gemini-3.8-flash-high"
+model_family = "gemini-flash"
+protocol = "chat_completions"
+api_key_env = "DEEPGRAPH_LLM_SECONDARY_API_KEY"
+rpm = 90
+enabled = true
+
 # The model UNDER TEST, and deliberately not a thinking model.
 #
 # Every other route here is "-high" or "-thinking", which is right for the
