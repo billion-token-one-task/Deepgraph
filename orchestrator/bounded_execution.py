@@ -34,7 +34,6 @@ from typing import Any, Callable
 
 from contracts.meta_harness import EVIDENCE_STATES, ResourceGrant
 from db import database as db
-from meta_harness.evidence_state import EvidenceTransitionContext
 from meta_harness.grants import ResourceRequest, authorize
 from meta_harness.repository import MetaHarnessRepository
 

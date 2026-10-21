@@ -18,8 +18,6 @@ from meta_harness.backends.colab_durable import (
     grant_from_row,
 )
 from meta_harness.compute import ComputeBackendError, ComputeJob
-from meta_harness.evidence_state import EvidenceTransitionContext
-from meta_harness.repository import MetaHarnessRepository
 from meta_harness.runner_contract import validate_final_results, verify_metric_from_artifacts
 
 

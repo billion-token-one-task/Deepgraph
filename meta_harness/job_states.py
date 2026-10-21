@@ -21,7 +21,7 @@ its disposition fails that test at the commit that introduces it.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 # A status that is claimable whatever the stage is. The stage on these rows is

@@ -1,6 +1,5 @@
 """Orchestrator: continuous paper processing pipeline."""
 import logging
-import json
 import threading
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -17,11 +16,11 @@ from db import database as db
 from db import evidence_graph as graph
 from db import opportunity_engine as opp
 from db import taxonomy as tax
-from ingestion.arxiv_client import fetch_recent, search_papers
+from ingestion.arxiv_client import search_papers
 from ingestion.pdf_parser import get_paper_text_parts
 from agents.claim_grounding import apply_claim_grounding, apply_result_grounding
 from agents.extraction_agent import extract_paper
-from agents.reasoning_agent import detect_contradictions, detect_contradictions_batch, discover_matrix_gaps
+from agents.reasoning_agent import detect_contradictions_batch
 from agents.taxonomy_expander import run_expansion, EXPANSION_THRESHOLD
 from ingestion.arxiv_ids import arxiv_base_id
 from meta_harness.scoped_llm import require_active_scope

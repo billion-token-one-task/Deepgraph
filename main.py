@@ -14,10 +14,8 @@ from config import (
     APP_NAME,
     AUTO_PIPELINE_ENABLED,
     AUTO_RESEARCH_ENABLED,
-    BACKFILL_GRAPH_ON_START,
     COMPUTE_BACKENDS_ENABLED,
     IDEA_WORKSPACE_DIR,
-    REFRESH_MERGE_CANDIDATES_ON_START,
     ROOT_NODE_ID,
     SCOPED_INGESTION_WORKER_ENABLED,
     WEB_HOST,
@@ -28,8 +26,6 @@ from config import (
 from db.database import describe_backend, init_db
 from db.evidence_graph import (
     backfill_entity_resolutions,
-    backfill_graph_from_structured_data,
-    refresh_merge_candidates,
 )
 from db.taxonomy import seed_taxonomy, backfill_result_taxonomy
 from web.app import app

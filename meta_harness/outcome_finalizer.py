@@ -177,7 +177,6 @@ def _advance_settled_evidence_state(
     """
     from orchestrator.bounded_execution import raw_artifacts_hash
     from meta_harness.repository import (
-        EvidenceTransitionContext,
         MetaHarnessRepository,
     )
 

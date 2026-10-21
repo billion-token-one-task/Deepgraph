@@ -6,7 +6,6 @@ When a leaf taxonomy node accumulates EXPANSION_THRESHOLD or more papers, this a
 3. Creates new child nodes in the taxonomy
 4. Re-classifies existing papers into the new children
 """
-import json
 import logging
 import re
 from collections.abc import Mapping

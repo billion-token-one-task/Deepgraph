@@ -8,7 +8,6 @@ Order respects foreign keys loosely — disable triggers if needed for your data
 
 from __future__ import annotations
 
-import json
 import os
 import sqlite3
 import sys

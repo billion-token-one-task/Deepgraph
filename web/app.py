@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Any
 from flask import Flask, Response, abort, jsonify, render_template, request, send_file, url_for
 from agents.workspace_layout import get_idea_workspace, list_paper_assets, plan_file_path, resolve_paper_asset
-import config as cfg
 from config import APP_NAME, APP_SUBTITLE, PROFILE, ROOT_NODE_ID
 from db import database as db
 from db import evidence_graph as graph

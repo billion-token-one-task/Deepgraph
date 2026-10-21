@@ -31,7 +31,6 @@ from meta_harness.compute import (
     ArtifactCollection,
     BackendCapability,
     ColabAccount,
-    ComputeBackendError,
     ComputeJob,
     ComputeSubmission,
     UsageAccounting,

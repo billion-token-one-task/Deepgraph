@@ -7,7 +7,6 @@ Integrates with the main pipeline without blocking paper processing.
 """
 import json
 import threading
-import time
 import traceback
 from datetime import datetime
 

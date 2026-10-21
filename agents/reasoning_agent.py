@@ -1,5 +1,4 @@
 """Reasoning Agent: Matrix gap finding + contradiction detection."""
-import json
 from collections.abc import Mapping
 from typing import Any
 

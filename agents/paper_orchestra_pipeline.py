@@ -23,7 +23,6 @@ from agents.paper_completeness import (
     audit_evidence_completeness,
     latex_sanity_check,
 )
-from agents.benchmark_audit import full_benchmark_evidence_blockers
 from agents.plain_manuscript_reviewer import review_manuscript_plain
 from agents.tex_code_agent import repair_latex_bundle
 from agents.reference_corpus_audit import audit_against_reference_corpus
@@ -42,7 +41,7 @@ from agents.manuscript_pipeline import (
     build_manuscript_input_state,
 )
 from agents.workspace_layout import get_idea_workspace, paper_bundle_root, write_latest_status, write_plan_files
-from agents.paperorchestra.venue_policy import SubmissionTarget, generic_template_tex, infer_submission_target, target_from_key
+from agents.paperorchestra.venue_policy import SubmissionTarget, infer_submission_target, target_from_key
 from agents.paperorchestra.writing_standard import build_paper_contract
 from agents.paperorchestra.reference_manager import ReferenceExpansionError
 from agents.paperorchestra.experiment_plot_reference import ExperimentPlotReferenceError

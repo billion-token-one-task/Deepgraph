@@ -930,7 +930,6 @@ def build_structured_graph_payload_for_paper(paper_id: str) -> dict:
 def backfill_graph_from_structured_data(limit: int | None = None, overwrite: bool = False) -> dict:
     """Backfill graph evidence for papers that already have structured extraction."""
     from db import opportunity_engine as opp
-    from db import taxonomy as tax
 
     sql = (
         "SELECT p.id FROM papers p "

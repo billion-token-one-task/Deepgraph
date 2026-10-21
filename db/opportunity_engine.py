@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import re
 from typing import Any
-from collections import Counter, defaultdict
+from collections import Counter
 
 from db import database as db
 from db import evidence_graph as graph

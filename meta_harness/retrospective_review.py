@@ -24,7 +24,6 @@ from __future__ import annotations
 import hashlib
 import hmac as hmac_lib
 import json
-import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -33,7 +32,6 @@ from typing import Any
 from db import database as db
 from meta_harness.reviewer_approval import (
     ReviewerApproval,
-    ReviewerApprovalError,
     ReviewerApprovalVerifier,
 )
 
