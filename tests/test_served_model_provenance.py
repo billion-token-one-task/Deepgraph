@@ -78,3 +78,52 @@ def test_observation_carries_both_names():
         status="succeeded", failure_reason=None, reservation_id=None,
     )
     assert observation.model != observation.served_model
+
+
+class _StreamResp:
+    status_code = 200
+    text = ""
+
+    def raise_for_status(self):
+        return None
+
+    def iter_lines(self):
+        yield 'data: {"model": "gemini-3.8-flash", "choices": [{"delta": {"content": "a long enough answer"}}]}'
+        yield 'data: {"model": "gemini-3.8-flash", "usage": {"total_tokens": 9, "prompt_tokens": 6}}'
+        yield "data: [DONE]"
+
+
+class _StreamClient:
+    def __init__(self, *a, **k):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def stream(self, *a, **k):
+        class _Ctx:
+            def __enter__(self_inner):
+                return _StreamResp()
+
+            def __exit__(self_inner, *a):
+                return False
+
+        return _Ctx()
+
+
+def test_streaming_chat_completions_also_reports_the_served_model():
+    """The live route streams, so the non-streaming path alone proves nothing."""
+    provider = {
+        "name": "gw",
+        "base_url": "https://gw.example/v1",
+        "api_key": "k",
+        "model": "gemini-3.8-flash-high",
+        "protocol": "chat_completions",
+        "stream_chat_completions": True,
+    }
+    with unittest.mock.patch.object(llm_client.httpx, "Client", _StreamClient):
+        result = llm_client._call_chat_completions(provider, "sys", "user", 128)
+    assert result[5] == "gemini-3.8-flash"
