@@ -136,6 +136,16 @@ class RealManifestTests(unittest.TestCase):
                 encoding="utf-8"
             )
         )
+        # The public history is a rewrite of the internal one, so the commit
+        # this manifest was built from only exists in internal clones.
+        commit_present = subprocess.run(
+            ["git", "cat-file", "-e", f"{manifest['source_commit']}^{{commit}}"],
+            cwd=ROOT,
+            capture_output=True,
+            check=False,
+        )
+        if commit_present.returncode != 0:
+            self.skipTest("manifest source_commit is not in this clone's history")
         for batch in manifest["batches"]:
             for entry in batch["files"]:
                 with self.subTest(source=entry["source"]):

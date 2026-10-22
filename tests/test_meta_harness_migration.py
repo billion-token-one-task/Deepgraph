@@ -26,6 +26,13 @@ class LiveLocalMigrationGuardTests(unittest.TestCase):
                 migration._validate_live_local_url(url)  # noqa: SLF001
 
     def test_backup_must_be_directly_under_home_and_match_recorded_digest(self):
+        # The guard pins a host path; point it at a scratch directory so the
+        # test neither needs that path to exist nor writes into it.
+        backup_dir = Path(tempfile.mkdtemp(prefix="test-meta-harness-home-"))
+        self.addCleanup(backup_dir.rmdir)
+        directory_patch = patch.object(migration, "LIVE_LOCAL_BACKUP_DIRECTORY", backup_dir)
+        directory_patch.start()
+        self.addCleanup(directory_patch.stop)
         with tempfile.NamedTemporaryFile(
             dir=migration.LIVE_LOCAL_BACKUP_DIRECTORY,  # noqa: SLF001
             prefix="test-meta-harness-backup-",
