@@ -225,13 +225,11 @@ paper_text_prefetch_concurrency = 8
 sleep_between_papers = 1
 incremental_insight_every = 20
 max_retryable_failures = 12
-event_poll_seconds = 5
 
 [graph]
 grounding_min_store_score = 0.0
 contradiction_requires_grounded = false
 backfill_on_start = true
-refresh_merge_candidates_on_start = true
 paper_cluster_min_papers = 10
 
 [compute]
@@ -258,15 +256,6 @@ backlog_policy = "explicit_import_only"
 scope_min_term_hits = 1
 default_backend_allowlist = ["cpu", "llm"]
 max_concurrency_per_agenda = 1
-
-[resource_grants]
-required = true
-default_ttl_seconds = 3600
-pilot_token_cap = 20000
-pilot_gpu_hours_cap = 0.25
-full_benchmark_token_cap = 100000
-full_benchmark_gpu_hours_cap = 8.0
-required_artifacts = ["raw_metrics", "run_manifest", "environment_manifest", "claim_ledger"]
 
 [llm_routes]
 failure_policy = "fail_closed_or_manual"
@@ -407,14 +396,8 @@ record_provider_model = true
 record_token_cost = true
 
 [discovery]
-tier1_candidates = 5
 tier2_problems = 8
 tier2_papers = 5
-min_tier2_backlog = 3
-auto_trigger_papers = 100
-bulk_tier1_candidates = 12
-bulk_tier1_overlaps = 80
-bulk_tier1_patterns = 60
 bulk_tier2_problems = 15
 bulk_tier2_plateaus = 35
 bulk_tier2_limit_nodes = 30
@@ -496,10 +479,6 @@ iclr2026_template_files = [
   "natbib.sty",
   "fancyhdr.sty",
 ]
-
-[paper_orchestra]
-paperbanana_cmd = ""
-refinement_iters = 4
 
 [auto_research]
 pipeline_enabled = false

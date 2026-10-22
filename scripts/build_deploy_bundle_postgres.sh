@@ -186,9 +186,6 @@ DeepGraph 全链路部署包（PostgreSQL + 源码 + EvoScientist/PaperOrchestra
   # 必填示例：
   #   DEEPGRAPH_DATABASE_URL=postgresql://...
   #   DEEPGRAPH_LLM_*（主模型网关）
-  # PaperOrchestra 文献检索（Semantic Scholar API，降低配额压力）：
-  #   DEEPGRAPH_SEMANTIC_SCHOLAR_API_KEY=...
-  # 可选配图（PaperOrchestra Step 2）：PaperBanana + DEEPGRAPH_PAPERBANANA_* 或 DEEPGRAPH_PAPERBANANA_CMD
   python3.12 main.py
 
 可选：GROBID（PDF 正文质量） docker compose -f docker-compose.grobid.yml up -d

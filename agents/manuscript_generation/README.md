@@ -16,7 +16,6 @@ Primary legacy modules:
 
 Primary scripts:
 
-- `scripts.paperbanana_wrapper`
 - `scripts.repair_manuscript_artifacts`
 
 Configuration lives in `deepgraph.toml` under `manuscript`, `paper_orchestra`, `llm`, and `paths`.
