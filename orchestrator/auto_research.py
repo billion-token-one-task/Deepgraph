@@ -84,14 +84,12 @@ _active_execution_lock = threading.Lock()
 _active_execution: dict | None = None
 _active_queue_worker_lock = threading.Lock()
 _active_queue_workers: dict[int, str] = {}
-AUTO_RESEARCH_CONSUMER = "auto_research"
 VERIFY_STALE_SECONDS = 60 * 60
 RESEARCH_STALE_SECONDS = 6 * 60 * 60
 REVIEW_PENDING_STALE_SECONDS = int(os.environ.get("DEEPGRAPH_REVIEW_PENDING_STALE_SECONDS", str(90 * 60)))
 REVIEW_WORKER_STALE_SECONDS = int(os.environ.get("DEEPGRAPH_REVIEW_WORKER_STALE_SECONDS", "1800"))
 SCAFFOLD_STALE_SECONDS = int(os.environ.get("DEEPGRAPH_SCAFFOLD_STALE_SECONDS", str(45 * 60)))
 REVIEW_SCAFFOLD_STALE_SECONDS = int(os.environ.get("DEEPGRAPH_REVIEW_SCAFFOLD_STALE_SECONDS", str(90 * 60)))
-EXECUTION_STALE_SECONDS = int(os.environ.get("DEEPGRAPH_EXECUTION_STALE_SECONDS", "600"))
 MAX_EXPERIMENT_REVIEW_REPAIR_ATTEMPTS = int(os.environ.get("DEEPGRAPH_EXPERIMENT_REVIEW_REPAIR_ATTEMPTS", "2"))
 MAX_BENCHMARK_HARNESS_REPAIR_ATTEMPTS = int(os.environ.get("DEEPGRAPH_BENCHMARK_HARNESS_REPAIR_ATTEMPTS", "3"))
 BENCHMARK_HARNESS_DESIGN_REPAIR_STAGE = "benchmark_harness_design_repair"
@@ -154,12 +152,6 @@ OPTIONAL_RESEARCH_NONBLOCKING_STAGES = {
     "research_skipped_input_missing",
 }
 IGNORED_EXISTING_RUN_STATUSES = {"superseded", "reset", "archived", "cancelled"}
-
-HEAVY_KEYWORDS = {
-    "llm", "gpt", "llama", "mistral", "diffusion", "stable diffusion",
-    "video", "multimodal", "vision-language", "vlm", "7b", "13b", "70b",
-    "gpu", "pretrain", "pre-training", "billion", "transformer-xl",
-}
 
 
 @dataclass(frozen=True)

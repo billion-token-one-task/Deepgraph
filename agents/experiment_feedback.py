@@ -22,7 +22,6 @@ _VALUE_KEYS = (
 )
 _ORACLE_MARKERS = ("oracle", "upper_bound", "upper-bound", "upper bound")
 _CANDIDATE_MARKERS = ("candidate", "target", "proposed", "ours", "method_under_test")
-_BASELINE_MARKERS = ("baseline", "vanilla", "cot", "always", "direct", "reason")
 
 
 def _read_json(path: Path) -> Any:

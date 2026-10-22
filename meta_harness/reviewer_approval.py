@@ -178,12 +178,3 @@ def scientific_manuscript_subject(
         f"scientific-manuscript:{int(agenda_id)}:{int(experiment_run_id)}:"
         f"{str(verdict_hash).strip().lower()}"
     )
-
-
-def harness_candidate_subject(
-    *, agenda_id: int, candidate_id: int, patch_hash: str
-) -> str:
-    return (
-        f"harness-candidate:{int(agenda_id)}:{int(candidate_id)}:"
-        f"{str(patch_hash).strip().lower()}"
-    )

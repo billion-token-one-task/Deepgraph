@@ -7,7 +7,6 @@ it can be evaluated safely in an isolated test lane.
 from __future__ import annotations
 
 import math
-import re
 from dataclasses import dataclass, field
 
 from contracts.base import ContractRecord, ContractValidationError
@@ -150,14 +149,3 @@ def decide_evidence(payload: EvidenceDecisionInput) -> EvidenceDecision:
     )
     decision.validate()
     return decision
-
-
-_NUMBER_RE = re.compile(
-    r"(?<![A-Za-z0-9_])[-+]?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][-+]?\d+)?%?"
-)
-_STRENGTH_MARKERS = (
-    ("general_superiority", ("state-of-the-art", "sota", "universally superior", "general superiority")),
-    ("bounded_supported", ("statistically significant", "confirmed improvement", "evidence supports")),
-    ("pilot_observation", ("pilot suggests", "preliminary improvement")),
-    ("descriptive", ("point estimate", "observed", "measured")),
-)

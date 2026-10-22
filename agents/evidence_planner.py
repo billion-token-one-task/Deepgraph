@@ -304,21 +304,3 @@ def build_evidence_plan(insight: dict) -> dict[str, Any]:
             result["skip_reasons"].setdefault(name, block["reason"] or "Not selected for this idea.")
 
     return result
-
-
-def summarize_evidence_plan(plan: dict[str, Any] | None) -> str:
-    if not isinstance(plan, dict) or not plan:
-        return "Adaptive evidence planning unavailable."
-
-    lines = [
-        f"Claim type: {plan.get('claim_type', 'unknown')}",
-        f"Required evidence: {', '.join(plan.get('required_evidence') or []) or 'none'}",
-        f"Optional evidence: {', '.join(plan.get('optional_evidence') or []) or 'none'}",
-    ]
-    for key in ("main_table", "ablation", "visualization"):
-        block = plan.get(key) or {}
-        status = "enabled" if block.get("enabled") else "disabled"
-        reason = block.get("reason") or (plan.get("skip_reasons") or {}).get(key, "")
-        if reason:
-            lines.append(f"{key}: {status} — {reason}")
-    return "\n".join(lines)

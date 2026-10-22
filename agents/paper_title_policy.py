@@ -18,17 +18,6 @@ TITLE_NAMING_STANDARD_TEXT = """Paper title naming standard:
 - Do not use claim-heavy words such as Certified, Optimal, Universal, Fixed-Point, or State-of-the-Art unless the proof or completed benchmark evidence directly supports them.
 - Keep the whole title concise, usually 7-16 words after the colon."""
 
-
-CLAIM_HEAVY_TERMS = (
-    "certified",
-    "optimal",
-    "universal",
-    "state-of-the-art",
-    "sota",
-    "fixed-point",
-    "fixed point",
-)
-
 GENERIC_PREFIXES = (
     "a study of ",
     "towards ",

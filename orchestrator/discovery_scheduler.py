@@ -21,16 +21,9 @@ from config import (
 from db import database as db
 from meta_harness.repository import MetaHarnessRepository
 from orchestrator.pipeline import log_event
-
-_discovery_thread = None
-_discovery_lock = threading.Lock()
 _tier2_thread = None
-_tier2_lock = threading.Lock()
-_milestone_thread = None
-_milestone_lock = threading.Lock()
 _stop_event = threading.Event()
 DISCOVERY_CONSUMER = "discovery_scheduler"
-PARALLEL_TIER2_MIN_INTERVAL_SECONDS = 90
 _last_parallel_tier2_at = 0.0
 
 

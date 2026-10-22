@@ -315,37 +315,3 @@ def _target_with_reason(target: SubmissionTarget, reason: str) -> SubmissionTarg
         route_reason=reason,
         guidelines=target.guidelines,
     )
-
-
-def generic_template_tex(state: dict[str, Any], target: SubmissionTarget) -> str:
-    """Return a generic anonymous LaTeX shell for non-ICLR targets."""
-    title = (state.get("title") or "Title").replace("&", r"\&")
-    author = "Anonymous authors\\\\Paper under double-blind review" if target.double_blind else "Authors"
-    return rf"""\documentclass[10pt]{{article}}
-\usepackage[margin=1in]{{geometry}}
-\usepackage{{microtype}}
-\usepackage{{graphicx}}
-\usepackage{{booktabs}}
-\usepackage{{array}}
-\usepackage{{tabularx}}
-\usepackage{{amsmath,amssymb}}
-\usepackage{{natbib}}
-\usepackage{{hyperref}}
-\usepackage{{url}}
-\title{{{title}}}
-\author{{{author}}}
-\date{{{target.label}}}
-\begin{{document}}
-\maketitle
-\begin{{abstract}}
-\end{{abstract}}
-\section{{Introduction}}
-\section{{Related Work}}
-\section{{Method}}
-\section{{Experiments}}
-\section{{Discussion}}
-\section{{Conclusion}}
-\bibliographystyle{{{target.bibliography_style}}}
-\bibliography{{references}}
-\end{{document}}
-"""

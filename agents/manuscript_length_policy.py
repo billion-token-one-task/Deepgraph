@@ -231,23 +231,3 @@ def policy_for_submission_target(target: Any | None) -> VenueLengthPolicy:
     if isinstance(target, dict):
         return policy_for_family(target.get("family") or target.get("key"))
     return policy_for_family(getattr(target, "family", None) or getattr(target, "key", None))
-
-
-def build_length_standard_text(target: Any | None = None) -> str:
-    policy = policy_for_submission_target(target)
-    ranges = policy.section_budgets
-    parts = [
-        f"Length standard: {POLICY_VERSION}.",
-        f"Target family: {policy.label}. Complete main text should be {policy.complete_main_page_range[0]}-{policy.complete_main_page_range[1]} pages"
-        + (f" under the official {policy.official_main_page_limit}-page main-text limit." if policy.official_main_page_limit else "."),
-        f"Main body target: {policy.main_word_range[0]}-{policy.main_word_range[1]} words before references.",
-        "Section target ranges are best-paper-calibrated priors, not decorative suggestions:",
-    ]
-    for name, budget in ranges.items():
-        parts.append(
-            f"- {name}: target {budget.target_min_words}-{budget.target_max_words} words; hard floor {budget.min_words}; hard ceiling {budget.max_words}."
-        )
-    parts.append(
-        f"References: at least {policy.min_reference_count} bibliography entries and {policy.min_cited_reference_count} distinct cited entries in the main text; aim for roughly 50 when enough topic-relevant literature is available."
-    )
-    return "\n".join(parts)

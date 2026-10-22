@@ -322,18 +322,6 @@ def validate_final_results(
 
 def _normalize_text(value: Any) -> str:
     return " ".join(str(value or "").strip().lower().split())
-
-
-# A generation that keeps going past its own answer must be read at the
-# answer, not at the end. Few-shot prompting makes the model continue the
-# pattern -- it answers correctly, then invents the next question and answers
-# that too. Measured 2026-08-20: 70% of an 8-shot arm's outputs carried a
-# fabricated continuation, and taking the last number scored the arm 0.210
-# where reading its own answer scored 0.510. Thirty points, and the loss is
-# ONE-SIDED: the baseline never continues (0% across all fourteen adjudicated
-# runs), so only candidates are penalised, and only those whose prompt style
-# invites continuation.
-_ANSWER_MARKER = "####"
 _CONTINUATION_MARKERS = ("\nquestion:", "\nproblem:", "\nq:")
 
 

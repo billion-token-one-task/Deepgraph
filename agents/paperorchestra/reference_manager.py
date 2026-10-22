@@ -8,56 +8,8 @@ met, while the search loop keeps trying multiple sources to approach the target.
 from __future__ import annotations
 
 from typing import Any
-
-
-
-
-REFERENCE_MANAGER_VERSION = "deepgraph_reference_manager_v1_2026_06_12"
 DEFAULT_REFERENCE_TARGET = 50
 DEFAULT_REFERENCE_MINIMUM = 30
-STOPWORDS = {
-    "about",
-    "across",
-    "after",
-    "against",
-    "allocation",
-    "answer",
-    "benchmark",
-    "benchmarks",
-    "completed",
-    "could",
-    "large",
-    "language",
-    "models",
-    "paper",
-    "reasoning",
-    "strongest",
-    "system",
-    "systems",
-    "using",
-    "with",
-}
-
-NON_PAPER_TITLES = {
-    "abstract",
-    "acknowledgment",
-    "acknowledgments",
-    "author index",
-    "back matter",
-    "bibliography",
-    "contents",
-    "copyright",
-    "dedication",
-    "editorial",
-    "erratum",
-    "foreword",
-    "front matter",
-    "index",
-    "introduction",
-    "preface",
-    "references",
-    "table of contents",
-}
 
 
 class ReferenceExpansionError(RuntimeError):

@@ -19,7 +19,6 @@ from db import database as db
 
 
 GPU_BACKENDS = {"local_gpu", "ssh_gpu", "colab_gpu"}
-ACTIVE_ATTEMPT_STATES = {"reserved", "running"}
 TERMINAL_ATTEMPT_STATES = {"settled", "released"}
 def _is_reusable_prelaunch_release(row) -> bool:
     """True when a released claim provably never ran and consumed nothing.

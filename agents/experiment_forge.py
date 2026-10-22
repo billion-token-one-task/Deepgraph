@@ -364,14 +364,6 @@ CAPABILITY_SCAFFOLD_TAGGED_RESPONSE_FILE = (
     "capability_scaffold_tagged_response.json"
 )
 CAPABILITY_SCAFFOLD_TAGGED_RESUME_RUN_ID = 137
-CAPABILITY_ADAPTER_REPAIR_OPERATION = (
-    "experiment_forge.capability_adapter_repair"
-)
-CAPABILITY_ADAPTER_REPAIR_ACTUAL_TOKEN_CAP = 2435
-CAPABILITY_ADAPTER_REPAIR_RESPONSE_FILE = "capability_adapter_repair_response.json"
-CAPABILITY_ADAPTER_REPAIR_SYSTEM = (
-    "Python only; exact hook; no imports, labels, I/O."
-)
 CAPABILITY_SCAFFOLD_FAILED_REPAIR_ERROR = (
     "resource-granted scaffold route unavailable: "
     "capability_scaffold_contract_missing:"

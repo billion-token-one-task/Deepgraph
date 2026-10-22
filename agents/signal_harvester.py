@@ -162,21 +162,6 @@ SIGNAL_PAYLOAD_TABLES = {
     "claim_method_gaps": "claim_method_gaps",
 }
 
-PROBLEM_SIGNAL_TABLES = {
-    "contradiction_clusters",
-    "performance_plateaus",
-    "mechanism_mismatches",
-    "protocol_artifacts",
-    "negative_space_gaps",
-    "claim_method_gaps",
-}
-
-SOLUTION_SIGNAL_TABLES = {
-    "node_entity_overlap",
-    "pattern_matches",
-    "hidden_variable_bridges",
-}
-
 
 def _json_list(value: str | None) -> list:
     if not value:

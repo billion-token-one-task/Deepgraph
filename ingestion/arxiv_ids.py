@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import re
-
-_VERSION_SUFFIX = re.compile(r"v\d+$", re.IGNORECASE)
 
 
 def arxiv_base_id(paper_id: str) -> str:

@@ -30,14 +30,6 @@ LATER_RESEARCH_GRANT_STAGES = frozenset(
     }
 )
 
-# The status API needs the same closed namespace as grant admission.  Export a
-# value set instead of teaching its SQL a second, fuzzy ``ingestion%`` rule:
-# unknown legacy spellings are not research authority, and exact ingestion
-# variants remain outside this set by construction.
-RESEARCH_GRANT_STAGES = frozenset(
-    {"proposal", "pilot", *LATER_RESEARCH_GRANT_STAGES}
-)
-
 # ``ingestion`` is the stable lane name.  Bounded operator variants such as
 # ``ingestion_backfill_canary`` remain explicit members of that namespace.
 # The full match is intentional: ``ingestionish`` and punctuation/case/space

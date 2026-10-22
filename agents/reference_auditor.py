@@ -8,15 +8,6 @@ from typing import Any
 
 AUDITOR_VERSION = "deepgraph_reference_auditor_v1_2026_06_10"
 
-REFERENCE_AUDIT_STANDARD_TEXT = """Reference standard:
-- A full paper must include at least 30 real bibliography entries and at least 30 distinct entries cited in the main text; aim for roughly 50 when the topic has enough literature.
-- Every cited key must exist in references.bib; no invented, placeholder, or dangling citation keys are allowed.
-- Each bibliography entry must include title, year, and author/editor/organization metadata, plus publication venue or a DOI/arXiv/URL identifier whenever available.
-- Citations must not appear in the Abstract.
-- Citations must not be stuffed into the contribution bullets or contribution paragraph.
-- The main citation load should be in Introduction, Related Work, and Method. Experiments may cite datasets and baselines, but cannot compensate for a thin Related Work.
-- Related Work should cite by category using small citation clusters, not one large undifferentiated citation dump."""
-
 
 CITE_RE = re.compile(r"\\cite[a-zA-Z*]*(?:\[[^\]]*\]){0,2}\{([^}]+)\}", re.IGNORECASE)
 BIB_ENTRY_RE = re.compile(r"@\s*([A-Za-z]+)\s*\{\s*([^,\s]+)\s*,(.*?)(?=\n\s*@|\Z)", re.DOTALL)

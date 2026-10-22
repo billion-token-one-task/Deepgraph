@@ -9,36 +9,7 @@ only when verified sweep artifacts exist.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any
-
-
-
-EXPERIMENT_PLOT_REFERENCE_VERSION = "deepgraph_experiment_plot_reference_v4_2026_06_13"
-DEFAULT_MIN_EXPERIMENT_FIGURES = 3
-DEFAULT_MIN_STYLE_REFERENCES = 3
-DEFAULT_MIN_DISTINCT_FAMILIES = 2
-LOCAL_EXPERIMENT_STYLE_REFERENCE_DIR = Path(__file__).resolve().parents[2] / "实验图例子"
-REQUIRED_STYLE_REFERENCE_SOURCES = ["local_user_examples", "related_literature_search"]
-
-CHART_FAMILY_BY_TYPE = {
-    "main_results_bar": "bar_family",
-    "main_results_bar_1x2": "bar_family",
-    "backend_grouped_bars": "bar_family",
-    "quality_cost_tradeoff": "distribution_family",
-    "method_metric_heatmap": "matrix_family",
-    "backend_heatmap_single": "matrix_family",
-    "backend_rank_lines_1x4": "line_family",
-    "ablation_bar": "bar_family",
-    "ablation_results": "bar_family",
-    "dataset_breakdown": "matrix_family",
-    "hyperparameter_sweep": "line_family",
-    "threshold_sweep": "line_family",
-    "tsne_embedding": "distribution_family",
-    "umap_embedding": "distribution_family",
-    "cmc_curve": "line_family",
-    "ranking_examples": "qualitative_family",
-}
 
 DOMAIN_RULES = [
     {
@@ -88,12 +59,6 @@ DOMAIN_RULES = [
         ],
         "recommended_chart_types": ["main_results_bar", "ablation_bar", "hyperparameter_sweep", "ranking_examples"],
     },
-]
-
-GENERIC_STYLE_QUERIES = [
-    "machine learning paper experimental results main results ablation sensitivity figure",
-    "neural network paper experiment figures grouped bar ablation hyperparameter sensitivity",
-    "benchmark paper experimental plots grouped bar ablation threshold sensitivity",
 ]
 
 

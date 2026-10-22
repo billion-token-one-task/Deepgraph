@@ -91,10 +91,6 @@ def log_event(event_type: str, data: dict):
             _event_log.pop(0)
 
 
-_insight_thread = None
-_insight_lock = threading.Lock()
-
-
 def _stage_rank(stage: str | None) -> int:
     return STAGE_ORDER.get((stage or "").strip(), -1)
 

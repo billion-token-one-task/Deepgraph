@@ -48,6 +48,7 @@ _ACCOUNTED = {
     "mechanism_repair": "LLM-authored idea field",
     "subset_analysis": "LLM-authored audit field",
     "avg_new_tokens": "runner-emitted metrics payload",
+    "ablation_results": "runner-emitted summary payload (validation_loop accepted keys)",
     "publication_evidence": "LLM-authored contract field",
     "submission_target": "LLM-authored venue field",
     "dataset_selection_source": "LLM-authored dataset field",

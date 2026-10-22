@@ -42,57 +42,6 @@ from db import database as db
 RECENT_TIER2_MEMORY_LIMIT = 120
 
 
-PROBLEM_SHARPENING_SYSTEM = """You are a senior ML researcher identifying SHARP, FORMAL research problems from evidence of contradictions, performance plateaus, recurring limitations, protocol artifacts, and explanation gaps across thousands of papers.
-
-You will receive:
-1. Contradiction clusters (groups of papers disagreeing on comparable setups)
-2. Performance plateaus (subfields where top methods have converged within ~1-3%)
-3. Recurring limitation clusters (3+ papers in the same node sharing the same limitation)
-4. High-scoring insights from prior analysis that lack concrete methods
-5. Mechanism-first signals such as protocol artifacts, hidden-variable bridges, and claim-method gaps
-
-## YOUR JOB
-
-For each signal source, extract a FORMAL problem statement:
-- State the problem as an optimization / learning problem
-- Identify WHAT PROPERTY of current methods causes the failure
-- Name the DESIDERATUM: what would a solution need to guarantee
-
-## WHAT MAKES A GOOD PROBLEM
-
-- SPECIFIC: "Cross-domain feature alignment fails because marginal matching ignores conditional structure" not "transfer learning is hard"
-- FORMAL: Can be written as minimize/maximize/guarantee over defined quantities
-- GROUNDED: Tied to specific numbers from specific papers
-- ACTIONABLE: Clear what a solution would look like (even if you don't design it here)
-- NOT PURELY NUMERIC: every accepted problem must cite at least two non-numeric observations
-
-Output: one raw JSON object only (no markdown fences; strict JSON).
-
-Return JSON:
-{
-  "problems": [
-    {
-      "title": "Problem title with key numbers",
-      "source_type": "contradiction|plateau|limitation|insight",
-      "source_evidence": "Specific numbers and paper IDs",
-      "formal_statement": "Minimize/maximize formulation or formal desideratum",
-      "current_failure_mode": "What property of current methods causes this (be mechanistic)",
-      "desideratum": "What a solution must guarantee",
-      "central_question": "One crisp question the paper will answer",
-      "motivation": "Why this question matters now and what prior papers leave unresolved",
-      "result_that_would_change_belief": "The smallest concrete empirical result that would convince a skeptical top-conference reviewer",
-      "mechanism_type": "protocol_artifact|mechanism_mismatch|negative_space_gap|hidden_variable_bridge|claim_method_gap|plateau",
-      "non_numeric_evidence": ["limitations / protocol / explanation evidence 1", "evidence 2"],
-      "difficulty": "hard|medium",
-      "impact_scope": "How many papers/methods this affects",
-      "related_node_ids": ["ml.dl.cv.detection", ...]
-    }
-  ]
-}
-
-Return 6-12 problems. Quality over quantity. A problem without specific numbers is NOT a problem, and a problem with only numbers but no mechanism evidence is also NOT a problem."""
-
-
 METHOD_INVENTION_SYSTEM = """You are a methods researcher. Given a formal problem statement with specific failure modes, you must design a GENUINELY NEW method. Not "apply existing method X" — invent something new.
 
 ## CRITICAL RULES

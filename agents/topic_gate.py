@@ -61,10 +61,6 @@ from contracts.agenda import ResearchAgenda
 
 POLICY_VERSION = "topic_gate_v2"
 
-# Stage ladder. A candidate never starts above ``pilot``.
-STAGES = ("pilot", "confirm", "full")
-STAGE_BUDGET_FRACTION = {"pilot": 0.10, "confirm": 0.35, "full": 1.0}
-
 # Reason codes are an operator contract: they are persisted, shown in the
 # dashboard and asserted in tests. Do not rename one without a migration note.
 REASON_SCOPE_MISMATCH = "topic_gate_agenda_scope_mismatch"

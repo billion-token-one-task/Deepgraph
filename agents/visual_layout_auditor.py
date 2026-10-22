@@ -10,19 +10,6 @@ from typing import Any
 AUDITOR_VERSION = "deepgraph_visual_layout_auditor_v7_2026_06_14"
 
 
-VISUAL_LAYOUT_STANDARD_TEXT = """Visual layout standard:
-- Figures must never appear before maketitle, title, authors, abstract, or the first substantive paper text.
-- Motivation and overview figures are mandatory gpt-image-2 post-writing figures, but they must not be forced into the first viewport and must not be the first object in the paper. Rich near-square concept diagrams should use a balanced single-column size, roughly 0.72--0.88\\linewidth with a height cap and keepaspectratio, so they remain information-rich without becoming a long empty slab.
-- LaTeX captions are the only figure captions. Do not add standalone "Figure 1:" paragraphs after a figure.
-- Generated images must not contain internal captions, "Figure X" labels, panel numbering such as "1./2./3.", or long explanatory paragraphs.
-- Motivation figures must not use a rigid three-column comparison layout. Prefer a compact tension map, central mechanism schematic, or one worked-example diagram with at most two small callouts.
-- Concept figures may use short local labels, score tags, or symbols, but the caption and surrounding prose must carry the explanation.
-- Algorithm and pseudocode blocks must use real LaTeX algorithm structure (algorithm+algpseudocode/algorithmic or algorithm2e) with a caption and line structure; do not fake algorithms with center/minipage/enumerate/textbf blocks.
-- Experiment figures are separate from motivation/overview diagrams: main results and ablation are required artifact-backed plots; hyperparameter/threshold sensitivity is generated when a verified artifact exists and must not block otherwise. The target pack is three plots with searched style-reference metadata from related papers and local user-provided experiment-figure examples.
-- Experiment figures must be wide multi-panel plots, specifically 1x3 or 1x4 layouts in figure* / textwidth form; single-column 1x1 experiment plots, default quality-cost scatter plots, and patterned/hatch bars are not allowed. Axis-based plots should use a full four-sided frame rather than only left/bottom axes.
-- Numeric tables should fill the available single-column or double-column width using tabularx, tabular*, or resizebox with \\linewidth/\\textwidth; narrow centered tabular blocks are not acceptable."""
-
-
 FIGURE_ENV_RE = re.compile(r"\\begin\{figure\*?\}.*?\\end\{figure\*?\}", re.DOTALL | re.IGNORECASE)
 INCLUDE_RE = re.compile(r"\\includegraphics(?:\[[^\]]*\])?\{([^}]+)\}", re.IGNORECASE)
 INCLUDE_WITH_OPTIONS_RE = re.compile(r"\\includegraphics(?:\[(?P<opts>[^\]]*)\])?\{(?P<path>[^}]+)\}", re.IGNORECASE)

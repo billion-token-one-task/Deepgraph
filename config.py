@@ -2,7 +2,6 @@
 import json
 import os
 import sys
-import shutil
 import tomllib
 from pathlib import Path
 
@@ -279,7 +278,6 @@ GROUNDING_MIN_STORE_SCORE = _env_float("DEEPGRAPH_GROUNDING_MIN_STORE_SCORE", 0.
 # Contradiction detection: if True, only "verified" performance claims (strict cite-and-verify)
 CONTRADICTION_REQUIRES_GROUNDED = _env_bool("DEEPGRAPH_CONTRADICTION_REQUIRES_GROUNDED", False, "graph.contradiction_requires_grounded")
 BACKFILL_GRAPH_ON_START = _env_bool("DEEPGRAPH_BACKFILL_GRAPH_ON_START", True, "graph.backfill_on_start")
-REFRESH_MERGE_CANDIDATES_ON_START = _env_bool("DEEPGRAPH_REFRESH_MERGE_CANDIDATES_ON_START", True, "graph.refresh_merge_candidates_on_start")
 PAPER_CLUSTER_MIN_PAPERS = _env_int("DEEPGRAPH_PAPER_CLUSTER_MIN_PAPERS", 10, "graph.paper_cluster_min_papers")
 
 # Compute admission policy for idea routing. This is intentionally separate
@@ -350,11 +348,6 @@ TOPIC_GATE_MAX_PILOT_WALL_HOURS = _env_float(
     24.0,
     "topic_gate.max_pilot_wall_hours",
 )
-
-# meta-harness-v1 policy is non-sensitive configuration. Provider, SSH, and
-# Colab credential material is never read from TOML; route/backend entries hold
-# environment or secret-manager references only.
-RESOURCE_GRANT_POLICY = dict(_toml_get("resource_grants", {}) or {})
 LLM_ROLE_ROUTES = {
     role: list(_toml_get(f"llm_routes.{role}", []) or [])
     for role in ("proposer", "evaluator", "reviewer")
@@ -494,11 +487,8 @@ HARNESS_PRODUCTION_DATABASE_NAMESPACE = _env_str(
     "",
     "harness_evolution.production_database_namespace",
 )
-DISCOVERY_TIER1_CANDIDATES = _env_int("DEEPGRAPH_TIER1_CANDIDATES", 5, "discovery.tier1_candidates")
 DISCOVERY_TIER2_PROBLEMS = _env_int("DEEPGRAPH_TIER2_PROBLEMS", 8, "discovery.tier2_problems")
 DISCOVERY_TIER2_PAPERS = _env_int("DEEPGRAPH_TIER2_PAPERS", 5, "discovery.tier2_papers")
-DISCOVERY_MIN_TIER2_BACKLOG = _env_int("DEEPGRAPH_DISCOVERY_MIN_TIER2_BACKLOG", 3, "discovery.min_tier2_backlog")
-DISCOVERY_AUTO_TRIGGER_PAPERS = _env_int("DEEPGRAPH_DISCOVERY_AUTO_TRIGGER", 100, "discovery.auto_trigger_papers")
 # Paper reading / idea review gates
 MULTI_AGENT_EXTRACTION_ENABLED = _env_bool("DEEPGRAPH_MULTI_AGENT_EXTRACTION", True, "extraction.multi_agent_enabled")
 # Extraction prompt budget.  The taxonomy has ~3.9k leaf nodes whose dotted IDs
@@ -529,10 +519,6 @@ EXTRACTION_TAXONOMY_ROUTING_ENABLED = _env_bool(
 TIER2_EVOSCI_PREINSERT_REVIEW = _env_bool("DEEPGRAPH_TIER2_EVOSCI_PREINSERT_REVIEW", True, "discovery.tier2_evosci_preinsert_review")
 TIER2_EVOSCI_REVIEW_TIMEOUT_SECONDS = _env_int("DEEPGRAPH_TIER2_EVOSCI_REVIEW_TIMEOUT_SECONDS", 1200, "discovery.tier2_evosci_review_timeout_seconds")
 TIER2_DEBATE_ROUNDS = _env_int("DEEPGRAPH_TIER2_DEBATE_ROUNDS", 10, "discovery.tier2_debate_rounds")
-# Bulk/on-demand full pass: wider SQL signals + more LLM slots
-DISCOVERY_BULK_TIER1_CANDIDATES = _env_int("DEEPGRAPH_BULK_TIER1_CANDIDATES", 12, "discovery.bulk_tier1_candidates")
-DISCOVERY_BULK_TIER1_OVERLAPS = _env_int("DEEPGRAPH_BULK_TIER1_OVERLAPS", 80, "discovery.bulk_tier1_overlaps")
-DISCOVERY_BULK_TIER1_PATTERNS = _env_int("DEEPGRAPH_BULK_TIER1_PATTERNS", 60, "discovery.bulk_tier1_patterns")
 DISCOVERY_BULK_TIER2_PROBLEMS = _env_int("DEEPGRAPH_BULK_TIER2_PROBLEMS", 15, "discovery.bulk_tier2_problems")
 DISCOVERY_BULK_TIER2_PLATEAUS = _env_int("DEEPGRAPH_BULK_TIER2_PLATEAUS", 35, "discovery.bulk_tier2_plateaus")
 DISCOVERY_BULK_TIER2_LIMIT_NODES = _env_int("DEEPGRAPH_BULK_TIER2_LIMIT_NODES", 30, "discovery.bulk_tier2_limit_nodes")
@@ -587,14 +573,6 @@ ALLOW_SMOKE_EXPERIMENT_VALIDATION = _env_bool("DEEPGRAPH_ALLOW_SMOKE_EXPERIMENT_
 IDEA_WORKSPACE_DIR = Path(_env_str("DEEPGRAPH_IDEA_WORKSPACE_DIR", str(Path.home() / "deepgraph_ideas"), "paths.idea_workspace_dir")).expanduser()
 RUNTIME_PYTHON = _env_str("DEEPGRAPH_RUNTIME_PYTHON", sys.executable, "runtime.python")
 MLFLOW_TRACKING_URI = _env_str("DEEPGRAPH_MLFLOW_TRACKING_URI", "", "tracking.mlflow_uri")
-CODEX_EXEC_ENABLED = _env_bool("DEEPGRAPH_CODEX_EXEC_ENABLED", True, "codex.exec_enabled")
-CODEX_CLI_PATH = _env_str(
-    "DEEPGRAPH_CODEX_CLI_PATH",
-    shutil.which("codex") or "",
-    "codex.cli_path",
-)
-CODEX_MODEL = _env_str("DEEPGRAPH_CODEX_MODEL", "", "codex.model")
-CODEX_TIMEOUT_SECONDS = _env_int("DEEPGRAPH_CODEX_TIMEOUT_SECONDS", 900, "codex.timeout_seconds")
 
 # GPU scheduling / experiment lanes
 GPU_MODE = _env_str("DEEPGRAPH_GPU_MODE", "single_host", "gpu.mode")
@@ -641,15 +619,7 @@ ICLR2026_TEMPLATE_FILES = _split_csv(_toml_get("manuscript.iclr2026_template_fil
     "natbib.sty",
     "fancyhdr.sty",
 ]
-
-# PaperOrchestra full §4 pipeline (S2 + parallel plot/lit + AgentReview loop)
-SEMANTIC_SCHOLAR_API_KEY = _env_str("DEEPGRAPH_SEMANTIC_SCHOLAR_API_KEY", "", "paper_orchestra.semantic_scholar_api_key")
-# Optional: shell command template for PaperBanana-style diagrams; must write output image path.
-# Example: python /path/to/PaperBanana/run.py --out {output} --spec '{spec}'
-PAPERBANANA_CMD = _env_str("DEEPGRAPH_PAPERBANANA_CMD", "", "paper_orchestra.paperbanana_cmd")
-PAPERORCHESTRA_REFINEMENT_ITERS = _env_int("DEEPGRAPH_PAPERORCHESTRA_REFINEMENT_ITERS", 4, "paper_orchestra.refinement_iters")
 PGVECTOR_EMBEDDING_DIM = _env_int("DEEPGRAPH_PGVECTOR_EMBEDDING_DIM", 1536, "database.pgvector_embedding_dim")
-PIPELINE_EVENT_POLL_SECONDS = _env_int("DEEPGRAPH_PIPELINE_EVENT_POLL_SECONDS", 5, "pipeline.event_poll_seconds")
 
 # Auto Research orchestration
 AUTO_PIPELINE_ENABLED = _env_bool("DEEPGRAPH_AUTO_PIPELINE_ENABLED", False, "auto_research.pipeline_enabled")

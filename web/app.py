@@ -297,10 +297,6 @@ def prewarm_stats_cache():
         _stats_cache.start_background_refresh()
 
 
-_pipeline_running = False
-_pipeline_lock = threading.Lock()
-
-
 @app.teardown_request
 def _finish_request_transaction(_exc):
     """Never leave a request thread idle in a PostgreSQL transaction."""
