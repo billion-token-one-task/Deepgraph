@@ -15,7 +15,6 @@ from pathlib import Path
 
 
 CLASSIFICATION = {
-    "agents/figure_agent.py": "legacy_no_generic_call_site",
     "agents/paperorchestra/tracing.py": "legacy_no_generic_call_site",
     "agents/paradigm_agent.py": "legacy_scheduler_and_registry_blocked",
 }

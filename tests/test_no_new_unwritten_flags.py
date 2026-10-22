@@ -71,6 +71,8 @@ _ACCOUNTED = {
     "max_vram_gb": "preflight environment probe payload",
     "gap_description": "gaps/matrix_gaps column read from historical rows; "
     "their insert helpers had no caller and were removed",
+    "svg_path": "figure-asset key in manifests the removed, uncalled figure_agent "
+    "once wrote; still read as a fallback for older bundles",
     # --- the benchmark readiness flags: KNOWN to have no writer ---
     # This is the defect that cost agenda 14 fifteen runs. They stay listed
     # because benchmark_harness_loop still reads them for the legacy path;

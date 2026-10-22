@@ -7,13 +7,11 @@ Primary legacy modules:
 - `agents.manuscript_pipeline`
 - `agents.paper_orchestra_pipeline`
 - `agents.paper_orchestra_prompts`
-- `agents.figure_agent`
 - `agents.paperorchestra.full_pipeline`
 - `agents.paperorchestra.figure_orchestra`
 - `agents.paperorchestra.literature_discovery`
 - `agents.paperorchestra.reference_manager`
 - `agents.paperorchestra.experiment_plot_reference`
-- `agents.paperorchestra.plotting_orchestra`
 - `agents.paperorchestra.semantic_scholar`
 
 Primary scripts:
