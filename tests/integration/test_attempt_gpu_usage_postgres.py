@@ -834,6 +834,9 @@ class IsolatedAttemptGPUUsageTests(unittest.TestCase):
                 return True
 
         plan = {
+            # Preflight binds the runner contract to the targets the plan names.
+            "benchmark_targets": [{"repository_id": "opaque/dataset-one"}],
+            "model_targets": [{"repository_id": "opaque/model-one"}],
             "execution_requirements": {
                 "schema_version": "experiment_requirements_v1",
                 "task_protocol": "sequence_classification",

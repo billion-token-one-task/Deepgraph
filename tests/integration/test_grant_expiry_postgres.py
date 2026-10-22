@@ -434,13 +434,13 @@ class OrphanedGrantExpiryTests(unittest.TestCase):
 
     # --- and the cases it must still refuse ------------------------------
 
-    def test_refuses_a_pilot_grant_that_has_a_run(self):
+    def test_refuses_a_pilot_grant_that_has_a_live_run(self):
         grant_id = self._grant("pilot", metered_tokens=40000)
         self.db.execute(
             """
             INSERT INTO experiment_runs
                 (agenda_id, deep_insight_id, resource_grant_id, status)
-            VALUES (?, ?, ?, 'failed')
+            VALUES (?, ?, ?, 'running')
             """,
             (self.agenda_id, self.idea_id, grant_id),
         )
