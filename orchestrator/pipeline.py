@@ -210,68 +210,6 @@ def recover_retryable_papers(limit: int = 1000) -> int:
     return len(rows)
 
 
-def _run_incremental_insights(papers_so_far: int, *, llm_scope: dict):
-    """Run insight discovery in a background thread so it doesn't block paper processing."""
-    global _insight_thread
-    with _insight_lock:
-        if _insight_thread and _insight_thread.is_alive():
-            print(f"[PIPELINE] Insight discovery still running, skipping this round", flush=True)
-            return
-
-    def _do_insights():
-        from agents.insight_agent import discover_insights, store_insight
-        nodes = db.fetchall(
-            """SELECT t.id, t.name, COUNT(DISTINCT pt.paper_id) as pc
-               FROM taxonomy_nodes t
-               JOIN paper_taxonomy pt ON pt.node_id = t.id
-               GROUP BY t.id
-               HAVING COUNT(DISTINCT pt.paper_id) >= 10
-               ORDER BY pc DESC LIMIT 15"""
-        )
-        new_insights = 0
-        for node in nodes:
-            existing = db.fetchone(
-                f"SELECT COUNT(*) as c FROM insights WHERE node_id=? AND {db.sql_created_after_hours(2)}",
-                (node["id"],),
-            )
-            recent_count = int(existing["c"] if existing else 0)
-            slots = max(0, 2 - recent_count)
-            if slots <= 0:
-                continue
-            try:
-                print(f"[PIPELINE] Insight discovery: analyzing {node['id']} ({node['pc']}p)...", flush=True)
-                log_event("step", {"step": "incremental_insight", "node_id": node["id"],
-                                   "papers_so_far": papers_so_far})
-                insights, tokens = discover_insights(
-                    node["id"],
-                    llm_scope=llm_scope,
-                )
-                for ins in insights[:slots]:
-                    insight_id = store_insight(ins)
-                    if not insight_id or insight_id <= 0:
-                        continue
-                    new_insights += 1
-                    print(f"[PIPELINE] New insight: [{ins['type']}] {ins['title'][:80]}", flush=True)
-                    log_event("insight", {
-                        "node_id": ins["node_id"],
-                        "type": ins["type"],
-                        "title": ins["title"],
-                        "novelty": ins.get("novelty_score", 0),
-                        "feasibility": ins.get("feasibility_score", 0),
-                    })
-            except Exception as e:
-                logger.error("Insight discovery failed for %s: %s", node["id"], e)
-        if new_insights:
-            print(f"[PIPELINE] Incremental insights: {new_insights} new insights at {papers_so_far} papers", flush=True)
-            log_event("incremental_insights_done", {"new_insights": new_insights, "papers_so_far": papers_so_far})
-        else:
-            print(f"[PIPELINE] Insight discovery: no new insights (all deduped or skipped)", flush=True)
-
-    with _insight_lock:
-        _insight_thread = threading.Thread(target=_do_insights, daemon=True)
-        _insight_thread.start()
-
-
 def ingest_papers(max_papers: int = 100) -> int:
     """Fetch and store papers from arXiv, paginating to find enough new ones."""
     log_event("ingest_start", {"max_papers": max_papers})

@@ -269,46 +269,6 @@ def _recent_node_insight_count(node_id: str, hours: int = 2) -> int:
     return int(row["c"]) if row else 0
 
 
-def _eligible_tier2_backlog() -> int:
-    if db.table_exists("research_problems"):
-        row = db.fetchone(
-            """
-            SELECT COUNT(DISTINCT COALESCE(di.research_problem_id, di.id)) AS c
-            FROM deep_insights di
-            LEFT JOIN auto_research_jobs arj ON arj.deep_insight_id = di.id
-            WHERE di.tier = 2
-              AND COALESCE(di.status, 'candidate') NOT IN ('exists')
-              AND COALESCE(di.outcome, 'pending') NOT IN ('cleaned', 'archived')
-              AND COALESCE(di.novelty_status, '') NOT IN ('cleaned_similar_duplicate', 'exists')
-              AND COALESCE(di.submission_status, 'not_started') NOT IN ('stale')
-              AND (
-                arj.status IS NULL
-                OR arj.status IN ('queued', 'eligible', 'failed', 'queued_cpu', 'queued_gpu')
-                OR (arj.status='blocked' AND arj.cpu_eligible=1)
-              )
-            """
-        )
-        return int(row["c"]) if row else 0
-    row = db.fetchone(
-        """
-        SELECT COUNT(*) AS c
-        FROM deep_insights di
-        LEFT JOIN auto_research_jobs arj ON arj.deep_insight_id = di.id
-        WHERE di.tier = 2
-          AND COALESCE(di.status, 'candidate') NOT IN ('exists')
-          AND COALESCE(di.outcome, 'pending') NOT IN ('cleaned', 'archived')
-          AND COALESCE(di.novelty_status, '') NOT IN ('cleaned_similar_duplicate', 'exists')
-          AND COALESCE(di.submission_status, 'not_started') NOT IN ('stale')
-          AND (
-            arj.status IS NULL
-            OR arj.status IN ('queued', 'eligible', 'failed', 'queued_cpu', 'queued_gpu')
-            OR (arj.status='blocked' AND arj.cpu_eligible=1)
-          )
-        """
-    )
-    return int(row["c"]) if row else 0
-
-
 def maybe_launch_milestone_idea_screening(trigger: str = "manual") -> dict:
     """Legacy unscoped trigger is disabled; scoped callers use run_full_discovery."""
     return {

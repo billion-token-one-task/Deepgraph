@@ -120,21 +120,6 @@ REPAIR_REVIEW_PENDING_STAGES = {
 }
 
 
-def _insight_is_archived_or_cleaned(row: dict | None) -> bool:
-    if not row:
-        return False
-    status = str(row.get("status") or "").strip().lower()
-    novelty = str(row.get("novelty_status") or "").strip().lower()
-    outcome = str(row.get("outcome") or "").strip().lower()
-    submission = str(row.get("submission_status") or "").strip().lower()
-    return (
-        status in {"exists"}
-        or novelty in {"cleaned_similar_duplicate", "exists"}
-        or outcome in {"cleaned", "archived"}
-        or submission in {"stale"}
-    )
-
-
 TERMINAL_RUN_STATUSES = {
     "completed",
     "failed",
@@ -1995,131 +1980,6 @@ def recover_orphaned_review_pending_jobs(limit: int = 50) -> int:
     return recovered
 
 
-def recover_runaway_review_scaffold_jobs(limit: int = 25) -> int:
-    rows = db.fetchall(
-        """
-        SELECT arj.deep_insight_id, arj.experiment_run_id
-        FROM auto_research_jobs arj
-        JOIN experiment_runs er ON er.id = arj.experiment_run_id
-        WHERE arj.status='review_pending'
-          AND er.status='scaffolding'
-        ORDER BY arj.updated_at ASC
-        LIMIT ?
-        """,
-        (limit,),
-    )
-    recovered = 0
-    for row in rows:
-        insight_id = int(row["deep_insight_id"])
-        run_id = row.get("experiment_run_id")
-        if not run_id:
-            continue
-        run = db.fetchone("SELECT * FROM experiment_runs WHERE id=?", (int(run_id),))
-        if not run or str(run.get("status") or "") != "scaffolding":
-            continue
-        stale_count = _review_stale_recovery_count(insight_id)
-        if stale_count < max(0, MAX_REVIEW_STALE_RETRIES) and _run_age_seconds(run) < REVIEW_PENDING_STALE_SECONDS:
-            continue
-        if _recover_stale_review_scaffold_run(insight_id, run, source="runaway_review_recovery"):
-            recovered += 1
-    return recovered
-
-
-def recover_invalid_ready_jobs(limit: int = 50) -> int:
-    rows = db.fetchall(
-        """
-        SELECT arj.deep_insight_id, arj.experiment_run_id, er.status AS run_status, er.error_message
-        FROM auto_research_jobs arj
-        LEFT JOIN experiment_runs er ON er.id = arj.experiment_run_id
-        WHERE arj.status IN ('eligible', 'smoke_only')
-          AND arj.experiment_run_id IS NOT NULL
-          AND (er.id IS NULL OR er.status!='scaffolding')
-        ORDER BY arj.updated_at ASC
-        LIMIT ?
-        """,
-        (limit,),
-    )
-    recovered = 0
-    for row in rows:
-        insight_id = int(row["deep_insight_id"])
-        run_id = row.get("experiment_run_id")
-        reason = (
-            "Ready job pointed at a non-scaffolding experiment run; requeueing before execution. "
-            f"run_id={run_id}; run_status={row.get('run_status') or 'missing'}; "
-            f"run_error={str(row.get('error_message') or '')[:300]}"
-        )
-        if _review_stale_recovery_count(insight_id) >= max(0, MAX_REVIEW_STALE_RETRIES):
-            _route_review_stale_to_harness(insight_id, int(run_id or 0), reason)
-        else:
-            _upsert_job(
-                insight_id,
-                status="queued",
-                stage="invalid_ready_run_reforge",
-                experiment_run_id=None,
-                assigned_worker=None,
-                last_error=None,
-                last_note=reason,
-            )
-        recovered += 1
-    return recovered
-
-
-def recover_foreign_key_review_failures(limit: int = 25) -> int:
-    rows = db.fetchall(
-        """
-        SELECT arj.deep_insight_id,
-               arj.experiment_run_id,
-               arj.last_error,
-               er.status AS run_status,
-               er.phase AS run_phase,
-               er.proxy_config,
-               er.error_message
-        FROM auto_research_jobs arj
-        LEFT JOIN experiment_runs er ON er.id = arj.experiment_run_id
-        WHERE arj.status='failed'
-          AND arj.stage='exception'
-          AND COALESCE(arj.last_error, '') LIKE '%FOREIGN KEY constraint failed%'
-        ORDER BY arj.updated_at ASC
-        LIMIT ?
-        """,
-        (limit,),
-    )
-    recovered = 0
-    for row in rows:
-        insight_id = int(row["deep_insight_id"])
-        run_id = row.get("experiment_run_id")
-        reason = (
-            "Recovered experiment-review database consistency failure; requeueing a fresh "
-            "forge under durable blocked-review handling."
-        )
-        if run_id and str(row.get("run_status") or "") == "failed" and str(row.get("run_phase") or "") == "experiment_review_blocked":
-            _handle_experiment_review_blocked(insight_id, _blocked_review_payload_from_run(row), source="review_fk_recovery")
-            recovered += 1
-            continue
-        if run_id and str(row.get("run_status") or "") == "scaffolding":
-            _supersede_stale_scaffold_run(int(run_id), reason)
-        _upsert_job(
-            insight_id,
-            status="queued",
-            stage="review_fk_recovered",
-            experiment_run_id=None,
-            assigned_worker=None,
-            last_error=None,
-            last_note=reason,
-        )
-        log_event(
-            "warning",
-            {
-                "step": "auto_research_review_fk_recovered",
-                "insight_id": insight_id,
-                "run_id": run_id,
-                "previous_error": str(row.get("last_error") or "")[:300],
-            },
-        )
-        recovered += 1
-    return recovered
-
-
 def _active_execution_run_id() -> int | None:
     with _active_execution_lock:
         active = _active_execution
@@ -2447,32 +2307,6 @@ def _block_invalid_manuscript_retry_run(insight_id: int, run_id: int | None, rea
             "reason": reason,
         },
     )
-
-
-def recover_invalid_manuscript_retry_jobs(limit: int = 50) -> int:
-    rows = db.fetchall(
-        """
-        SELECT arj.deep_insight_id, arj.experiment_run_id
-        FROM auto_research_jobs arj
-        WHERE arj.status='queued'
-          AND arj.stage IN ('manuscript_retry_after_quality_gate', 'manuscript_retry_after_soft_benchmark_gate', 'manuscript_blocked')
-          AND arj.experiment_run_id IS NOT NULL
-        ORDER BY arj.updated_at ASC
-        LIMIT ?
-        """,
-        (limit,),
-    )
-    recovered = 0
-    for row in rows:
-        insight_id = int(row["deep_insight_id"])
-        run_id = int(row["experiment_run_id"])
-        run = db.fetchone("SELECT * FROM experiment_runs WHERE id=?", (run_id,))
-        blocker = _manuscript_retry_blocker(run)
-        if not blocker:
-            continue
-        _block_invalid_manuscript_retry_run(insight_id, run_id, blocker)
-        recovered += 1
-    return recovered
 
 
 def _run_manuscript_retry_job(insight_id: int, run_id: int, resource_class: str | None) -> None:
@@ -3189,59 +3023,6 @@ def _route_recovered_legacy_job(insight: dict) -> tuple[str, str]:
         resource_class = "gpu_small"
         reason = f"{reason} Legacy cpu_ineligible note indicates GPU-heavy; routed to gpu_small."
     return resource_class, reason
-
-
-def recover_legacy_cpu_ineligible_jobs(limit: int = 50) -> int:
-    """Requeue jobs blocked by the pre-GPU-era CPU-only filter."""
-    rows = db.fetchall(
-        """SELECT di.*, arj.last_note AS auto_last_note
-           FROM auto_research_jobs arj
-           JOIN deep_insights di ON di.id = arj.deep_insight_id
-           WHERE arj.status='blocked'
-             AND arj.stage='cpu_ineligible'
-             AND COALESCE(di.status, 'candidate') NOT IN ('exists')
-             AND COALESCE(di.outcome, 'pending') NOT IN ('cleaned', 'archived')
-             AND COALESCE(di.novelty_status, '') NOT IN ('cleaned_similar_duplicate', 'exists')
-             AND COALESCE(di.submission_status, 'not_started') NOT IN ('stale')
-           ORDER BY arj.updated_at ASC
-           LIMIT ?""",
-        (limit,),
-    )
-    recovered = 0
-    for insight in rows:
-        insight_id = int(insight["id"])
-        resource_class, reason = _route_recovered_legacy_job(dict(insight))
-        experimentability = _resource_experimentability(resource_class)
-        db.execute(
-            """UPDATE deep_insights
-               SET resource_class=?, experimentability=?, updated_at=CURRENT_TIMESTAMP
-               WHERE id=? AND agenda_id=?""",
-            (
-                resource_class,
-                experimentability,
-                insight_id,
-                int(insight["agenda_id"]),
-            ),
-        )
-        _upsert_job(
-            insight_id,
-            status="queued",
-            stage="legacy_gpu_requeue",
-            cpu_eligible=1,
-            cpu_reason=reason,
-            resource_class=resource_class,
-            scheduler_priority=2 if resource_class == "gpu_large" else 1,
-            last_error=None,
-            last_note="Recovered from legacy cpu_ineligible block; waiting for Auto Research scheduling.",
-        )
-        log_event(
-            "auto_research",
-            {"step": "legacy_cpu_ineligible_recovered", "insight_id": insight_id, "resource_class": resource_class},
-        )
-        recovered += 1
-    if recovered:
-        db.commit()
-    return recovered
 
 
 def _candidate_needs_verification(candidate: dict) -> bool:
