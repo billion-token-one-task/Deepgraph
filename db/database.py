@@ -1651,16 +1651,6 @@ def upsert_paper_insight(paper_id: str, insight: dict):
     commit()
 
 
-def get_paper_insight(paper_id: str) -> dict | None:
-    row = fetchone("SELECT * FROM paper_insights WHERE paper_id=?", (paper_id,))
-    if not row:
-        return None
-    row["key_findings"] = _load_json(row.get("key_findings"), [])
-    row["limitations"] = _load_json(row.get("limitations"), [])
-    row["open_questions"] = _load_json(row.get("open_questions"), [])
-    return row
-
-
 VALID_RESEARCH_FACET_TYPES = {
     "problem_frame",
     "motivation_rationale",

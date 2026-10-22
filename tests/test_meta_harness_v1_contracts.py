@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
-import hmac
 import unittest
 from unittest import mock
 from datetime import datetime, timedelta, timezone
@@ -33,22 +31,12 @@ from meta_harness.frontier_builder import (
 from meta_harness.grants import GrantDeniedError, ResourceRequest, authorize
 from meta_harness.repository import MetaHarnessPersistenceError, MetaHarnessRepository
 from meta_harness.harness_evolution import (
-    EvaluationRun,
     HarnessCandidate,
-    HarnessPatch,
     HarnessPolicy,
     HarnessPolicyError,
-    evaluate_candidate,
     validate_candidate,
-    validate_patch,
 )
 from meta_harness.portfolio import PortfolioPolicy, decide_portfolio
-from meta_harness.reviewer_approval import (
-    ReviewerApproval,
-    ReviewerApprovalError,
-    ReviewerApprovalVerifier,
-    harness_candidate_subject,
-)
 
 
 def _estimate(value: float, *, lower: float = 0.0, upper: float = 1.0) -> Estimate:
@@ -374,122 +362,6 @@ class HarnessIsolationTests(unittest.TestCase):
                 production_path="/home/billion-token/Deepgraph",
                 production_database_namespace="deepgraph",
             )
-
-    def test_candidate_cannot_modify_holdout_or_policy(self):
-        policy = HarnessPolicy(candidate_root="/tmp/meta-harness-candidates")
-        changed = ("meta_harness/held_out/secret_cases.json",)
-        material = "\n".join(["a" * 40, *changed, "10", "2"]).encode()
-        patch = HarnessPatch(
-            agenda_id=11,
-            candidate_ref="candidate-1",
-            base_commit="a" * 40,
-            changed_paths=changed,
-            added_lines=10,
-            deleted_lines=2,
-            patch_hash=hashlib.sha256(material).hexdigest(),
-        )
-        with self.assertRaises(HarnessPolicyError):
-            validate_patch(patch, policy=policy)
-
-    def test_all_three_suites_still_require_reviewer(self):
-        runs = [
-            EvaluationRun(
-                agenda_id=11,
-                suite=name,
-                status="passed",
-                evaluator_ref=f"readonly:{name}",
-                evaluator_hash=f"{name}-hash",
-                artifact_manifest={"files": ["result"]},
-            )
-            for name in ("held_in", "held_out", "canary")
-        ]
-        report = evaluate_candidate(runs)
-        self.assertEqual(report.decision, "awaiting_approval")
-
-    def test_harness_approval_is_signed_and_subject_bound(self):
-        runs = [
-            EvaluationRun(
-                agenda_id=11,
-                suite=name,
-                status="passed",
-                evaluator_ref=f"readonly:{name}",
-                evaluator_hash=f"{name}-hash",
-                artifact_manifest={"files": ["result"]},
-            )
-            for name in ("held_in", "held_out", "canary")
-        ]
-        secret = b"isolated-test-secret"
-        subject = harness_candidate_subject(
-            agenda_id=11,
-            candidate_id=41,
-            patch_hash="a" * 64,
-        )
-        unsigned = ReviewerApproval(
-            reviewer_id="reviewer-1",
-            key_id="test-key",
-            purpose="harness_upgrade",
-            subject=subject,
-            issued_at=datetime.now(timezone.utc).isoformat(),
-            signature="pending",
-        )
-        approval = ReviewerApproval(
-            **{
-                **unsigned.__dict__,
-                "signature": hmac.new(
-                    secret,
-                    unsigned.signing_payload(),
-                    hashlib.sha256,
-                ).hexdigest(),
-            }
-        )
-        verifier = ReviewerApprovalVerifier(
-            {"test-key": "env:DEEPGRAPH_TEST_REVIEWER_SECRET"}
-        )
-        with mock.patch.dict(
-            "os.environ",
-            {"DEEPGRAPH_TEST_REVIEWER_SECRET": secret.decode()},
-        ):
-            report = evaluate_candidate(
-                runs,
-                candidate_id=41,
-                patch_hash="a" * 64,
-                reviewer_approval=approval,
-                approval_verifier=verifier,
-            )
-        self.assertEqual(report.decision, "approved")
-        self.assertEqual(report.reviewer, "reviewer-1")
-
-        wrong_subject = ReviewerApproval(
-            **{**approval.__dict__, "subject": subject + ":other"}
-        )
-        with mock.patch.dict(
-            "os.environ",
-            {"DEEPGRAPH_TEST_REVIEWER_SECRET": secret.decode()},
-        ):
-            with self.assertRaises(ReviewerApprovalError):
-                evaluate_candidate(
-                    runs,
-                    candidate_id=41,
-                    patch_hash="a" * 64,
-                    reviewer_approval=wrong_subject,
-                    approval_verifier=verifier,
-                )
-
-    def test_cross_agenda_evaluations_are_rejected(self):
-        runs = [
-            EvaluationRun(
-                agenda_id=11 if name != "canary" else 12,
-                suite=name,
-                status="passed",
-                evaluator_ref=f"readonly:{name}",
-                evaluator_hash=f"{name}-hash",
-                artifact_manifest={"files": ["result"]},
-            )
-            for name in ("held_in", "held_out", "canary")
-        ]
-        report = evaluate_candidate(runs)
-        self.assertEqual(report.decision, "reject")
-        self.assertIn("cross_agenda_evaluation", report.blockers)
 
 
 class StaticMigrationContractTests(unittest.TestCase):

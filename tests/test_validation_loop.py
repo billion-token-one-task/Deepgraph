@@ -623,29 +623,6 @@ class ValidationLoopVerdictTests(unittest.TestCase):
         self.assertTrue(payload["not_scientific_verdict"])
         self.assertEqual(payload["recommended_route"], "reforge_or_benchmark_harness")
 
-    def test_codex_agents_md_contains_mechanism_contract(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            code_dir = Path(tmpdir) / "code"
-            code_dir.mkdir()
-
-            path = validation_loop.codex_executor.write_iteration_agents_md(
-                code_dir=code_dir,
-                method_desc="Memory replay method",
-                baseline=0.7,
-                best_so_far=0.7,
-                iteration=1,
-                history=[],
-                proxy={},
-                success_criteria={"metric_name": "accuracy"},
-                experimental_plan={},
-                evidence_plan={},
-                supervisor_plan={},
-            )
-            text = path.read_text(encoding="utf-8")
-
-        self.assertIn("Mechanism Operationalization Contract", text)
-        self.assertIn("EXPERIMENT_REDESIGN_REQUIRED.json", text)
-
 
 if __name__ == "__main__":
     unittest.main()

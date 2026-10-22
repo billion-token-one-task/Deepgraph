@@ -155,17 +155,6 @@ class IdempotencyAndEventTests(TempDbCase):
         )
         self.assertEqual(database.fetch_pipeline_events(discovery_scheduler.DISCOVERY_CONSUMER, limit=10), [])
 
-    def test_discovery_event_loop_rolls_back_after_refresh_failure(self):
-        with (
-            mock.patch.object(discovery_scheduler._stop_event, "is_set", side_effect=[False, True]),
-            mock.patch.object(discovery_scheduler._stop_event, "wait"),
-            mock.patch.object(discovery_scheduler, "consume_pipeline_events_once", side_effect=RuntimeError("pg aborted")),
-            mock.patch.object(database, "rollback") as rollback,
-        ):
-            discovery_scheduler._event_loop()
-
-        rollback.assert_called_once()
-
 class PipelineTextPrefetchTests(TempDbCase):
     def test_prefetch_paper_texts_updates_text_ready_concurrently(self):
         from orchestrator import pipeline

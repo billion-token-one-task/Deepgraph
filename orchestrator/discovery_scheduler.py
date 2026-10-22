@@ -17,7 +17,6 @@ from config import (
     DISCOVERY_BULK_TIER2_PROBLEMS,
     DISCOVERY_TIER2_PAPERS,
     DISCOVERY_TIER2_PROBLEMS,
-    PIPELINE_EVENT_POLL_SECONDS,
 )
 from db import database as db
 from meta_harness.repository import MetaHarnessRepository
@@ -369,22 +368,6 @@ def consume_pipeline_events_once(
         "tier2": tier2_status,
         "idea_screening": idea_screening_status,
     }
-
-
-def _event_loop() -> None:
-    while not _stop_event.is_set():
-        try:
-            stats = consume_pipeline_events_once(limit=100)
-            if not stats.get("events"):
-                _stop_event.wait(max(1, PIPELINE_EVENT_POLL_SECONDS))
-        except Exception as exc:
-            try:
-                db.rollback()
-            except Exception:
-                pass
-            print(f"[DISCOVERY] Event loop failed: {exc}", flush=True)
-            print(traceback.format_exc(), flush=True)
-            _stop_event.wait(max(1, PIPELINE_EVENT_POLL_SECONDS))
 
 
 def schedule_discovery_if_ready():

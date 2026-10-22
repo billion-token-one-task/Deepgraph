@@ -458,36 +458,6 @@ def _reconcile_succeeded_runs() -> int:
     return len(rows)
 
 
-def recover_succeeded_run(*, experiment_run_id: int, resource_grant_id: int) -> bool:
-    """Recover one explicitly named successful request without claiming work.
-
-    This operator-safe entry point is intentionally narrower than ``run_one``:
-    it cannot inspect, claim, submit, or execute any other queued Colab work.
-    It only performs the verified terminal handoff for the supplied run/grant
-    pair, which makes it suitable for recovering a controller interruption.
-    """
-
-    row = db.fetchone(
-        """
-        SELECT cwr.experiment_run_id, cwr.agenda_id, cwr.idea_id,
-               cwr.resource_grant_id, cwr.stage, cwr.artifact_output_dir
-        FROM colab_work_requests_v1 AS cwr
-        JOIN compute_jobs_v1 AS cj ON cj.id=cwr.compute_job_id
-        WHERE cwr.experiment_run_id=? AND cwr.resource_grant_id=?
-          AND cwr.status='succeeded' AND cj.status='succeeded'
-        ORDER BY cwr.completed_at DESC, cwr.id DESC
-        LIMIT 1
-        """,
-        (int(experiment_run_id), int(resource_grant_id)),
-    )
-    if not row:
-        return False
-    _record_terminal_run_success(
-        dict(row), type("Observed", (), {"status": "succeeded"})()
-    )
-    return True
-
-
 def run_one() -> dict:
     """Claim and settle at most one request; safe for a scheduler loop or CI."""
     from meta_harness.attempt_gpu_usage import GrantGPUUsageControl

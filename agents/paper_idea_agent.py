@@ -398,26 +398,6 @@ def _recent_tier2_memory(limit: int = RECENT_TIER2_MEMORY_LIMIT) -> list[dict]:
     return memory
 
 
-def _recent_idea_memory_block(memory: list[dict]) -> str:
-    if not memory:
-        return ""
-    lines = [
-        "## RECENT TIER-1/TIER-2 IDEAS TO AVOID REPEATING",
-        "The system has already generated these paper ideas. Prefer different source-node families, mechanism types, datasets, and failure mechanisms unless the evidence is materially stronger.",
-    ]
-    for item in memory[:20]:
-        nodes = ", ".join(str(node) for node in item.get("source_node_ids", [])[:4])
-        method = item.get("method_name") or "?"
-        title = str(item.get("title") or "")[:180]
-        mechanism = item.get("mechanism_type") or "?"
-        node_text = nodes or "?"
-        lines.append(
-            f"- {title} | mechanism={mechanism} | "
-            f"method={method[:80]} | nodes={node_text}"
-        )
-    return "\n".join(lines)
-
-
 def _text_similarity(a: str, b: str) -> float:
     a = (a or "").lower().strip()
     b = (b or "").lower().strip()
@@ -1986,7 +1966,7 @@ def discover_paper_ideas(
         plateau_limit=tier2_plateau_limit,
         limitation_node_limit=tier2_limitation_nodes,
     )
-    fallback_problem_refs = signal_refs_from_rows(
+    signal_refs_from_rows(
         getattr(signals, "payload", signals),
         roles={"problem", "derived"},
     )

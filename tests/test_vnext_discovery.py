@@ -7,7 +7,6 @@ from agents.paradigm_agent import store_deep_insight
 from agents import discovery_supervisor
 from agents.signal_harvester import (
     get_solution_signals,
-    get_tier1_signals,
     get_tier2_signals,
     harvest_protocol_artifacts,
 )
@@ -60,14 +59,13 @@ class Tier2SignalCompatibilityTests(TempDbTestCase):
             mock.patch.object(signal_harvester.db, "column_names", return_value={"paradigm_score"}),
             mock.patch.object(signal_harvester.db, "table_exists", return_value=False),
         ):
-            get_tier1_signals()
             get_tier2_signals()
             get_solution_signals()
 
         hidden_queries = [
             query for query in queries if "FROM hidden_variable_bridges" in query
         ]
-        self.assertEqual(len(hidden_queries), 3)
+        self.assertEqual(len(hidden_queries), 2)
         self.assertTrue(
             all("ORDER BY score DESC" in query for query in hidden_queries),
             hidden_queries,

@@ -8,9 +8,7 @@ from db.evidence_graph import (
     make_entity_id,
     merge_graph_payloads,
     normalize_entity_name,
-    normalize_entity_type,
     normalize_predicate,
-    score_entity_merge_candidate,
     summarize_graph_rows,
 )
 
@@ -31,18 +29,6 @@ class EvidenceGraphNormalizationTests(unittest.TestCase):
     def test_normalize_predicate(self):
         self.assertEqual(normalize_predicate("evaluated_on"), "evaluated_on")
         self.assertEqual(normalize_predicate("unsupported relation"), "related_to")
-
-    def test_score_entity_merge_candidate_matches_ours_suffix(self):
-        entity_a = {"canonical_name": "SemTok", "entity_type": "method", "aliases": '[]'}
-        entity_b = {"canonical_name": "SemTok (Ours)", "entity_type": "method", "aliases": '[]'}
-        score, rationale = score_entity_merge_candidate(entity_a, entity_b)
-        self.assertGreaterEqual(score, 0.99)
-        self.assertIn("match", rationale.lower())
-
-    def test_score_entity_merge_candidate_rejects_different_names(self):
-        entity_a = {"canonical_name": "Transformer", "entity_type": "method", "aliases": '[]'}
-        entity_b = {"canonical_name": "ResNet", "entity_type": "method", "aliases": '[]'}
-        self.assertIsNone(score_entity_merge_candidate(entity_a, entity_b))
 
 
 class EvidenceGraphSummaryTests(unittest.TestCase):

@@ -27,10 +27,6 @@ def _blocked(stage: str) -> dict[str, Any]:
     }
 
 
-def run_figure_orchestra(*args: Any, **kwargs: Any) -> dict[str, Any]:
-    return _blocked("figure_orchestra")
-
-
 def run_postwriting_api_figure_stage(*args: Any, **kwargs: Any) -> dict[str, Any]:
     return _blocked("postwriting_api_figures")
 
@@ -48,9 +44,3 @@ def infer_figure_spec_from_reference(path: str, caption: str = "") -> dict[str, 
         "caption": str(caption),
         "blocker": "reference-image inference is outside the first closed loop",
     }
-
-
-def _run_external_diagram(*args: Any, **kwargs: Any) -> dict[str, Any]:
-    raise FigureGenerationBlocked(
-        "external diagram generation is outside the meta-harness-v1 first closed loop"
-    )

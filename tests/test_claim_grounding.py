@@ -4,7 +4,6 @@ import unittest
 from agents.claim_grounding import (
     apply_claim_grounding,
     locate_quote_span,
-    score_grounding,
 )
 
 
@@ -25,24 +24,6 @@ class TestLocateQuote(unittest.TestCase):
     def test_too_short_quote(self):
         full = "Hello world"
         self.assertIsNone(locate_quote_span(full, "short"))
-
-
-class TestScoreGrounding(unittest.TestCase):
-    def test_verified(self):
-        full = "The proposed method obtains an accuracy of 92.3% on ImageNet."
-        st, score, a, b = score_grounding(
-            full,
-            "Method gets 92.3% accuracy",
-            "accuracy of 92.3% on ImageNet",
-        )
-        self.assertEqual(st, "verified")
-        self.assertEqual(score, 1.0)
-        self.assertEqual(full[a:b], "accuracy of 92.3% on ImageNet")
-
-    def test_no_quote(self):
-        st, score, a, b = score_grounding("hello world", "x", None)
-        self.assertEqual(st, "no_quote")
-        self.assertEqual(score, 0.0)
 
 
 class TestApplyClaim(unittest.TestCase):

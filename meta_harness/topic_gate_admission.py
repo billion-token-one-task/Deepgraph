@@ -57,18 +57,3 @@ def evaluate(
         row_to_agenda(agenda_row),
         policy=policy or policy_from_config(),
     )
-
-
-def require_pass(
-    *,
-    agenda_id: int,
-    idea_id: int,
-    policy: TopicGatePolicy | None = None,
-) -> TopicGateDecision:
-    """Return the decision, or refuse the candidate with auditable reasons."""
-    decision = evaluate(agenda_id=agenda_id, idea_id=idea_id, policy=policy)
-    if not decision.passed:
-        raise TopicGateAdmissionError(
-            "topic gate blocked this candidate:" + ",".join(decision.reason_codes)
-        )
-    return decision

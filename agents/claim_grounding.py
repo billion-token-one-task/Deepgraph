@@ -77,36 +77,6 @@ def _fuzzy_best_window(full_text: str, claim_text: str, quote: str) -> tuple[flo
     return best
 
 
-def score_grounding(
-    full_text: str,
-    claim_text: str,
-    source_quote: str | None,
-) -> tuple[str, float, int | None, int | None]:
-    """
-    Returns (grounding_status, grounding_score, char_start, char_end).
-    Status: verified | weak | unverified | no_quote
-    """
-    quote = (source_quote or "").strip()
-    if not quote:
-        return "no_quote", 0.0, None, None
-
-    span = locate_quote_span(full_text, quote)
-    if span:
-        a, b = span
-        return "verified", 1.0, a, b
-
-    fb = _fuzzy_best_window(full_text, claim_text, quote)
-    if fb:
-        ratio, a, b = fb
-        if ratio >= 0.88:
-            return "weak", ratio, a, b
-        if ratio >= WEAK_THRESHOLD:
-            return "weak", ratio, a, b
-        return "unverified", ratio, None, None
-
-    return "unverified", 0.0, None, None
-
-
 def score_grounding_in_sources(
     sources: dict[str, str],
     claim_text: str,

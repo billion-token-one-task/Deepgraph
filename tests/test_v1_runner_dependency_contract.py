@@ -205,14 +205,6 @@ class RunnerDependencyContractTests(unittest.TestCase):
         )
         commit.assert_called_once()
 
-    def test_named_success_recovery_does_not_claim_or_submit_work(self):
-        with mock.patch.object(colab_worker.db, "fetchone", return_value=None):
-            self.assertFalse(
-                colab_worker.recover_succeeded_run(
-                    experiment_run_id=153, resource_grant_id=45
-                )
-            )
-
 
 if __name__ == "__main__":
     unittest.main()

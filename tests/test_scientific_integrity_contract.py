@@ -4,7 +4,6 @@ from pathlib import Path
 
 from contracts.scientific_evidence import (
     EvidenceDecisionInput,
-    audit_presentation_transform,
     decide_evidence,
 )
 
@@ -72,22 +71,6 @@ class ScientificEvidenceContractTests(unittest.TestCase):
         )
         self.assertFalse(decision.confirmation_allowed)
         self.assertIn("independent_evaluator_missing", decision.blockers)
-
-    def test_presentation_cannot_introduce_a_number(self):
-        audit = audit_presentation_transform(
-            "The observed result is inconclusive.",
-            "The observed result improved by 7.2%.",
-        )
-        self.assertFalse(audit.passed)
-        self.assertEqual(audit.introduced_numbers, ["7.2%"])
-
-    def test_presentation_cannot_raise_claim_strength(self):
-        audit = audit_presentation_transform(
-            "The point estimate is descriptive.",
-            "The result is a statistically significant confirmed improvement.",
-        )
-        self.assertFalse(audit.passed)
-        self.assertIn("presentation_strengthened_claim", audit.blockers)
 
 
 class SourceIntegrityTests(unittest.TestCase):

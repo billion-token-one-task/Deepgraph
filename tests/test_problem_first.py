@@ -7,7 +7,7 @@ from unittest import mock
 
 from agents.candidate_contract import ContractReview
 from agents.paper_idea_agent import discover_paper_ideas
-from agents.problem_first import discover_research_problems, problem_first_cycle, writeback_experiment_result
+from agents.problem_first import discover_research_problems, writeback_experiment_result
 from agents.signal_harvester import harvest_protocol_artifacts
 from db import database
 
@@ -196,62 +196,6 @@ class ProblemFirstTests(TempDbTestCase):
             problems = discover_research_problems(limit=2, agenda_id=9, persist=False)
 
         self.assertEqual(problems, [])
-
-    def test_problem_first_cycle_records_inconclusive_attempts(self):
-        problem = discover_research_problems(limit=1, agenda_id=1, persist=True)[0]
-
-        def _worker(_problem, approach):
-            return {
-                "verdict": "inconclusive",
-                "conditions": {"reason": "dataset unavailable"},
-                "effect_size": None,
-                "run_id": None,
-                "deep_insight_id": None,
-                "source_signal_refs": approach.get("source_signal_refs"),
-            }
-
-        with mock.patch(
-            "agents.problem_first.propose_approach",
-            return_value={"summary": "try protocol-robust calibration", "source_signal_refs": {}},
-        ):
-            result = problem_first_cycle(agenda_id=1, max_attempts=1, worker=_worker)
-
-        self.assertEqual(result["status"], "attempt_limit")
-        stored_problem = database.fetchone(
-            "SELECT attempts_count, status, ruled_out_approaches FROM research_problems WHERE id=?",
-            (problem["id"],),
-        )
-        self.assertEqual(stored_problem["attempts_count"], 1)
-        self.assertEqual(stored_problem["status"], "exploring")
-        attempts = json.loads(stored_problem["ruled_out_approaches"])
-        self.assertEqual(attempts[-1]["verdict"], "inconclusive")
-
-    def test_positive_worker_result_cannot_solve_without_decided_run(self):
-        problem = discover_research_problems(limit=1, agenda_id=1, persist=True)[0]
-
-        def _worker(_problem, approach):
-            return {
-                "verdict": "confirmed",
-                "run_id": None,
-                "source_signal_refs": approach.get("source_signal_refs"),
-            }
-
-        with mock.patch(
-            "agents.problem_first.propose_approach",
-            return_value={"summary": "candidate", "source_signal_refs": {}},
-        ):
-            result = problem_first_cycle(
-                agenda_id=1,
-                max_attempts=1,
-                worker=_worker,
-            )
-
-        self.assertEqual(result["status"], "awaiting_scientific_decision")
-        stored = database.fetchone(
-            "SELECT status FROM research_problems WHERE id=?",
-            (problem["id"],),
-        )
-        self.assertNotEqual(stored["status"], "solved")
 
     def test_writeback_experiment_result_updates_posterior_and_problem_state(self):
         problem = discover_research_problems(limit=1, agenda_id=1, persist=True)[0]

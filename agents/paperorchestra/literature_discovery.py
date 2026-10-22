@@ -5,52 +5,10 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from db import database as db
 
 from agents.paperorchestra.semantic_scholar import (
-    arxiv_id_from_paper,
     paper_year,
 )
-
-
-def _extract_queries_from_outline(outline: dict) -> list[str]:
-    """Flatten intro_related_work_plan (+ light section_plan citation_hints) into search strings."""
-    qs: list[str] = []
-    irw = outline.get("intro_related_work_plan") or {}
-    intro = irw.get("introduction_strategy") or {}
-    for s in intro.get("search_directions") or []:
-        if isinstance(s, str) and s.strip():
-            qs.append(s.strip())
-    rw = irw.get("related_work_strategy") or {}
-    for sub in rw.get("subsections") or []:
-        if not isinstance(sub, dict):
-            continue
-        for k in ("limitation_search_queries",):
-            for q in sub.get(k) or []:
-                if isinstance(q, str) and q.strip():
-                    qs.append(q.strip())
-        for k in ("sota_investigation_mission", "methodology_cluster"):
-            v = sub.get(k)
-            if isinstance(v, str) and v.strip():
-                qs.append(v.strip())
-    # section_plan citation_hints as weak queries
-    for sec in outline.get("section_plan") or []:
-        if not isinstance(sec, dict):
-            continue
-        for sub in sec.get("subsections") or []:
-            if not isinstance(sub, dict):
-                continue
-            for h in sub.get("citation_hints") or []:
-                if isinstance(h, str) and len(h) > 10:
-                    qs.append(h[:500])
-    # de-dupe preserving order
-    seen: set[str] = set()
-    out: list[str] = []
-    for q in qs:
-        if q not in seen:
-            seen.add(q)
-            out.append(q)
-    return out
 
 
 def _as_list(value) -> list:
@@ -164,46 +122,6 @@ def _literature_relevance_score(paper: dict[str, Any], queries: list[str]) -> fl
     return score
 
 
-def _db_paper_to_registry_row(
-    pid: str,
-    *,
-    source_claim_ids: list[str] | None = None,
-    source_node_ids: list[str] | None = None,
-) -> dict[str, Any] | None:
-    row = db.fetchone(
-        """
-        SELECT id, arxiv_base_id, title, abstract, authors, published_date
-        FROM papers
-        WHERE id=? OR arxiv_base_id=?
-        ORDER BY CASE WHEN id=? THEN 0 ELSE 1 END
-        LIMIT 1
-        """,
-        (pid, pid, pid),
-    )
-    if not row:
-        return None
-    arxiv_id = row.get("arxiv_base_id") or row.get("id") or pid
-    key = str(arxiv_id).replace(".", "_").replace("/", "_")
-    try:
-        authors = json.loads(row["authors"]) if row.get("authors") else []
-    except (json.JSONDecodeError, TypeError):
-        authors = []
-    return {
-        "paperId": f"db:{row.get('id')}",
-        "title": row.get("title"),
-        "year": int(row["published_date"][:4]) if row.get("published_date") and len(row["published_date"]) >= 4 else None,
-        "abstract": row.get("abstract"),
-        "authors": [{"name": a} for a in authors if isinstance(a, str)],
-        "externalIds": {"ArXiv": arxiv_id} if isinstance(arxiv_id, str) and arxiv_id else {},
-        "_cite_key": key,
-        "_source": "evidence_graph",
-        "_db_paper_id": row.get("id"),
-        "_source_claim_ids": source_claim_ids or [],
-        "_source_node_ids": source_node_ids or [],
-        "_matched_queries": [],
-    }
-
-
 def _merge_registry_row(existing: dict[str, Any] | None, incoming: dict[str, Any]) -> dict[str, Any]:
     if existing is None:
         merged = dict(incoming)
@@ -227,12 +145,3 @@ def _merge_registry_row(existing: dict[str, Any] | None, incoming: dict[str, Any
     if merged.get("_source") != "evidence_graph":
         merged["_source"] = incoming.get("_source") or merged.get("_source")
     return merged
-
-
-def _paper_matches_id(paper: dict[str, Any], pid: str) -> bool:
-    if not pid:
-        return False
-    if paper.get("_db_paper_id") == pid:
-        return True
-    arxiv_id = arxiv_id_from_paper(paper)
-    return bool(arxiv_id and arxiv_id == pid)

@@ -3,7 +3,6 @@ from collections.abc import Mapping
 from typing import Any
 
 from db import database as db
-from db import taxonomy as tax
 from config import CONTRADICTION_REQUIRES_GROUNDED
 from meta_harness.scoped_llm import proposer_json
 
@@ -177,64 +176,3 @@ EXISTING CLAIMS FROM OTHER PAPERS:
             contra["_new_claim"] = perf_claims[idx]
 
     return contras, tokens
-
-
-def discover_matrix_gaps(
-    node_id: str,
-    *,
-    llm_scope: Mapping[str, Any] | None = None,
-) -> tuple[list[dict], int]:
-    """Find valuable empty cells in the method x dataset matrix for a taxonomy node."""
-    matrix = tax.get_method_dataset_matrix(node_id)
-
-    if len(matrix["methods"]) < 2 or len(matrix["datasets"]) < 2:
-        return [], 0
-
-    node = tax.get_node(node_id)
-    node_name = node["name"] if node else node_id
-
-    # Build a readable matrix representation
-    filled_cells = []
-    empty_combos = []
-    for m in matrix["methods"]:
-        for d in matrix["datasets"]:
-            # Check if any metric exists for this method+dataset
-            has_data = False
-            for metric in (matrix["metrics"] or [""]):
-                key = f"{m}|||{d}|||{metric}"
-                if key in matrix["cells"]:
-                    cell = matrix["cells"][key]
-                    filled_cells.append(
-                        f"  {m} + {d} [{metric}] = {cell['value']} (paper {cell['paper_id']})"
-                    )
-                    has_data = True
-            if not has_data:
-                empty_combos.append(f"  {m} + {d}")
-
-    if not empty_combos:
-        return [], 0
-
-    user_prompt = f"""Research area: {node_name} (taxonomy: {node_id})
-
-FILLED CELLS (existing results):
-{chr(10).join(filled_cells[:100])}
-
-EMPTY CELLS (untested combinations):
-{chr(10).join(empty_combos[:80])}
-
-Methods in the matrix: {', '.join(matrix['methods'])}
-Datasets in the matrix: {', '.join(matrix['datasets'])}
-
-Find the most valuable empty cells. Why would testing these combinations advance the field?"""
-
-    result, tokens, _route = proposer_json(
-        GAP_SYSTEM,
-        user_prompt,
-        llm_scope=llm_scope,
-        operation=f"matrix_gap_discovery:{node_id}",
-    )
-    gaps = result.get("gaps", [])
-    # Attach node_id to each gap
-    for g in gaps:
-        g["node_id"] = node_id
-    return gaps, tokens

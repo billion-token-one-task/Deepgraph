@@ -16,7 +16,6 @@ from meta_harness.llm_routing import (
 from orchestrator import bounded_proposal
 from agents import paper_idea_agent
 from agents.candidate_contract import ContractReview, ContractViolation
-from agents import problem_first
 
 
 def _request():
@@ -455,27 +454,6 @@ class BoundedProposalTests(unittest.TestCase):
                     )
         provider.assert_not_called()
         ledger.assert_not_called()
-
-    def test_exact_problem_loader_is_read_only_and_scope_bound(self):
-        row = {
-            "id": 9,
-            "agenda_id": 2,
-            "problem_statement": "bounded problem",
-            "source_signal_ref": "{}",
-            "node_ids": "[]",
-            "paper_ids": "[]",
-            "ruled_out_approaches": "[]",
-            "problem_quality_score": 1.0,
-        }
-        with (
-            mock.patch.object(problem_first.db, "fetchone", return_value=row) as fetch,
-            mock.patch.object(problem_first, "_load_signal_row", return_value={}),
-        ):
-            result = problem_first.load_problem_first_candidate(
-                agenda_id=2, research_problem_id=9
-            )
-        self.assertEqual(result["research_problem_id"], 9)
-        self.assertEqual(fetch.call_args.args[1], (9, 2, problem_first.MAX_ATTEMPTS))
 
     def test_scope_escape_refuses_before_store_or_settlement(self):
         repository = mock.Mock()

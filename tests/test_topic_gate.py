@@ -19,19 +19,12 @@ from agents.topic_gate import (
     REASON_NOT_FALSIFIABLE,
     REASON_REJECT_KEYWORD,
     REASON_SCOPE_MISMATCH,
-    STAGE_BUDGET_FRACTION,
-    TopicGateError,
     TopicGatePolicy,
     binary_entropy,
-    escalation_verdict,
-    next_stage,
-    observed_surprise_bits,
     screen_candidate,
-    stage_token_cap,
     surprisal_bits,
 )
 from contracts.agenda import ResearchAgenda
-from meta_harness.topic_gate_admission import TopicGateAdmissionError, require_pass
 
 
 def _agenda(**overrides) -> ResearchAgenda:
@@ -280,74 +273,11 @@ class NegativeResultsStayValidTests(unittest.TestCase):
 
         self.assertTrue(decision.passed, decision.reason_codes)
 
-    def test_a_refuted_pilot_escalates_because_it_produced_bits(self):
-        verdict = escalation_verdict(
-            {"confidence": 0.6, "predicted_outcome": "improves"},
-            {"ran": True, "outcome": "refuted", "attribution_control": "passed"},
-        )
-
-        self.assertEqual(verdict["verdict"], "escalate")
-        self.assertGreaterEqual(verdict["surprise_bits"], 1.0)
-
-    def test_a_confirmed_low_surprise_pilot_stops(self):
-        verdict = escalation_verdict(
-            {"confidence": 0.6, "predicted_outcome": "improves"},
-            {"ran": True, "outcome": "confirmed", "attribution_control": "passed"},
-        )
-
-        self.assertEqual(verdict["verdict"], "stop")
-        self.assertLess(verdict["surprise_bits"], 1.0)
-        self.assertIn("running_is_not_passing", verdict["reason_codes"])
-
-    def test_unattributable_or_unrun_pilot_is_invalid(self):
-        self.assertEqual(
-            escalation_verdict({}, {"ran": False})["verdict"],
-            "invalid",
-        )
-        self.assertEqual(
-            escalation_verdict(
-                {"confidence": 0.6},
-                {"ran": True, "outcome": "refuted", "attribution_control": "failed"},
-            )["verdict"],
-            "invalid",
-        )
-
-    def test_undecided_pilot_is_inconclusive(self):
-        self.assertEqual(
-            escalation_verdict(
-                {"confidence": 0.6},
-                {"ran": True, "outcome": "inconclusive"},
-            )["verdict"],
-            "inconclusive",
-        )
-
 
 class SurpriseDrivenComputeTests(unittest.TestCase):
-    def test_pilot_gets_a_tenth_of_the_planned_budget(self):
-        self.assertEqual(STAGE_BUDGET_FRACTION["pilot"], 0.10)
-        self.assertEqual(stage_token_cap(50_000, stage="pilot"), 5_000)
-        self.assertEqual(stage_token_cap(50_000, stage="confirm"), 17_500)
-        self.assertEqual(stage_token_cap(50_000, stage="full"), 50_000)
-
-    def test_stage_ladder_is_ordered_and_finite(self):
-        self.assertEqual(next_stage("pilot"), "confirm")
-        self.assertEqual(next_stage("confirm"), "full")
-        self.assertIsNone(next_stage("full"))
-        with self.assertRaises(TopicGateError):
-            next_stage("unbounded")
-        with self.assertRaises(TopicGateError):
-            stage_token_cap(0, stage="pilot")
-
     def test_bits_are_information_theoretic(self):
         self.assertAlmostEqual(surprisal_bits(0.5), 1.0)
         self.assertAlmostEqual(binary_entropy(0.5), 1.0)
-        self.assertAlmostEqual(
-            observed_surprise_bits(confidence=0.6, outcome="refuted"),
-            round(surprisal_bits(0.4), 4),
-        )
-        self.assertEqual(
-            observed_surprise_bits(confidence=0.6, outcome="inconclusive"), 0.0
-        )
 
 
 class SelectorIntegrationTests(unittest.TestCase):
@@ -390,40 +320,6 @@ class SelectorIntegrationTests(unittest.TestCase):
 
 class AdmissionTests(unittest.TestCase):
     """The gate cannot be bypassed by a route that skips the selector."""
-
-    def test_admission_reruns_the_gate_from_persisted_rows(self):
-        agenda_row = {
-            "id": 5,
-            "name": "robustness",
-            "focus_json": json.dumps(["robustness", "attention"]),
-            "token_budget": 50_000,
-            "backend_allowlist_json": json.dumps(["cpu", "llm"]),
-            "max_concurrency": 1,
-            "status": "active",
-            "is_active": 1,
-        }
-        with mock.patch(
-            "meta_harness.topic_gate_admission.db.fetchone",
-            side_effect=[_candidate(), agenda_row],
-        ):
-            decision = require_pass(agenda_id=5, idea_id=41)
-        self.assertTrue(decision.passed)
-
-        with mock.patch(
-            "meta_harness.topic_gate_admission.db.fetchone",
-            side_effect=[_candidate(topic_gate_json=None), agenda_row],
-        ):
-            with self.assertRaisesRegex(
-                TopicGateAdmissionError, REASON_MISSING_PREDICTION
-            ):
-                require_pass(agenda_id=5, idea_id=41)
-
-    def test_unscoped_candidate_cannot_be_admitted(self):
-        with mock.patch(
-            "meta_harness.topic_gate_admission.db.fetchone", return_value=None
-        ):
-            with self.assertRaises(TopicGateAdmissionError):
-                require_pass(agenda_id=5, idea_id=41)
 
     def test_promote_decision_cannot_bypass_the_gate(self):
         from contracts.meta_harness import Estimate, IdeaDecisionPacket

@@ -12,7 +12,6 @@ from meta_harness.backend_capability import (
     BackendCapabilityError,
     evaluate_backends,
     require_schedulable,
-    selected_canary_backend,
 )
 
 
@@ -113,35 +112,6 @@ class FailClosedTests(unittest.TestCase):
         )
 
         self.assertEqual(reports["colab_gpu"].state, STATE_DISABLED)
-
-
-class CanarySelectionTests(unittest.TestCase):
-    def test_exactly_one_gpu_backend_may_be_selected(self):
-        reports = _production_shaped()
-
-        self.assertEqual(selected_canary_backend(reports, requested="ssh_gpu").kind, "ssh_gpu")
-        with self.assertRaisesRegex(BackendCapabilityError, "is not the eligible one"):
-            selected_canary_backend(reports, requested="colab_gpu")
-
-    def test_ambiguous_configuration_is_refused_not_resolved(self):
-        reports = _production_shaped(
-            enabled=["cpu", "ssh_gpu", "colab_gpu"],
-            colab_manifest_ref="secretmanager:colab-accounts",
-            colab_binary="/usr/local/bin/colab",
-        )
-
-        with self.assertRaisesRegex(BackendCapabilityError, "enable exactly one"):
-            selected_canary_backend(reports, requested="ssh_gpu")
-
-    def test_no_eligible_gpu_backend_is_an_explicit_error(self):
-        reports = _production_shaped(enabled=["cpu"])
-
-        with self.assertRaisesRegex(BackendCapabilityError, "no GPU backend"):
-            selected_canary_backend(reports, requested="ssh_gpu")
-
-    def test_cpu_is_never_a_canary_target(self):
-        with self.assertRaises(BackendCapabilityError):
-            selected_canary_backend(_production_shaped(), requested="cpu")
 
 
 class RuntimeRoutingTests(unittest.TestCase):

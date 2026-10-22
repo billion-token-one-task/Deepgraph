@@ -1,6 +1,5 @@
 import unittest
 
-from agents.domain_summary_agent import fallback_domain_summary
 from db.taxonomy import _intersection_strength, _metric_prefers_lower, cluster_papers_from_signals
 
 
@@ -19,28 +18,6 @@ class MetricPreferenceTests(unittest.TestCase):
         low = _intersection_strength(0, 4)
         high = _intersection_strength(2, 1)
         self.assertGreater(high, low)
-
-
-class FallbackSummaryTests(unittest.TestCase):
-    def test_fallback_uses_limitations_as_gaps(self):
-        node = {"id": "ml.dl.cv", "name": "Computer Vision", "description": "Visual understanding with deep learning"}
-        snapshot = {
-            "children": [],
-            "paper_count": 5,
-            "result_count": 20,
-            "work_types": [{"work_type": "benchmark", "count": 2}],
-            "methods": [{"name": "Model-A", "paper_count": 3}],
-            "datasets": [{"name": "Dataset-A", "paper_count": 4}],
-            "limitations": ["Models break under lighting changes."],
-            "open_questions": ["How well do they generalize outdoors?"],
-        }
-
-        summary = fallback_domain_summary(node, snapshot)
-
-        self.assertIn("overview", summary)
-        self.assertEqual(summary["what_people_are_building"][0]["label"], "Benchmark")
-        self.assertEqual(summary["current_gaps"][0]["description"], "Models break under lighting changes.")
-        self.assertIn("How well do they generalize outdoors?", summary["starter_questions"])
 
 
 class PaperClusterTests(unittest.TestCase):

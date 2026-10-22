@@ -5,12 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from typing import Any, Callable
+from typing import Any
 
 from agents.signal_harvester import (
     HARVEST_SIGNAL_ROLES,
     get_problem_signals,
-    get_solution_signals,
     signal_ref_from_row,
     structural_score,
 )
@@ -249,42 +248,6 @@ def promote_to_problem(signal: dict) -> dict:
     return problem
 
 
-def text_similarity(left: str, right: str) -> float:
-    left_tokens = {token for token in str(left or "").lower().split() if token}
-    right_tokens = {token for token in str(right or "").lower().split() if token}
-    if not left_tokens or not right_tokens:
-        return 0.0
-    return len(left_tokens & right_tokens) / max(1, len(left_tokens | right_tokens))
-
-
-def match_problem_to_research_problem(problem: dict, candidates: list[dict]) -> dict | None:
-    if not candidates:
-        return None
-    target_nodes = {str(node) for node in problem.get("related_node_ids") or problem.get("node_ids") or [] if str(node).strip()}
-    mechanism = str(problem.get("mechanism_type") or problem.get("source_type") or "").lower()
-    title_blob = " ".join(
-        str(problem.get(key) or "")
-        for key in ("title", "formal_statement", "problem_statement", "source_evidence")
-    )
-    best = None
-    best_score = -1.0
-    for candidate in candidates:
-        candidate_nodes = {str(node) for node in candidate.get("node_ids") or [] if str(node).strip()}
-        source_ref = candidate.get("source_signal_ref") or {}
-        source_table = str(source_ref.get("table") or "").lower()
-        score = 0.0
-        if target_nodes and candidate_nodes:
-            score += len(target_nodes & candidate_nodes) / max(1, len(target_nodes | candidate_nodes)) * 3.0
-        if mechanism and mechanism in source_table:
-            score += 2.5
-        score += text_similarity(title_blob, candidate.get("problem_statement") or "") * 2.0
-        score += float(candidate.get("problem_quality_score") or 0) * 0.1
-        if score > best_score:
-            best = candidate
-            best_score = score
-    return best
-
-
 def hydrate_problem_candidate(problem: dict) -> dict:
     source_ref = problem.get("source_signal_ref") or {}
     source_row = _load_signal_row(source_ref) or {}
@@ -373,37 +336,6 @@ def select_problem_first_candidates(
         )
         candidates = [_row_to_problem(row) for row in rows]
     return [hydrate_problem_candidate(candidate) for candidate in candidates[:limit]]
-
-
-def load_problem_first_candidate(
-    *,
-    agenda_id: int,
-    research_problem_id: int,
-) -> dict | None:
-    """Load one already-persisted problem without refreshing the global pool.
-
-    Controlled proposal realization must not run discovery merely to recover
-    the problem behind an explicitly named proposal shell.  This exact lookup
-    is intentionally read-only and accepts only a still-live problem in the
-    same agenda.
-    """
-
-    agenda_id = _require_agenda_id(agenda_id)
-    research_problem_id = int(research_problem_id)
-    if research_problem_id <= 0:
-        raise ValueError("research_problem_id must be positive")
-    row = db.fetchone(
-        """
-        SELECT * FROM research_problems
-        WHERE id=? AND agenda_id=?
-          AND status IN ('open', 'exploring')
-          AND attempts_count < ?
-        """,
-        (research_problem_id, agenda_id, MAX_ATTEMPTS),
-    )
-    if not row:
-        return None
-    return hydrate_problem_candidate(_row_to_problem(dict(row)))
 
 
 def upsert_research_problem(problem: dict, *, agenda_id: int) -> int:
@@ -654,57 +586,6 @@ def _row_to_problem(row: dict) -> dict:
     out["paper_ids"] = _json_list(row.get("paper_ids"))
     out["ruled_out_approaches"] = _json_list(row.get("ruled_out_approaches"))
     return out
-
-
-def select_next_problem(*, agenda_id: int) -> dict | None:
-    agenda_id = _require_agenda_id(agenda_id)
-    row = db.fetchone(
-        """
-        SELECT * FROM research_problems
-        WHERE agenda_id=?
-          AND status IN ('open', 'exploring')
-          AND attempts_count < ?
-        ORDER BY problem_quality_score DESC, updated_at ASC
-        LIMIT 1
-        """,
-        (agenda_id, MAX_ATTEMPTS),
-    )
-    if not row:
-        discovered = discover_research_problems(limit=5, agenda_id=agenda_id, persist=True)
-        if not discovered:
-            return None
-        return discovered[0]
-    return _row_to_problem(row)
-
-
-def _approach_summary(signal: dict) -> str:
-    table = signal.get("_signal_table")
-    if table == "method_transfer":
-        return signal.get("title") or signal.get("hypothesis") or "method transfer"
-    if table == "hidden_variable_bridges":
-        return f"Use shared factor {signal.get('shared_factor')} between {signal.get('node_a_id')} and {signal.get('node_b_id')}."
-    if table == "node_entity_overlap":
-        return f"Explore shared entities between {signal.get('node_a_id')} and {signal.get('node_b_id')}."
-    if table == "pattern_matches":
-        return f"Transfer convergent pattern {signal.get('pattern_a_id')} <-> {signal.get('pattern_b_id')}."
-    return signal.get("summary") or signal.get("title") or str(table or "candidate approach")
-
-
-def propose_approach(problem: dict, solution_signals: list[dict] | None = None, ruled_out: list[dict] | None = None) -> dict | None:
-    solution_signals = solution_signals or get_solution_signals(problem, limit=30)
-    ruled_text = " ".join(str(item.get("approach") or item.get("summary") or "") for item in (ruled_out or []))
-    for signal in solution_signals:
-        summary = _approach_summary(signal)
-        if summary and summary in ruled_text:
-            continue
-        source_ref = signal.get("_source_ref") or {}
-        return {
-            "summary": summary,
-            "source_signal_refs": {"signals": [source_ref] if source_ref else []},
-            "hypothesis_node": (signal.get("_node_ids") or [None])[0],
-            "raw_signal": signal,
-        }
-    return None
 
 
 def record_solution(
@@ -1063,79 +944,3 @@ def writeback_experiment_result(
             else "scientifically_decided_supported_transition_required"
         ),
     }
-
-
-def problem_first_cycle(
-    *,
-    agenda_id: int,
-    max_attempts: int = MAX_ATTEMPTS,
-    worker: Callable[[dict, dict], dict] | None = None,
-) -> dict:
-    agenda_id = _require_agenda_id(agenda_id)
-    problem = select_next_problem(agenda_id=agenda_id)
-    if not problem:
-        return {"status": "no_problem"}
-    pid = problem.get("id")
-    if pid:
-        db.execute(
-            "UPDATE research_problems SET status='exploring', updated_at=CURRENT_TIMESTAMP "
-            "WHERE id=? AND agenda_id=?",
-            (pid, agenda_id),
-        )
-        db.commit()
-    attempts = int(problem.get("attempts_count") or 0)
-    while attempts < max_attempts:
-        approach = propose_approach(problem, ruled_out=problem.get("ruled_out_approaches") or [])
-        if not approach:
-            return {"status": "no_approach", "problem": problem}
-        if worker is None:
-            return {"status": "approach_ready", "problem": problem, "approach": approach}
-        result = worker(problem, approach)
-        verdict = str(result.get("verdict") or "").lower()
-        if verdict in {"confirmed", "supported", "reproduced"}:
-            if record_solution(
-                problem,
-                approach,
-                result,
-                agenda_id=agenda_id,
-            ):
-                return {
-                    "status": "solved",
-                    "problem": problem,
-                    "approach": approach,
-                    "result": result,
-                }
-            return {
-                "status": "awaiting_scientific_decision",
-                "problem": problem,
-                "approach": approach,
-                "result": result,
-            }
-        if verdict == "refuted":
-            if pid:
-                append_ruled_out_approach(
-                    int(pid),
-                    approach,
-                    result,
-                    agenda_id=agenda_id,
-                )
-            writeback_experiment_result(
-                agenda_id=agenda_id,
-                run_id=result.get("run_id"),
-                deep_insight_id=int(result.get("deep_insight_id") or 0),
-                verdict=verdict,
-                effect_size=result.get("effect_size"),
-                conditions=result.get("conditions") or {},
-                source_signal_refs=result.get("source_signal_refs") or approach.get("source_signal_refs"),
-            )
-        elif pid:
-            tracked_result = dict(result)
-            tracked_result["verdict"] = verdict or "inconclusive"
-            append_ruled_out_approach(
-                int(pid),
-                approach,
-                tracked_result,
-                agenda_id=agenda_id,
-            )
-        attempts += 1
-    return {"status": "attempt_limit", "problem": problem}

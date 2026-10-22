@@ -30,7 +30,6 @@ from config import (
     GPU_REMOTE_SSH_HOST,
     GPU_REMOTE_SSH_PORT,
     GPU_REMOTE_SSH_USER,
-    GPU_REMOTE_SSH_PASSWORD,
     COMPUTE_SSH_CREDENTIAL_REF,
     GPU_VISIBLE_DEVICES,
 )
@@ -779,60 +778,6 @@ def upsert_ssh_worker(
     }
 
 
-def upsert_colab_worker(
-    *,
-    account_ref: str,
-    gpu_model: str,
-    total_mem_gb: float,
-    measured_at: str,
-    detail: dict | None = None,
-) -> dict:
-    """Record a Colab accelerator that a canary actually reached.
-
-    Preflight refuses to infer Colab hardware from an account manifest and
-    holds its VRAM at zero until something measures it, which is the right
-    default for a backend whose allocation is not guaranteed. There was no way
-    to record that measurement, so the zero was permanent and Colab could never
-    be selected. This writes only what a canary observed on the device.
-    """
-    if not str(account_ref).strip():
-        raise ValueError("a Colab worker row requires an account reference")
-    if float(total_mem_gb) <= 0:
-        raise ValueError("a Colab worker row requires measured VRAM")
-    hostname = _local_hostname()
-    worker_id = f"{hostname}:colab-{account_ref}"
-    metadata = {
-        "backend": "colab",
-        "visible_device": None,
-        "account_ref": str(account_ref),
-        "measured_at": str(measured_at),
-        **{str(k): v for k, v in (detail or {}).items()},
-    }
-    existing = db.fetchone("SELECT id FROM gpu_workers WHERE id=?", (worker_id,))
-    if existing:
-        db.execute(
-            """UPDATE gpu_workers
-               SET hostname=?, gpu_model=?, total_mem_gb=?, status='idle',
-                   heartbeat_at=CURRENT_TIMESTAMP, metadata=?
-               WHERE id=?""",
-            (hostname, gpu_model, float(total_mem_gb), json.dumps(metadata), worker_id),
-        )
-    else:
-        db.execute(
-            """INSERT INTO gpu_workers
-               (id, hostname, gpu_index, gpu_model, total_mem_gb, status, metadata)
-               VALUES (?, ?, ?, ?, ?, 'idle', ?)""",
-            (worker_id, hostname, 0, gpu_model, float(total_mem_gb), json.dumps(metadata)),
-        )
-    return {
-        "id": worker_id,
-        "gpu_model": gpu_model,
-        "total_mem_gb": float(total_mem_gb),
-        "status": "idle",
-        **metadata,
-    }
-
-
 def register_default_workers() -> list[dict]:
     db.init_db()
     if GPU_MODE == "ssh":
@@ -989,20 +934,6 @@ def _sanitize_worker(row: dict) -> dict:
 def list_workers() -> list[dict]:
     db.init_db()
     return [_sanitize_worker(row) for row in db.fetchall("SELECT * FROM gpu_workers ORDER BY gpu_index, id")]
-
-
-def list_jobs(limit: int = 100) -> list[dict]:
-    db.init_db()
-    return db.fetchall(
-        """
-        SELECT gj.*, di.title AS insight_title
-        FROM gpu_jobs gj
-        LEFT JOIN deep_insights di ON di.id = gj.deep_insight_id
-        ORDER BY gj.created_at DESC
-        LIMIT ?
-        """,
-        (limit,),
-    )
 
 
 def get_status() -> dict:

@@ -94,18 +94,3 @@ def parse_direction_payload(payload: Mapping[str, Any]) -> ResearchAgenda:
             "source": "direction_intake_v1",
         }
     )
-
-
-def build_echo(agenda: ResearchAgenda) -> dict[str, Any]:
-    return {
-        "type": "direction_intake_echo",
-        "name": agenda.name,
-        "direction": agenda.description,
-        "focus": list(agenda.focus),
-        "submitter": agenda.submitter,
-        "token_budget": agenda.token_budget,
-        "gpu_hours_budget": agenda.gpu_hours_budget,
-        "backend_allowlist": list(agenda.backend_allowlist),
-        "backlog_policy": agenda.backlog_policy,
-        "confirmation_required": True,
-    }

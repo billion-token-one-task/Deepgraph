@@ -39,10 +39,3 @@ TABLE_RULES = {
         "boolean_values": r"Use \checkmark and -- rather than Yes/No.",
     },
 }
-
-
-def table_policy_manifest() -> dict:
-    return {
-        "standard_version": TABLE_STANDARD_VERSION,
-        "table_rules": TABLE_RULES,
-    }

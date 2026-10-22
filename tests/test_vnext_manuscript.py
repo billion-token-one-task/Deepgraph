@@ -668,32 +668,6 @@ Candidate & 0.61 & 1.5 \\
         self.assertTrue(result["blockers"])
         self.assertFalse((figures_dir / "postwriting_api_figure_manifest.json").exists())
 
-    def test_paperorchestra_tracing_deadline_supports_worker_threads(self):
-        from agents.paperorchestra import tracing
-
-        result = {}
-
-        def _target():
-            try:
-                result["value"] = tracing._call_llm_with_deadline(
-                    "system",
-                    "user",
-                    temperature=0.0,
-                    max_tokens=32,
-                    timeout_seconds=1,
-                )
-            except Exception as exc:  # pragma: no cover - asserted below
-                result["error"] = exc
-
-        with mock.patch.object(tracing, "call_llm", return_value=("ok", 3)):
-            thread = threading.Thread(target=_target)
-            thread.start()
-            thread.join(timeout=5)
-
-        self.assertFalse(thread.is_alive())
-        self.assertNotIn("error", result)
-        self.assertEqual(result["value"], ("ok", 3))
-
     def test_manuscript_llm_timeout_wrapper_supports_worker_threads(self):
         # The wrapper routes through call_llm_for_role, not the unscoped
         # call_llm it used before agenda-scoped role routing existed, and it

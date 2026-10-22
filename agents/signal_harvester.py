@@ -1842,63 +1842,6 @@ def harvest_all() -> dict:
     return stats
 
 
-def get_tier1_signals(top_overlaps: int = 20, top_patterns: int = 15) -> DiscoverySignalBundle:
-    """Assemble signals for Tier 1 (Paradigm Discovery) agent."""
-    ensure_harvest_signal_schema()
-    overlaps = db.fetchall(
-        """SELECT * FROM node_entity_overlap
-           ORDER BY COALESCE(empirical_posterior, overlap_score) DESC LIMIT ?""", (top_overlaps,))
-
-    pattern_ms = db.fetchall("""
-        SELECT pm.*, pa.pattern_text as text_a, pa.pattern_type as type_a,
-               pb.pattern_text as text_b, pb.pattern_type as type_b
-        FROM pattern_matches pm
-        JOIN patterns pa ON pm.pattern_a_id = pa.id
-        JOIN patterns pb ON pm.pattern_b_id = pb.id
-        ORDER BY COALESCE(pm.empirical_posterior, pm.similarity_score) DESC LIMIT ?
-    """, (top_patterns,))
-
-    clusters = db.fetchall(
-        "SELECT * FROM contradiction_clusters WHERE cluster_size >= 2 "
-        "ORDER BY COALESCE(empirical_posterior, cluster_size) DESC")
-
-    taxonomy = db.fetchall("""
-        SELECT t.id, t.name, t.parent_id, t.depth,
-               COUNT(DISTINCT pt.paper_id) as paper_count
-        FROM taxonomy_nodes t
-        LEFT JOIN paper_taxonomy pt ON pt.node_id = t.id
-        GROUP BY t.id, t.name, t.parent_id, t.depth, t.sort_order
-        ORDER BY t.depth, t.sort_order
-    """)
-
-    payload = {
-        "entity_overlaps": overlaps,
-        "pattern_matches": pattern_ms,
-        "contradiction_clusters": clusters,
-        "protocol_artifacts": db.fetchall(
-            "SELECT * FROM protocol_artifacts ORDER BY COALESCE(empirical_posterior, support_count) DESC LIMIT 10"),
-        "hidden_variable_bridges": db.fetchall(
-            # This table has millions of rows and an existing score index.
-            # COALESCE(empirical_posterior, score) cannot use that index (the
-            # posterior is currently unpopulated), so it caused a parallel
-            # full-table scan for every discovery call.
-            "SELECT * FROM hidden_variable_bridges ORDER BY score DESC LIMIT 10"),
-        "claim_method_gaps": db.fetchall(
-            "SELECT * FROM claim_method_gaps ORDER BY COALESCE(empirical_posterior, support_count) DESC LIMIT 10"),
-        "taxonomy_map": taxonomy,
-    }
-    return DiscoverySignalBundle.from_payload(
-        tier=1,
-        stage="signal_harvest",
-        payload=payload,
-        metadata={
-            "entity_overlap_count": len(overlaps),
-            "pattern_match_count": len(pattern_ms),
-            "contradiction_cluster_count": len(clusters),
-        },
-    )
-
-
 def get_tier2_signals(
     *,
     plateau_limit: int = 20,

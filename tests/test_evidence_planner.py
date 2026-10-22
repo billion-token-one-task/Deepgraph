@@ -1,9 +1,7 @@
-import tempfile
 import unittest
 from pathlib import Path
 
 from agents.evidence_planner import build_evidence_plan
-from agents.paperorchestra.figure_orchestra import run_figure_orchestra
 
 
 class EvidencePlannerTests(unittest.TestCase):
@@ -51,60 +49,16 @@ class EvidencePlannerTests(unittest.TestCase):
         self.assertTrue(plan["visualization"]["enabled"])
         self.assertEqual(plan["visualization"]["priority"], "required")
 
-    def test_disabled_visualization_skips_default_figure_generation(self):
-        state = {
-            "title": "No Figure Insight",
-            "method_name": "NoFigureNet",
-            "evidence_plan": {
-                "visualization": {
-                    "enabled": False,
-                    "priority": "skip",
-                    "reason": "Table-first claim.",
-                }
-            },
-        }
-        with tempfile.TemporaryDirectory() as tmpdir:
-            manifest = run_figure_orchestra(
-                outline={},
-                state=state,
-                iterations=[],
-                figures_dir=Path(tmpdir),
-                baseline=None,
-                metric_name="accuracy",
-                paperbanana_cmd=None,
-            )
-            self.assertEqual(manifest["assets"], [])
-
-if __name__ == "__main__":
-    unittest.main()
-
 
 class FigureOrchestraBoundaryTests(unittest.TestCase):
     """The V1 boundary must keep reporting blocked, not manufacture assets."""
 
-    def test_figure_orchestra_reports_blocked(self):
-        from agents.paperorchestra.figure_orchestra import run_figure_orchestra
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            manifest = run_figure_orchestra(
-                outline={"plotting_plan": [{"figure_id": "fig_main_results", "plot_type": "plot"}]},
-                state={"title": "Anything"},
-                iterations=[],
-                figures_dir=Path(tmpdir),
-                baseline=None,
-                metric_name="accuracy",
-                paperbanana_cmd=None,
-            )
-
-        self.assertEqual(manifest["status"], "blocked")
-        self.assertEqual(manifest["assets"], [])
-        self.assertEqual(manifest["generated_count"], 0)
-        self.assertTrue(manifest["blockers"])
-
-    def test_native_and_external_rendering_stay_refused(self):
+    def test_native_rendering_stays_refused(self):
         from agents.paperorchestra import figure_orchestra as boundary
 
         with self.assertRaises(boundary.FigureGenerationBlocked):
             boundary.render_native_figure({}, Path("."))
-        with self.assertRaises(boundary.FigureGenerationBlocked):
-            boundary._run_external_diagram({})
+
+
+if __name__ == "__main__":
+    unittest.main()

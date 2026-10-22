@@ -43,7 +43,6 @@ class GpuSchedulerTests(unittest.TestCase):
         self.old_gpu_remote_ssh_host = gpu_scheduler.GPU_REMOTE_SSH_HOST
         self.old_gpu_remote_ssh_user = gpu_scheduler.GPU_REMOTE_SSH_USER
         self.old_gpu_remote_ssh_port = gpu_scheduler.GPU_REMOTE_SSH_PORT
-        self.old_gpu_remote_ssh_password = gpu_scheduler.GPU_REMOTE_SSH_PASSWORD
         self.old_gpu_remote_base_dir = gpu_scheduler.GPU_REMOTE_BASE_DIR
         self.old_gpu_remote_python = gpu_scheduler.GPU_REMOTE_PYTHON
         self.old_gpu_stale_recovery_poll_seconds = gpu_scheduler.GPU_STALE_RECOVERY_POLL_SECONDS
@@ -93,7 +92,6 @@ class GpuSchedulerTests(unittest.TestCase):
         gpu_scheduler.GPU_REMOTE_SSH_HOST = self.old_gpu_remote_ssh_host
         gpu_scheduler.GPU_REMOTE_SSH_USER = self.old_gpu_remote_ssh_user
         gpu_scheduler.GPU_REMOTE_SSH_PORT = self.old_gpu_remote_ssh_port
-        gpu_scheduler.GPU_REMOTE_SSH_PASSWORD = self.old_gpu_remote_ssh_password
         gpu_scheduler.GPU_REMOTE_BASE_DIR = self.old_gpu_remote_base_dir
         gpu_scheduler.GPU_REMOTE_PYTHON = self.old_gpu_remote_python
         gpu_scheduler.GPU_STALE_RECOVERY_POLL_SECONDS = self.old_gpu_stale_recovery_poll_seconds
@@ -696,7 +694,6 @@ class GpuSchedulerTests(unittest.TestCase):
         gpu_scheduler.GPU_REMOTE_SSH_HOST = "gpu.example.com"
         gpu_scheduler.GPU_REMOTE_SSH_USER = "root"
         gpu_scheduler.GPU_REMOTE_SSH_PORT = 55860
-        gpu_scheduler.GPU_REMOTE_SSH_PASSWORD = "secret"
         gpu_scheduler.GPU_REMOTE_BASE_DIR = "/root/deepgraph-remote-worker"
         gpu_scheduler.GPU_REMOTE_PYTHON = "python"
 
@@ -1102,56 +1099,3 @@ class FalselyUnboundRecoveryTests(unittest.TestCase):
         self.assertIn("j.status='failed'", sql)
         self.assertIn("r.phase='scaffold_ready'", sql)
         self.assertEqual(fetch.call_args.args[1][0], gpu_scheduler._FALSE_UNBOUND_BLOCKER)
-
-
-class ColabWorkerRegistrationTests(unittest.TestCase):
-    """Preflight can only select Colab once something measured the device.
-
-    preflight holds Colab VRAM at zero until a canary records real hardware,
-    which is the correct default for a backend whose allocation is not
-    guaranteed. Nothing could record that measurement, so the zero was
-    permanent and colab_gpu was unselectable by construction.
-    """
-
-    def test_a_measured_device_is_written_as_an_idle_colab_worker(self):
-        statements = []
-
-        with (
-            mock.patch.object(gpu_scheduler.db, "fetchone", return_value=None),
-            mock.patch.object(
-                gpu_scheduler.db,
-                "execute",
-                side_effect=lambda sql, params=None: statements.append(
-                    (" ".join(sql.split()), params)
-                ),
-            ),
-            mock.patch.object(
-                gpu_scheduler, "_local_hostname", return_value="host"
-            ),
-        ):
-            summary = gpu_scheduler.upsert_colab_worker(
-                account_ref="colab-pro",
-                gpu_model="Tesla T4",
-                total_mem_gb=14.56,
-                measured_at="2026-08-15",
-                detail={"driver": "580.82.07"},
-            )
-
-        self.assertEqual(summary["total_mem_gb"], 14.56)
-        self.assertEqual(summary["status"], "idle")
-        self.assertEqual(summary["backend"], "colab")
-        sql, params = statements[0]
-        self.assertIn("INSERT INTO gpu_workers", sql)
-        self.assertIn("'idle'", sql)
-        self.assertIn("host:colab-colab-pro", params)
-
-    def test_an_unmeasured_device_is_refused(self):
-        for kwargs in (
-            {"account_ref": "", "total_mem_gb": 14.56},
-            {"account_ref": "colab-pro", "total_mem_gb": 0},
-        ):
-            with self.subTest(kwargs=kwargs):
-                with self.assertRaises(ValueError):
-                    gpu_scheduler.upsert_colab_worker(
-                        gpu_model="Tesla T4", measured_at="2026-08-15", **kwargs
-                    )

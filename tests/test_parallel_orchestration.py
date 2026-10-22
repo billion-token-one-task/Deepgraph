@@ -722,28 +722,6 @@ class AutoResearchSchedulingTests(unittest.TestCase):
         self.assertIn("no GPU lane", upserts[0][1]["last_error"])
         log_event.assert_called_once()
 
-    def test_next_candidate_requeues_blocked_input_missing_after_repair(self):
-        repaired_candidate = {
-            "id": 13,
-            "tier": 2,
-            "novelty_status": "unchecked",
-            "auto_status": "blocked",
-            "auto_stage": "verification_input_missing",
-        }
-
-        with (
-            mock.patch.object(auto_research, "_candidate_pool", return_value=[repaired_candidate]),
-            mock.patch.object(auto_research, "_execution_active_job_count", return_value=0),
-            mock.patch.object(auto_research, "_verification_job_count", return_value=0),
-            mock.patch.object(auto_research, "_review_pending_job_count", return_value=0),
-            mock.patch.object(auto_research, "_repair_pending_job_count", return_value=0),
-            mock.patch.object(auto_research, "evosci_available", return_value=True),
-            mock.patch.object(auto_research, "get_evosci_input_issue", return_value=None),
-        ):
-            candidate = auto_research._next_candidate()
-
-        self.assertEqual(candidate["id"], 13)
-
     def test_refresh_running_jobs_repairs_review_pending_with_error(self):
         job = {
             "deep_insight_id": 14,
@@ -1236,135 +1214,6 @@ class AutoResearchSchedulingTests(unittest.TestCase):
         queue_completion.assert_called_once_with(25, existing_run, "gpu_large")
         self.assertNotIn("research_unavailable", [call.kwargs.get("stage") for call in upsert.call_args_list])
 
-    def test_recover_soft_benchmark_completion_jobs_requeues_non_benchmark_rows(self):
-        rows = [
-            {
-                "id": 7,
-                # auto_research_jobs is agenda-scoped, and the recovery UPDATE
-                # keys on (id, agenda_id).
-                "agenda_id": 3,
-                "deep_insight_id": 4,
-                "experiment_run_id": 335,
-                "last_error": "Only manuscript polish blockers remain after benchmark evidence passed.",
-            }
-        ]
-
-        with (
-            mock.patch.object(auto_research.db, "fetchall", return_value=rows),
-            mock.patch.object(auto_research.db, "execute") as execute,
-            mock.patch.object(auto_research.db, "commit") as commit,
-            mock.patch.object(auto_research, "log_event"),
-            # Releasing a confirmed run from the soft gate is still a positive
-            # decision, so it needs the evidence audit's authorization. The
-            # case below covers a row that does not have it.
-            mock.patch.object(auto_research, "positive_decision_authorized", return_value=True),
-        ):
-            recovered = auto_research.recover_soft_benchmark_completion_jobs()
-
-        self.assertEqual(recovered, 1)
-        self.assertIn("manuscript_retry_after_soft_benchmark_gate", execute.call_args.args[0])
-        commit.assert_called_once()
-
-    def test_recover_soft_benchmark_completion_jobs_skips_unauthorized_rows(self):
-        """The soft gate is a release valve, not a bypass of the ladder."""
-        rows = [
-            {
-                "id": 7,
-                "agenda_id": 3,
-                "deep_insight_id": 4,
-                "experiment_run_id": 335,
-                "last_error": "Only manuscript polish blockers remain after benchmark evidence passed.",
-            }
-        ]
-
-        with (
-            mock.patch.object(auto_research.db, "fetchall", return_value=rows),
-            mock.patch.object(auto_research.db, "execute") as execute,
-            mock.patch.object(auto_research.db, "commit"),
-            mock.patch.object(auto_research, "log_event"),
-            mock.patch.object(auto_research, "positive_decision_authorized", return_value=False),
-        ):
-            recovered = auto_research.recover_soft_benchmark_completion_jobs()
-
-        self.assertEqual(recovered, 0)
-        execute.assert_not_called()
-
-    def test_recover_soft_benchmark_completion_jobs_keeps_full_benchmark_gaps(self):
-        rows = [
-            {
-                "id": 7,
-                "deep_insight_id": 4,
-                "experiment_run_id": 335,
-                "last_error": "benchmark_summary.full_benchmark_completed is false; required baselines missing: Extra",
-            }
-        ]
-
-        with (
-            mock.patch.object(auto_research.db, "fetchall", return_value=rows),
-            mock.patch.object(auto_research.db, "execute") as execute,
-            mock.patch.object(auto_research.db, "commit") as commit,
-            mock.patch.object(auto_research, "log_event"),
-        ):
-            recovered = auto_research.recover_soft_benchmark_completion_jobs()
-
-        self.assertEqual(recovered, 0)
-        execute.assert_not_called()
-        commit.assert_not_called()
-
-    def test_recover_soft_benchmark_completion_jobs_keeps_hard_blockers(self):
-        rows = [
-            {
-                "id": 8,
-                "deep_insight_id": 9,
-                "experiment_run_id": 278,
-                "last_error": "Benchmark summary must include at least two methods/baselines.",
-            }
-        ]
-
-        with (
-            mock.patch.object(auto_research.db, "fetchall", return_value=rows),
-            mock.patch.object(auto_research.db, "execute") as execute,
-            mock.patch.object(auto_research.db, "commit") as commit,
-        ):
-            recovered = auto_research.recover_soft_benchmark_completion_jobs()
-
-        self.assertEqual(recovered, 0)
-        execute.assert_not_called()
-        commit.assert_not_called()
-
-    def test_recover_blocked_manuscript_jobs_requeues_latest_blocked_run(self):
-        rows = [
-            {
-                "deep_insight_id": 8,
-                "experiment_run_id": 13,
-                "manuscript_status": "manuscript_blocked",
-                "manuscript_workdir": "/tmp/idea8/papers/current",
-                "auto_status": "completed",
-                "auto_stage": "experiment_confirmed",
-                "auto_resource_class": "cpu",
-                "run_resource_class": "gpu_small",
-                "run_error_message": "Manuscript quality gate failed",
-            }
-        ]
-        upserts = []
-
-        def _capture_upsert(insight_id, **fields):
-            upserts.append((insight_id, fields))
-
-        with (
-            mock.patch.object(auto_research.db, "fetchall", return_value=rows),
-            mock.patch.object(auto_research, "_manuscript_retry_blocker", return_value=None),
-            mock.patch.object(auto_research, "_upsert_job", side_effect=_capture_upsert),
-            mock.patch.object(auto_research, "log_event"),
-        ):
-            recovered = auto_research.recover_blocked_manuscript_jobs()
-
-        self.assertEqual(recovered, 1)
-        self.assertEqual(upserts[-1][0], 8)
-        self.assertEqual(upserts[-1][1]["status"], "queued")
-        self.assertEqual(upserts[-1][1]["stage"], "manuscript_retry_after_quality_gate")
-        self.assertEqual(upserts[-1][1]["experiment_run_id"], 13)
-
     def test_invalid_manuscript_retry_marks_blocked_manuscript_stale(self):
         with (
             # manuscript_runs is agenda-scoped, and the writer refuses to run
@@ -1409,27 +1258,6 @@ class AutoResearchSchedulingTests(unittest.TestCase):
         self.assertEqual(upsert.call_args.kwargs["resource_class"], "gpu_small")
         self.assertIn("switching from invalid run 335", upsert.call_args.kwargs["last_note"])
         self.assertEqual(log_event.call_args.args[0], "auto_research")
-
-    def test_recover_blocked_manuscript_jobs_skips_active_retry(self):
-        rows = [
-            {
-                "deep_insight_id": 4,
-                "experiment_run_id": 335,
-                "manuscript_status": "manuscript_blocked",
-                "auto_status": "queued",
-                "auto_stage": "manuscript_retry_after_quality_gate",
-            }
-        ]
-
-        with (
-            mock.patch.object(auto_research.db, "fetchall", return_value=rows),
-            mock.patch.object(auto_research, "_upsert_job") as upsert,
-            mock.patch.object(auto_research, "log_event"),
-        ):
-            recovered = auto_research.recover_blocked_manuscript_jobs()
-
-        self.assertEqual(recovered, 0)
-        upsert.assert_not_called()
 
     def test_process_candidate_writes_bundle_for_completed_confirmed_run(self):
         candidate = {
@@ -1566,28 +1394,6 @@ class AutoResearchSchedulingTests(unittest.TestCase):
         self.assertEqual(upserts[-1][1]["status"], "review_pending")
         self.assertEqual(upserts[-1][1]["stage"], "experiment_review")
         self.assertEqual(upserts[-1][1]["experiment_run_id"], 9)
-
-    def test_next_candidate_allows_experiment_when_only_research_jobs_are_active(self):
-        candidate = {
-            "id": 31,
-            "tier": 2,
-            "novelty_status": "novel",
-            "auto_status": None,
-            "auto_stage": None,
-        }
-
-        with (
-            mock.patch.object(auto_research, "_candidate_pool", return_value=[candidate]),
-            mock.patch.object(auto_research, "_execution_active_job_count", return_value=0),
-            mock.patch.object(auto_research, "_verification_job_count", return_value=0),
-            mock.patch.object(auto_research, "_research_job_count", return_value=3),
-            mock.patch.object(auto_research, "_review_pending_job_count", return_value=0),
-            mock.patch.object(auto_research, "_repair_pending_job_count", return_value=0),
-            mock.patch.object(auto_research, "evosci_available", return_value=False),
-        ):
-            selected = auto_research._next_candidate()
-
-        self.assertEqual(selected["id"], 31)
 
     def test_active_job_count_still_includes_researching_jobs(self):
         with (
@@ -1881,27 +1687,6 @@ class AutoResearchSchedulingTests(unittest.TestCase):
 
         self.assertEqual(selected["id"], 63)
         self.assertEqual(state["selected_queue"], auto_research.QUEUE_EXECUTION)
-
-    def test_next_candidate_requeues_legacy_tier1_completed_without_runs(self):
-        candidate = {
-            "id": 51,
-            "tier": 1,
-            "novelty_status": "novel",
-            "auto_status": "completed",
-            "auto_stage": "tier1_research_complete",
-        }
-
-        with (
-            mock.patch.object(auto_research, "_candidate_pool", return_value=[candidate]),
-            mock.patch.object(auto_research, "_execution_active_job_count", return_value=0),
-            mock.patch.object(auto_research, "_verification_job_count", return_value=0),
-            mock.patch.object(auto_research, "_review_pending_job_count", return_value=0),
-            mock.patch.object(auto_research, "_repair_pending_job_count", return_value=0),
-            mock.patch.object(auto_research, "evosci_available", return_value=False),
-        ):
-            selected = auto_research._next_candidate()
-
-        self.assertEqual(selected["id"], 51)
 
 
 class ParallelTier2LaunchTests(unittest.TestCase):

@@ -1,7 +1,6 @@
 """Entity-relation-evidence helpers for the scientific graph layer."""
 from __future__ import annotations
 
-from difflib import SequenceMatcher
 import re
 from collections import Counter
 from typing import Any
@@ -132,13 +131,6 @@ def is_high_value_entity(entity_type: str | None, name: str) -> bool:
     if entity_type == "concept" and _is_sentence_like_entity(canonical):
         return False
     return True
-
-
-def _acronym(name: str) -> str:
-    words = _tokenize_words(name)
-    if len(words) <= 1:
-        return ""
-    return "".join(word[0] for word in words if word)
 
 
 def _entity_support_count(entity_id: str) -> int:
@@ -339,100 +331,6 @@ def merge_graph_payloads(*payloads: dict | None) -> dict:
         "entities": _merge_entity_buckets(entity_items),
         "relations": _merge_relation_buckets(relation_items),
     }
-
-
-def score_entity_merge_candidate(entity_a: dict, entity_b: dict) -> tuple[float, str] | None:
-    """Return a heuristic merge score and rationale for two entities."""
-    type_a = normalize_entity_type(entity_a.get("entity_type"))
-    type_b = normalize_entity_type(entity_b.get("entity_type"))
-    if type_a != type_b:
-        return None
-
-    name_a = canonicalize_entity_name(type_a, entity_a.get("canonical_name") or entity_a.get("name") or "")
-    name_b = canonicalize_entity_name(type_b, entity_b.get("canonical_name") or entity_b.get("name") or "")
-    if not name_a or not name_b or name_a == name_b:
-        if name_a and name_a == name_b:
-            return 1.0, "Canonical names already match after normalization."
-        return None
-
-    norm_a = normalize_entity_name(name_a)
-    norm_b = normalize_entity_name(name_b)
-    aliases_a = {normalize_entity_name(alias) for alias in db._load_json(entity_a.get("aliases"), []) if alias}
-    aliases_b = {normalize_entity_name(alias) for alias in db._load_json(entity_b.get("aliases"), []) if alias}
-    aliases_a.add(norm_a)
-    aliases_b.add(norm_b)
-
-    if norm_a == norm_b:
-        return 0.99, "Normalized names match exactly."
-    if norm_a in aliases_b or norm_b in aliases_a:
-        return 0.97, "One entity name appears in the other entity's aliases."
-    if aliases_a & aliases_b:
-        return 0.95, "Entities share normalized aliases."
-
-    tokens_a = set(_tokenize_words(name_a))
-    tokens_b = set(_tokenize_words(name_b))
-    if not tokens_a or not tokens_b:
-        return None
-
-    jaccard = len(tokens_a & tokens_b) / len(tokens_a | tokens_b)
-    ratio = SequenceMatcher(None, norm_a, norm_b).ratio()
-    acronym_a = _acronym(name_a)
-    acronym_b = _acronym(name_b)
-    acronym_match = bool(acronym_a and acronym_b and acronym_a == acronym_b)
-    substring_match = norm_a in norm_b or norm_b in norm_a
-
-    score = max(jaccard, ratio)
-    reasons = []
-    if jaccard >= 0.75:
-        reasons.append(f"high token overlap ({jaccard:.2f})")
-    if ratio >= 0.90:
-        reasons.append(f"strong string similarity ({ratio:.2f})")
-    if acronym_match:
-        score = max(score, 0.88)
-        reasons.append(f"matching acronym ({acronym_a})")
-    if substring_match and abs(len(norm_a) - len(norm_b)) <= 8:
-        score = max(score, 0.86)
-        reasons.append("one normalized name contains the other")
-
-    if score < 0.84:
-        return None
-
-    if not reasons:
-        reasons.append(f"combined similarity {score:.2f}")
-    return score, "; ".join(reasons)
-
-
-def _merge_candidate_order(entity_a: dict, entity_b: dict) -> tuple[dict, dict]:
-    """Pick which entity should act as the primary side of a merge candidate."""
-    support_a = entity_a.get("support_count", 0)
-    support_b = entity_b.get("support_count", 0)
-    if support_a != support_b:
-        return (entity_a, entity_b) if support_a > support_b else (entity_b, entity_a)
-
-    len_a = len(entity_a.get("canonical_name") or "")
-    len_b = len(entity_b.get("canonical_name") or "")
-    if len_a != len_b:
-        return (entity_a, entity_b) if len_a <= len_b else (entity_b, entity_a)
-    return (entity_a, entity_b) if entity_a["id"] <= entity_b["id"] else (entity_b, entity_a)
-
-
-def _candidate_block_keys(entity: dict) -> set[str]:
-    entity_type = normalize_entity_type(entity.get("entity_type"))
-    name = canonicalize_entity_name(entity_type, entity.get("canonical_name") or "")
-    norm_name = normalize_entity_name(name)
-    tokens = _tokenize_words(name)
-    keys = {f"name:{norm_name}"}
-    if tokens:
-        keys.add(f"first:{tokens[0]}")
-        keys.add(f"last:{tokens[-1]}")
-    acronym = _acronym(name)
-    if acronym:
-        keys.add(f"acro:{acronym}")
-    for alias in db._load_json(entity.get("aliases"), []):
-        alias_norm = normalize_entity_name(alias)
-        if alias_norm:
-            keys.add(f"alias:{alias_norm}")
-    return keys
 
 
 def list_merge_candidates(status: str = "pending", limit: int = 100, entity_type: str | None = None) -> list[dict]:
@@ -780,30 +678,6 @@ def store_paper_graph(paper_id: str, node_ids: list[str], graph: dict) -> dict:
 
     db.commit()
     return {"entities": entity_count, "relations": relation_count}
-
-
-def build_structured_graph_payload_for_paper(paper_id: str) -> dict:
-    """Build graph payload from already stored structured paper data."""
-    methods = db.fetchall(
-        """SELECT name, category, description, key_innovation, first_paper_id, builds_on
-           FROM methods WHERE first_paper_id=?""",
-        (paper_id,),
-    )
-    for method in methods:
-        method["builds_on"] = db._load_json(method.get("builds_on"), [])
-
-    results = db.fetchall(
-        """SELECT method_name, dataset_name, metric_name, evidence_location
-           FROM results WHERE paper_id=?""",
-        (paper_id,),
-    )
-    claims = db.fetchall(
-        """SELECT claim_text, claim_type, method_name, dataset_name, metric_name, evidence_location
-           FROM claims WHERE paper_id=?""",
-        (paper_id,),
-    )
-    insight = db.get_paper_insight(paper_id)
-    return build_structured_graph_payload_from_records(methods, results, claims, insight)
 
 
 def get_paper_graph(paper_id: str) -> dict:

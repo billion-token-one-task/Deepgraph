@@ -450,25 +450,6 @@ class ComputeScheduler:
             "no_allowed_backend_available:" + ",".join(failures)
         )
 
-    def collect_if_successful(
-        self,
-        job: ComputeJob,
-        *,
-        requirements: tuple[str, ...],
-    ) -> ArtifactCollection:
-        job.validate()
-        if job.status != "succeeded":
-            raise ComputeBackendError(
-                f"artifacts cannot certify non-successful job: {job.status}"
-            )
-        backend = self._backends.get(job.backend_kind)
-        if backend is None:
-            raise ComputeBackendError("backend no longer configured")
-        artifacts = backend.collect_artifacts(job.backend_job_id, requirements)
-        if not artifacts.complete or artifacts.missing_requirements:
-            raise ComputeBackendError("required artifacts are incomplete")
-        return artifacts
-
     def refresh_and_settle(
         self,
         job: ComputeJob,

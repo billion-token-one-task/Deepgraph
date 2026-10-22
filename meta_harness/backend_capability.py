@@ -226,39 +226,3 @@ def require_schedulable(
             + ",".join(report.reasons)
         )
     return report
-
-
-def selected_canary_backend(
-    reports: Mapping[str, BackendCapabilityReport],
-    *,
-    requested: str,
-) -> BackendCapabilityReport:
-    """Exactly one GPU backend may be selected for a canary, and it must be it.
-
-    Ambiguity is refused rather than resolved: if more than one GPU backend is
-    canary-eligible, the operator must narrow the enabled list first.
-    """
-    requested_kind = str(requested).strip().lower()
-    if requested_kind not in GPU_BACKENDS:
-        raise BackendCapabilityError(
-            "a canary target must be a GPU backend:" + ",".join(GPU_BACKENDS)
-        )
-    eligible = [
-        report
-        for kind, report in reports.items()
-        if kind in GPU_BACKENDS and report.usable_for_canary
-    ]
-    if not eligible:
-        raise BackendCapabilityError("no GPU backend is eligible for a canary")
-    if len(eligible) > 1:
-        raise BackendCapabilityError(
-            "more than one GPU backend is canary-eligible; enable exactly one:"
-            + ",".join(sorted(report.kind for report in eligible))
-        )
-    report = eligible[0]
-    if report.kind != requested_kind:
-        raise BackendCapabilityError(
-            f"requested canary backend {requested_kind} is not the eligible one:"
-            f"{report.kind}"
-        )
-    return report

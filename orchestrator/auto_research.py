@@ -69,7 +69,6 @@ from db.insight_outcomes import (
 )
 from orchestrator.benchmark_completion import (
     BENCHMARK_COMPLETION_STAGE,
-    benchmark_completion_blockers,
     benchmark_completion_bundle_from_run,
     schedule_benchmark_completion,
 )
@@ -2548,25 +2547,6 @@ def _release_process_lock() -> None:
         _process_lock = None
 
 
-def list_jobs(limit: int = 50) -> list[dict]:
-    db.init_db()
-    rows = db.fetchall(
-        """SELECT arj.*, di.title, di.tier, di.status AS insight_status,
-                  di.novelty_status, di.created_at AS insight_created_at,
-                  er.status AS experiment_status, er.hypothesis_verdict,
-                  er.effect_pct
-           FROM auto_research_jobs arj
-           JOIN deep_insights di
-             ON di.agenda_id=arj.agenda_id
-            AND di.id = arj.deep_insight_id
-           LEFT JOIN experiment_runs er ON er.id = arj.experiment_run_id
-           ORDER BY arj.updated_at DESC
-           LIMIT ?""",
-        (limit,),
-    )
-    return rows
-
-
 def get_status() -> dict:
     with _worker_lock:
         running = bool(_worker_thread and _worker_thread.is_alive())
@@ -3006,25 +2986,6 @@ def _candidate_pool() -> list[dict]:
     return rows
 
 
-def _resource_experimentability(resource_class: str) -> str:
-    if resource_class == "cpu":
-        return "easy"
-    if resource_class == "gpu_small":
-        return "medium"
-    if resource_class == "gpu_unavailable":
-        return "blocked"
-    return "hard"
-
-
-def _route_recovered_legacy_job(insight: dict) -> tuple[str, str]:
-    resource_class, reason = assess_experiment_route(insight)
-    note = str(insight.get("auto_last_note") or "").lower()
-    if resource_class == "cpu" and ("gpu-heavy" in note or "looks gpu" in note):
-        resource_class = "gpu_small"
-        reason = f"{reason} Legacy cpu_ineligible note indicates GPU-heavy; routed to gpu_small."
-    return resource_class, reason
-
-
 def _candidate_needs_verification(candidate: dict) -> bool:
     novelty = (candidate.get("novelty_status") or "unchecked").strip()
     return evosci_available() and novelty in {"", "unchecked"}
@@ -3038,11 +2999,6 @@ def _candidate_still_missing_required_inputs(candidate: dict) -> bool:
         return False
     mode = "verification" if stage == "verification_input_missing" else "research"
     return get_evosci_input_issue(candidate, mode=mode) is not None
-
-
-def _next_candidate() -> dict | None:
-    candidate, _ = _select_candidate_from_queues()
-    return candidate
 
 
 def _refresh_running_jobs() -> None:
@@ -3382,159 +3338,6 @@ def _refresh_running_jobs() -> None:
                 )
 
 
-def recover_blocked_manuscript_jobs(limit: int = 50) -> int:
-    """Queue latest blocked manuscript runs for targeted writing repair."""
-    rows = db.fetchall(
-        """
-        SELECT mr.deep_insight_id,
-               mr.experiment_run_id,
-               mr.status AS manuscript_status,
-               mr.workdir AS manuscript_workdir,
-               arj.id AS auto_job_id,
-               arj.status AS auto_status,
-               arj.stage AS auto_stage,
-               arj.resource_class AS auto_resource_class,
-               er.resource_class AS run_resource_class,
-               er.error_message AS run_error_message
-        FROM manuscript_runs mr
-        JOIN (
-            SELECT deep_insight_id, MAX(id) AS latest_id
-            FROM manuscript_runs
-            WHERE status IN ('manuscript_blocked', 'needs_revision')
-            GROUP BY deep_insight_id
-        ) latest ON latest.latest_id = mr.id
-        JOIN deep_insights di ON di.id = mr.deep_insight_id
-        LEFT JOIN auto_research_jobs arj ON arj.deep_insight_id = mr.deep_insight_id
-        LEFT JOIN experiment_runs er ON er.id = mr.experiment_run_id
-        WHERE COALESCE(di.status, 'candidate') NOT IN ('exists')
-          AND COALESCE(di.outcome, 'pending') NOT IN ('cleaned', 'archived')
-          AND COALESCE(di.novelty_status, '') NOT IN ('cleaned_similar_duplicate', 'exists')
-          AND COALESCE(di.submission_status, 'not_started') NOT IN ('stale')
-          AND mr.experiment_run_id IS NOT NULL
-        ORDER BY mr.updated_at ASC
-        LIMIT ?
-        """,
-        (limit,),
-    )
-    recovered = 0
-    active_statuses = {
-        "queued",
-        "queued_cpu",
-        "queued_gpu",
-        "running_cpu",
-        "running_gpu",
-        "running_experiment",
-        "review_pending",
-        "researching",
-        "verifying",
-    }
-    active_stages = set(MANUSCRIPT_RETRY_STAGES) | {
-        BENCHMARK_COMPLETION_STAGE,
-        "manuscript_revision",
-        "gpu_scheduler",
-        "validation_loop",
-        "experiment_review",
-    }
-    for row in rows:
-        auto_status = str(row.get("auto_status") or "").strip()
-        auto_stage = str(row.get("auto_stage") or "").strip()
-        if auto_status in active_statuses and (not auto_stage or auto_stage in active_stages):
-            continue
-        insight_id = int(row["deep_insight_id"])
-        run_id = int(row["experiment_run_id"])
-        run = db.fetchone("SELECT * FROM experiment_runs WHERE id=?", (run_id,))
-        retry_blocker = _manuscript_retry_blocker(run)
-        if retry_blocker:
-            _block_invalid_manuscript_retry_run(insight_id, run_id, retry_blocker)
-            recovered += 1
-            continue
-        blocker = str(row.get("run_error_message") or row.get("manuscript_status") or "Manuscript quality gate failed.").strip()
-        _upsert_job(
-            insight_id,
-            status="queued",
-            stage="manuscript_retry_after_quality_gate",
-            experiment_run_id=run_id,
-            resource_class=row.get("auto_resource_class") or row.get("run_resource_class") or "cpu",
-            assigned_worker=None,
-            last_note="Recovered blocked manuscript and queued targeted writing/TeX/figure revision.",
-            last_error=blocker[:4000],
-        )
-        log_event(
-            "auto_research",
-            {
-                "step": "blocked_manuscript_recovered",
-                "insight_id": insight_id,
-                "run_id": run_id,
-                "manuscript_status": row.get("manuscript_status"),
-                "workdir": row.get("manuscript_workdir"),
-            },
-        )
-        recovered += 1
-    return recovered
-
-
-def recover_soft_benchmark_completion_jobs(limit: int = 50) -> int:
-    """Release confirmed runs that were blocked only by extended benchmark gaps."""
-    rows = db.fetchall(
-        """
-        SELECT arj.*, er.status AS run_status, er.hypothesis_verdict
-        FROM auto_research_jobs arj
-        JOIN experiment_runs er
-          ON er.agenda_id=arj.agenda_id
-         AND er.id = arj.experiment_run_id
-        WHERE arj.status='queued'
-          AND arj.stage=?
-          AND er.status='completed'
-          AND LOWER(COALESCE(er.hypothesis_verdict, '')) IN ('confirmed', 'supported')
-        ORDER BY arj.updated_at ASC
-        LIMIT ?
-        """,
-        (BENCHMARK_COMPLETION_STAGE, limit),
-    )
-    recovered = 0
-    for row in rows:
-        if not positive_decision_authorized(
-            agenda_id=int(row.get("agenda_id") or 0),
-            run_id=int(row.get("experiment_run_id") or 0),
-        ):
-            continue
-        raw_error = str(row.get("last_error") or "").strip()
-        blocker_items = [item.strip() for item in raw_error.split(";") if item.strip()]
-        bundle = {"error": raw_error, "submission_blockers": blocker_items}
-        if benchmark_completion_blockers(bundle):
-            continue
-        db.execute(
-            """
-            UPDATE auto_research_jobs
-            SET status='queued',
-                stage='manuscript_retry_after_soft_benchmark_gate',
-                assigned_worker=NULL,
-                last_error=NULL,
-                last_note=?,
-                last_checked_at=CURRENT_TIMESTAMP,
-                updated_at=CURRENT_TIMESTAMP
-            WHERE id=? AND agenda_id=?
-            """,
-            (
-                "Recovered from soft benchmark-completion gate; confirmed run can draft manuscript while extra baselines/seeds/ablations remain follow-up work.",
-                row["id"],
-                int(row["agenda_id"]),
-            ),
-        )
-        log_event(
-            "auto_research",
-            {
-                "step": "soft_benchmark_completion_recovered",
-                "insight_id": row.get("deep_insight_id"),
-                "run_id": row.get("experiment_run_id"),
-            },
-        )
-        recovered += 1
-    if recovered:
-        db.commit()
-    return recovered
-
-
 def _launch_candidates_to_capacity() -> dict:
     recovered_execution = recover_stale_execution_jobs()
     # A review claim is held by a pid recorded in assigned_worker. When that
@@ -3649,7 +3452,7 @@ def _process_candidate(insight: dict) -> None:
 
 def _process_candidate_in_scope(insight: dict) -> None:
     insight_id = insight["id"]
-    tier = insight.get("tier")
+    insight.get("tier")
     initial_auto_stage = str(insight.get("auto_stage") or "").strip()
     preserve_queue_stage = (
         initial_auto_stage == BENCHMARK_COMPLETION_STAGE

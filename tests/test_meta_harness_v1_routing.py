@@ -520,12 +520,6 @@ class ComputeRoutingTests(unittest.TestCase):
                 preferred_backends=["cpu"],
             )
 
-    def test_artifacts_only_certify_successful_job(self):
-        scheduler = ComputeScheduler([CPUBackend(_Transport())])
-        failed = ComputeJob("cpu", "job-1", "job-key", "failed", failure_reason="x")
-        with self.assertRaises(ComputeBackendError):
-            scheduler.collect_if_successful(failed, requirements=("raw_metrics",))
-
     def test_submission_fails_closed_without_durable_store(self):
         transport = _Transport()
         scheduler = ComputeScheduler([CPUBackend(transport)])

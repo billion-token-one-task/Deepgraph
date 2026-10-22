@@ -38,13 +38,7 @@ _ROOT = Path(__file__).resolve().parent.parent
 
 # Each entry is a key the scan reports and a human has accounted for.
 _ACCOUNTED = {
-    # --- third-party API responses (OpenAlex works objects) ---
-    "abstract_inverted_index": "OpenAlex works field",
-    "authorships": "OpenAlex works field",
-    "cited_by_count": "OpenAlex works field",
-    "primary_location": "OpenAlex works field",
-    "publication_year": "OpenAlex works field",
-    "https://api.openalex.org/works": "OpenAlex endpoint literal",
+    # --- third-party API responses ---
     "cardData": "HuggingFace Hub model/dataset card payload",
     # --- LLM response payloads, written by the model not by us ---
     "concur": "evaluator/reviewer JSON verdict field",
@@ -52,9 +46,6 @@ _ACCOUNTED = {
     "hyperparameters": "LLM-authored plan field",
     "falsification_hook": "LLM-authored idea field",
     "mechanism_repair": "LLM-authored idea field",
-    "phenomenon": "LLM-authored paradigm field",
-    "per_dataset_table": "LLM-authored audit field",
-    "route_rate_sweep": "LLM-authored audit field",
     "subset_analysis": "LLM-authored audit field",
     "avg_new_tokens": "runner-emitted metrics payload",
     "publication_evidence": "LLM-authored contract field",
