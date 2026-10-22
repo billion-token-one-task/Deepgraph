@@ -426,20 +426,3 @@ def backend_plot_pack(metric_name: str) -> list[dict[str, Any]]:
             "standard_version": FIGURE_STANDARD_VERSION,
         },
     ]
-
-
-def is_blocklisted_internal_figure(fig: dict[str, Any]) -> bool:
-    text = " ".join(
-        str(fig.get(key) or "")
-        for key in ("figure_id", "title", "objective", "chart_type", "data_source")
-    ).lower()
-    return any(token in text for token in BLOCKLISTED_INTERNAL_FIGURE_TOKENS)
-
-
-def experiment_figure_policy_manifest() -> dict[str, Any]:
-    return {
-        "standard_version": FIGURE_STANDARD_VERSION,
-        "experiment_figure_rules": EXPERIMENT_FIGURE_RULES,
-        "concept_figure_rules": CONCEPT_FIGURE_RULES,
-        "panel_layout_rules": PANEL_LAYOUT_RULES,
-    }

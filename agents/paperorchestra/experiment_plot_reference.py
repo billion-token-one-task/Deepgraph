@@ -10,13 +10,11 @@ only when verified sweep artifacts exist.
 from __future__ import annotations
 
 import json
-import os
 import re
-import time
 from pathlib import Path
 from typing import Any
 
-from agents.paperorchestra.semantic_scholar import paper_to_bibtex_key, paper_year, search_papers
+from agents.paperorchestra.semantic_scholar import paper_to_bibtex_key, paper_year
 
 
 EXPERIMENT_PLOT_REFERENCE_VERSION = "deepgraph_experiment_plot_reference_v4_2026_06_13"
@@ -563,106 +561,3 @@ def _build_plot_plan(metric_name: str, refs: list[dict[str, Any]], flags: dict[s
             )
         )
     return plan[: max(DEFAULT_MIN_EXPERIMENT_FIGURES, 3)]
-
-
-def discover_experiment_plot_references_or_raise(
-    outline: dict[str, Any],
-    state: dict[str, Any],
-    evidence_brief: dict[str, Any] | None,
-    *,
-    metric_name: str,
-    api_key: str | None = None,
-    min_figures: int = DEFAULT_MIN_EXPERIMENT_FIGURES,
-    min_style_references: int = DEFAULT_MIN_STYLE_REFERENCES,
-    min_distinct_families: int = DEFAULT_MIN_DISTINCT_FAMILIES,
-    per_query_limit: int = 8,
-    citation_registry: list[dict[str, Any]] | None = None,
-) -> dict[str, Any]:
-    text = _state_text(outline or {}, state or {}, evidence_brief or {})
-    domains = _detect_domains(text)
-    queries = _query_pool(domains, state or {}, metric_name)
-    errors: list[str] = []
-    max_seconds = float(os.getenv("PAPERORCHESTRA_PLOT_REFERENCE_MAX_SECONDS", "30") or "30")
-    query_timeout = float(os.getenv("PAPERORCHESTRA_PLOT_REFERENCE_QUERY_TIMEOUT", "5") or "5")
-    registry_first = os.getenv("PAPERORCHESTRA_PLOT_REFERENCE_REGISTRY_FIRST", "1").strip().lower() not in {"0", "false", "no", "off"}
-    started_at = time.monotonic()
-    papers: list[dict[str, Any]] = _papers_from_citation_registry(citation_registry)
-    registry_candidate_count = len(papers)
-    registry_relevant = [paper for paper in papers if isinstance(paper, dict) and _paper_is_domain_relevant(paper, domains)]
-    registry_style_refs = _dedupe_references([_style_reference_row(paper, domains) for paper in registry_relevant])
-    if registry_first and len(registry_style_refs) >= min_style_references:
-        errors.append("registry_first: skipped external plot-style search because reference_manager supplied enough domain-relevant style references")
-        queries = []
-    for query in queries:
-        if max_seconds > 0 and time.monotonic() - started_at > max_seconds:
-            errors.append(f"plot reference search budget exceeded after {max_seconds:.1f}s")
-            break
-        hits: list[dict[str, Any]] = []
-        try:
-            hits = search_papers(query, limit=per_query_limit, api_key=api_key, timeout=query_timeout)
-            for hit in hits:
-                if isinstance(hit, dict):
-                    hit.setdefault("_source", "semantic_scholar")
-        except Exception as exc:  # noqa: BLE001
-            errors.append(f"Semantic Scholar {query}: {exc}")
-        if not hits:
-            try:
-                hits = _search_openalex(query, limit=per_query_limit, timeout=query_timeout)
-            except Exception as exc:  # noqa: BLE001
-                errors.append(f"OpenAlex {query}: {exc}")
-        papers.extend(hits)
-    relevant_papers = [paper for paper in papers if isinstance(paper, dict) and _paper_is_domain_relevant(paper, domains)]
-    style_refs = _dedupe_references([_style_reference_row(paper, domains) for paper in relevant_papers])
-    flags = _evidence_flags(state or {})
-    plan = _build_plot_plan(metric_name, style_refs, flags, domains)
-    families = sorted({str(fig.get("chart_family") or CHART_FAMILY_BY_TYPE.get(str(fig.get("chart_type") or ""), "")) for fig in plan if fig.get("plot_type") == "plot"})
-    families = [x for x in families if x]
-
-    blockers: list[str] = []
-    chart_types = {str(fig.get("chart_type") or "") for fig in plan if fig.get("plot_type") == "plot"}
-    has_core_plot_plan = {"main_results_bar", "ablation_bar"}.issubset(chart_types) or bool(flags.get("backend_matrix") and len(plan) >= 2)
-    local_style_reference_count = len([p for p in LOCAL_EXPERIMENT_STYLE_REFERENCE_DIR.glob("*") if p.is_file()]) if LOCAL_EXPERIMENT_STYLE_REFERENCE_DIR.exists() else 0
-    if local_style_reference_count <= 0:
-        blockers.append(f"No local user-provided experiment figure examples were found at {LOCAL_EXPERIMENT_STYLE_REFERENCE_DIR}.")
-    if len(style_refs) < min_style_references:
-        blockers.append(f"Only {len(style_refs)}/{min_style_references} domain-relevant searched experiment-figure style references were found.")
-    if not has_core_plot_plan:
-        blockers.append(f"Required main-results and ablation experiment figures were not both planned: {sorted(chart_types)}.")
-    if len(plan) < min_figures and not has_core_plot_plan:
-        blockers.append(f"Only {len(plan)}/{min_figures} experiment figures were planned.")
-    if len(families) < min_distinct_families and not has_core_plot_plan:
-        blockers.append(f"Only {len(families)}/{min_distinct_families} distinct experiment chart families were planned: {families}.")
-    if not flags.get("per_method"):
-        blockers.append("No benchmark_summary.per_method evidence is available for artifact-backed experiment figures.")
-    for fig in plan[:min_figures]:
-        if fig.get("layout") not in {"1x3", "1x4"} or fig.get("placement") != "double_column":
-            blockers.append(f"{fig.get('figure_id')} is not a required wide 1x3/1x4 experiment figure layout.")
-        if not fig.get("style_reference_keys"):
-            blockers.append(f"{fig.get('figure_id')} has no searched style-reference keys.")
-        sources = set(fig.get("style_reference_sources") or [])
-        if not {"local_user_examples", "related_literature_search"}.issubset(sources):
-            blockers.append(f"{fig.get('figure_id')} does not record both local user examples and related-paper literature style sources.")
-
-    report = {
-        "schema_version": EXPERIMENT_PLOT_REFERENCE_VERSION,
-        "status": "blocked" if blockers else "ok",
-        "domains": [rule.get("domain") for rule in domains],
-        "queries_used": queries,
-        "search_errors": errors[:8],
-        "style_reference_sources": list(REQUIRED_STYLE_REFERENCE_SOURCES) + ["reference_manager_registry"],
-        "local_style_reference_dir": str(LOCAL_EXPERIMENT_STYLE_REFERENCE_DIR),
-        "local_style_reference_count": local_style_reference_count,
-        "domain_relevant_paper_count": len(relevant_papers),
-        "registry_candidate_count": registry_candidate_count,
-        "style_reference_count": len(style_refs),
-        "style_references": style_refs[:24],
-        "evidence_flags": flags,
-        "planned_experiment_figure_count": len(plan),
-        "distinct_chart_families": families,
-        "plotting_plan": plan,
-        "domain_recommended_chart_types": sorted({x for rule in domains for x in (rule.get("recommended_chart_types") or [])}),
-        "blockers": blockers,
-    }
-    if blockers:
-        raise ExperimentPlotReferenceError(report)
-    return report

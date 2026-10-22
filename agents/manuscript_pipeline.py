@@ -619,10 +619,6 @@ def build_manuscript_input_state(run: dict, insight: dict, iterations: list[dict
     return state
 
 
-def _build_canonical_state(run: dict, insight: dict, iterations: list[dict], claims: list[dict]) -> dict:
-    return build_manuscript_input_state(run, insight, iterations, claims).to_dict()
-
-
 def _bundle_manifest(bundle_root: Path) -> dict:
     manifest = {"files": []}
     for path in sorted(bundle_root.rglob("*")):

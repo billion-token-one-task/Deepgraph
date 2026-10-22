@@ -50,15 +50,6 @@ def infer_figure_spec_from_reference(path: str, caption: str = "") -> dict[str, 
     }
 
 
-def _augment_plotting_plan(
-    plan: list[dict[str, Any]],
-    state: dict[str, Any],
-    iterations: list[dict[str, Any]],
-    metric_name: str,
-) -> list[dict[str, Any]]:
-    return list(plan or [])
-
-
 def _run_external_diagram(*args: Any, **kwargs: Any) -> dict[str, Any]:
     raise FigureGenerationBlocked(
         "external diagram generation is outside the meta-harness-v1 first closed loop"

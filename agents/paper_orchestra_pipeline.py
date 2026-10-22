@@ -726,16 +726,6 @@ def normalize_latex_for_target(text: str, target: SubmissionTarget) -> str:
         source = _strip_iclr_style_for_target(source, target)
     return source
 
-def _inject_after_first_section(source: str, section_name: str, block: str) -> str:
-    if not block.strip():
-        return source
-    pattern = rf"(\\section\{{{re.escape(section_name)}\}}\s*)"
-    match = re.search(pattern, source)
-    if not match:
-        return source
-    insert_at = match.end()
-    return source[:insert_at] + "\n" + block.strip() + "\n" + source[insert_at:]
-
 
 def _inject_after_section_opening_paragraph(source: str, section_name: str, block: str, *, min_words: int = 80) -> str:
     """Place a figure after enough complete prose, never inside a word/sentence."""
@@ -999,15 +989,6 @@ def _ensure_table_color_package(source: str) -> str:
     return preamble + marker + body
 
 
-def _table_data_lines(block: str) -> list[str]:
-    lines = []
-    for line in (block or "").splitlines():
-        stripped = line.strip()
-        if "&" in stripped and stripped.endswith(r"\\") and not stripped.startswith("\\"):
-            lines.append(line)
-    return lines
-
-
 def _group_main_results_rows(block: str) -> str:
     """Leave semantic row grouping to explicitly enabled domain plugins."""
     return block
@@ -1211,10 +1192,6 @@ def _compile_main_pdf(bundle_dir: Path) -> dict:
         "attempts": attempts,
         "error_summary": error_summary,
     }
-
-
-def _bundle_dir_for_format(root: Path, bundle_format: str) -> Path:
-    return root / bundle_format
 
 
 def _copy_iclr2026_template_files(bundle_dir: Path) -> list[str]:
@@ -2196,32 +2173,6 @@ def _issue_is_experiment_scope(issue: dict) -> bool:
     return False
 
 
-def _issue_is_sota_margin_advisory(issue: dict) -> bool:
-    text = _issue_text(issue)
-    markers = (
-        "statistical significance",
-        "statistically significant",
-        "not significant",
-        "p>=",
-        "p-value",
-        "p value",
-        "p=",
-        "tiny",
-        "small margin",
-        "positive margin",
-        "meaningfully beat",
-        "not meaningfully beat",
-        "negligible",
-        "effect size",
-        "route/gate",
-        "route rate",
-        "routing rate",
-        "trigger rate",
-        "gate rate",
-    )
-    return any(marker in text for marker in markers)
-
-
 def _issue_is_authorable(issue: dict) -> bool:
     """Whether a quality issue can be sent back to the manuscript writer.
 
@@ -2510,13 +2461,6 @@ def _dg_insert_before_section(tex, section, block):
     if fallback:
         return (tex or "")[: fallback.start()] + block.rstrip() + "\n\n" + (tex or "")[fallback.start():]
     return (tex or "").rstrip() + "\n\n" + block.rstrip() + "\n"
-
-
-def _dg_insert_before_document_end(tex, block):
-    match = re.search(r"\\end\{document\}", tex or "", flags=re.IGNORECASE)
-    if match:
-        return (tex or "")[: match.start()] + block.rstrip() + "\n" + (tex or "")[match.start():]
-    return (tex or "").rstrip() + "\n" + block.rstrip() + "\n"
 
 
 def _dg_cite_series(keys):

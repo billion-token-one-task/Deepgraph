@@ -3,18 +3,13 @@
 from __future__ import annotations
 
 import json
-import os
-import time
 from typing import Any
 
 from db import database as db
 
 from agents.paperorchestra.semantic_scholar import (
     arxiv_id_from_paper,
-    paper_to_bibtex_entry,
-    paper_to_bibtex_key,
     paper_year,
-    search_papers,
 )
 
 
@@ -241,146 +236,3 @@ def _paper_matches_id(paper: dict[str, Any], pid: str) -> bool:
         return True
     arxiv_id = arxiv_id_from_paper(paper)
     return bool(arxiv_id and arxiv_id == pid)
-
-
-def run_literature_discovery(
-    outline: dict,
-    evidence_paper_ids: list[str],
-    *,
-    claim_evidence: list[dict[str, Any]] | None = None,
-    cutoff_year: int,
-    api_key: str | None,
-    max_queries: int = 24,
-    per_query_limit: int = 5,
-) -> dict[str, Any]:
-    """
-    Returns:
-      collected_papers: list for literature_review_agent ``collected_papers``
-      bibtex: merged .bib string
-      bib_keys: ordered keys for \\cite
-      registry: list of dicts (metadata)
-    """
-    by_key: dict[str, dict[str, Any]] = {}
-    normalized_claims: list[dict[str, Any]] = []
-    max_seconds = float(os.getenv("PAPERORCHESTRA_LITERATURE_MAX_SECONDS", "90") or "90")
-    query_timeout = float(os.getenv("PAPERORCHESTRA_LITERATURE_QUERY_TIMEOUT", "8") or "8")
-    started_at = time.monotonic()
-
-    for idx, claim in enumerate(claim_evidence or []):
-        if not isinstance(claim, dict):
-            continue
-        claim_id = str(claim.get("id") or f"claim_{idx + 1}")
-        normalized = {
-            "claim_id": claim_id,
-            "claim_text": claim.get("claim_text") or "",
-            "source_paper_ids": [str(x) for x in _as_list(claim.get("source_paper_ids")) if x],
-            "source_node_ids": [str(x) for x in _as_list(claim.get("source_node_ids")) if x],
-        }
-        normalized_claims.append(normalized)
-        for pid in normalized["source_paper_ids"]:
-            row = _db_paper_to_registry_row(
-                pid,
-                source_claim_ids=[claim_id],
-                source_node_ids=normalized["source_node_ids"],
-            )
-            if not row:
-                continue
-            by_key[row["_cite_key"]] = _merge_registry_row(by_key.get(row["_cite_key"]), row)
-
-    for pid in evidence_paper_ids:
-        row = _db_paper_to_registry_row(str(pid))
-        if not row:
-            continue
-        k = row["_cite_key"]
-        by_key[k] = _merge_registry_row(by_key.get(k), row)
-
-    queries = _extract_queries_from_outline(outline)[:max_queries]
-    for q in queries:
-        if max_seconds > 0 and time.monotonic() - started_at > max_seconds:
-            break
-        try:
-            hits = search_papers(q, limit=per_query_limit, api_key=api_key, timeout=query_timeout)
-        except Exception:
-            continue
-        for p in hits:
-            y = paper_year(p)
-            if y is not None and y > cutoff_year:
-                continue
-            k = paper_to_bibtex_key(p)
-            candidate = dict(p)
-            candidate["_cite_key"] = k
-            candidate["_source"] = "semantic_scholar"
-            candidate["_source_claim_ids"] = []
-            candidate["_source_node_ids"] = []
-            candidate["_matched_queries"] = [q]
-            by_key[k] = _merge_registry_row(by_key.get(k), candidate)
-
-    registry = [
-        row
-        for row in by_key.values()
-        if _literature_relevance_score(row, queries) >= 1.0
-    ]
-    query_text = " ".join(queries).lower()
-    needs_qvae_fallback = any(
-        token in query_text
-        for token in ("q-vae", "rank-weighted", "rank weighted", "policy gradient", "residual policy")
-    )
-    if len(registry) < 10 or needs_qvae_fallback:
-        for fallback in FALLBACK_QVAE_REFERENCES:
-            row = dict(fallback)
-            key = str(row.get("_cite_key") or paper_to_bibtex_key(row))
-            row["_cite_key"] = key
-            row.setdefault("_source_claim_ids", [])
-            row.setdefault("_source_node_ids", [])
-            by_key[key] = _merge_registry_row(by_key.get(key), row)
-        registry = [
-            row
-            for row in by_key.values()
-            if _literature_relevance_score(row, queries) >= 1.0 or row.get("_source") == "deterministic_fallback"
-        ]
-    registry.sort(key=lambda row: _literature_relevance_score(row, queries), reverse=True)
-    bib_chunks: list[str] = []
-    bib_keys: list[str] = []
-    collected: list[dict[str, Any]] = []
-    claim_citation_map: dict[str, dict[str, Any]] = {}
-
-    for p in registry:
-        k = p["_cite_key"]
-        bib_keys.append(k)
-        bib_chunks.append(paper_to_bibtex_entry(p, k))
-        collected.append(
-            {
-                "cite_key": k,
-                "title": p.get("title"),
-                "abstract": (p.get("abstract") or "")[:4000],
-                "year": paper_year(p),
-                "arxiv_id": arxiv_id_from_paper(p) or (p.get("paperId") or "").replace("db:", ""),
-                "source": p.get("_source"),
-                "sources": p.get("_sources") or [p.get("_source")],
-                "source_claim_ids": p.get("_source_claim_ids") or [],
-                "source_node_ids": p.get("_source_node_ids") or [],
-                "matched_queries": p.get("_matched_queries") or [],
-            }
-        )
-
-    for claim in normalized_claims:
-        cite_keys = [
-            row["_cite_key"]
-            for row in registry
-            if any(_paper_matches_id(row, pid) for pid in claim["source_paper_ids"])
-        ]
-        claim_citation_map[claim["claim_id"]] = {
-            "claim_text": claim["claim_text"],
-            "source_paper_ids": claim["source_paper_ids"],
-            "source_node_ids": claim["source_node_ids"],
-            "cite_keys": _dedupe(cite_keys),
-        }
-
-    return {
-        "collected_papers": collected,
-        "bibtex": "\n".join(bib_chunks),
-        "bib_keys": bib_keys,
-        "registry": registry,
-        "claim_citation_map": claim_citation_map,
-        "queries_used": queries,
-    }

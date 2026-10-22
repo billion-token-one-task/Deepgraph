@@ -138,20 +138,6 @@ MANUSCRIPT_WRITING_STANDARD_TEXT = "\n\n".join(
 )
 
 
-def section_style_rules(section_title: str) -> str:
-    """Return section-specific style rules for compact section-writing prompts."""
-    title = (section_title or "").lower()
-    if "intro" in title or "related" in title:
-        return INTRODUCTION_STANDARD + "\n\n" + CONTRIBUTIONS_STANDARD + "\n\n" + RELATED_WORK_STANDARD + "\n\n" + ABBREVIATION_STANDARD
-    if "method" in title:
-        return METHOD_STANDARD + "\n\n" + ABBREVIATION_STANDARD
-    if "experiment" in title or "result" in title:
-        return EXPERIMENTS_STANDARD + "\n\n" + TABLE_FIGURE_STANDARD + "\n\n" + ABBREVIATION_STANDARD
-    if "discussion" in title or "conclusion" in title:
-        return DISCUSSION_LIMITATIONS_STANDARD
-    return MANUSCRIPT_WRITING_STANDARD_TEXT
-
-
 def build_paper_contract(state: dict, venue_target: dict | None = None) -> dict:
     """Construct a compact binding paper contract from manuscript state."""
     paper_intent = state.get("paper_intent") if isinstance(state.get("paper_intent"), dict) else {}

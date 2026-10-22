@@ -433,15 +433,6 @@ def is_routing_or_gating_state(state: dict[str, Any], manifest: dict[str, Any] |
     return any(term in haystack for term in ("routing", "router", "gating", "gate", "selective", "deliberation"))
 
 
-def _has_quantitative_artifact(manifest: dict[str, Any], *names: str) -> bool:
-    artifacts = {key.lower(): value for key, value in _as_dict(manifest.get("artifacts")).items() if value}
-    for name in names:
-        needle = name.lower()
-        if any(needle in key for key in artifacts):
-            return True
-    return False
-
-
 def _baseline_has(manifest: dict[str, Any], *terms: str) -> bool:
     baselines = [_lower(x) for x in _as_list(manifest.get("baselines"))]
     return any(all(term in base for term in terms) for base in baselines)
