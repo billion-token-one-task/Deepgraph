@@ -364,9 +364,3 @@ def get_paper_text_parts(arxiv_id: str, pdf_url: str = "", abstract: str = "") -
         return abstract, ""
     except Exception:
         return abstract, ""
-
-
-def get_paper_text(arxiv_id: str, pdf_url: str = "", abstract: str = "") -> str:
-    """Backward-compatible helper returning the main body text only."""
-    main_text, _ = get_paper_text_parts(arxiv_id, pdf_url, abstract)
-    return main_text

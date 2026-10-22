@@ -46,11 +46,3 @@ def to_postgres(sql: str) -> str:
     out = out.replace("INSERT OR REPLACE INTO", "INSERT INTO")
     # Caller must add ON CONFLICT for REPLACE cases — handled in specialized paths
     return out
-
-
-def strip_sqlite_master_query(sql: str) -> str | None:
-    """Return None if query must be handled only on SQLite (skip on PG)."""
-    s = sql.strip().upper()
-    if "SQLITE_MASTER" in s or "PRAGMA" in s:
-        return None
-    return sql

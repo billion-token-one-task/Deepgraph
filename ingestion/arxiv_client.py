@@ -83,8 +83,3 @@ def search_papers(query: str = "", start: int = 0, max_results: int = None,
         })
 
     return papers
-
-
-def fetch_recent(max_results: int = 100) -> list[dict]:
-    """Fetch recent papers from the configured discovery profile."""
-    return search_papers(max_results=max_results)

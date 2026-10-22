@@ -69,6 +69,8 @@ _ACCOUNTED = {
     "auto_experiment_run_id": "SQL column alias",
     "patch_agenda_id": "SQL column alias",
     "max_vram_gb": "preflight environment probe payload",
+    "gap_description": "gaps/matrix_gaps column read from historical rows; "
+    "their insert helpers had no caller and were removed",
     # --- the benchmark readiness flags: KNOWN to have no writer ---
     # This is the defect that cost agenda 14 fifteen runs. They stay listed
     # because benchmark_harness_loop still reads them for the legacy path;

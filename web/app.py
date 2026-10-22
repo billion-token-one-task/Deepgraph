@@ -4,7 +4,6 @@ import importlib.util
 import os
 import re
 import shutil
-import subprocess
 import threading
 import time
 import traceback
@@ -377,14 +376,6 @@ def _manual_api_removed_response():
     ), 410
 
 
-def _required_agenda_query_id() -> int | None:
-    try:
-        agenda_id = int(request.args.get("agenda_id", ""))
-    except (TypeError, ValueError):
-        return None
-    return agenda_id if agenda_id > 0 else None
-
-
 # Sentinel for "every agenda", distinct from None (= the caller sent something
 # we could not parse).
 ALL_AGENDAS = "all"
@@ -451,131 +442,6 @@ def _api_failure(scope: str, exc: Exception, status: int = 500):
             "correlation_id": correlation_id,
         }
     ), status
-
-
-def _process_rss_mb() -> float | None:
-    try:
-        out = subprocess.check_output(
-            ["ps", "-o", "rss=", "-p", str(os.getpid())],
-            text=True,
-            stderr=subprocess.DEVNULL,
-        ).strip()
-        return round(int(out) / 1024, 1) if out else None
-    except (OSError, subprocess.SubprocessError, ValueError):
-        return None
-
-
-def _total_memory_mb() -> float | None:
-    try:
-        if platform.system() == "Darwin":
-            out = subprocess.check_output(
-                ["sysctl", "-n", "hw.memsize"],
-                text=True,
-                stderr=subprocess.DEVNULL,
-            ).strip()
-            return round(int(out) / (1024 * 1024), 1)
-        pages = os.sysconf("SC_PHYS_PAGES")
-        page_size = os.sysconf("SC_PAGE_SIZE")
-        return round((pages * page_size) / (1024 * 1024), 1)
-    except (OSError, subprocess.SubprocessError, ValueError, AttributeError):
-        return None
-
-
-def _disk_snapshot(path: Path) -> dict[str, Any]:
-    try:
-        usage = shutil.disk_usage(path if path.exists() else path.parent)
-        return {
-            "total_gb": round(usage.total / (1024 ** 3), 1),
-            "used_gb": round(usage.used / (1024 ** 3), 1),
-            "free_gb": round(usage.free / (1024 ** 3), 1),
-        }
-    except OSError:
-        return {}
-
-def _cpu_snapshot() -> dict[str, Any]:
-    snapshot: dict[str, Any] = {"count": os.cpu_count()}
-    try:
-        one, five, fifteen = os.getloadavg()
-        snapshot.update({
-            "load_1m": round(one, 2),
-            "load_5m": round(five, 2),
-            "load_15m": round(fifteen, 2),
-            "load_pct_1m": round((one / max(os.cpu_count() or 1, 1)) * 100, 1),
-        })
-    except (OSError, AttributeError):
-        pass
-    return snapshot
-
-
-def _gpu_snapshot() -> dict[str, Any]:
-    if not shutil.which("nvidia-smi"):
-        return {"available": False, "gpus": [], "processes": []}
-    query = "index,name,memory.total,memory.used,utilization.gpu,temperature.gpu,power.draw,power.limit"
-    try:
-        out = subprocess.check_output(
-            ["nvidia-smi", f"--query-gpu={query}", "--format=csv,noheader,nounits"],
-            text=True,
-            stderr=subprocess.DEVNULL,
-            timeout=5,
-        )
-        gpus = []
-        for line in out.splitlines():
-            parts = [part.strip() for part in line.split(",")]
-            if len(parts) < 8:
-                continue
-            idx, name, mem_total, mem_used, util, temp, power, power_limit = parts[:8]
-            def _float(value: str) -> float | None:
-                try:
-                    return round(float(value), 1)
-                except ValueError:
-                    return None
-            total = _float(mem_total) or 0
-            used = _float(mem_used) or 0
-            gpus.append({
-                "index": int(idx),
-                "name": name,
-                "memory_total_mb": total,
-                "memory_used_mb": used,
-                "memory_used_pct": round((used / total) * 100, 1) if total else None,
-                "utilization_pct": _float(util),
-                "temperature_c": _float(temp),
-                "power_w": _float(power),
-                "power_limit_w": _float(power_limit),
-            })
-    except (OSError, subprocess.SubprocessError, ValueError):
-        return {"available": False, "gpus": [], "processes": []}
-
-    processes = []
-    try:
-        pout = subprocess.check_output(
-            [
-                "nvidia-smi",
-                "--query-compute-apps=gpu_uuid,pid,process_name,used_memory",
-                "--format=csv,noheader,nounits",
-            ],
-            text=True,
-            stderr=subprocess.DEVNULL,
-            timeout=5,
-        )
-        for line in pout.splitlines():
-            parts = [part.strip() for part in line.split(",")]
-            if len(parts) < 4:
-                continue
-            gpu_uuid, pid, process_name, used_memory = parts[:4]
-            try:
-                used_memory_mb = round(float(used_memory), 1)
-            except ValueError:
-                used_memory_mb = None
-            processes.append({
-                "gpu_uuid": gpu_uuid,
-                "pid": pid,
-                "process_name": process_name,
-                "used_memory_mb": used_memory_mb,
-            })
-    except (OSError, subprocess.SubprocessError):
-        pass
-
-    return {"available": True, "gpus": gpus, "processes": processes}
 
 
 

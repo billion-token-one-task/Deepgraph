@@ -130,28 +130,3 @@ def claim_predicate_sql(*, job: str = "arj", insight: str = "di") -> str:
             )
         parts.append("(\n                    " + clause + "\n                  )")
     return "(\n               " + "\n               OR ".join(parts) + "\n             )"
-
-
-def is_claimable(status: str | None, stage: str | None) -> bool:
-    """Same decision as the SQL, for callers that already hold the row."""
-
-    if status is None or status == "":
-        return True
-    if status in CLAIMABLE_STATUSES:
-        return True
-    for rule in CLAIM_RULES:
-        if status == rule.status and stage in rule.stages:
-            # extra_sql conditions are row-level and cannot be judged here; the
-            # SQL remains the authority for those.
-            return True
-    return False
-
-
-def declared_stages() -> frozenset[str]:
-    """Every stage this module gives a disposition to."""
-
-    stages: set[str] = set()
-    for rule in CLAIM_RULES:
-        stages.update(rule.stages)
-    stages.update(stage for _status, stage in RECYCLABLE)
-    return frozenset(stages)

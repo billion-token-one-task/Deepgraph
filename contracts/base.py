@@ -49,10 +49,6 @@ def ensure_string_list(value: Any) -> list[str]:
     return out
 
 
-def json_compact(value: Any) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True)
-
-
 def dump_contract_dict(value: Any) -> Any:
     if is_dataclass(value):
         return {key: dump_contract_dict(val) for key, val in asdict(value).items()}

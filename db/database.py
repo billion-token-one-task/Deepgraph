@@ -1604,23 +1604,6 @@ def insert_method(method: dict):
     commit()
 
 
-def insert_pattern(pattern: dict) -> int:
-    rid = insert_returning_id(
-        """INSERT INTO patterns (pattern_text, pattern_type, domain_count, domains, claim_ids)
-           VALUES (?, ?, ?, ?, ?)
-           RETURNING id""",
-        (
-            pattern["pattern_text"],
-            pattern.get("pattern_type"),
-            pattern.get("domain_count", 1),
-            json.dumps(pattern.get("domains", [])),
-            json.dumps(pattern.get("claim_ids", [])),
-        ),
-    )
-    commit()
-    return rid
-
-
 def insert_contradiction(c: dict) -> int:
     rid = insert_returning_id(
         """INSERT INTO contradictions (claim_a_id, claim_b_id, description, condition_diff, hypothesis, severity)
@@ -1633,26 +1616,6 @@ def insert_contradiction(c: dict) -> int:
             c.get("condition_diff"),
             c.get("hypothesis"),
             c.get("severity", "medium"),
-        ),
-    )
-    commit()
-    return rid
-
-
-def insert_gap(g: dict) -> int:
-    rid = insert_returning_id(
-        """INSERT INTO gaps (problem_pattern_id, solution_pattern_id, gap_description,
-           missing_domain, evidence_papers, research_proposal, value_score)
-           VALUES (?, ?, ?, ?, ?, ?, ?)
-           RETURNING id""",
-        (
-            g.get("problem_pattern_id"),
-            g.get("solution_pattern_id"),
-            g["gap_description"],
-            g.get("missing_domain"),
-            json.dumps(g.get("evidence_papers", [])),
-            g.get("research_proposal"),
-            g.get("value_score"),
         ),
     )
     commit()
@@ -1759,19 +1722,6 @@ def replace_paper_research_facets(paper_id: str, facets: list[dict]) -> int:
         count += 1
     commit()
     return count
-
-
-def get_paper_research_facets(paper_id: str, facet_type: str | None = None) -> list[dict]:
-    params: list = [paper_id]
-    sql = "SELECT * FROM paper_research_facets WHERE paper_id=?"
-    if facet_type:
-        sql += " AND facet_type=?"
-        params.append(facet_type)
-    sql += " ORDER BY facet_type, id"
-    rows = fetchall(sql, tuple(params))
-    for row in rows:
-        row["metadata"] = _load_json(row.get("metadata"), {})
-    return rows
 
 
 def upsert_node_summary(summary: dict):

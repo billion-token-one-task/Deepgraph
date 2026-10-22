@@ -24,7 +24,3 @@ def arxiv_base_id(paper_id: str) -> str:
         if len(parts) == 2 and parts[1].isdigit():
             base = parts[0]
     return base
-
-
-def is_same_paper(a: str, b: str) -> bool:
-    return arxiv_base_id(a) == arxiv_base_id(b) and bool(arxiv_base_id(a))

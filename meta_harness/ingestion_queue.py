@@ -2011,17 +2011,3 @@ class ScopedIngestionRepository:
         except Exception:
             db.rollback()
             raise
-
-    def count_by_status(self) -> dict[str, int]:
-        rows = db.fetchall(
-            """
-            SELECT status, COUNT(*) AS count
-            FROM scoped_ingestion_jobs_v1
-            GROUP BY status
-            ORDER BY status
-            """
-        )
-        return {
-            str(row["status"]): int(row.get("count") or 0)
-            for row in rows
-        }

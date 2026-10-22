@@ -305,21 +305,6 @@ class DeepInsightSpec(ContractRecord):
                 payload[key] = payload[key]
         return payload
 
-    def storage_json_dict(self) -> dict[str, Any]:
-        payload = self.to_storage_dict()
-        for key in DEEP_INSIGHT_JSON_FIELDS:
-            if key in payload:
-                payload[key] = ensure_dict(payload[key]) if key not in {
-                    "supporting_papers",
-                    "source_paper_ids",
-                    "source_node_ids",
-                    "source_signal_ids",
-                    "signal_mix",
-                    "predictions",
-                    "exemplars_used",
-                } else ensure_list(payload[key])
-        return payload
-
 
 @dataclass
 class ExperimentJudgement(ContractRecord):
@@ -525,13 +510,6 @@ class ExperimentResultPacket(ContractRecord):
             raise ContractValidationError("ExperimentResultPacket missing run_id")
         if self.deep_insight_id is None:
             raise ContractValidationError("ExperimentResultPacket missing deep_insight_id")
-
-    def require_formal_manuscript_ready(self) -> None:
-        self.validate()
-        if not self.formal_experiment or self.smoke_test_only:
-            raise ContractValidationError("Non-formal experiment result cannot enter manuscript path")
-        if not self.claim_text:
-            raise ContractValidationError("ExperimentResultPacket missing claim_text")
 
 
 @dataclass

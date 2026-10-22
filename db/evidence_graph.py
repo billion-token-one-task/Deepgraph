@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from difflib import SequenceMatcher
 import re
-from collections import Counter, defaultdict
+from collections import Counter
 from typing import Any
 
 from db import database as db
@@ -546,127 +546,6 @@ def list_merge_candidates_with_context(status: str = "pending", limit: int = 100
     return results
 
 
-def refresh_merge_candidates(entity_type: str | None = None, min_score: float = 0.84, max_entities_per_type: int = 500) -> dict:
-    """Generate heuristic merge candidates for unresolved canonical entities."""
-    backfill_entity_resolutions()
-
-    sql = """
-        SELECT ge.id, ge.canonical_name, ge.entity_type, ge.aliases,
-               COALESCE((SELECT COUNT(*) FROM paper_entity_mentions pem WHERE pem.entity_id = ge.id), 0) +
-               COALESCE((SELECT COUNT(*) FROM graph_relations gr WHERE gr.subject_entity_id = ge.id OR gr.object_entity_id = ge.id), 0)
-               AS support_count
-        FROM graph_entities ge
-        JOIN entity_resolutions er ON er.entity_id = ge.id
-        WHERE er.canonical_entity_id = ge.id
-    """
-    params: list[Any] = []
-    if entity_type:
-        sql += " AND ge.entity_type = ?"
-        params.append(normalize_entity_type(entity_type))
-    sql += " ORDER BY ge.entity_type, support_count DESC, ge.canonical_name LIMIT ?"
-    params.append(max_entities_per_type if entity_type else max_entities_per_type * max(len(VALID_ENTITY_TYPES), 1))
-    rows = db.fetchall(sql, tuple(params))
-
-    by_type: dict[str, list[dict]] = defaultdict(list)
-    for row in rows:
-        by_type[row["entity_type"]].append(row)
-
-    created = 0
-    compared_pairs: set[tuple[str, str]] = set()
-    for current_type, entities in by_type.items():
-        blocks: dict[str, list[dict]] = defaultdict(list)
-        for entity in entities:
-            for key in _candidate_block_keys(entity):
-                blocks[key].append(entity)
-
-        candidate_pairs: set[tuple[str, str]] = set()
-        for block_entities in blocks.values():
-            if len(block_entities) < 2:
-                continue
-            for i, entity_a in enumerate(block_entities):
-                for entity_b in block_entities[i + 1:]:
-                    pair = tuple(sorted((entity_a["id"], entity_b["id"])))
-                    candidate_pairs.add(pair)
-
-        for entity_a_id, entity_b_id in sorted(candidate_pairs):
-            if (entity_a_id, entity_b_id) in compared_pairs:
-                continue
-            compared_pairs.add((entity_a_id, entity_b_id))
-            entity_a = next(entity for entity in entities if entity["id"] == entity_a_id)
-            entity_b = next(entity for entity in entities if entity["id"] == entity_b_id)
-            scored = score_entity_merge_candidate(entity_a, entity_b)
-            if not scored:
-                continue
-            score, rationale = scored
-            if score < min_score:
-                continue
-            primary, candidate = _merge_candidate_order(entity_a, entity_b)
-            db.execute(
-                """INSERT INTO entity_merge_candidates
-                   (entity_type, primary_entity_id, candidate_entity_id, similarity_score, rationale, generated_by)
-                   VALUES (?, ?, ?, ?, ?, 'heuristic')
-                   ON CONFLICT(primary_entity_id, candidate_entity_id) DO UPDATE SET
-                     similarity_score=excluded.similarity_score,
-                     rationale=excluded.rationale,
-                     updated_at=CURRENT_TIMESTAMP""",
-                (current_type, primary["id"], candidate["id"], score, rationale),
-            )
-            created += 1
-    if created:
-        db.commit()
-    return {"candidates_upserted": created, "types_scanned": len(by_type), "pairs_compared": len(compared_pairs)}
-
-
-def decide_merge_candidate(candidate_id: int, decision: str, note: str = "") -> dict | None:
-    """Accept or reject a merge candidate, keeping an auditable trail."""
-    if decision not in {"accepted", "rejected"}:
-        raise ValueError("decision must be 'accepted' or 'rejected'")
-
-    row = db.fetchone(
-        """SELECT * FROM entity_merge_candidates WHERE id=?""",
-        (candidate_id,),
-    )
-    if not row:
-        return None
-
-    db.execute(
-        """UPDATE entity_merge_candidates
-           SET status=?, decision_note=?, updated_at=CURRENT_TIMESTAMP
-           WHERE id=?""",
-        (decision, note, candidate_id),
-    )
-
-    if decision == "accepted":
-        primary_id = get_canonical_entity_id(row["primary_entity_id"])
-        candidate_entity_id = row["candidate_entity_id"]
-
-        db.execute(
-            """UPDATE entity_resolutions
-               SET canonical_entity_id=?, status='merged', updated_at=CURRENT_TIMESTAMP
-               WHERE entity_id=? OR canonical_entity_id=?""",
-            (primary_id, candidate_entity_id, candidate_entity_id),
-        )
-
-        primary = db.fetchone("SELECT aliases FROM graph_entities WHERE id=?", (primary_id,))
-        candidate = db.fetchone("SELECT canonical_name, aliases FROM graph_entities WHERE id=?", (candidate_entity_id,))
-        merged_aliases = _unique_list(
-            db._load_json(primary.get("aliases"), []) +
-            db._load_json(candidate.get("aliases"), []) +
-            [candidate.get("canonical_name", "")]
-        )
-        db.execute(
-            "UPDATE graph_entities SET aliases=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-            (db._dump_json(merged_aliases), primary_id),
-        )
-
-        # Invalidate cached summaries so future reads recompute with the new canonical mapping.
-        db.execute("DELETE FROM node_graph_summaries")
-        db.execute("DELETE FROM node_summaries")
-
-    db.commit()
-    return db.fetchone("SELECT * FROM entity_merge_candidates WHERE id=?", (candidate_id,))
-
-
 def build_structured_graph_payload_from_records(
     methods: list[dict],
     results: list[dict],
@@ -925,59 +804,6 @@ def build_structured_graph_payload_for_paper(paper_id: str) -> dict:
     )
     insight = db.get_paper_insight(paper_id)
     return build_structured_graph_payload_from_records(methods, results, claims, insight)
-
-
-def backfill_graph_from_structured_data(limit: int | None = None, overwrite: bool = False) -> dict:
-    """Backfill graph evidence for papers that already have structured extraction."""
-    from db import opportunity_engine as opp
-
-    sql = (
-        "SELECT p.id FROM papers p "
-        "LEFT JOIN paper_entity_mentions pem ON pem.paper_id = p.id "
-        "WHERE p.status IN ('extracted', 'reasoned') "
-    )
-    params: list[Any] = []
-    if not overwrite:
-        sql += "GROUP BY p.id HAVING COUNT(pem.id) = 0 "
-    else:
-        sql += "GROUP BY p.id "
-    sql += "ORDER BY p.updated_at DESC"
-    if limit:
-        sql += " LIMIT ?"
-        params.append(limit)
-
-    rows = db.fetchall(sql, tuple(params))
-    processed = 0
-    total_entities = 0
-    total_relations = 0
-    touched_nodes: set[str] = set()
-
-    for row in rows:
-        paper_id = row["id"]
-        node_rows = db.fetchall(
-            "SELECT node_id FROM paper_taxonomy WHERE paper_id=? ORDER BY node_id",
-            (paper_id,),
-        )
-        node_ids = [item["node_id"] for item in node_rows]
-        payload = build_structured_graph_payload_for_paper(paper_id)
-        if not payload["entities"] and not payload["relations"]:
-            continue
-        stats = store_paper_graph(paper_id, node_ids, payload)
-        processed += 1
-        total_entities += stats["entities"]
-        total_relations += stats["relations"]
-        touched_nodes.update(node_ids)
-
-    for node_id in sorted(touched_nodes):
-        ensure_node_graph_summary(node_id, force=True)
-        opp.ensure_node_opportunities(node_id, force=True)
-
-    return {
-        "papers_processed": processed,
-        "entities_written": total_entities,
-        "relations_written": total_relations,
-        "nodes_updated": len(touched_nodes),
-    }
 
 
 def get_paper_graph(paper_id: str) -> dict:

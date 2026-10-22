@@ -520,7 +520,3 @@ def agenda_timeline(agenda_id: int):
     events.extend(_outcome_events(agenda_id))
     events.sort(key=lambda item: item.get("at") or "", reverse=True)
     return jsonify({"agenda_id": agenda_id, "events": events[:limit]})
-
-
-def register_provenance_routes(app) -> None:
-    app.register_blueprint(blueprint)

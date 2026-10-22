@@ -476,11 +476,6 @@ def get_children(node_id: str) -> list[dict]:
     return children
 
 
-def get_root_children() -> list[dict]:
-    """Get the root node's children (top-level categories)."""
-    return get_children(ROOT_NODE_ID)
-
-
 def get_breadcrumb(node_id: str) -> list[dict]:
     """Return the path from root to node_id as a list of {id, name}."""
     crumbs = []
@@ -1066,84 +1061,4 @@ def backfill_result_taxonomy():
         db.commit()
 
 
-def insert_matrix_gap(gap: dict) -> int:
-    """Insert a gap found in the method x dataset matrix."""
-    rid = db.insert_returning_id(
-        """INSERT INTO matrix_gaps
-           (node_id, method_name, dataset_name, metric_name,
-            gap_description, research_proposal, value_score, evidence_paper_ids)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-           RETURNING id""",
-        (gap["node_id"], gap["method_name"], gap["dataset_name"],
-         gap.get("metric_name"), gap["gap_description"],
-         gap.get("research_proposal"), gap.get("value_score"),
-         json.dumps(gap.get("evidence_paper_ids", []))),
-    )
-    db.commit()
-    return rid
-
-
 # ── Dynamic taxonomy node creation ─────────────────────────────────
-
-def create_dynamic_node(
-    node_id: str,
-    name: str,
-    parent_id: str,
-    description: str = "",
-    sort_order: int = 0,
-) -> dict | None:
-    """Create a new taxonomy node dynamically (not from the predefined list).
-
-    Returns the created node dict, or None if it already exists.
-    """
-    existing = get_node(node_id)
-    if existing:
-        return None
-
-    parent = get_node(parent_id)
-    depth = (parent["depth"] + 1) if parent else 0
-
-    db.execute(
-        """INSERT INTO taxonomy_nodes
-           (id, name, parent_id, depth, description, sort_order)
-           VALUES (?, ?, ?, ?, ?, ?)
-           ON CONFLICT (id) DO NOTHING""",
-        (node_id, name, parent_id, depth, description, sort_order),
-    )
-    db.commit()
-    return get_node(node_id)
-
-
-def get_direct_paper_count(node_id: str) -> int:
-    """Return the number of papers directly assigned to a node (not subtree)."""
-    row = db.fetchone(
-        "SELECT COUNT(*) as c FROM paper_taxonomy WHERE node_id = ?",
-        (node_id,),
-    )
-    return row["c"] if row else 0
-
-
-def is_leaf_node(node_id: str) -> bool:
-    """Check whether a node is a leaf (has no children)."""
-    row = db.fetchone(
-        "SELECT id FROM taxonomy_nodes WHERE parent_id = ? LIMIT 1",
-        (node_id,),
-    )
-    return row is None
-
-
-def get_recently_created_nodes(limit: int = 20) -> list[dict]:
-    """Get the most recently created dynamic taxonomy nodes (by created_at)."""
-    return db.fetchall(
-        """SELECT t.*,
-                  COALESCE(pc.paper_count, 0) AS paper_count
-           FROM taxonomy_nodes t
-           LEFT JOIN (
-               SELECT node_id, COUNT(DISTINCT paper_id) AS paper_count
-               FROM paper_taxonomy
-               GROUP BY node_id
-           ) pc ON pc.node_id = t.id
-           ORDER BY t.created_at DESC
-           LIMIT ?""",
-        (limit,),
-    )

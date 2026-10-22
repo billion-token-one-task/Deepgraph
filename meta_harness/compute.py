@@ -8,7 +8,6 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from typing import Any, Mapping, Protocol
 
 from contracts.meta_harness import ResourceGrant
@@ -532,12 +531,3 @@ class ComputeScheduler:
             return observed
         self._job_store.record_backend_state(observed)
         return observed
-
-
-def heartbeat_is_stale(value: str | None, *, timeout_seconds: int) -> bool:
-    if not value or timeout_seconds <= 0:
-        return True
-    heartbeat = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    if heartbeat.tzinfo is None:
-        return True
-    return (datetime.now(timezone.utc) - heartbeat.astimezone(timezone.utc)).total_seconds() > timeout_seconds

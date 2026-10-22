@@ -724,25 +724,3 @@ class ComputeJobRepository:
         except Exception:
             db.rollback()
             raise
-
-    def reconciliation_queue(self, *, agenda_id: int | None = None) -> list[dict]:
-        _require_postgresql()
-        params: tuple[Any, ...] = ()
-        scope = ""
-        if agenda_id is not None:
-            if int(agenda_id) <= 0:
-                raise ComputeBackendError("agenda_id must be positive")
-            scope = " AND agenda_id=?"
-            params = (int(agenda_id),)
-        return db.fetchall(
-            f"""
-            SELECT id, agenda_id, idea_id, resource_grant_id, backend_kind,
-                   backend_job_id, idempotency_key, status, heartbeat_at,
-                   timeout_at, failure_reason
-            FROM compute_jobs_v1
-            WHERE status IN ('submission_unknown', 'collecting',
-                             'usage_unknown'){scope}
-            ORDER BY updated_at ASC, id ASC
-            """,
-            params,
-        )
