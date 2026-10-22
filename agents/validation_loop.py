@@ -1988,10 +1988,7 @@ def _determine_final_verdict(
     minimum refutation budget.
     """
     effect = best_value - baseline if direction == "higher" else baseline - best_value
-    effect_pct = (effect / abs(baseline) * 100) if baseline != 0 else 0
     is_improvement = effect > 0
-    exciting = criteria.get("exciting", 0)
-    solid = criteria.get("solid", 0)
 
     if automation_failed:
         return "inconclusive"

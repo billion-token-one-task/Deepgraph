@@ -1533,7 +1533,6 @@ def _figure_captions(main_tex: str) -> list[str]:
 
 def _experiment_figure_roles(main_tex: str, includes: list[str]) -> dict[str, list[str]]:
     captions = _figure_captions(main_tex)
-    joined = "\n".join(captions)
     roles: dict[str, list[str]] = {
         "main_benchmark": [],
         "ablation": [],

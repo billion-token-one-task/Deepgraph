@@ -7,7 +7,6 @@ After the validation loop completes:
 4. Create experimental_claims for the Knowledge Loop
 """
 import json
-import math
 import random
 from pathlib import Path
 
@@ -59,7 +58,6 @@ def _compute_p_value(treatment: list[float], control: list[float]) -> float:
     observed_diff = abs(sum(treatment) / len(treatment) - sum(control) / len(control))
     combined = treatment + control
     n_treat = len(treatment)
-    n_perms = min(5000, math.factorial(min(len(combined), 10)))
 
     count_extreme = 0
     for _ in range(5000):

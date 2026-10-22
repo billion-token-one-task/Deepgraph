@@ -240,7 +240,6 @@ def benchmark_completion_bundle_from_run(run_id: int, result: dict | None = None
     blockers: list[str] = []
 
     spec_evidence_file_present = bool(spec_evidence_path and spec_evidence_path.exists())
-    spec_manifest_file_present = bool(spec_manifest_path and spec_manifest_path.exists())
     if spec_evidence_file_present and not spec_evidence_plan:
         blockers.append("spec/evidence_plan.json is empty; benchmark evidence plan must be materialized before manuscript writing.")
     if spec_benchmark_manifest:

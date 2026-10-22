@@ -267,7 +267,6 @@ def _idea_for_evosci_review(insight: dict) -> dict:
     method = idea.get("proposed_method") if isinstance(idea.get("proposed_method"), dict) else {}
     experiments = idea.get("experimental_plan") if isinstance(idea.get("experimental_plan"), dict) else {}
     related = idea.get("related_work_positioning") if isinstance(idea.get("related_work_positioning"), dict) else {}
-    awareness = idea.get("problem_awareness") if isinstance(idea.get("problem_awareness"), dict) else {}
     evidence = idea.get("evidence_packet") if isinstance(idea.get("evidence_packet"), dict) else {}
     main_claim = experiments.get("main_claim") if isinstance(experiments.get("main_claim"), dict) else experiments.get("main_claim")
     if isinstance(main_claim, dict):

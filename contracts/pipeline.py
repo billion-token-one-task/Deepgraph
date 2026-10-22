@@ -641,26 +641,7 @@ class ManuscriptInputState(ContractRecord):
         )
         if scaffold_kind in {"bootstrap_probe", "fallback_bootstrap", "real_benchmark_fallback"}:
             benchmark_required = True
-        seed_results = ensure_list(benchmark_summary.get("seed_results"))
         per_method = ensure_dict(benchmark_summary.get("per_method"))
-        try:
-            num_seeds = int(benchmark_summary.get("num_seeds") or len(seed_results) or 0)
-        except (TypeError, ValueError):
-            num_seeds = 0
-        try:
-            minimum_seeds = int(
-                self.result_packet.get("minimum_seeds")
-                or publication_contract.get("minimum_seeds")
-                or quality_gates.get("minimum_seeds")
-                or 3
-            )
-        except (TypeError, ValueError):
-            minimum_seeds = 3
-        full_done = bool(
-            self.result_packet.get("full_benchmark_completed")
-            or benchmark_summary.get("full_benchmark_completed")
-            or benchmark_artifact_manifest.get("full_benchmark_completed")
-        )
         has_artifact_manifest = bool(
             artifact_paths.get("artifact_manifest")
             or benchmark_artifact_manifest.get("artifacts")
