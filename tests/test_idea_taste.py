@@ -2,6 +2,7 @@ import json
 import unittest
 from unittest import mock
 
+from tests.sqlite_isolation import use_temp_sqlite
 from agents.idea_taste import (
     compute_taste_score,
     graph_novelty_gate,
@@ -11,6 +12,12 @@ from agents.idea_taste import (
 
 
 class IdeaTasteTests(unittest.TestCase):
+    def setUp(self):
+        # score_graph_novelty and compute_taste_score read the taxonomy and
+        # entity tables; give them an empty schema of their own rather than
+        # whatever deepgraph.db the checkout happens to hold.
+        use_temp_sqlite(self)
+
     def test_graph_novelty_gate_rejects_empty_method_with_dense_graph_signal(self):
         insight = {
             "title": "Transformer baseline on GSM8K",

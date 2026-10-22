@@ -4,6 +4,7 @@ from unittest import mock
 from datetime import timedelta
 
 from orchestrator import auto_research, discovery_scheduler
+from tests.sqlite_isolation import use_temp_sqlite
 
 
 class _StubComputeJob:
@@ -91,6 +92,11 @@ class AutoResearchRoutingTests(unittest.TestCase):
 
 
 class AutoResearchSchedulingTests(unittest.TestCase):
+    def setUp(self):
+        # Several scheduler passes run a recovery query before the part a test
+        # mocks; those need real (empty) tables, not the repo-root deepgraph.db.
+        use_temp_sqlite(self)
+
     def test_candidate_pool_query_does_not_treat_review_pending_as_ready_candidate(self):
         with mock.patch.object(auto_research.db, "fetchall", return_value=[] ) as fetchall:
             auto_research._candidate_pool()

@@ -45,6 +45,11 @@ class AutoAdvanceGuardTests(unittest.TestCase):
             ),
             mock.patch.object(auto_advance, "_save_state"),
             mock.patch.object(auto_advance.Journal, "log"),
+            # main() asks the gpu_workers registry which card to request when
+            # no --gpu-class is given. That read is not what this test is
+            # about, and left unmocked it opens the default database, which
+            # created an empty deepgraph.db in the repository root.
+            mock.patch.object(auto_advance, "resolve_gpu_class", return_value="none"),
             mock.patch.object(auto_advance.db, "describe_backend", return_value={}),
             mock.patch.object(auto_advance.db, "rollback"),
             mock.patch.object(auto_advance, "_guard_spent_delta", return_value=0),
