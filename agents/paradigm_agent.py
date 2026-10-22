@@ -9,7 +9,6 @@ and here's the mathematical structure that proves it."
   Call 3: Adversarial Challenge — skeptic tries to destroy the insight
 """
 import json
-import time
 from agents.discovery_metadata import build_evidence_packet, enrich_deep_insight
 from agents.idea_taste import (
     attach_graph_taste_to_insight,
@@ -20,7 +19,6 @@ from agents.idea_taste import (
 from agents.insight_validation import get_evosci_input_issue
 from agents.llm_client import (
     call_llm_json,
-    call_llm,
     is_llm_auth_error,
     is_llm_provider_unavailable_error,
 )
