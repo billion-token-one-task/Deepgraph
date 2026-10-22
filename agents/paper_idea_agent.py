@@ -13,15 +13,12 @@ import re
 import time
 from collections import Counter
 from pathlib import Path
-from dataclasses import asdict
 from difflib import SequenceMatcher
 from agents.compute_profile import detect_compute_profile
 from agents.discovery_metadata import build_evidence_packet, enrich_deep_insight
 from agents.idea_taste import (
     attach_graph_taste_to_insight,
-    format_frontier_block,
     graph_novelty_gate,
-    signal_type_weight,
 )
 from agents.insight_validation import get_evosci_input_issue
 from agents.llm_client import (
@@ -34,7 +31,6 @@ from agents.llm_client import (
 )
 from agents.problem_first import (
     discover_research_problems,
-    match_problem_to_research_problem,
     select_problem_first_candidates,
 )
 from agents.paper_title_policy import TITLE_NAMING_STANDARD_TEXT, normalize_paper_title
@@ -368,26 +364,6 @@ def _problem_ruled_out(problem: dict) -> list[dict]:
     return [row for row in rows if isinstance(row, dict)]
 
 
-def _attach_research_problem_context(problem: dict, research_problems: list[dict], fallback_refs: dict) -> dict:
-    enriched = dict(problem)
-    matched = match_problem_to_research_problem(problem, research_problems)
-    if matched:
-        source_ref = matched.get("source_signal_ref") or {}
-        enriched["research_problem_id"] = matched.get("id")
-        enriched["problem_statement"] = matched.get("problem_statement") or enriched.get("formal_statement") or enriched.get("title")
-        enriched["ruled_out_approaches"] = matched.get("ruled_out_approaches") or []
-        enriched["source_signal_refs"] = {
-            "signals": [source_ref] if source_ref else [],
-            "node_ids": matched.get("node_ids") or enriched.get("related_node_ids") or [],
-            "paper_ids": matched.get("paper_ids") or [],
-        }
-        enriched["source_paper_ids"] = matched.get("paper_ids") or []
-    else:
-        enriched["source_signal_refs"] = fallback_refs
-        enriched["source_paper_ids"] = fallback_refs.get("paper_ids", [])
-    return enriched
-
-
 def _recent_tier2_memory(limit: int = RECENT_TIER2_MEMORY_LIMIT) -> list[dict]:
     try:
         rows = db.fetchall(
@@ -703,165 +679,6 @@ def _diversify_problems(problems: list[dict], budget: int, recent_memory: list[d
         candidates = [(cand_idx, cand) for cand_idx, cand in candidates if cand_idx != idx]
 
     return [problem for _idx, problem in selected]
-
-
-def _build_problem_prompt(
-    signals: dict,
-    recent_memory: list[dict] | None = None,
-    *,
-    agenda_id: int,
-) -> str:
-    """Build evidence prompt for Call 1 (Problem Sharpening)."""
-    sections = ["# EVIDENCE FROM 10,000+ ML PAPERS\n"]
-    compute = detect_compute_profile()
-    try:
-        compute_payload = asdict(compute)
-    except TypeError:
-        compute_payload = vars(compute)
-    sections.append("## LOCAL EXECUTION CONSTRAINTS")
-    sections.append(json.dumps(compute_payload, ensure_ascii=False, default=str))
-
-    weighted_signals = []
-    for key in (
-        "contradiction_clusters",
-        "performance_plateaus",
-        "limitation_clusters",
-        "mechanism_mismatches",
-        "protocol_artifacts",
-        "negative_space_gaps",
-        "hidden_variable_bridges",
-        "claim_method_gaps",
-    ):
-        rows = signals.get(key) or []
-        if rows:
-            weighted_signals.append(
-                (
-                    signal_type_weight(key.rstrip("s"), agenda_id=agenda_id),
-                    key,
-                    len(rows),
-                )
-            )
-    if weighted_signals:
-        weighted_signals.sort(reverse=True)
-        sections.append("\n## SIGNAL PRIORITY (meta-learned weights)")
-        for weight, key, count in weighted_signals[:6]:
-            sections.append(f"- {key}: weight={weight:.2f}, rows={count}")
-    if not compute.gpu_allowed:
-        sections.append(
-            "Generate paper ideas that can be executed locally without GPU training: "
-            "inference-time evaluation, controlled materialized traces, CPU-only analysis, "
-            "evaluation protocols, lightweight ablations, or small public-data studies. "
-            "Do not require fine-tuning, embedding model training, large ASR/vision training, "
-            "or multi-GPU experiments. Prefer ideas whose evidence can be executed from "
-            "existing local artifacts or concrete public datasets with standard loaders. "
-            "Do not invent benchmark names or require unavailable datasets."
-        )
-    memory_block = _recent_idea_memory_block(recent_memory or [])
-    if memory_block:
-        sections.append("\n" + memory_block)
-
-    # Contradiction clusters
-    if signals["contradiction_clusters"]:
-        sections.append("## CONTRADICTION CLUSTERS")
-        sections.append("(Groups of papers disagreeing on comparable setups)\n")
-        for cl in signals["contradiction_clusters"]:
-            entities = json.loads(cl["shared_entities"]) if cl["shared_entities"] else []
-            nodes = json.loads(cl["node_ids"]) if cl["node_ids"] else []
-            contra_ids = json.loads(cl["contradiction_ids"]) if cl["contradiction_ids"] else []
-
-            sections.append(f"### Cluster: {cl['theme']} ({cl['cluster_size']} contradictions)")
-            sections.append(f"Nodes: {', '.join(nodes[:5])}")
-            sections.append(f"Entities: {', '.join(entities[:8])}")
-
-            for cid in contra_ids[:3]:
-                contra = db.fetchone("""
-                    SELECT c.description, c.hypothesis,
-                           ca.method_name, ca.metric_name, ca.metric_value, ca.paper_id as pa,
-                           cb.method_name as method_b, cb.metric_value as value_b, cb.paper_id as pb
-                    FROM contradictions c
-                    JOIN claims ca ON c.claim_a_id = ca.id
-                    JOIN claims cb ON c.claim_b_id = cb.id
-                    WHERE c.id = ?
-                """, (cid,))
-                if contra:
-                    sections.append(f"  - {contra['description'][:200]}")
-                    if contra["method_name"] and contra["metric_value"]:
-                        sections.append(
-                            f"    {contra['pa']}: {contra['method_name']} = {contra['metric_value']} "
-                            f"vs {contra['pb']}: {contra.get('method_b', '?')} = {contra.get('value_b', '?')}")
-            sections.append("")
-
-    # Performance plateaus
-    if signals["performance_plateaus"]:
-        sections.append("\n## PERFORMANCE PLATEAUS")
-        sections.append("(Subfields where top methods have converged)\n")
-        for pl in signals["performance_plateaus"]:
-            top = json.loads(pl["top_methods"]) if pl["top_methods"] else []
-            sections.append(
-                f"- **{pl['node_id']}** on {pl['dataset_name']} [{pl['metric_name']}]: "
-                f"spread={pl['spread_pct']:.2f}% across {pl['method_count']} methods")
-            for m in top[:4]:
-                sections.append(f"    {m['method']}: {m['value']}")
-            sections.append("")
-
-    # Limitation clusters
-    if signals["limitation_clusters"]:
-        sections.append("\n## RECURRING LIMITATIONS")
-        sections.append("(Same limitation appears across 3+ papers in a node)\n")
-        for lc in signals["limitation_clusters"]:
-            paper_ids = lc["paper_ids"].split(",")[:5] if lc.get("paper_ids") else []
-            sections.append(f"- **{lc['node_id']}** ({lc['lim_count']} papers with limitations)")
-            for pid in paper_ids[:3]:
-                pi = db.fetchone(
-                    "SELECT limitations FROM paper_insights WHERE paper_id=?", (pid.strip(),))
-                if pi and pi["limitations"]:
-                    try:
-                        lims = json.loads(pi["limitations"])
-                        for lim in lims[:2]:
-                            if isinstance(lim, str) and len(lim) > 15:
-                                sections.append(f"    [{pid.strip()}] {lim[:150]}")
-                    except (json.JSONDecodeError, TypeError):
-                        pass
-            sections.append("")
-
-    # High-potential existing insights
-    if signals["high_potential_insights"]:
-        sections.append("\n## HIGH-SCORING PRIOR INSIGHTS (need method innovation)")
-        for ins in signals["high_potential_insights"][:5]:
-            label = ins.get("insight_type") or ins.get("mechanism_type") or "insight"
-            sections.append(f"- [{label}] {ins['title']}")
-            hypothesis = ins.get("hypothesis") or ins.get("evidence_summary") or ""
-            sections.append(f"  Hypothesis: {hypothesis[:200]}")
-            score = ins.get("paradigm_score", ins.get("adversarial_score", 0))
-            sections.append(f"  Prior score: {score}")
-            sections.append("")
-
-    frontier_nodes = []
-    for cluster in signals.get("limitation_clusters") or []:
-        if cluster.get("node_id"):
-            frontier_nodes.append(cluster["node_id"])
-    for plateau in signals.get("performance_plateaus") or []:
-        if plateau.get("node_id"):
-            frontier_nodes.append(plateau["node_id"])
-    frontier_nodes = list(dict.fromkeys(frontier_nodes))[:4]
-    if frontier_nodes:
-        sections.append("\n" + format_frontier_block(frontier_nodes))
-
-    for key, title in [
-        ("mechanism_mismatches", "MECHANISM MISMATCHES"),
-        ("protocol_artifacts", "PROTOCOL ARTIFACTS"),
-        ("negative_space_gaps", "NEGATIVE SPACE GAPS"),
-        ("hidden_variable_bridges", "HIDDEN VARIABLE BRIDGES"),
-        ("claim_method_gaps", "CLAIM-METHOD GAPS"),
-    ]:
-        rows = signals.get(key) or []
-        if not rows:
-            continue
-        sections.append(f"\n## {title}")
-        for row in rows[:6]:
-            sections.append(f"- {json.dumps(row, ensure_ascii=True, default=str)[:260]}")
-
-    return "\n".join(sections)
 
 
 def _build_method_prompt(problem: dict, solution_signals: list[dict] | None = None) -> str:

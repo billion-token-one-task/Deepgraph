@@ -599,14 +599,3 @@ def protocol_minimum_seeds(protocol: Mapping[str, Any] | None) -> int:
     except (TypeError, ValueError):
         return 1
 
-
-def protocol_required_names(protocol: Mapping[str, Any] | None, key: str) -> list[str]:
-    if not isinstance(protocol, Mapping):
-        return []
-    requirements = protocol.get("full_benchmark_requirements")
-    if isinstance(requirements, Mapping):
-        value = requirements.get(key)
-        if isinstance(value, list):
-            return _named_values(value, ("name", "id", "dataset", "model", "method"))
-    return []
-

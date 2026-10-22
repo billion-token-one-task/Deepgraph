@@ -12,7 +12,6 @@ import time
 from pathlib import Path
 
 from db import database as db
-from agents.evosci_requirements import evosci_binary_path
 
 
 ACTIVE_SESSION_LOG_WINDOW_SECONDS = 15 * 60
@@ -435,70 +434,6 @@ Based on the above deep insight and supporting evidence, please:
 The goal is a paper-ready research plan that an engineer or PhD student could execute directly.
 """
     return proposal
-
-
-def launch_evoscientist(insight_id: int, workdir: str = None) -> dict:
-    """Launch EvoScientist with an enriched research proposal from a DeepGraph insight.
-
-    Returns {"status": "started", "workdir": ..., "pid": ...} immediately.
-    EvoScientist runs in the background.
-    """
-    ctx = gather_context(insight_id)
-    proposal = format_proposal(ctx)
-
-    # Create workspace for this research
-    if workdir is None:
-        safe_title = ctx["insight"]["title"][:50].replace(" ", "_").replace("/", "-")
-        workdir = str(Path.home() / "research" / f"insight_{insight_id}_{safe_title}")
-
-    os.makedirs(workdir, exist_ok=True)
-
-    # Write the proposal
-    proposal_path = Path(workdir) / "research_proposal.md"
-    proposal_path.write_text(proposal, encoding="utf-8")
-
-    # Write context as JSON for reference
-    ctx_path = Path(workdir) / "deepgraph_context.json"
-    # Make serializable
-    ctx_ser = {k: v for k, v in ctx.items()}
-    ctx_ser["insight"] = {k: (str(v) if not isinstance(v, (str, int, float, type(None))) else v)
-                          for k, v in ctx["insight"].items()}
-    ctx_path.write_text(json.dumps(ctx_ser, indent=2, default=str), encoding="utf-8")
-
-    # Launch EvoScientist in background
-    # Write a short prompt that points to the full proposal file
-    evosci_bin = str(evosci_binary_path())
-    short_prompt = (
-        f"Read the file research_proposal.md in this workspace. "
-        f"It contains a detailed research proposal titled: {ctx['insight']['title']}. "
-        f"Follow ALL the instructions in that file to produce a complete research plan "
-        f"with experiment design, success criteria, risk analysis, and paper outline."
-    )
-    env = os.environ.copy()
-    env["CUSTOM_OPENAI_USE_RESPONSES_API"] = "true"
-    log_file = open(Path(workdir) / "evoscientist.log", "w")
-    proc = subprocess.Popen(
-        [
-            evosci_bin,
-            "--workdir", workdir,
-            "--auto-approve",
-            "--ui", "cli",
-            "-p", short_prompt,
-        ],
-        stdout=log_file,
-        stderr=subprocess.STDOUT,
-        cwd=workdir,
-        env=env,
-    )
-    write_session_pid(Path(workdir), proc.pid)
-
-    return {
-        "status": "started",
-        "insight_id": insight_id,
-        "workdir": workdir,
-        "pid": proc.pid,
-        "proposal_path": str(proposal_path),
-    }
 
 
 def get_research_status(workdir: str) -> dict:

@@ -109,18 +109,3 @@ def build_echo(agenda: ResearchAgenda) -> dict[str, Any]:
         "backlog_policy": agenda.backlog_policy,
         "confirmation_required": True,
     }
-
-
-def parse_direction_yaml(text: str) -> tuple[ResearchAgenda, dict[str, Any]]:
-    if not str(text or "").strip():
-        raise DirectionParseError("empty direction submission")
-    import yaml  # type: ignore
-
-    try:
-        payload = yaml.safe_load(text)
-    except yaml.YAMLError as exc:
-        raise DirectionParseError(f"invalid YAML: {exc}") from exc
-    if not isinstance(payload, Mapping):
-        raise DirectionParseError("direction submission must be a mapping")
-    agenda = parse_direction_payload(payload)
-    return agenda, build_echo(agenda)

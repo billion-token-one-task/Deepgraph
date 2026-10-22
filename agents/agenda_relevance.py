@@ -28,21 +28,6 @@ def agenda_scope_terms(agenda: ResearchAgenda) -> list[str]:
     return terms
 
 
-def agenda_constraint_block(agenda: ResearchAgenda) -> str:
-    agenda.validate()
-    return "\n".join(
-        [
-            "# RESEARCH AGENDA (hard scope)",
-            f"agenda_id: {agenda.agenda_id}",
-            f"direction: {agenda.description or agenda.name}",
-            f"scope terms: {', '.join(agenda_scope_terms(agenda))}",
-            "Generate only objects inside this agenda.",
-            "Return fewer candidates rather than drifting out of scope.",
-            "Do not consume or relabel unscoped legacy backlog.",
-        ]
-    )
-
-
 # What the candidate asserts it will do. The reject list is a statement about
 # method -- "no weight updates here" -- so it must be matched against the
 # candidate's own claim, not against every sentence in the file.

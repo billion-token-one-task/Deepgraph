@@ -1065,28 +1065,6 @@ def writeback_experiment_result(
     }
 
 
-def run_experiment_worker(problem: dict, approach: dict, *, run_id: int | None = None) -> dict:
-    """Compatibility wrapper for problem-first callers.
-
-    Direct execution is no longer a compatibility behavior. A staged approach
-    may return an inconclusive packet, but an existing run must enter through
-    the grant-scoped durable ComputeScheduler path.
-    """
-    if run_id is None:
-        return {
-            "verdict": "inconclusive",
-            "conditions": {"reason": "no_run_id_supplied"},
-            "effect_size": None,
-            "run_id": None,
-            "deep_insight_id": None,
-            "source_signal_refs": approach.get("source_signal_refs") or {},
-        }
-    raise PermissionError(
-        "direct problem-first validation is disabled; submit the existing "
-        "run through ComputeScheduler with a valid ResourceGrant"
-    )
-
-
 def problem_first_cycle(
     *,
     agenda_id: int,

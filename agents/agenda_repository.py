@@ -286,22 +286,6 @@ class AgendaRepository:
         )
         db.commit()
 
-    def set_status(self, agenda_id: int, status: str) -> None:
-        cur = db.execute(
-            """
-            UPDATE research_agendas
-            SET status=?,
-                is_active=CASE WHEN ?='active' THEN 1 ELSE 0 END,
-                updated_at=CURRENT_TIMESTAMP
-            WHERE id=?
-            """,
-            (status, status, int(agenda_id)),
-        )
-        if int(getattr(cur, "rowcount", 0) or 0) != 1:
-            db.rollback()
-            raise AgendaNotFoundError(agenda_id)
-        db.commit()
-
     def candidates(self, agenda_id: int, *, limit: int = 100) -> list[dict[str, Any]]:
         """Return only records already bound to this agenda.
 

@@ -20,7 +20,6 @@ import subprocess
 import sys
 import textwrap
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 
 from agents.benchmark_audit import (
@@ -30,7 +29,7 @@ from agents.benchmark_audit import (
     comparison_validity_blockers,
     full_benchmark_evidence_blockers,
 )
-from agents import codex_executor
+from agents import codex_executor  # noqa: F401 - tests reach it as validation_loop.codex_executor
 from agents import experiment_feedback
 from agents import experiment_supervisor
 from agents.evosci_requirements import evosci_strict_gate_insight
@@ -763,18 +762,6 @@ def _env_truthy(name: str) -> bool:
     return str(os.getenv(name) or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _bounded_int_text(value: str | None, cap: int) -> str:
-    if cap <= 0:
-        return str(value or "")
-    try:
-        current = int(str(value or "").strip())
-    except (TypeError, ValueError):
-        current = cap
-    if current <= 0:
-        current = cap
-    return str(min(current, cap))
-
-
 def _contract_context(workdir: Path) -> tuple[dict, dict, dict]:
     success = _read_success_criteria(workdir)
     proxy = _read_proxy_config(workdir)
@@ -1433,20 +1420,6 @@ def _run_experiment_model_matrix(
         "visible_device": per_model_results[-1].get("visible_device") if per_model_results else None,
         "final_results_present": bool(merged),
     }
-
-def _as_utc_datetime(value) -> datetime | None:
-    if isinstance(value, datetime):
-        parsed = value
-    elif value:
-        try:
-            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-        except ValueError:
-            return None
-    else:
-        return None
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
 
 
 def _remaining_grant_gpu_seconds(run_id: int) -> float | None:

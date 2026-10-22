@@ -2213,18 +2213,6 @@ def _normalize_success_criteria(success: dict, plan: dict, contract: dict) -> di
     return success
 
 
-def _default_dataset_name(parsed: dict) -> str:
-    corpus = " ".join(
-        [
-            _non_empty_text(parsed.get("title")),
-            _non_empty_text((parsed.get("proposed_method") or {}).get("type")),
-        ]
-    ).lower()
-    if any(token in corpus for token in ("gpu", "cuda", "systems_validation", "smoke")):
-        return "synthetic_remote_gpu_probe"
-    return "synthetic_stress_test"
-
-
 def _enrich_proposed_method(parsed: dict, plan: dict) -> dict:
     method = dict(parsed.get("proposed_method") or {})
     title = _non_empty_text(parsed.get("title")) or f"insight_{parsed.get('id', 'unknown')}"

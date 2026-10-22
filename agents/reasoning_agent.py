@@ -73,62 +73,6 @@ Be VERY selective. Most matrices have 0-2 genuine gaps. Return empty list rather
 Return ONLY valid JSON."""
 
 
-def detect_contradictions(
-    new_claim: dict,
-    new_claim_id: int,
-    *,
-    llm_scope: Mapping[str, Any] | None = None,
-) -> tuple[list[dict], int]:
-    """Check a new claim against existing related claims for contradictions."""
-    related = []
-    if new_claim.get("method_name"):
-        related += db.fetchall(
-            "SELECT id, claim_text, claim_type, method_name, dataset_name, metric_name, metric_value, paper_id "
-            "FROM claims WHERE method_name=? AND id!=? LIMIT 20",
-            (new_claim["method_name"], new_claim_id)
-        )
-    if new_claim.get("dataset_name"):
-        related += db.fetchall(
-            "SELECT id, claim_text, claim_type, method_name, dataset_name, metric_name, metric_value, paper_id "
-            "FROM claims WHERE dataset_name=? AND id!=? LIMIT 20",
-            (new_claim["dataset_name"], new_claim_id)
-        )
-
-    if not related:
-        return [], 0
-
-    # Deduplicate
-    seen = set()
-    unique_related = []
-    for r in related:
-        if r["id"] not in seen:
-            seen.add(r["id"])
-            unique_related.append(r)
-
-    existing_text = "\n".join(
-        f"[ID={r['id']}] (paper {r['paper_id']}): {r['claim_text']} "
-        f"[method={r.get('method_name')}, dataset={r.get('dataset_name')}, "
-        f"metric={r.get('metric_name')}, value={r.get('metric_value')}]"
-        for r in unique_related[:20]
-    )
-
-    user_prompt = f"""NEW CLAIM:
-{new_claim['claim_text']}
-[method={new_claim.get('method_name')}, dataset={new_claim.get('dataset_name')},
- metric={new_claim.get('metric_name')}, value={new_claim.get('metric_value')}]
-
-EXISTING RELATED CLAIMS:
-{existing_text}"""
-
-    result, tokens, _route = proposer_json(
-        CONTRADICTION_SYSTEM,
-        user_prompt,
-        llm_scope=llm_scope,
-        operation=f"contradiction_check:claim:{new_claim_id}",
-    )
-    return result.get("contradictions", []), tokens
-
-
 BATCH_CONTRADICTION_SYSTEM = """You are a scientific contradiction detector. Given a set of NEW claims from one paper and EXISTING claims from other papers, identify contradictions.
 
 A contradiction exists when:
@@ -294,33 +238,3 @@ Find the most valuable empty cells. Why would testing these combinations advance
     for g in gaps:
         g["node_id"] = node_id
     return gaps, tokens
-
-
-def discover_all_gaps(
-    *,
-    llm_scope: Mapping[str, Any] | None = None,
-) -> tuple[list[dict], int]:
-    """Run gap discovery on all taxonomy nodes that have enough data."""
-    all_gaps = []
-    total_tokens = 0
-
-    # Find nodes with at least 2 methods and 2 datasets
-    nodes = db.fetchall(
-        """SELECT rt.node_id, COUNT(DISTINCT r.method_name) as mc,
-                  COUNT(DISTINCT r.dataset_name) as dc
-           FROM results r
-           JOIN result_taxonomy rt ON rt.result_id = r.id
-           GROUP BY rt.node_id
-           HAVING COUNT(DISTINCT r.method_name) >= 2
-              AND COUNT(DISTINCT r.dataset_name) >= 2"""
-    )
-
-    for node in nodes:
-        gaps, tokens = discover_matrix_gaps(
-            node["node_id"],
-            llm_scope=llm_scope,
-        )
-        all_gaps.extend(gaps)
-        total_tokens += tokens
-
-    return all_gaps, total_tokens

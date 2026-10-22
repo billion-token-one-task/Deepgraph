@@ -654,50 +654,6 @@ def _release_provider(name: str):
         stats["in_flight"] = max(0, stats.get("in_flight", 0) - 1)
 
 
-def get_provider_stats() -> dict:
-    """Return stats for all providers."""
-    _init_providers()
-    result = {}
-    now = time.time()
-    for p in _providers:
-        name = p["name"]
-        s = _provider_stats[name]
-        total_input = s.get("input_tokens", 0)
-        cached = s.get("cached_tokens", 0)
-        cache_rate = round(cached / max(total_input, 1) * 100, 1)
-        cooldown_until = _provider_cooldown.get(name, 0)
-        cooldown_remaining = max(0, int(cooldown_until - now))
-        result[name] = {
-            "calls": s["calls"],
-            "tokens": s["tokens"],
-            "errors": s["errors"],
-            "avg_latency": round(s["total_latency"] / max(s["calls"], 1), 1),
-            "in_flight": s.get("in_flight", 0),
-            "model": p["model"],
-            "base_url": p["base_url"][:40],
-            "cached_tokens": cached,
-            "input_tokens": total_input,
-            "cache_hit_rate": f"{cache_rate}%",
-            "cooldown_remaining": f"{cooldown_remaining}s" if cooldown_remaining > 0 else "active",
-        }
-    return result
-
-
-def get_provider_models() -> list[dict]:
-    """Return configured provider names and models for explicit reviewer routing."""
-    _init_providers()
-    return [
-        {
-            "name": p.get("name"),
-            "model": p.get("model"),
-            "base_url": str(p.get("base_url") or "")[:80],
-            "protocol": p.get("protocol"),
-            "model_family": p.get("model_family"),
-        }
-        for p in _providers
-    ]
-
-
 def _should_omit_token_limit(provider: dict) -> bool:
     """Return True for routes whose gateway rejects max token limit fields."""
     if provider.get("omit_token_limit"):

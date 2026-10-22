@@ -9,21 +9,17 @@ and here's the mathematical structure that proves it."
   Call 3: Adversarial Challenge — skeptic tries to destroy the insight
 """
 import json
-from agents.discovery_metadata import build_evidence_packet, enrich_deep_insight
+from agents.discovery_metadata import enrich_deep_insight
 from agents.idea_taste import (
     attach_graph_taste_to_insight,
-    format_counterevidence_block,
     graph_novelty_gate,
-    retrieve_graph_counterevidence,
 )
 from agents.insight_validation import get_evosci_input_issue
 from agents.llm_client import (
-    call_llm_json,
     is_llm_auth_error,
     is_llm_provider_unavailable_error,
 )
 from contracts import DeepInsightSpec, normalize_deep_insight_storage
-from agents.signal_harvester import get_tier1_signals, signal_refs_from_rows
 from config import LLM_MODEL, PROMPT_VERSION
 from db import database as db
 from db.insight_outcomes import new_generation_run_id, record_created
@@ -326,202 +322,6 @@ def _build_formalization_prompt(candidate: dict, signals: dict) -> str:
 
 def _llm_temporarily_unavailable(exc: Exception) -> bool:
     return is_llm_auth_error(exc) or is_llm_provider_unavailable_error(exc)
-
-
-def discover_paradigm_insights(
-    max_candidates: int = 5,
-    *,
-    tier1_top_overlaps: int = 20,
-    tier1_top_patterns: int = 15,
-) -> list[dict]:
-    """Run the 3-stage paradigm discovery pipeline.
-
-    Returns list of deep_insight dicts ready for storage.
-    """
-    print(f"[PARADIGM] Starting Tier 1 discovery (max {max_candidates} candidates)...", flush=True)
-    total_tokens = 0
-    total_calls = 0
-
-    # Stage 0: Gather signals
-    signals = get_tier1_signals(
-        top_overlaps=tier1_top_overlaps, top_patterns=tier1_top_patterns
-    )
-    source_signal_refs = signal_refs_from_rows(getattr(signals, "payload", signals))
-    if not signals["entity_overlaps"] and not signals["pattern_matches"]:
-        print("[PARADIGM] No signals available. Run signal_harvester first.", flush=True)
-        return []
-
-    # Stage 1: Structure Detection
-    print("[PARADIGM] Call 1/3: Structure Detection...", flush=True)
-    structure_prompt = _build_structure_prompt(signals)
-    try:
-        result1, tokens1 = call_llm_json(STRUCTURE_DETECTION_SYSTEM, structure_prompt)
-        total_tokens += tokens1
-        total_calls += 1
-    except Exception as e:
-        if _llm_temporarily_unavailable(e):
-            print(f"[PARADIGM] Structure detection skipped: LLM unavailable ({e})", flush=True)
-            return []
-        print(f"[PARADIGM] Structure detection failed: {e}", flush=True)
-        return []
-
-    candidates = result1.get("candidates", [])
-    if not candidates:
-        print("[PARADIGM] No candidates from structure detection", flush=True)
-        return []
-
-    candidates.sort(key=lambda c: c.get("confidence", 0), reverse=True)
-    candidate_budget = min(len(candidates), max_candidates + max(2, max_candidates // 2))
-    candidates = candidates[:candidate_budget]
-    print(
-        f"[PARADIGM] {len(candidates)} candidates queued to produce up to {max_candidates} accepted insights",
-        flush=True,
-    )
-
-    # Stage 2 + 3: Formalize and Challenge each candidate
-    deep_insights = []
-    for i, candidate in enumerate(candidates):
-        if len(deep_insights) >= max_candidates:
-            break
-        title = candidate.get("title", f"Candidate {i+1}")
-        print(f"[PARADIGM] Processing candidate {i+1}/{len(candidates)}: {title[:80]}", flush=True)
-
-        # Stage 2: Formalization
-        print(f"[PARADIGM] Call 2/3: Formalizing '{title[:50]}'...", flush=True)
-        formal_prompt = _build_formalization_prompt(candidate, signals)
-        try:
-            result2, tokens2 = call_llm_json(FORMALIZATION_SYSTEM, formal_prompt)
-            total_tokens += tokens2
-            total_calls += 1
-        except Exception as e:
-            if _llm_temporarily_unavailable(e):
-                print(f"[PARADIGM] Formalization paused: LLM unavailable ({e})", flush=True)
-                break
-            print(f"[PARADIGM] Formalization failed for '{title[:50]}': {e}", flush=True)
-            continue
-
-        # Stage 3: Adversarial Challenge
-        print(f"[PARADIGM] Call 3/3: Adversarial challenge for '{title[:50]}'...", flush=True)
-        adversarial_seed = {
-            "title": result2.get("title", title),
-            "formal_structure": result2.get("formal_structure", ""),
-            "transformation": result2.get("transformation", ""),
-            "predictions": result2.get("predictions", []),
-            "field_a": candidate.get("field_a", {}),
-            "field_b": candidate.get("field_b", {}),
-        }
-        counterevidence = retrieve_graph_counterevidence(
-            {
-                "title": adversarial_seed["title"],
-                "source_node_ids": json.dumps(
-                    [
-                        candidate.get("field_a", {}).get("node_id"),
-                        candidate.get("field_b", {}).get("node_id"),
-                    ]
-                ),
-                "predictions": json.dumps(result2.get("predictions", [])),
-            }
-        )
-        adversarial_prompt = json.dumps(adversarial_seed, indent=2)
-        if counterevidence:
-            adversarial_prompt += "\n\n" + format_counterevidence_block(counterevidence)
-
-        try:
-            result3, tokens3 = call_llm_json(ADVERSARIAL_SYSTEM, adversarial_prompt)
-            total_tokens += tokens3
-            total_calls += 1
-        except Exception as e:
-            if _llm_temporarily_unavailable(e):
-                print(f"[PARADIGM] Adversarial challenge skipped: LLM unavailable ({e})", flush=True)
-                result3 = {"overall_score": 5, "verdict": "unknown",
-                           "attacks": [], "strongest_attack": "LLM unavailable during challenge"}
-            else:
-                print(f"[PARADIGM] Adversarial challenge failed: {e}. Using next LLM provider in pool.", flush=True)
-                try:
-                    result3, tokens3 = call_llm_json(ADVERSARIAL_SYSTEM, adversarial_prompt)
-                    total_tokens += tokens3
-                    total_calls += 1
-                except Exception as e2:
-                    if _llm_temporarily_unavailable(e2):
-                        print(f"[PARADIGM] Adversarial fallback skipped: LLM unavailable ({e2})", flush=True)
-                        result3 = {"overall_score": 5, "verdict": "unknown",
-                                   "attacks": [], "strongest_attack": "LLM unavailable during challenge"}
-                    else:
-                        print(f"[PARADIGM] Adversarial fallback also failed: {e2}", flush=True)
-                        result3 = {"overall_score": 5, "verdict": "unknown",
-                                   "attacks": [], "strongest_attack": "Could not evaluate"}
-
-        score = result3.get("overall_score", 0)
-        verdict = result3.get("verdict", "unknown")
-        print(f"[PARADIGM] Adversarial score: {score}/10 ({verdict})", flush=True)
-
-        if score < 4:
-            print(f"[PARADIGM] Rejected (score {score} < 4): {title[:60]}", flush=True)
-            continue
-
-        deep_insight = {
-            "tier": 1,
-            "status": "candidate",
-            "title": result2.get("title", title),
-            "formal_structure": result2.get("formal_structure", ""),
-            "field_a": json.dumps(candidate.get("field_a", {})),
-            "field_b": json.dumps(candidate.get("field_b", {})),
-            "transformation": result2.get("transformation", ""),
-            "predictions": json.dumps(result2.get("predictions", [])),
-            "falsification": json.dumps(result2.get("falsification", {})),
-            "adversarial_score": score,
-            "adversarial_critique": json.dumps({
-                "verdict": verdict,
-                "attacks": result3.get("attacks", []),
-                "strongest_attack": result3.get("strongest_attack", ""),
-                "what_would_change_mind": result3.get("what_would_change_your_mind", ""),
-                "residual_value": result3.get("residual_value", ""),
-            }),
-            "supporting_papers": json.dumps(result2.get("supporting_papers", [])),
-            "source_node_ids": json.dumps([
-                candidate.get("field_a", {}).get("node_id", ""),
-                candidate.get("field_b", {}).get("node_id", ""),
-            ]),
-            "source_signal_ids": json.dumps(
-                [ref["content_hash"] for ref in source_signal_refs.get("signals", []) if ref.get("content_hash")]
-            ),
-            "source_signal_refs": json.dumps(source_signal_refs),
-            "evidence_summary": candidate.get("evidence_from_graph", ""),
-            "mechanism_type": _guess_mechanism_type(candidate, result2),
-            "signal_mix": json.dumps(
-                ["entity_overlap", "pattern_match", _guess_mechanism_type(candidate, result2)]
-            ),
-            "evidence_packet": build_evidence_packet(
-                signal_mix=["entity_overlap", "pattern_match", _guess_mechanism_type(candidate, result2)],
-                evidence_summary=candidate.get("evidence_from_graph", ""),
-                falsification=json.dumps(result2.get("falsification", {})),
-                structural_evidence=[candidate.get("evidence_from_graph", "")],
-                non_numeric_evidence=result2.get("non_numeric_evidence") or candidate.get("non_numeric_evidence") or [],
-            ),
-            "novelty_status": "unchecked",
-            "generation_tokens": total_tokens,
-            "llm_calls": total_calls,
-        }
-
-        # Also store minimal experiment info in experimental_plan
-        if result2.get("minimal_experiment"):
-            deep_insight["experimental_plan"] = json.dumps(result2["minimal_experiment"])
-
-        input_issue = get_evosci_input_issue(deep_insight, mode="verification")
-        if input_issue:
-            missing = ", ".join(input_issue.get("missing_fields") or [])
-            print(
-                f"[PARADIGM] Skipped underspecified insight '{title[:60]}' (missing: {missing})",
-                flush=True,
-            )
-            continue
-
-        deep_insights.append(enrich_deep_insight(deep_insight))
-        print(f"[PARADIGM] Accepted: {title[:80]} (score={score})", flush=True)
-
-    print(f"[PARADIGM] Done: {len(deep_insights)} insights from {len(candidates)} candidates. "
-          f"Tokens: {total_tokens}, LLM calls: {total_calls}", flush=True)
-    return deep_insights
 
 
 def _jsonify(v):

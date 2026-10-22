@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
 from typing import Any, Mapping
 
 from agents.agenda_repository import AgendaRepository
@@ -49,38 +47,9 @@ def parse_agenda(
     return agenda
 
 
-def load_agenda_from_file(path: str | Path) -> ResearchAgenda:
-    file_path = Path(path)
-    text = file_path.read_text(encoding="utf-8")
-    if file_path.suffix.lower() in {".yaml", ".yml"}:
-        import yaml  # type: ignore
-
-        payload = yaml.safe_load(text)
-    else:
-        payload = json.loads(text)
-    if not isinstance(payload, Mapping):
-        raise ValueError("agenda file must contain a mapping")
-    return parse_agenda(payload)
-
-
-def save_agenda(
-    agenda: ResearchAgenda,
-    *,
-    repository: AgendaRepository | None = None,
-) -> int:
-    return (repository or AgendaRepository()).create(agenda)
-
-
 def get_agenda(
     agenda_id: int,
     *,
     repository: AgendaRepository | None = None,
 ) -> ResearchAgenda | None:
     return (repository or AgendaRepository()).get(agenda_id)
-
-
-def list_active_agendas(
-    *,
-    repository: AgendaRepository | None = None,
-) -> list[ResearchAgenda]:
-    return (repository or AgendaRepository()).list_active()

@@ -322,10 +322,3 @@ def summarize_evidence_plan(plan: dict[str, Any] | None) -> str:
         if reason:
             lines.append(f"{key}: {status} — {reason}")
     return "\n".join(lines)
-
-
-def wants_visualization(plan: dict[str, Any] | None) -> bool:
-    if not isinstance(plan, dict):
-        return True
-    block = plan.get("visualization") or {}
-    return bool(block.get("enabled"))

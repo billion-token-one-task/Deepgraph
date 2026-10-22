@@ -392,39 +392,6 @@ def discover_insights(
     return insights, tokens
 
 
-def discover_all_insights(
-    min_papers: int = 10,
-    *,
-    llm_scope: Mapping[str, Any] | None = None,
-) -> tuple[list[dict], int]:
-    """Run insight discovery on all nodes with enough data."""
-    nodes = db.fetchall("""
-        SELECT t.id, t.name, COUNT(DISTINCT pt.paper_id) as paper_count
-        FROM taxonomy_nodes t
-        JOIN paper_taxonomy pt ON pt.node_id = t.id
-        GROUP BY t.id
-        HAVING COUNT(DISTINCT pt.paper_id) >= ?
-        ORDER BY paper_count DESC
-    """, (min_papers,))
-
-    all_insights = []
-    total_tokens = 0
-
-    for node in nodes:
-        print(f"  Analyzing {node['id']} ({node['paper_count']}p)...", flush=True)
-        insights, tokens = discover_insights(
-            node["id"],
-            llm_scope=llm_scope,
-        )
-        total_tokens += tokens
-
-        for ins in insights:
-            all_insights.append(ins)
-            print(f"    [{ins['type']}] {ins['title'][:80]}", flush=True)
-
-    return all_insights, total_tokens
-
-
 def _jsonify_provenance(value) -> str | None:
     if value is None:
         return None
