@@ -6,7 +6,9 @@ After the validation loop completes:
 3. Generate a structured verdict with confidence
 4. Create experimental_claims for the Knowledge Loop
 """
+import itertools
 import json
+import math
 import random
 from pathlib import Path
 
@@ -34,10 +36,11 @@ def _bootstrap_ci(values: list[float], n_resamples: int = 1000,
     if len(values) == 1:
         return values[0], values[0], values[0]
 
+    rng = random.Random(12345)
     means = []
     n = len(values)
     for _ in range(n_resamples):
-        sample = [random.choice(values) for _ in range(n)]
+        sample = [rng.choice(values) for _ in range(n)]
         means.append(sum(sample) / n)
 
     means.sort()
@@ -49,26 +52,36 @@ def _bootstrap_ci(values: list[float], n_resamples: int = 1000,
 
 
 def _compute_p_value(treatment: list[float], control: list[float]) -> float:
-    """Approximate p-value using permutation test.
-    Tests whether treatment mean differs from control mean.
+    """Two-sided permutation p-value for a difference in means.
+
+    Exact over every split of the pooled values when there are at most 5000
+    of them; otherwise 5000 seeded random splits with the observed split
+    counted among them, so the same data always gives the same p and it is
+    never 0.
     """
     if not treatment or not control:
         return 1.0
 
-    observed_diff = abs(sum(treatment) / len(treatment) - sum(control) / len(control))
-    combined = treatment + control
+    combined = list(treatment) + list(control)
     n_treat = len(treatment)
+    n_ctrl = len(control)
+    total = sum(combined)
 
+    def diff(treat_sum: float) -> float:
+        return abs(treat_sum / n_treat - (total - treat_sum) / n_ctrl)
+
+    observed = diff(sum(treatment)) - 1e-12
+    if math.comb(len(combined), n_treat) <= 5000:
+        splits = [diff(sum(c)) for c in itertools.combinations(combined, n_treat)]
+        return sum(d >= observed for d in splits) / len(splits)
+
+    rng = random.Random(12345)
     count_extreme = 0
     for _ in range(5000):
-        random.shuffle(combined)
-        perm_treat = combined[:n_treat]
-        perm_ctrl = combined[n_treat:]
-        perm_diff = abs(sum(perm_treat) / len(perm_treat) - sum(perm_ctrl) / len(perm_ctrl))
-        if perm_diff >= observed_diff:
+        rng.shuffle(combined)
+        if diff(sum(combined[:n_treat])) >= observed:
             count_extreme += 1
-
-    return count_extreme / 5000
+    return (count_extreme + 1) / 5001
 
 
 def _iteration_evidence_label(
