@@ -3,7 +3,9 @@ import unittest
 from unittest import mock
 
 from tests.sqlite_isolation import use_temp_sqlite
+from db import database as db
 from agents.idea_taste import (
+    compute_frontier_profile,
     compute_taste_score,
     graph_novelty_gate,
     score_excitement,
@@ -17,6 +19,31 @@ class IdeaTasteTests(unittest.TestCase):
         # entity tables; give them an empty schema of their own rather than
         # whatever deepgraph.db the checkout happens to hold.
         use_temp_sqlite(self)
+
+    def test_frontier_profile_reads_measured_results_of_the_whole_subtree(self):
+        # "node = ? OR node LIKE ? AND metric_value IS NOT NULL" binds the AND to
+        # the LIKE alone, so unmeasured rows on the node itself filled the LIMIT
+        # and pushed the measured rows of its children out of the sample.
+        db.execute("INSERT INTO taxonomy_nodes (id, name) VALUES ('ml', 'ML')")
+        db.execute("INSERT INTO taxonomy_nodes (id, name, parent_id) VALUES ('ml.nlp', 'NLP', 'ml')")
+        db.execute("INSERT INTO papers (id, title) VALUES ('p1', 'paper')")
+        for _ in range(120):
+            db.execute(
+                "INSERT INTO results (paper_id, node_id, method_name, dataset_name, metric_name)"
+                " VALUES ('p1', 'ml', 'm', 'd', 'acc')"
+            )
+        for value in (10.0, 11.0):
+            db.execute(
+                "INSERT INTO results (paper_id, node_id, method_name, dataset_name, metric_name, metric_value)"
+                " VALUES ('p1', 'ml.nlp', 'm', 'd', 'acc', ?)",
+                (value,),
+            )
+        db.commit()
+
+        profile = compute_frontier_profile(["ml"])
+
+        self.assertEqual(profile["method_diversity"], 1)
+        self.assertAlmostEqual(profile["saturation"], round(1 - 4 / 11, 3))
 
     def test_graph_novelty_gate_rejects_empty_method_with_dense_graph_signal(self):
         insight = {

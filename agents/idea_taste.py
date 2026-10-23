@@ -288,8 +288,9 @@ def compute_frontier_profile(node_ids: list[str]) -> dict:
             """
             SELECT method_name, dataset_name, metric_name, metric_value
             FROM results
-            WHERE node_id = ? OR node_id LIKE ? || '.%'
+            WHERE (node_id = ? OR node_id LIKE ? || '.%')
               AND metric_value IS NOT NULL
+            ORDER BY id
             LIMIT 120
             """,
             (node_id, node_id),
