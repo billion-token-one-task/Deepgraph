@@ -150,7 +150,7 @@ DeepGraph 全链路部署包（PostgreSQL + 源码 + EvoScientist/PaperOrchestra
 ----
 - .env（密钥）；请用 Deepgraph/.env.example 复制后填写。
 - 本地 SQLite deepgraph.db（生产以 Postgres 为准）。
-- EvoScientist / PaperBanana 本体仓库（体积与许可证单独维护），见下文安装路径约定。
+- EvoScientist 本体仓库（体积与许可证单独维护），见下文安装路径约定。
 
 --------------------------------------------------------------------
 一、恢复 Postgres（示例：docker-compose.postgres.yml）
@@ -206,7 +206,7 @@ novelty / verify 会使用 DeepGraph 配置里的 OpenAI-compatible 网关（见
 五、PaperOrchestra
 --------------------------------------------------------------------
 已在仓库 agents/paperorchestra + prompts/paper_orchestra；无需单独安装 Python 包。
-依赖主 LLM +（可选）Semantic Scholar +（可选）PaperBanana。
+依赖主 LLM +（可选）Semantic Scholar。
 
 EOF
 
