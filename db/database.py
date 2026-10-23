@@ -360,7 +360,7 @@ def _apply_postgres_schema_file() -> None:
                 if "does not exist" in msg:
                     deferred.append((stmt, error))
                     continue
-                raise
+                raise error
             if not deferred:
                 break
             if not progressed:
