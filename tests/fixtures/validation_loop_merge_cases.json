@@ -1,0 +1,930 @@
+{
+ "merge": [
+  {
+   "name": "two models, mixed quality fields",
+   "criteria_metric_name": "accuracy",
+   "model_results": [
+    {
+     "model_id": "m1",
+     "benchmark_summary": {
+      "primary_metric": "accuracy",
+      "candidate_method": " cand ",
+      "per_method": {
+       "cand": {
+        "count": 10,
+        "score": 0.6,
+        "metric_value": 0.6,
+        "avg_new_tokens": 100,
+        "accuracy": 0.6
+       },
+       "base1": {
+        "count": 10,
+        "score": 0.5,
+        "metric_value": 0.5
+       },
+       "oracle_router": {
+        "count": 10,
+        "score": 0.9
+       },
+       "base2": {
+        "count": 10,
+        "score": 0.52,
+        "upper_bound": false
+       }
+      },
+      "seed_results": [
+       {
+        "seed": 1,
+        "methods": {
+         "cand": {
+          "metric_value": 0.61
+         },
+         "base2": {
+          "metric_value": 0.5
+         }
+        }
+       },
+       {
+        "seed": 2,
+        "methods": {
+         "cand": {
+          "metric_value": 0.59
+         },
+         "base2": {
+          "score": 0.54
+         }
+        }
+       },
+       "not-a-row"
+      ],
+      "datasets": [
+       {
+        "name": "GSM8K",
+        "split": "test"
+       },
+       "plain"
+      ],
+      "model": {
+       "id": "m1-hf",
+       "family": "qwen"
+      },
+      "ablation_table": [
+       {
+        "variant": "no_router",
+        "score": 0.55
+       },
+       "skip"
+      ],
+      "num_seeds": 2,
+      "load_failures": [],
+      "full_benchmark_completed": true,
+      "duration_seconds": 10.5,
+      "peak_vram_mb": 1000,
+      "hardware": "A100"
+     }
+    },
+    {
+     "model_id": "",
+     "benchmark_summary": {
+      "per_method": {
+       "cand": {
+        "count": "bad",
+        "score": "x",
+        "metric_value": 0.7
+       },
+       "base1": {
+        "count": 5,
+        "score": 0.4,
+        "metric_value": 0.45
+       },
+       "base2": {
+        "count": 5,
+        "score": 0.55,
+        "upper_bound": true
+       },
+       "Upper-Bound probe": {
+        "count": 5,
+        "score": 0.99
+       }
+      },
+      "seed_results": [
+       {
+        "seed": 1,
+        "methods": {
+         "cand": {
+          "metric_value": 0.7
+         },
+         "base2": {
+          "metric_value": 0.4
+         }
+        }
+       }
+      ],
+      "datasets": [
+       {
+        "name": "gsm8k"
+       },
+       {
+        "id": "MATH"
+       }
+      ],
+      "model": {
+       "id": "M1-HF"
+      },
+      "latency_tokens_table": [
+       {
+        "method": "cand",
+        "latency": 1.5
+       }
+      ],
+      "num_seeds": "3",
+      "load_failures": [
+       "oom on shard 2"
+      ],
+      "full_benchmark_completed": true,
+      "duration_seconds": null,
+      "peak_vram_mb": "2048",
+      "hardware": "H100"
+     }
+    },
+    {
+     "model_id": "m3",
+     "benchmark_summary": "not a dict"
+    }
+   ],
+   "expected": {
+    "primary_metric": "accuracy",
+    "candidate_method": " cand ",
+    "per_method": {
+     "Upper-Bound probe": {
+      "score": 0.99,
+      "count": 5
+     },
+     "base1": {
+      "score": 0.4666666666666667,
+      "metric_value": 0.48333333333333334,
+      "count": 15
+     },
+     "base2": {
+      "score": 0.53,
+      "count": 15,
+      "upper_bound": true
+     },
+     "cand": {
+      "score": 0.6,
+      "avg_new_tokens": 100.0,
+      "metric_value": 0.6,
+      "count": 10
+     },
+     "oracle_router": {
+      "score": 0.9,
+      "count": 10
+     }
+    },
+    "seed_results": [
+     {
+      "seed": 1,
+      "methods": {
+       "cand": {
+        "metric_value": 0.61
+       },
+       "base2": {
+        "metric_value": 0.5
+       }
+      },
+      "model_id": "m1"
+     },
+     {
+      "seed": 2,
+      "methods": {
+       "cand": {
+        "metric_value": 0.59
+       },
+       "base2": {
+        "score": 0.54
+       }
+      },
+      "model_id": "m1"
+     },
+     {
+      "seed": 1,
+      "methods": {
+       "cand": {
+        "metric_value": 0.7
+       },
+       "base2": {
+        "metric_value": 0.4
+       }
+      },
+      "model_id": "M1-HF"
+     }
+    ],
+    "datasets": [
+     {
+      "name": "GSM8K",
+      "split": "test"
+     },
+     {
+      "id": "MATH"
+     }
+    ],
+    "model": {
+     "ids": [
+      "m1",
+      "M1-HF"
+     ],
+     "backend": "transformers",
+     "cuda": true
+    },
+    "ablation_table": [
+     {
+      "model_id": "m1",
+      "variant": "no_router",
+      "score": 0.55
+     }
+    ],
+    "num_seeds": 3,
+    "load_failures": [
+     "oom on shard 2"
+    ],
+    "full_benchmark_completed": false,
+    "duration_seconds": 10.5,
+    "peak_vram_mb": 2048.0,
+    "hardware": "A100, H100",
+    "latency_tokens_table": [
+     {
+      "model_id": "M1-HF",
+      "method": "cand",
+      "latency": 1.5
+     }
+    ],
+    "dataset": {
+     "name": "GSM8K",
+     "split": "test"
+    },
+    "models": [
+     {
+      "id": "m1",
+      "family": "qwen"
+     },
+     {
+      "id": "M1-HF"
+     }
+    ],
+    "bootstrap_ci": {
+     "candidate_method": "cand",
+     "baseline_method": "base1",
+     "candidate_ci95": [
+      0.0,
+      0.0
+     ],
+     "baseline_ci95": [
+      0.0,
+      0.0
+     ],
+     "paired_permutation_p": null,
+     "p_value": null
+    },
+    "accuracy": 0.6
+   }
+  },
+  {
+   "name": "paired seeds give a permutation p-value",
+   "criteria_metric_name": "score",
+   "model_results": [
+    {
+     "model_id": "p1",
+     "benchmark_summary": {
+      "primary_metric": "score",
+      "candidate_method": "cand",
+      "per_method": {
+       "cand": {
+        "count": 4,
+        "score": 0.7
+       },
+       "base": {
+        "count": 4,
+        "score": 0.6
+       },
+       "weak": {
+        "count": 4,
+        "score": 0.1
+       },
+       "unscored": {
+        "count": 2
+       }
+      },
+      "seed_results": [
+       {
+        "methods": {
+         "cand": {
+          "score": 0.6
+         },
+         "base": {
+          "score": 0.5
+         }
+        }
+       },
+       {
+        "methods": {
+         "cand": {
+          "score": 0.65
+         },
+         "base": {
+          "score": 0.55
+         }
+        }
+       },
+       {
+        "methods": {
+         "cand": {
+          "score": 0.7
+         },
+         "base": {
+          "score": 0.6
+         }
+        }
+       },
+       {
+        "methods": {
+         "cand": {
+          "score": 0.72
+         },
+         "base": {
+          "score": 0.62
+         }
+        }
+       },
+       {
+        "methods": {
+         "cand": {
+          "score": 0.6799999999999999
+         },
+         "base": {
+          "score": 0.58
+         }
+        }
+       },
+       {
+        "methods": {
+         "cand": {
+          "score": 0.2
+         }
+        }
+       },
+       {
+        "methods": "bad"
+       }
+      ],
+      "num_seeds": 7,
+      "full_benchmark_completed": true,
+      "duration_seconds": "3",
+      "peak_vram_mb": null
+     }
+    },
+    {
+     "model_id": "p2",
+     "benchmark_summary": {
+      "per_method": {
+       "cand": {
+        "count": 4,
+        "score": 0.9
+       },
+       "base": {
+        "count": 12,
+        "score": 0.65
+       }
+      },
+      "seed_results": [
+       {
+        "methods": {
+         "cand": {
+          "score": 0.91
+         },
+         "base": {
+          "score": 0.6
+         }
+        }
+       }
+      ],
+      "num_seeds": 1,
+      "full_benchmark_completed": true,
+      "hardware": "A100"
+     }
+    }
+   ],
+   "expected": {
+    "primary_metric": "score",
+    "candidate_method": "cand",
+    "per_method": {
+     "base": {
+      "score": 0.6375000000000001,
+      "count": 16
+     },
+     "cand": {
+      "score": 0.8,
+      "count": 8
+     },
+     "unscored": {
+      "count": 2
+     },
+     "weak": {
+      "score": 0.1,
+      "count": 4
+     }
+    },
+    "seed_results": [
+     {
+      "methods": {
+       "cand": {
+        "score": 0.6
+       },
+       "base": {
+        "score": 0.5
+       }
+      },
+      "model_id": "p1"
+     },
+     {
+      "methods": {
+       "cand": {
+        "score": 0.65
+       },
+       "base": {
+        "score": 0.55
+       }
+      },
+      "model_id": "p1"
+     },
+     {
+      "methods": {
+       "cand": {
+        "score": 0.7
+       },
+       "base": {
+        "score": 0.6
+       }
+      },
+      "model_id": "p1"
+     },
+     {
+      "methods": {
+       "cand": {
+        "score": 0.72
+       },
+       "base": {
+        "score": 0.62
+       }
+      },
+      "model_id": "p1"
+     },
+     {
+      "methods": {
+       "cand": {
+        "score": 0.6799999999999999
+       },
+       "base": {
+        "score": 0.58
+       }
+      },
+      "model_id": "p1"
+     },
+     {
+      "methods": {
+       "cand": {
+        "score": 0.2
+       }
+      },
+      "model_id": "p1"
+     },
+     {
+      "methods": "bad",
+      "model_id": "p1"
+     },
+     {
+      "methods": {
+       "cand": {
+        "score": 0.91
+       },
+       "base": {
+        "score": 0.6
+       }
+      },
+      "model_id": "p2"
+     }
+    ],
+    "num_seeds": 7,
+    "full_benchmark_completed": true,
+    "duration_seconds": 3.0,
+    "peak_vram_mb": 0.0,
+    "datasets": [],
+    "dataset": {},
+    "models": [
+     {
+      "id": "p1"
+     },
+     {
+      "id": "p2"
+     }
+    ],
+    "model": {
+     "ids": [
+      "p1",
+      "p2"
+     ],
+     "backend": "transformers",
+     "cuda": true
+    },
+    "load_failures": [],
+    "hardware": "A100",
+    "bootstrap_ci": {
+     "candidate_method": "cand",
+     "baseline_method": "base",
+     "candidate_ci95": [
+      0.645,
+      0.7966666666666667
+     ],
+     "baseline_ci95": [
+      0.5416666666666666,
+      0.6033333333333334
+     ],
+     "paired_permutation_p": 0.03125,
+     "p_value": 0.03125
+    },
+    "score": 0.8
+   }
+  },
+  {
+   "name": "no candidate method",
+   "criteria_metric_name": "accuracy",
+   "model_results": [
+    {
+     "model_id": "a",
+     "benchmark_summary": {
+      "metric_name": "f1",
+      "per_method": {
+       "x": {
+        "count": 2,
+        "f1": 0.3
+       },
+       "y": {
+        "count": 2,
+        "f1": 0.8
+       }
+      }
+     }
+    }
+   ],
+   "expected": {
+    "metric_name": "f1",
+    "per_method": {
+     "x": {
+      "f1": 0.3,
+      "count": 2
+     },
+     "y": {
+      "f1": 0.8,
+      "count": 2
+     }
+    },
+    "seed_results": [],
+    "num_seeds": 0,
+    "datasets": [],
+    "dataset": {},
+    "models": [
+     {
+      "id": "a"
+     }
+    ],
+    "model": {
+     "ids": [
+      "a"
+     ],
+     "backend": "transformers",
+     "cuda": true
+    },
+    "load_failures": [],
+    "full_benchmark_completed": false,
+    "duration_seconds": 0.0,
+    "peak_vram_mb": 0.0,
+    "hardware": "",
+    "bootstrap_ci": {
+     "candidate_method": "",
+     "baseline_method": "y",
+     "candidate_ci95": [
+      0.0,
+      0.0
+     ],
+     "baseline_ci95": [
+      0.0,
+      0.0
+     ],
+     "paired_permutation_p": null,
+     "p_value": null
+    }
+   }
+  },
+  {
+   "name": "no metric name anywhere",
+   "criteria_metric_name": "",
+   "model_results": [
+    {
+     "benchmark_summary": {
+      "candidate_method": "c",
+      "per_method": {
+       "c": {
+        "count": 1,
+        "exact": 1
+       },
+       "b": {
+        "count": 1,
+        "cost_adjusted_accuracy": 0.2
+       }
+      },
+      "seed_results": [
+       {
+        "methods": {
+         "c": {
+          "score": 0.9
+         },
+         "b": {
+          "cost_adjusted_accuracy": 0.2
+         }
+        }
+       }
+      ],
+      "full_benchmark_completed": false
+     }
+    }
+   ],
+   "expected": {
+    "candidate_method": "c",
+    "per_method": {
+     "b": {
+      "cost_adjusted_accuracy": 0.2,
+      "count": 1
+     },
+     "c": {
+      "exact": 1.0,
+      "count": 1
+     }
+    },
+    "seed_results": [
+     {
+      "methods": {
+       "c": {
+        "score": 0.9
+       },
+       "b": {
+        "cost_adjusted_accuracy": 0.2
+       }
+      },
+      "model_id": ""
+     }
+    ],
+    "full_benchmark_completed": false,
+    "num_seeds": 0,
+    "datasets": [],
+    "dataset": {},
+    "models": [],
+    "model": {
+     "ids": [],
+     "backend": "transformers",
+     "cuda": true
+    },
+    "load_failures": [],
+    "duration_seconds": 0.0,
+    "peak_vram_mb": 0.0,
+    "hardware": "",
+    "bootstrap_ci": {
+     "candidate_method": "c",
+     "baseline_method": "b",
+     "candidate_ci95": [
+      0.9,
+      0.9
+     ],
+     "baseline_ci95": [
+      0.2,
+      0.2
+     ],
+     "paired_permutation_p": 1.0,
+     "p_value": 1.0
+    },
+    "metric_value": 0.0
+   }
+  },
+  {
+   "name": "a model without a summary shifts the ids of the ones after it",
+   "criteria_metric_name": "score",
+   "model_results": [
+    {
+     "model_id": "first",
+     "benchmark_summary": {
+      "candidate_method": "c",
+      "per_method": {
+       "c": {
+        "count": 1,
+        "score": 0.5
+       }
+      },
+      "seed_results": [
+       {
+        "methods": {
+         "c": {
+          "score": 0.5
+         }
+        }
+       }
+      ],
+      "model": {
+       "id": "first-hf"
+      }
+     }
+    },
+    {
+     "model_id": "failed",
+     "benchmark_summary": null
+    },
+    {
+     "model_id": "third",
+     "benchmark_summary": {
+      "per_method": {
+       "c": {
+        "count": 1,
+        "score": 0.7
+       }
+      },
+      "seed_results": [
+       {
+        "methods": {
+         "c": {
+          "score": 0.7
+         }
+        }
+       }
+      ],
+      "model": {
+       "id": "third-hf"
+      },
+      "ablation_table": [
+       {
+        "v": 1
+       }
+      ]
+     }
+    }
+   ],
+   "expected": {
+    "candidate_method": "c",
+    "per_method": {
+     "c": {
+      "score": 0.6,
+      "count": 2
+     }
+    },
+    "seed_results": [
+     {
+      "methods": {
+       "c": {
+        "score": 0.5
+       }
+      },
+      "model_id": "first"
+     },
+     {
+      "methods": {
+       "c": {
+        "score": 0.7
+       }
+      },
+      "model_id": "failed"
+     }
+    ],
+    "model": {
+     "ids": [
+      "first",
+      "failed"
+     ],
+     "backend": "transformers",
+     "cuda": true
+    },
+    "ablation_table": [
+     {
+      "model_id": "failed",
+      "v": 1
+     }
+    ],
+    "num_seeds": 0,
+    "datasets": [],
+    "dataset": {},
+    "models": [
+     {
+      "id": "first"
+     },
+     {
+      "id": "failed"
+     }
+    ],
+    "load_failures": [],
+    "full_benchmark_completed": false,
+    "duration_seconds": 0.0,
+    "peak_vram_mb": 0.0,
+    "hardware": "",
+    "bootstrap_ci": {
+     "candidate_method": "c",
+     "baseline_method": "",
+     "candidate_ci95": [
+      0.0,
+      0.0
+     ],
+     "baseline_ci95": [
+      0.0,
+      0.0
+     ],
+     "paired_permutation_p": null,
+     "p_value": null
+    },
+    "score": 0.6
+   }
+  },
+  {
+   "name": "no results",
+   "criteria_metric_name": "x",
+   "model_results": [],
+   "expected": {}
+  },
+  {
+   "name": "no summary is a dict",
+   "criteria_metric_name": "x",
+   "model_results": [
+    {
+     "benchmark_summary": null
+    },
+    {
+     "model_id": "z"
+    }
+   ],
+   "expected": {}
+  }
+ ],
+ "weighted": [
+  {
+   "rows": [],
+   "expected": {
+    "count": 1
+   }
+  },
+  {
+   "rows": [
+    {
+     "count": 0,
+     "score": 0.5
+    }
+   ],
+   "expected": {
+    "score": 0.5,
+    "count": 1
+   }
+  },
+  {
+   "rows": [
+    {
+     "count": 3,
+     "score": 0.5,
+     "f1": "n/a"
+    },
+    {
+     "count": "7",
+     "score": 1,
+     "route_rate": 0.25
+    },
+    {
+     "score": 0.2,
+     "upper_bound": 1
+    }
+   ],
+   "expected": {
+    "score": 0.8699999999999999,
+    "route_rate": 0.175,
+    "count": 10,
+    "upper_bound": true
+   }
+  },
+  {
+   "rows": [
+    {
+     "count": null,
+     "metric_value": "0.4"
+    },
+    {
+     "count": -2,
+     "metric_value": 0.6
+    }
+   ],
+   "expected": {
+    "metric_value": 1.0,
+    "count": 1
+   }
+  }
+ ]
+}
