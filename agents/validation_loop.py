@@ -1433,6 +1433,28 @@ def _remaining_grant_gpu_seconds(run_id: int) -> float | None:
     )
 
 
+def _note_launch_failure(log_path: Path, text: str) -> None:
+    try:
+        log_path.write_text(text, encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _launch_failure(duration, error, failure_type, command_tokens, log_path, benchmark_env, **extra) -> dict:
+    """Result for a run that failed before producing any output."""
+    return {
+        "status": "crash",
+        "duration": duration,
+        "error": error,
+        "failure_type": failure_type,
+        "final_results_present": False,
+        "command_tokens": command_tokens,
+        "log_path": str(log_path),
+        **extra,
+        "benchmark_env": benchmark_env,
+    }
+
+
 def _run_experiment(
     workdir: Path,
     code_dir: Path,
@@ -1484,27 +1506,13 @@ def _run_experiment(
     )
     if contract_violations:
         duration = time.time() - start
-        error = "; ".join(contract_violations)
-        try:
-            log_path.write_text(
-                "Contract-preserving runner guard blocked execution.\n"
-                f"Command: {command_tokens}\n"
-                + "\n".join(f"- {item}" for item in contract_violations)
-                + "\n",
-                encoding="utf-8",
-            )
-        except OSError:
-            pass
-        return {
-            "status": "crash",
-            "duration": duration,
-            "error": error,
-            "failure_type": "contract_violation",
-            "final_results_present": False,
-            "command_tokens": command_tokens,
-            "log_path": str(log_path),
-            "benchmark_env": benchmark_env,
-        }
+        _note_launch_failure(
+            log_path,
+            "Contract-preserving runner guard blocked execution.\n"
+            f"Command: {command_tokens}\n" + "\n".join(f"- {item}" for item in contract_violations) + "\n",
+        )
+        return _launch_failure(duration, "; ".join(contract_violations), "contract_violation",
+                               command_tokens, log_path, benchmark_env)
     if full_benchmark and not _disable_model_matrix and len(_benchmark_model_list_from_env(benchmark_env)) > 1:
         return _run_experiment_model_matrix(
             workdir,
@@ -1522,17 +1530,9 @@ def _run_experiment(
         if run_id is not None and ssh_gpu_backend.is_ssh_worker(worker):
             remaining_gpu_seconds = _remaining_grant_gpu_seconds(run_id)
             if remaining_gpu_seconds is not None and remaining_gpu_seconds <= 0:
-                return {
-                    "status": "crash",
-                    "duration": time.time() - start,
-                    "error": "resource grant cumulative GPU-hour cap is exhausted",
-                    "failure_type": "grant_gpu_hours_exhausted",
-                    "final_results_present": False,
-                    "command_tokens": command_tokens,
-                    "log_path": str(log_path),
-                    "backend": "ssh",
-                    "benchmark_env": benchmark_env,
-                }
+                return _launch_failure(time.time() - start, "resource grant cumulative GPU-hour cap is exhausted",
+                                       "grant_gpu_hours_exhausted", command_tokens, log_path, benchmark_env,
+                                       backend="ssh")
             remote_time_budget = time_budget
             if remaining_gpu_seconds is not None:
                 bounded_seconds = max(1, int(remaining_gpu_seconds))
@@ -1656,42 +1656,14 @@ def _run_experiment(
 
     except subprocess.TimeoutExpired as exc:
         duration = time.time() - start
-        try:
-            log_path.write_text(
-                f"Experiment timed out after {duration:.1f}s\nCommand: {command_tokens}\n{exc}\n",
-                encoding="utf-8",
-            )
-        except OSError:
-            pass
-        return {
-            "status": "crash",
-            "duration": duration,
-            "error": "timeout",
-            "failure_type": "timeout",
-            "final_results_present": False,
-            "command_tokens": command_tokens,
-            "log_path": str(log_path),
-            "benchmark_env": benchmark_env,
-        }
+        _note_launch_failure(log_path, f"Experiment timed out after {duration:.1f}s\nCommand: {command_tokens}\n{exc}\n")
+        return _launch_failure(duration, "timeout", "timeout", command_tokens, log_path, benchmark_env)
     except Exception as e:
         duration = time.time() - start
-        try:
-            log_path.write_text(
-                f"Experiment launcher failed after {duration:.1f}s\nCommand: {command_tokens}\nError: {e}\n",
-                encoding="utf-8",
-            )
-        except OSError:
-            pass
-        return {
-            "status": "crash",
-            "duration": duration,
-            "error": str(e),
-            "failure_type": "launcher_error",
-            "final_results_present": False,
-            "command_tokens": command_tokens,
-            "log_path": str(log_path),
-            "benchmark_env": benchmark_env,
-        }
+        _note_launch_failure(
+            log_path, f"Experiment launcher failed after {duration:.1f}s\nCommand: {command_tokens}\nError: {e}\n"
+        )
+        return _launch_failure(duration, str(e), "launcher_error", command_tokens, log_path, benchmark_env)
 
     metric = None
     benchmark_summary = _parse_benchmark_summary_from_log(log_path)
