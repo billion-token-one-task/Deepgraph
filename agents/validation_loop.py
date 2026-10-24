@@ -1147,37 +1147,49 @@ def _upper_bound_name(name: str, row: dict | None = None) -> bool:
     return bool(isinstance(row, dict) and row.get("upper_bound")) or "oracle" in label or "upper_bound" in label
 
 
+_WEIGHTED_METHOD_KEYS = (
+    "score",
+    "exact",
+    "f1",
+    "avg_new_tokens",
+    "avg_latency_seconds",
+    "route_rate",
+    "cost_adjusted_accuracy",
+    "metric_value",
+)
+_PER_MODEL_TABLE_KEYS = (
+    "ablation_table",
+    "ablation_results",
+    "cost_utility_tradeoff_table",
+    "quality_cost_frontier",
+    "route_rate_sweep",
+    "difficulty_breakdown_table",
+    "latency_tokens_table",
+    "calibration_reliability",
+)
+
+
+def _count_or_none(row: dict) -> int | None:
+    try:
+        return int(row.get("count") or 0)
+    except (TypeError, ValueError):
+        return None
+
+
 def _weighted_merge_method_rows(rows: list[dict]) -> dict:
+    counts = [_count_or_none(row) for row in rows]
+    total_count = max(1, sum(count for count in counts if count is not None))
     merged: dict = {}
-    total_count = 0
-    for row in rows:
-        try:
-            total_count += int(row.get("count") or 0)
-        except (TypeError, ValueError):
-            pass
-    total_count = max(1, total_count)
-    numeric_avg_keys = (
-        "score",
-        "exact",
-        "f1",
-        "avg_new_tokens",
-        "avg_latency_seconds",
-        "route_rate",
-        "cost_adjusted_accuracy",
-        "metric_value",
-    )
-    for key in numeric_avg_keys:
-        value = 0.0
-        seen = False
-        for row in rows:
+    for key in _WEIGHTED_METHOD_KEYS:
+        terms = []
+        for row, count in zip(rows, counts):
             try:
-                count = int(row.get("count") or 0)
-                value += float(row.get(key)) * max(1, count)
-                seen = True
+                if count is not None:
+                    terms.append(float(row.get(key)) * max(1, count))
             except (TypeError, ValueError):
-                continue
-        if seen:
-            merged[key] = float(value / total_count)
+                pass
+        if terms:
+            merged[key] = float(sum(terms) / total_count)
     merged["count"] = total_count
     if any(row.get("upper_bound") for row in rows if isinstance(row, dict)):
         merged["upper_bound"] = True
@@ -1216,66 +1228,56 @@ def _merge_model_benchmark_summaries(model_results: list[dict], criteria_metric_
     summaries = [row.get("benchmark_summary") for row in model_results if isinstance(row.get("benchmark_summary"), dict)]
     if not summaries:
         return {}
+    # Summaries are paired with model_results by position, so a model without a
+    # summary shifts the ids of the ones after it (pinned by the merge tests).
+    labelled = []
+    for model_result, summary in zip(model_results, summaries):
+        model = summary.get("model") if isinstance(summary.get("model"), dict) else {}
+        labelled.append((summary, model, model_result.get("model_id") or model.get("id") or ""))
     base = json.loads(json.dumps(summaries[0]))
     metric_name = str(base.get("primary_metric") or base.get("metric_name") or criteria_metric_name or "metric_value")
     candidate = str(base.get("candidate_method") or "").strip()
-    all_methods = sorted({name for summary in summaries for name in (summary.get("per_method") or {}).keys()})
     per_method: dict = {}
-    for method in all_methods:
-        rows = [summary.get("per_method", {}).get(method) for summary in summaries]
-        rows = [row for row in rows if isinstance(row, dict)]
+    for method in sorted({name for summary in summaries for name in (summary.get("per_method") or {})}):
+        rows = [row for summary in summaries if isinstance(row := summary.get("per_method", {}).get(method), dict)]
         if rows:
             per_method[method] = _weighted_merge_method_rows(rows)
-    seed_results = []
-    for model_result, summary in zip(model_results, summaries):
-        model = summary.get("model") if isinstance(summary.get("model"), dict) else {}
-        model_id = model_result.get("model_id") or model.get("id") or ""
-        for seed_row in summary.get("seed_results") or []:
-            if isinstance(seed_row, dict):
-                copied = json.loads(json.dumps(seed_row))
-                copied["model_id"] = model_id
-                seed_results.append(copied)
-    datasets = []
-    seen_datasets = set()
-    for summary in summaries:
-        for row in summary.get("datasets") or []:
-            if not isinstance(row, dict):
-                continue
-            key = str(row.get("name") or row.get("id") or row).lower()
-            if key and key not in seen_datasets:
-                seen_datasets.add(key)
-                datasets.append(row)
-    models = []
-    seen_models = set()
-    for model_result, summary in zip(model_results, summaries):
-        model = summary.get("model") if isinstance(summary.get("model"), dict) else {}
-        model_id = str(model_result.get("model_id") or model.get("id") or "").strip()
+    seed_results = [
+        {**json.loads(json.dumps(seed_row)), "model_id": model_id}
+        for summary, _, model_id in labelled
+        for seed_row in summary.get("seed_results") or []
+        if isinstance(seed_row, dict)
+    ]
+    datasets, seen_datasets = [], set()
+    for row in (row for summary in summaries for row in summary.get("datasets") or [] if isinstance(row, dict)):
+        key = str(row.get("name") or row.get("id") or row).lower()
+        if key and key not in seen_datasets:
+            seen_datasets.add(key)
+            datasets.append(row)
+    models, seen_models = [], set()
+    for _, model, model_id in labelled:
+        model_id = str(model_id).strip()
         if model_id and model_id.lower() not in seen_models:
             seen_models.add(model_id.lower())
             models.append({**model, "id": model_id})
-    strongest_name = ""
-    strongest_value = None
-    higher = True
+    strongest_name, strongest_value = "", None
     for name, row in per_method.items():
         if name == candidate or _upper_bound_name(name, row):
             continue
         value = _metric_from_row(row, metric_name)
-        if value is None:
-            continue
-        if strongest_value is None or (value > strongest_value if higher else value < strongest_value):
+        if value is not None and (strongest_value is None or value > strongest_value):
             strongest_name, strongest_value = name, value
     candidate_values: list[float] = []
     baseline_values: list[float] = []
-    if candidate and strongest_name:
-        for seed_row in seed_results:
-            methods = seed_row.get("methods") if isinstance(seed_row, dict) else {}
-            if not isinstance(methods, dict):
-                continue
-            cand = _metric_from_row(methods.get(candidate, {}), metric_name)
-            base_value = _metric_from_row(methods.get(strongest_name, {}), metric_name)
-            if cand is not None and base_value is not None:
-                candidate_values.append(cand)
-                baseline_values.append(base_value)
+    for seed_row in seed_results if candidate and strongest_name else []:
+        methods = seed_row.get("methods")
+        if not isinstance(methods, dict):
+            continue
+        cand = _metric_from_row(methods.get(candidate, {}), metric_name)
+        base_value = _metric_from_row(methods.get(strongest_name, {}), metric_name)
+        if cand is not None and base_value is not None:
+            candidate_values.append(cand)
+            baseline_values.append(base_value)
     p_value = _paired_permutation_pvalue(candidate_values, baseline_values)
     bootstrap = {
         "candidate_method": candidate,
@@ -1285,23 +1287,13 @@ def _merge_model_benchmark_summaries(model_results: list[dict], criteria_metric_
         "paired_permutation_p": p_value,
         "p_value": p_value,
     }
-    for key in (
-        "ablation_table",
-        "ablation_results",
-        "cost_utility_tradeoff_table",
-        "quality_cost_frontier",
-        "route_rate_sweep",
-        "difficulty_breakdown_table",
-        "latency_tokens_table",
-        "calibration_reliability",
-    ):
-        rows = []
-        for model_result, summary in zip(model_results, summaries):
-            model = summary.get("model") if isinstance(summary.get("model"), dict) else {}
-            model_id = model_result.get("model_id") or model.get("id") or ""
-            for row in summary.get(key) or []:
-                if isinstance(row, dict):
-                    rows.append({"model_id": model_id, **row})
+    for key in _PER_MODEL_TABLE_KEYS:
+        rows = [
+            {"model_id": model_id, **row}
+            for summary, _, model_id in labelled
+            for row in summary.get(key) or []
+            if isinstance(row, dict)
+        ]
         if rows:
             base[key] = rows
     base["per_method"] = per_method
