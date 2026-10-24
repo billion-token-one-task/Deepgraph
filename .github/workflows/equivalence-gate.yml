@@ -1,0 +1,82 @@
+name: Equivalence gate
+
+# V1.6 changes must keep behaviour: this records what the base branch and the
+# pull request each do (tests, imports, routes, schema, PostgreSQL tests, every
+# GET response on a seeded database) and fails on anything the PR loses.
+# The gate code always comes from the base branch, so a PR is judged by the
+# rules it was opened against, not by rules it edits.
+
+on:
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: equivalence-gate-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: dgtest
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U dgtest" --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      PG: postgresql://dgtest@127.0.0.1:5432
+    defaults:
+      run:
+        shell: bash  # explicit bash adds pipefail, so `compare | tee` still fails the job
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check out the base branch next to the PR
+        run: git worktree add ../base "${{ github.event.pull_request.base.sha || 'origin/master' }}"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install
+        run: |
+          pip install -r requirements.txt
+          pip install pytest==9.0.3 ruff==0.17.1
+
+      - name: Pick the gate code
+        run: |
+          if [ -f ../base/tools/equivalence_gate/gate.py ]; then
+            echo "GATE=$(cd ../base && pwd)/tools/equivalence_gate" >> "$GITHUB_ENV"
+          else
+            echo "::warning::base branch has no equivalence gate yet; using the PR's copy"
+            echo "GATE=$PWD/tools/equivalence_gate" >> "$GITHUB_ENV"
+          fi
+
+      - name: Record the base branch
+        run: python -I "$GATE/gate.py" ../base out/base --pg "$PG" --tag base
+
+      - name: Record the pull request
+        run: python -I "$GATE/gate.py" . out/head --pg "$PG" --tag head
+
+      - name: Compare
+        run: |
+          python -I "$GATE/size.py" ../base . >> "$GITHUB_STEP_SUMMARY"
+          echo >> "$GITHUB_STEP_SUMMARY"
+          python -I "$GATE/compare.py" out/base out/head | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: equivalence-gate
+          path: out/
+          retention-days: 14

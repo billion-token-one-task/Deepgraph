@@ -111,7 +111,7 @@ def scan(root: Path, *, min_reads: int = 2) -> list[tuple[str, int, list[str]]]:
     written: set[str] = set()
     for path in sorted(root.rglob("*.py")):
         parts = set(path.parts)
-        if parts & {".git", "node_modules", "__pycache__", "tests", "plugins"}:
+        if parts & {".git", "node_modules", "__pycache__", "tests", "plugins", "tools"}:
             continue
         try:
             source = path.read_text(encoding="utf-8")
