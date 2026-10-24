@@ -104,6 +104,9 @@ def snap(repo_root: str, db_url: str, out_dir: str) -> None:
     from db import database as db
 
     app = web_app.app
+    # Without a .release-commit the cache-busting token is the newest static
+    # file mtime, which differs between two checkouts of the same commit.
+    web_app.ASSET_VERSION = "snapshot"
     # main.py warms the dashboard cache before serving; do it synchronously so
     # /api/stats answers the way production does, without a refresher thread.
     web_app._stats_cache.prewarm()
