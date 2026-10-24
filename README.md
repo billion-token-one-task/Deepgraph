@@ -90,7 +90,7 @@ Full deployment (PostgreSQL, systemd, remote GPU backends): [docs/DEPLOY.md](doc
 
 ## Contributing
 
-Researchers: bring a computational question at [deepgraph.joulebeat.com](https://deepgraph.joulebeat.com). Developers: issues and pull requests are welcome; contributions are covered by the [CLA](CLA.md).
+Researchers: bring a computational question at [deepgraph.joulebeat.com](https://deepgraph.joulebeat.com). Developers: issues and pull requests are welcome; contributions are covered by the [CLA](CLA.md). The next version, V1.6, is a community effort to shrink the code without changing behaviour: [pick a task](docs/V1.6.md).
 
 ## License
 

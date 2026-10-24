@@ -2,6 +2,7 @@
 
 > 中文导读: DeepGraph 的定位是自主科研的裁判, 不是第 10001 个作者。路线分三段:
 > V1.0 一台可信的仪器 (已有); V1.5 让它持续、诚实、便宜地对外运转 (现在);
+> V1.6 架构优化: 功能不变, 把代码压实 (下一版, 社区任务见 [V1.6](V1.6.md));
 > V2 把诚信链收成一小组不变量 + 插件 API 的平台 (建设中)。终局是 benchmark x harness
 > 交错进化, 它跑在 DeepGraph 之上。
 
@@ -18,12 +19,15 @@ flowchart LR
     B2["model trust report cards:<br/>claimed vs measured, and how much<br/>a score collapses under meaning-preserving rewrites"]
     B3["candidates as reasoning scaffolds,<br/>not only prompts"]
   end
+  subgraph V16["V1.6: architecture optimization (next)"]
+    D1["same behaviour, less code:<br/>every change passes an automatic equivalence gate"]
+  end
   subgraph V2["V2: thin integrity core + plugin API (building)"]
     C1["6 invariants + 1 loop as a plugin core,<br/>on an open agent-harness substrate"]
     C2["runner / evaluator / benchmark / scaffold /<br/>agenda / metric / selector plugins"]
     C3["learning layer: verdicts feed selection<br/>(shadow first, then bounded online)"]
   end
-  V10 --> V15 --> V2
+  V10 --> V15 --> V16 --> V2
   V2 -.->|"runs on top"| G["benchmark x harness co-evolution"]
 ```
 
@@ -72,6 +76,18 @@ accuracy" claims hard to certify there.
   minimum-detectable-effect arithmetic before spending, a positive control
   before candidates, and an intervention surface that can actually express the
   hypothesis.
+
+## V1.6: architecture optimization (next)
+
+Same behaviour, less code. V1.6 reduces the production code base (206 Python
+files, 488k tokens at the start) by equivalence-preserving changes only:
+merging duplicates, parsing data once at module boundaries with explicit
+types, and removing branches that cannot be reached. Prompts, SQL semantics,
+API responses, thresholds and defaults stay as they are. Every pull request
+must pass an automatic equivalence gate that runs the base branch and the PR
+side by side -- tests, imports, routes, schema, PostgreSQL integration tests
+and every GET response on a seeded database -- and fails on anything the PR
+loses. The work is split into claimable community tasks; see [V1.6](V1.6.md).
 
 ## V2: thin integrity core + plugin API (building)
 

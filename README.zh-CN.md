@@ -89,7 +89,7 @@ python3.12 main.py      # 打开 http://localhost:8080
 
 ## 参与
 
-科研工作者：在 [deepgraph.joulebeat.com](https://deepgraph.joulebeat.com) 提交一个计算类问题。开发者：欢迎 issue 和 PR，贡献适用 [CLA](CLA.md)。
+科研工作者：在 [deepgraph.joulebeat.com](https://deepgraph.joulebeat.com) 提交一个计算类问题。开发者：欢迎 issue 和 PR，贡献适用 [CLA](CLA.md)。下一版 V1.6 是社区一起做的架构优化：功能不变，把代码压实，[来领任务](docs/V1.6.md)。
 
 ## 许可证
 
